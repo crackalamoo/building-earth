@@ -14,7 +14,7 @@ from shapely.prepared import prep
 from typing import Optional
 
 OCEAN_HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
-LAND_HEAT_CAPACITY_M2 = 3.0e6  # J m-2 K-1, ~1.5 m soil
+LAND_HEAT_CAPACITY_M2 = 6.0e6  # J m-2 K-1, ~3 m soil skin depth
 OCEAN_ALBEDO = 0.05
 LAND_ALBEDO = 0.3
 

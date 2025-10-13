@@ -2,27 +2,32 @@
 
 from __future__ import annotations
 
-from typing import Callable, Tuple
+from dataclasses import replace
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 from scipy import optimize
 
 import climate_sim.modeling.radiation as radiation
+from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
-from climate_sim.modeling.diffusion import DiffusionOperator, create_diffusion_operator
+from climate_sim.modeling.diffusion import (
+    DiffusionConfig,
+    DiffusionOperator,
+    create_diffusion_operator,
+)
 from climate_sim.utils.landmask import compute_albedo_field, compute_heat_capacity_field
 
 NEWTON_TOLERANCE = 1e-5  # K
 NEWTON_MAX_ITERS = 16
 NEWTON_DAMPING = 0.5
-TEMPERATURE_FLOOR_K = 10.0  # K
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 RhsDerivativeFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
-RhsFactory = Callable[[np.ndarray, np.ndarray, DiffusionOperator], Tuple[RhsFunc, RhsDerivativeFunc]]
-InitialGuessFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
+RhsFactory = Callable[[np.ndarray, np.ndarray, DiffusionOperator, RadiationConfig], Tuple[RhsFunc, RhsDerivativeFunc]]
+InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig], np.ndarray]
 MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
 HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
@@ -144,7 +149,8 @@ def compute_periodic_cycle_kelvin(
     heat_capacity_field_fn: HeatCapacityFieldFunc,
     rhs_factory: RhsFactory,
     initial_guess_fn: InitialGuessFunc,
-    temperature_floor: float,
+    radiation_config: RadiationConfig,
+    diffusion_config: DiffusionConfig,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Solve for the periodic temperature cycle and return results in Kelvin."""
     lon2d, lat2d = create_lat_lon_grid(resolution_deg)
@@ -154,12 +160,16 @@ def compute_periodic_cycle_kelvin(
 
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
     albedo_field = compute_albedo_field(lon2d, lat2d)
-    diffusion_operator = create_diffusion_operator(lon2d, lat2d, heat_capacity_field)
+    diffusion_operator = create_diffusion_operator(
+        lon2d, lat2d, heat_capacity_field, config=diffusion_config
+    )
     rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
-        heat_capacity_field, albedo_field, diffusion_operator
+        heat_capacity_field, albedo_field, diffusion_operator, radiation_config
     )
 
-    initial_temperature = initial_guess_fn(monthly_insolation, heat_capacity_field)
+    initial_temperature = initial_guess_fn(
+        monthly_insolation, albedo_field, radiation_config
+    )
 
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
 
@@ -169,7 +179,7 @@ def compute_periodic_cycle_kelvin(
         month_durations,
         rhs_fn=rhs_fn,
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-        temperature_floor=temperature_floor,
+        temperature_floor=radiation_config.temperature_floor,
     )
 
     monthly_temperatures = integrate_periodic_cycle(
@@ -178,7 +188,7 @@ def compute_periodic_cycle_kelvin(
         month_durations,
         rhs_fn=rhs_fn,
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-        temperature_floor=temperature_floor,
+        temperature_floor=radiation_config.temperature_floor,
     )
 
     return lon2d, lat2d, monthly_temperatures
@@ -192,7 +202,10 @@ def compute_periodic_cycle_celsius(
     land_heat_capacity: float = None,
     emissivity_sfc: float = None,
     emissivity_atm: float = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    radiation_config: RadiationConfig | None = None,
+    diffusion_config: DiffusionConfig | None = None,
+    return_layer_map: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Convenience wrapper wiring the radiation component into the solver."""
 
     def monthly_insolation_lat_fn(lat2d: np.ndarray) -> np.ndarray:
@@ -206,20 +219,37 @@ def compute_periodic_cycle_celsius(
             land_heat_capacity=land_heat_capacity,
         )
 
+    resolved_radiation = radiation_config or RadiationConfig()
+    if emissivity_sfc is not None:
+        resolved_radiation = replace(
+            resolved_radiation, emissivity_surface=emissivity_sfc
+        )
+    if emissivity_atm is not None:
+        resolved_radiation = replace(
+            resolved_radiation, emissivity_atmosphere=emissivity_atm
+        )
+
+    resolved_diffusion = diffusion_config or DiffusionConfig()
+
     def rhs_factory(
         heat_capacity_field: np.ndarray,
         albedo_field: np.ndarray,
         diffusion_operator: DiffusionOperator,
+        config: RadiationConfig,
     ):
         def rhs(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
                 temperature,
                 insolation,
                 heat_capacity_field=heat_capacity_field,
-                emissivity_sfc=emissivity_sfc,
-                emissivity_atm=emissivity_atm,
                 albedo_field=albedo_field,
+                config=config,
             )
+            if config.include_atmosphere:
+                diffusion = diffusion_operator.tendency(temperature[0])
+                radiative = radiative.copy()
+                radiative[0] += diffusion
+                return radiative
             diffusion = diffusion_operator.tendency(temperature)
             return radiative + diffusion
 
@@ -228,22 +258,25 @@ def compute_periodic_cycle_celsius(
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 temperature,
                 heat_capacity_field=heat_capacity_field,
-                emissivity_sfc=emissivity_sfc,
-                emissivity_atm=emissivity_atm,
+                config=config,
             )
+            if config.include_atmosphere:
+                radiative_derivative = radiative_derivative.copy()
+                radiative_derivative[0] += diffusion_operator.diagonal
+                return radiative_derivative
             return radiative_derivative + diffusion_operator.diagonal
 
         return rhs, rhs_derivative
 
     def initial_guess_fn(
         monthly_insolation: np.ndarray,
-        heat_capacity_field: np.ndarray,
+        albedo_field: np.ndarray,
+        config: RadiationConfig,
     ) -> np.ndarray:
-        del heat_capacity_field
         return radiation.radiative_equilibrium_initial_guess(
             monthly_insolation,
-            emissivity_sfc=emissivity_sfc,
-            emissivity_atm=emissivity_atm,
+            albedo_field=albedo_field,
+            config=config,
         )
 
     lon2d, lat2d, monthly_temperatures_K = compute_periodic_cycle_kelvin(
@@ -252,8 +285,22 @@ def compute_periodic_cycle_celsius(
         heat_capacity_field_fn=heat_capacity_field_fn,
         rhs_factory=rhs_factory,
         initial_guess_fn=initial_guess_fn,
-        temperature_floor=TEMPERATURE_FLOOR_K,
+        radiation_config=resolved_radiation,
+        diffusion_config=resolved_diffusion,
     )
 
-    monthly_temperatures_C = monthly_temperatures_K - 273.15
-    return lon2d, lat2d, monthly_temperatures_C
+    if monthly_temperatures_K.ndim == 3:
+        monthly_surface_K = monthly_temperatures_K
+        layers_map = {"surface": monthly_surface_K - 273.15}
+    else:
+        monthly_surface_K = monthly_temperatures_K[:, 0]
+        monthly_atmosphere_K = monthly_temperatures_K[:, 1]
+        layers_map = {
+            "surface": monthly_surface_K - 273.15,
+            "atmosphere": monthly_atmosphere_K - 273.15,
+        }
+
+    if return_layer_map:
+        return lon2d, lat2d, layers_map
+
+    return lon2d, lat2d, layers_map["surface"]

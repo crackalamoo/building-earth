@@ -6,8 +6,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-EARTH_RADIUS_M = 6.371e6
-MERIDIONAL_DIFFUSIVITY_M2_S = 5.0e7
+
+@dataclass(frozen=True)
+class DiffusionConfig:
+    """Container for lateral diffusion parameters."""
+
+    earth_radius_m: float = 6.371e6
+    meridional_diffusivity_m2_s: float = 5.0e7
+    enabled: bool = True
 
 
 def _harmonic_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -31,8 +37,24 @@ class DiffusionOperator:
     west_coeff: np.ndarray
     diagonal: np.ndarray
 
+    enabled: bool = True
+
+    @classmethod
+    def disabled(cls, shape: tuple[int, int]) -> DiffusionOperator:
+        zeros = np.zeros(shape, dtype=float)
+        return cls(
+            north_coeff=zeros,
+            south_coeff=zeros,
+            east_coeff=zeros,
+            west_coeff=zeros,
+            diagonal=zeros,
+            enabled=False,
+        )
+
     def tendency(self, temperature: np.ndarray) -> np.ndarray:
         """Return the diffusion tendency for the provided temperature field."""
+        if not self.enabled:
+            return np.zeros_like(temperature)
         north_term = self.north_coeff * (np.roll(temperature, -1, axis=0) - temperature)
         south_term = self.south_coeff * (np.roll(temperature, 1, axis=0) - temperature)
         east_term = self.east_coeff * (np.roll(temperature, -1, axis=1) - temperature)
@@ -50,11 +72,15 @@ def create_diffusion_operator(
     lat2d: np.ndarray,
     heat_capacity_field: np.ndarray,
     *,
-    diffusivity_m2_s: float = MERIDIONAL_DIFFUSIVITY_M2_S,
+    config: DiffusionConfig | None = None,
 ) -> DiffusionOperator:
     """Create a discrete diffusion operator for the supplied grid and materials."""
     if lon2d.shape != lat2d.shape or lon2d.shape != heat_capacity_field.shape:
         raise ValueError("Grid and heat capacity field must share the same shape")
+
+    config = config or DiffusionConfig()
+    if not config.enabled:
+        return DiffusionOperator.disabled(heat_capacity_field.shape)
 
     nlat, nlon = lon2d.shape
 
@@ -64,19 +90,27 @@ def create_diffusion_operator(
     delta_lat_rad = np.deg2rad(delta_lat_deg)
     delta_lon_rad = np.deg2rad(delta_lon_deg)
 
-    delta_lat_m = EARTH_RADIUS_M * delta_lat_rad if delta_lat_rad > 0.0 else np.inf
-    delta_lon_m = EARTH_RADIUS_M * delta_lon_rad if delta_lon_rad > 0.0 else np.inf
+    earth_radius = config.earth_radius_m
+
+    delta_lat_m = earth_radius * delta_lat_rad if delta_lat_rad > 0.0 else np.inf
+    if delta_lon_rad > 0.0:
+        cos_lat = np.cos(np.deg2rad(lat2d))
+        delta_lon_m = earth_radius * cos_lat * delta_lon_rad
+    else:
+        delta_lon_m = np.full_like(heat_capacity_field, np.inf, dtype=float)
 
     lat_diffusivity = (
-        diffusivity_m2_s / (heat_capacity_field * delta_lat_m**2)
+        config.meridional_diffusivity_m2_s / (heat_capacity_field * delta_lat_m**2)
         if np.isfinite(delta_lat_m)
         else np.zeros_like(heat_capacity_field)
     )
-    lon_diffusivity = (
-        diffusivity_m2_s / (heat_capacity_field * delta_lon_m**2)
-        if np.isfinite(delta_lon_m)
-        else np.zeros_like(heat_capacity_field)
-    )
+    lon_diffusivity = np.zeros_like(heat_capacity_field)
+    if delta_lon_rad > 0.0:
+        valid = np.abs(delta_lon_m) > 0.0
+        lon_diffusivity[valid] = (
+            config.meridional_diffusivity_m2_s
+            / (heat_capacity_field[valid] * delta_lon_m[valid] ** 2)
+        )
 
     if nlat > 1 and np.isfinite(delta_lat_m):
         north_coeff = _harmonic_mean(lat_diffusivity, np.roll(lat_diffusivity, -1, axis=0))
@@ -87,7 +121,7 @@ def create_diffusion_operator(
         north_coeff = np.zeros_like(heat_capacity_field)
         south_coeff = np.zeros_like(heat_capacity_field)
 
-    if nlon > 1 and np.isfinite(delta_lon_m):
+    if nlon > 1 and delta_lon_rad > 0.0:
         east_coeff = _harmonic_mean(lon_diffusivity, np.roll(lon_diffusivity, -1, axis=1))
         west_coeff = _harmonic_mean(lon_diffusivity, np.roll(lon_diffusivity, 1, axis=1))
     else:
