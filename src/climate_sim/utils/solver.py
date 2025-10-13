@@ -10,7 +10,8 @@ from scipy import optimize
 import climate_sim.modeling.radiation as radiation
 from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
-from climate_sim.utils.landmask import compute_heat_capacity_field
+from climate_sim.modeling.diffusion import DiffusionOperator, create_diffusion_operator
+from climate_sim.utils.landmask import compute_albedo_field, compute_heat_capacity_field
 
 NEWTON_TOLERANCE = 1e-5  # K
 NEWTON_MAX_ITERS = 16
@@ -20,7 +21,7 @@ TEMPERATURE_FLOOR_K = 10.0  # K
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 RhsDerivativeFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
-RhsFactory = Callable[[np.ndarray], Tuple[RhsFunc, RhsDerivativeFunc]]
+RhsFactory = Callable[[np.ndarray, np.ndarray, DiffusionOperator], Tuple[RhsFunc, RhsDerivativeFunc]]
 InitialGuessFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
 HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
@@ -152,7 +153,11 @@ def compute_periodic_cycle_kelvin(
     monthly_insolation = expand_latitude_field(monthly_insolation_lat, lon2d.shape[1])
 
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
-    rhs_fn, rhs_temperature_derivative_fn = rhs_factory(heat_capacity_field)
+    albedo_field = compute_albedo_field(lon2d, lat2d)
+    diffusion_operator = create_diffusion_operator(lon2d, lat2d, heat_capacity_field)
+    rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
+        heat_capacity_field, albedo_field, diffusion_operator
+    )
 
     initial_temperature = initial_guess_fn(monthly_insolation, heat_capacity_field)
 
@@ -201,24 +206,32 @@ def compute_periodic_cycle_celsius(
             land_heat_capacity=land_heat_capacity,
         )
 
-    def rhs_factory(heat_capacity_field: np.ndarray):
+    def rhs_factory(
+        heat_capacity_field: np.ndarray,
+        albedo_field: np.ndarray,
+        diffusion_operator: DiffusionOperator,
+    ):
         def rhs(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
-            return radiation.radiative_balance_rhs(
+            radiative = radiation.radiative_balance_rhs(
                 temperature,
                 insolation,
                 heat_capacity_field=heat_capacity_field,
                 emissivity_sfc=emissivity_sfc,
                 emissivity_atm=emissivity_atm,
+                albedo_field=albedo_field,
             )
+            diffusion = diffusion_operator.tendency(temperature)
+            return radiative + diffusion
 
         def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
             del insolation
-            return radiation.radiative_balance_rhs_temperature_derivative(
+            radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 temperature,
                 heat_capacity_field=heat_capacity_field,
                 emissivity_sfc=emissivity_sfc,
                 emissivity_atm=emissivity_atm,
             )
+            return radiative_derivative + diffusion_operator.diagonal
 
         return rhs, rhs_derivative
 

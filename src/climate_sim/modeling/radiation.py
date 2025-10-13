@@ -8,7 +8,7 @@ from typing import Optional
 STEFAN_BOLTZMANN = 5.670374419e-8  # W m-2 K-4
 EMISSIVITY_SFC = 1.0
 EMISSIVITY_ATM = 0.77
-ALBEDO = 0.3  # Typical Earth value
+DEFAULT_ALBEDO = 0.3  # Typical Earth value
 TEMPERATURE_FLOOR_K = 10.0
 
 def radiative_balance_rhs(
@@ -18,6 +18,7 @@ def radiative_balance_rhs(
     heat_capacity_field: np.ndarray,
     emissivity_sfc: Optional[float] = EMISSIVITY_SFC,
     emissivity_atm: Optional[float] = EMISSIVITY_ATM,
+    albedo_field: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Column energy-balance tendency C dT/dt = S - εσT⁴."""
     emissivity_sfc = emissivity_sfc if emissivity_sfc is not None else EMISSIVITY_SFC
@@ -25,7 +26,8 @@ def radiative_balance_rhs(
     temperature = np.maximum(temperature_K, TEMPERATURE_FLOOR_K)
     emissivity_eff = emissivity_sfc * (1 - 0.5 * emissivity_atm)
     emitted = emissivity_eff * STEFAN_BOLTZMANN * np.power(temperature, 4)
-    return (insolation_W_m2 * (1 - ALBEDO) - emitted) / heat_capacity_field
+    albedo = albedo_field if albedo_field is not None else DEFAULT_ALBEDO
+    return (insolation_W_m2 * (1 - albedo) - emitted) / heat_capacity_field
 
 
 def radiative_balance_rhs_temperature_derivative(
