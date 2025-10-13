@@ -12,13 +12,16 @@ from __future__ import annotations
 import numpy as np
 from scipy import optimize
 
+from ..utils.landmask import compute_land_mask
+
 SOLAR_CONSTANT = 1361.0  # W m-2
 STEFAN_BOLTZMANN = 5.670374419e-8  # W m-2 K-4
 OBLIQUITY_DEGREES = 23.44  # Earth axial tilt
 SECONDS_PER_DAY = 86400.0
 DAYS_PER_MONTH = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=float)
 ANNUAL_DAYS = DAYS_PER_MONTH.sum()
-HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
+OCEAN_HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
+LAND_HEAT_CAPACITY_M2 = 8.0e7  # J m-2 K-1, ~2 m soil
 EMISSIVITY = 1.0
 NEWTON_TOLERANCE = 1e-5  # K
 NEWTON_MAX_ITERS = 16
@@ -31,6 +34,19 @@ def create_lat_lon_grid(resolution_deg: float = 1.0) -> tuple[np.ndarray, np.nda
     lons = np.arange(resolution_deg / 2, 360.0, resolution_deg)
     lon2d, lat2d = np.meshgrid(lons, lats)
     return lon2d, lat2d
+
+
+def compute_heat_capacity_field(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    *,
+    ocean_heat_capacity: float,
+    land_heat_capacity: float,
+) -> np.ndarray:
+    """Assign per-cell heat capacity based on land/sea classification."""
+    land_mask = compute_land_mask(lon2d, lat2d)
+    heat_capacity = np.where(land_mask, land_heat_capacity, ocean_heat_capacity)
+    return heat_capacity
 
 
 def monthly_midpoint_days() -> np.ndarray:
@@ -95,12 +111,12 @@ def radiative_balance_rhs(
     temperature_K: np.ndarray,
     insolation_W_m2: np.ndarray,
     *,
-    heat_capacity: float,
+    heat_capacity_field: np.ndarray,
     emissivity: float,
 ) -> np.ndarray:
     """Return dT/dt = (S - εσT⁴)/C for the column energy balance."""
     emitted = emissivity * STEFAN_BOLTZMANN * np.power(np.maximum(temperature_K, MIN_TEMPERATURE_K), 4)
-    return (insolation_W_m2 - emitted) / heat_capacity
+    return (insolation_W_m2 - emitted) / heat_capacity_field
 
 
 def implicit_monthly_step(
@@ -108,7 +124,7 @@ def implicit_monthly_step(
     insolation_W_m2: np.ndarray,
     dt_seconds: float,
     *,
-    heat_capacity: float,
+    heat_capacity_field: np.ndarray,
     emissivity: float,
 ) -> np.ndarray:
     """Advance the column temperature one implicit backward-Euler step."""
@@ -119,7 +135,7 @@ def implicit_monthly_step(
         rhs_value = radiative_balance_rhs(
             temp_capped,
             insolation_W_m2,
-            heat_capacity=heat_capacity,
+            heat_capacity_field=heat_capacity_field,
             emissivity=emissivity,
         )
         residual = temp_capped - temperature_K - dt_seconds * rhs_value
@@ -129,7 +145,7 @@ def implicit_monthly_step(
             * STEFAN_BOLTZMANN
             * dt_seconds
             * np.power(temp_capped, 3)
-            / heat_capacity
+            / heat_capacity_field
         )
 
         correction = residual / derivative
@@ -147,7 +163,7 @@ def apply_annual_map(
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     *,
-    heat_capacity: float,
+    heat_capacity_field: np.ndarray,
     emissivity: float,
 ) -> np.ndarray:
     """Propagate the state through 12 implicit steps and return the end-of-year temperature."""
@@ -157,7 +173,7 @@ def apply_annual_map(
             state,
             monthly_insolation[month],
             month_durations[month],
-            heat_capacity=heat_capacity,
+            heat_capacity_field=heat_capacity_field,
             emissivity=emissivity,
         )
     return state
@@ -168,7 +184,7 @@ def find_periodic_temperature(
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     *,
-    heat_capacity: float,
+    heat_capacity_field: np.ndarray,
     emissivity: float,
     damping: float = 0.5,
     tolerance: float = 1e-4,
@@ -182,7 +198,7 @@ def find_periodic_temperature(
             state,
             monthly_insolation,
             month_durations,
-            heat_capacity=heat_capacity,
+            heat_capacity_field=heat_capacity_field,
             emissivity=emissivity,
         )
         damped = damping * advanced + (1.0 - damping) * state
@@ -202,7 +218,7 @@ def integrate_periodic_cycle(
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     *,
-    heat_capacity: float,
+    heat_capacity_field: np.ndarray,
     emissivity: float,
 ) -> np.ndarray:
     """Return the 12-month start-of-month temperatures for the periodic solution."""
@@ -214,7 +230,7 @@ def integrate_periodic_cycle(
             state,
             monthly_insolation[month],
             month_durations[month],
-            heat_capacity=heat_capacity,
+            heat_capacity_field=heat_capacity_field,
             emissivity=emissivity,
         )
     return temps
@@ -224,7 +240,8 @@ def compute_periodic_radiative_cycle_celsius(
     resolution_deg: float = 1.0,
     *,
     solar_constant: float = SOLAR_CONSTANT,
-    heat_capacity: float = HEAT_CAPACITY_M2,
+    ocean_heat_capacity: float = OCEAN_HEAT_CAPACITY_M2,
+    land_heat_capacity: float = LAND_HEAT_CAPACITY_M2,
     emissivity: float = EMISSIVITY,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute the 12-month °C temperature cycle with a strictly periodic solution."""
@@ -235,6 +252,13 @@ def compute_periodic_radiative_cycle_celsius(
 
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
 
+    heat_capacity_field = compute_heat_capacity_field(
+        lon2d,
+        lat2d,
+        ocean_heat_capacity=ocean_heat_capacity,
+        land_heat_capacity=land_heat_capacity,
+    )
+
     annual_mean_insolation = monthly_insolation.mean(axis=0)
     equilibrium_guess = np.power(
         np.maximum(annual_mean_insolation, 1e-6) / (emissivity * STEFAN_BOLTZMANN), 0.25
@@ -243,7 +267,7 @@ def compute_periodic_radiative_cycle_celsius(
         equilibrium_guess,
         monthly_insolation,
         month_durations,
-        heat_capacity=heat_capacity,
+        heat_capacity_field=heat_capacity_field,
         emissivity=emissivity,
     )
 
@@ -251,7 +275,7 @@ def compute_periodic_radiative_cycle_celsius(
         periodic_temperature,
         monthly_insolation,
         month_durations,
-        heat_capacity=heat_capacity,
+        heat_capacity_field=heat_capacity_field,
         emissivity=emissivity,
     )
     monthly_temperatures_C = monthly_temperatures_K - 273.15

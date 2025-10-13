@@ -1,5 +1,5 @@
-from modeling.radiation import compute_periodic_radiative_cycle_celsius
-from plotting import plot_monthly_temperature_cycle
+from climate_sim.modeling.radiation import compute_periodic_radiative_cycle_celsius
+from climate_sim.plotting import plot_monthly_temperature_cycle
 
 
 def main() -> None:
@@ -16,7 +16,7 @@ def main() -> None:
         lon2d,
         lat2d,
         monthly_cycle,
-        title="Periodic Radiative Temperature Cycle",
+        title="Temperature Cycle",
     )
 
 
