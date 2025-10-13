@@ -1,11 +1,10 @@
-from climate_sim.modeling.radiation import compute_periodic_radiative_cycle_celsius
+from climate_sim.utils.solver import compute_periodic_cycle_celsius
 from climate_sim.plotting import plot_monthly_temperature_cycle
 
 
 def main() -> None:
-    lon2d, lat2d, monthly_cycle = compute_periodic_radiative_cycle_celsius()
+    lon2d, lat2d, monthly_cycle = compute_periodic_cycle_celsius()
 
-    # Optional: print stats
     print(
         f"Annual Tmin={monthly_cycle.min():.1f}°C, "
         f"Annual Tmax={monthly_cycle.max():.1f}°C, "

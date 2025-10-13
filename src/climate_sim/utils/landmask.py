@@ -55,6 +55,16 @@ def compute_land_mask(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
         _MASK_CACHE[key] = _compute_land_mask(lon2d, lat2d)
     return _MASK_CACHE[key]
 
+def compute_heat_capacity_field(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    *,
+    ocean_heat_capacity: float,
+    land_heat_capacity: float,
+) -> np.ndarray:
+    """Assign per-cell heat capacity based on land/sea classification."""
+    land_mask = compute_land_mask(lon2d, lat2d)
+    return np.where(land_mask, land_heat_capacity, ocean_heat_capacity)
 
 def _default_grid(resolution_deg: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
     """Generate a lon/lat grid matching the modeling module defaults."""
