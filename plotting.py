@@ -2,7 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from typing import Iterable, Optional, Tuple
 
 
@@ -34,11 +36,15 @@ def plot_field(
     norm: Optional[Normalize] = None,
     colorbar_label: str = "",
     colorbar_ticks: Optional[Iterable[float]] = None,
+    colorbar_orientation: str = "vertical",
+    stats_text: Optional[str] = None,
 ) -> None:
     """Render a scalar field on an equirectangular map with land outlines."""
     projection = ccrs.PlateCarree()
     fig = plt.figure(figsize=(12, 6))
     ax = fig.add_subplot(1, 1, 1, projection=projection)
+
+    divider = make_axes_locatable(ax)
 
     mesh = ax.pcolormesh(
         lon2d,
@@ -62,16 +68,42 @@ def plot_field(
     ax.set_global()
     ax.set_title(title, fontsize=14, weight="bold")
 
-    cbar = fig.colorbar(mesh, orientation="horizontal", pad=0.07)
+    if colorbar_orientation == "vertical":
+        cax = divider.append_axes("right", size="3%", pad=0.08, axes_class=Axes)
+        cbar = fig.colorbar(mesh, cax=cax, orientation="vertical")
+    else:
+        cax = divider.append_axes("bottom", size="5%", pad=0.4, axes_class=Axes)
+        cbar = fig.colorbar(mesh, cax=cax, orientation="horizontal")
     if colorbar_label:
         cbar.set_label(colorbar_label)
     if colorbar_ticks is not None:
         cbar.set_ticks(colorbar_ticks)
-        cbar.ax.set_xticklabels([f"{int(tick)}" for tick in colorbar_ticks])
+        labels = [f"{int(tick)}" for tick in colorbar_ticks]
+        if colorbar_orientation == "horizontal":
+            cbar.ax.set_xticklabels(labels)
+        else:
+            cbar.ax.set_yticklabels(labels)
+
+    if stats_text:
+        if colorbar_orientation == "vertical":
+            stats_ax = divider.append_axes("left", size="9%", pad=0.25, axes_class=Axes)
+        else:
+            stats_ax = divider.append_axes("top", size="12%", pad=0.7, axes_class=Axes)
+        stats_ax.axis("off")
+        stats_ax.text(
+            0.5,
+            0.5,
+            stats_text,
+            ha="center",
+            va="center",
+            fontsize=8,
+            color="#222222",
+            bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="#cccccc", alpha=0.9),
+            transform=stats_ax.transAxes,
+        )
 
     add_status_readout(fig, ax, lon2d, lat2d, field)
 
-    fig.tight_layout()
     plt.show()
 
 
@@ -82,6 +114,11 @@ def plot_temperature_field(
     cmap, bounds = build_temperature_cmap()
     vmin, vmax = bounds[0], bounds[-1]
     norm = Normalize(vmin=vmin, vmax=vmax)
+    stats_text = (
+        f"min {field.min():.1f}°C\n"
+        f"mean {field.mean():.1f}°C\n"
+        f"max {field.max():.1f}°C"
+    )
 
     plot_field(
         lon2d,
@@ -92,6 +129,8 @@ def plot_temperature_field(
         norm=norm,
         colorbar_label="Temperature (°C)",
         colorbar_ticks=bounds,
+        colorbar_orientation="vertical",
+        stats_text=stats_text,
     )
 
 
