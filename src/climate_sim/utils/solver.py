@@ -7,12 +7,14 @@ from typing import Callable, Tuple
 import numpy as np
 from scipy import optimize
 
+import climate_sim.modeling.radiation as radiation
 from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
 from climate_sim.utils.landmask import compute_heat_capacity_field
 
 NEWTON_TOLERANCE = 1e-5  # K
 NEWTON_MAX_ITERS = 16
+NEWTON_DAMPING = 0.5
 TEMPERATURE_FLOOR_K = 10.0  # K
 
 
@@ -83,9 +85,6 @@ def find_periodic_temperature(
     *,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
-    damping: float,
-    tolerance: float,
-    max_iterations: int,
     temperature_floor: float,
 ) -> np.ndarray:
     """Solve P(T) = T for the annual map using a fixed-point iteration."""
@@ -100,14 +99,14 @@ def find_periodic_temperature(
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
         )
-        damped = damping * advanced + (1.0 - damping) * state
+        damped = NEWTON_DAMPING * advanced + (1.0 - NEWTON_DAMPING) * state
         return damped.ravel()
 
     solution_flat = optimize.fixed_point(
         annual_map_flat,
         initial_temperature.ravel(),
-        xtol=tolerance,
-        maxiter=max_iterations,
+        xtol=NEWTON_TOLERANCE,
+        maxiter=NEWTON_MAX_ITERS,
     )
     return solution_flat.reshape(initial_temperature.shape)
 
@@ -145,9 +144,6 @@ def compute_periodic_cycle_kelvin(
     rhs_factory: RhsFactory,
     initial_guess_fn: InitialGuessFunc,
     temperature_floor: float,
-    fixed_point_damping: float,
-    fixed_point_tolerance: float,
-    fixed_point_max_iterations: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Solve for the periodic temperature cycle and return results in Kelvin."""
     lon2d, lat2d = create_lat_lon_grid(resolution_deg)
@@ -168,9 +164,6 @@ def compute_periodic_cycle_kelvin(
         month_durations,
         rhs_fn=rhs_fn,
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-        damping=fixed_point_damping,
-        tolerance=fixed_point_tolerance,
-        max_iterations=fixed_point_max_iterations,
         temperature_floor=temperature_floor,
     )
 
@@ -192,33 +185,10 @@ def compute_periodic_cycle_celsius(
     solar_constant: float = None,
     ocean_heat_capacity: float = None,
     land_heat_capacity: float = None,
-    emissivity: float = None,
-    fixed_point_damping: float = None,
-    fixed_point_tolerance: float = None,
-    fixed_point_max_iterations: int = None,
+    emissivity_sfc: float = None,
+    emissivity_atm: float = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convenience wrapper wiring the radiation component into the solver."""
-    from climate_sim.modeling import radiation
-
-    solar_constant = solar_constant if solar_constant is not None else radiation.SOLAR_CONSTANT
-    ocean_heat_capacity = (
-        ocean_heat_capacity if ocean_heat_capacity is not None else radiation.OCEAN_HEAT_CAPACITY_M2
-    )
-    land_heat_capacity = (
-        land_heat_capacity if land_heat_capacity is not None else radiation.LAND_HEAT_CAPACITY_M2
-    )
-    emissivity = emissivity if emissivity is not None else radiation.EMISSIVITY
-    fixed_point_damping = (
-        fixed_point_damping if fixed_point_damping is not None else radiation.FIXED_POINT_DAMPING
-    )
-    fixed_point_tolerance = (
-        fixed_point_tolerance if fixed_point_tolerance is not None else radiation.FIXED_POINT_TOLERANCE
-    )
-    fixed_point_max_iterations = (
-        fixed_point_max_iterations
-        if fixed_point_max_iterations is not None
-        else radiation.FIXED_POINT_MAX_ITERATIONS
-    )
 
     def monthly_insolation_lat_fn(lat2d: np.ndarray) -> np.ndarray:
         return compute_monthly_insolation_field(lat2d, solar_constant=solar_constant)
@@ -237,7 +207,8 @@ def compute_periodic_cycle_celsius(
                 temperature,
                 insolation,
                 heat_capacity_field=heat_capacity_field,
-                emissivity=emissivity,
+                emissivity_sfc=emissivity_sfc,
+                emissivity_atm=emissivity_atm,
             )
 
         def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
@@ -245,7 +216,8 @@ def compute_periodic_cycle_celsius(
             return radiation.radiative_balance_rhs_temperature_derivative(
                 temperature,
                 heat_capacity_field=heat_capacity_field,
-                emissivity=emissivity,
+                emissivity_sfc=emissivity_sfc,
+                emissivity_atm=emissivity_atm,
             )
 
         return rhs, rhs_derivative
@@ -257,7 +229,8 @@ def compute_periodic_cycle_celsius(
         del heat_capacity_field
         return radiation.radiative_equilibrium_initial_guess(
             monthly_insolation,
-            emissivity=emissivity,
+            emissivity_sfc=emissivity_sfc,
+            emissivity_atm=emissivity_atm,
         )
 
     lon2d, lat2d, monthly_temperatures_K = compute_periodic_cycle_kelvin(
@@ -267,9 +240,6 @@ def compute_periodic_cycle_celsius(
         rhs_factory=rhs_factory,
         initial_guess_fn=initial_guess_fn,
         temperature_floor=TEMPERATURE_FLOOR_K,
-        fixed_point_damping=fixed_point_damping,
-        fixed_point_tolerance=fixed_point_tolerance,
-        fixed_point_max_iterations=fixed_point_max_iterations,
     )
 
     monthly_temperatures_C = monthly_temperatures_K - 273.15

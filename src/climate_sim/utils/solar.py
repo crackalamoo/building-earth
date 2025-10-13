@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+from typing import Optional
 
 SOLAR_CONSTANT = 1361.0  # W m-2
 OBLIQUITY_DEGREES = 23.44
@@ -54,9 +55,10 @@ def daily_mean_insolation(lat_rad: np.ndarray, declination_rad: np.ndarray, *, s
 def compute_monthly_insolation_field(
     lat2d: np.ndarray,
     *,
-    solar_constant: float,
+    solar_constant: Optional[float]=SOLAR_CONSTANT,
 ) -> np.ndarray:
     """Return monthly-averaged insolation (W m-2) at the top of the atmosphere."""
+    solar_constant = solar_constant if solar_constant is not None else SOLAR_CONSTANT
     lat_rad = np.deg2rad(lat2d[:, 0])
     midpoints = monthly_midpoint_days()
     declinations = solar_declination(midpoints)
