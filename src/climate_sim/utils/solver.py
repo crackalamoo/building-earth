@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Callable, Dict, Tuple
 
 import numpy as np
@@ -200,8 +199,6 @@ def compute_periodic_cycle_celsius(
     solar_constant: float = None,
     ocean_heat_capacity: float = None,
     land_heat_capacity: float = None,
-    emissivity_sfc: float = None,
-    emissivity_atm: float = None,
     radiation_config: RadiationConfig | None = None,
     diffusion_config: DiffusionConfig | None = None,
     return_layer_map: bool = False,
@@ -220,15 +217,6 @@ def compute_periodic_cycle_celsius(
         )
 
     resolved_radiation = radiation_config or RadiationConfig()
-    if emissivity_sfc is not None:
-        resolved_radiation = replace(
-            resolved_radiation, emissivity_surface=emissivity_sfc
-        )
-    if emissivity_atm is not None:
-        resolved_radiation = replace(
-            resolved_radiation, emissivity_atmosphere=emissivity_atm
-        )
-
     resolved_diffusion = diffusion_config or DiffusionConfig()
 
     def rhs_factory(

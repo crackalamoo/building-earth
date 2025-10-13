@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from climate_sim.utils.math import harmonic_mean
+
 
 @dataclass(frozen=True)
 class DiffusionConfig:
@@ -14,17 +16,6 @@ class DiffusionConfig:
     earth_radius_m: float = 6.371e6
     meridional_diffusivity_m2_s: float = 5.0e7
     enabled: bool = True
-
-
-def _harmonic_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Element-wise harmonic mean guarding against zero coefficients."""
-    denom = np.zeros_like(a)
-    valid = (a > 0.0) & (b > 0.0)
-    denom[valid] = (1.0 / a[valid]) + (1.0 / b[valid])
-    result = np.zeros_like(a)
-    valid_denom = valid & (denom > 0.0)
-    result[valid_denom] = 2.0 / denom[valid_denom]
-    return result
 
 
 @dataclass
@@ -113,17 +104,17 @@ def create_diffusion_operator(
         )
 
     if nlat > 1 and np.isfinite(delta_lat_m):
-        north_coeff = _harmonic_mean(lat_diffusivity, np.roll(lat_diffusivity, -1, axis=0))
+        north_coeff = harmonic_mean(lat_diffusivity, np.roll(lat_diffusivity, -1, axis=0))
         north_coeff[-1, :] = 0.0
-        south_coeff = _harmonic_mean(lat_diffusivity, np.roll(lat_diffusivity, 1, axis=0))
+        south_coeff = harmonic_mean(lat_diffusivity, np.roll(lat_diffusivity, 1, axis=0))
         south_coeff[0, :] = 0.0
     else:
         north_coeff = np.zeros_like(heat_capacity_field)
         south_coeff = np.zeros_like(heat_capacity_field)
 
     if nlon > 1 and delta_lon_rad > 0.0:
-        east_coeff = _harmonic_mean(lon_diffusivity, np.roll(lon_diffusivity, -1, axis=1))
-        west_coeff = _harmonic_mean(lon_diffusivity, np.roll(lon_diffusivity, 1, axis=1))
+        east_coeff = harmonic_mean(lon_diffusivity, np.roll(lon_diffusivity, -1, axis=1))
+        west_coeff = harmonic_mean(lon_diffusivity, np.roll(lon_diffusivity, 1, axis=1))
     else:
         east_coeff = np.zeros_like(heat_capacity_field)
         west_coeff = np.zeros_like(heat_capacity_field)

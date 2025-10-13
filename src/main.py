@@ -1,21 +1,22 @@
-from climate_sim.utils.solver import compute_periodic_cycle_celsius
 from climate_sim.plotting import plot_monthly_temperature_cycle
+from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
 
 def main() -> None:
-    lon2d, lat2d, monthly_cycle = compute_periodic_cycle_celsius()
+    lon2d, lat2d, layers = compute_periodic_cycle_celsius(return_layer_map=True)
+    surface_cycle = layers["surface"]
 
     print(
-        f"Annual Tmin={monthly_cycle.min():.1f}°C, "
-        f"Annual Tmax={monthly_cycle.max():.1f}°C, "
-        f"Annual mean={monthly_cycle.mean():.1f}°C"
+        f"Annual Tmin={surface_cycle.min():.1f}°C, "
+        f"Annual Tmax={surface_cycle.max():.1f}°C, "
+        f"Annual mean={surface_cycle.mean():.1f}°C"
     )
 
     plot_monthly_temperature_cycle(
         lon2d,
         lat2d,
-        monthly_cycle,
-        title="Temperature Cycle",
+        surface_cycle,
+        title="Surface Temperature Cycle",
     )
 
 

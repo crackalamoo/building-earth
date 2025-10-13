@@ -32,7 +32,7 @@ def main() -> None:
     parser.add_argument(
         "--resolution",
         type=float,
-        default=2.5,
+        default=1.0,
         help="Grid resolution in degrees",
     )
     parser.add_argument(
