@@ -6,8 +6,6 @@ import numpy as np
 from typing import Optional
 
 STEFAN_BOLTZMANN = 5.670374419e-8  # W m-2 K-4
-OCEAN_HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
-LAND_HEAT_CAPACITY_M2 = 8.0e7  # J m-2 K-1, ~2 m soil
 EMISSIVITY_SFC = 1.0
 EMISSIVITY_ATM = 0.77
 ALBEDO = 0.3  # Typical Earth value

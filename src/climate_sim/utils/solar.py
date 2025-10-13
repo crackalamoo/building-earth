@@ -64,3 +64,20 @@ def compute_monthly_insolation_field(
     declinations = solar_declination(midpoints)
     insolation_by_lat_month = daily_mean_insolation(lat_rad, declinations, solar_constant=solar_constant)
     return insolation_by_lat_month.T  # month, lat
+
+
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
+
+    from grid import create_lat_lon_grid, expand_latitude_field
+    lon2d, lat2d = create_lat_lon_grid(1.0)
+    insolation = compute_monthly_insolation_field(lat2d)
+    print(insolation.shape)
+    insolation = expand_latitude_field(insolation, lon2d.shape[1])
+    print(insolation.shape)
+    insolation = insolation.mean(axis=0)
+    plt.imshow(insolation, origin='lower', extent=[-180, 180, -90, 90], aspect='auto')
+    plt.colorbar(label='W m$^{-2}$')
+    plt.xlabel('Longitude')
+    plt.ylabel('Latitude')
+    plt.show()

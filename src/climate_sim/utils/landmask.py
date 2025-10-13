@@ -13,6 +13,9 @@ from shapely.ops import unary_union
 from shapely.prepared import prep
 from typing import Optional
 
+OCEAN_HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
+LAND_HEAT_CAPACITY_M2 = 3.0e6  # J m-2 K-1, ~1.5 m soil
+
 _MASK_CACHE: dict[Tuple[int, int, float, float, float, float], np.ndarray] = {}
 
 
@@ -65,8 +68,8 @@ def compute_heat_capacity_field(
 ) -> np.ndarray:
     """Assign per-cell heat capacity based on land/sea classification."""
     land_mask = compute_land_mask(lon2d, lat2d)
-    ocean_heat_capacity = ocean_heat_capacity if ocean_heat_capacity is not None else 4.0e8
-    land_heat_capacity = land_heat_capacity if land_heat_capacity is not None else 1.0e8
+    ocean_heat_capacity = ocean_heat_capacity if ocean_heat_capacity is not None else OCEAN_HEAT_CAPACITY_M2
+    land_heat_capacity = land_heat_capacity if land_heat_capacity is not None else LAND_HEAT_CAPACITY_M2
     return np.where(land_mask, land_heat_capacity, ocean_heat_capacity)
 
 def _default_grid(resolution_deg: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
