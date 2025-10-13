@@ -1,18 +1,23 @@
-from modeling.radiation import compute_temperature_celsius
-from plotting import plot_temperature_field
+from modeling.radiation import compute_periodic_radiative_cycle_celsius
+from plotting import plot_monthly_temperature_cycle
 
 
 def main() -> None:
-    lon2d, lat2d, temperature = compute_temperature_celsius()
+    lon2d, lat2d, monthly_cycle = compute_periodic_radiative_cycle_celsius()
 
     # Optional: print stats
     print(
-        f"Tmin={temperature.min():.1f}°C, "
-        f"Tmax={temperature.max():.1f}°C, "
-        f"mean={temperature.mean():.1f}°C"
+        f"Annual Tmin={monthly_cycle.min():.1f}°C, "
+        f"Annual Tmax={monthly_cycle.max():.1f}°C, "
+        f"Annual mean={monthly_cycle.mean():.1f}°C"
     )
 
-    plot_temperature_field(lon2d, lat2d, temperature, title="Black-body Radiative Temperature Field")
+    plot_monthly_temperature_cycle(
+        lon2d,
+        lat2d,
+        monthly_cycle,
+        title="Periodic Radiative Temperature Cycle",
+    )
 
 
 if __name__ == "__main__":

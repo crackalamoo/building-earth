@@ -1,10 +1,11 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.widgets import Slider
 from typing import Iterable, Optional, Tuple
 
 
@@ -183,3 +184,120 @@ def add_status_readout(
 
     fig.canvas.mpl_connect("motion_notify_event", on_move)
     fig.canvas.mpl_connect("figure_leave_event", lambda _evt: toolbar.set_message(""))
+
+
+def plot_monthly_temperature_cycle(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    monthly_field: np.ndarray,
+    *,
+    title: str = "Monthly Temperature Cycle",
+) -> None:
+    """Interactive monthly cycle viewer driven by a slider."""
+    month_names = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ]
+    cmap, bounds = build_temperature_cmap()
+    vmin, vmax = bounds[0], bounds[-1]
+    norm = Normalize(vmin=vmin, vmax=vmax)
+
+    projection = ccrs.PlateCarree()
+    fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
+    ax.set_global()
+    ax.coastlines(linewidth=0.4)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.2)
+    ax.add_feature(cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0)
+
+    mesh = ax.pcolormesh(
+        lon2d,
+        lat2d,
+        monthly_field[0],
+        cmap=cmap,
+        norm=norm,
+        shading="auto",
+        transform=projection,
+    )
+    ax.set_title(f"{title} – {month_names[0]}")
+
+    cbar = fig.colorbar(mesh, ax=ax, orientation="vertical", pad=0.04, fraction=0.046)
+    cbar.set_label("Temperature (°C)")
+    cbar.set_ticks(bounds)
+
+    slider_ax = fig.add_axes([0.12, 0.1, 0.76, 0.03])
+    slider = Slider(
+        slider_ax,
+        label="Month",
+        valmin=0,
+        valmax=11,
+        valinit=0,
+        valstep=1,
+        valfmt="%0.0f",
+    )
+
+    current_field = {"data": monthly_field[0]}
+
+    def update_status_handler() -> None:
+        lons = lon2d[0, :]
+        lats = lat2d[:, 0]
+        manager = getattr(fig.canvas, "manager", None)
+        toolbar = getattr(manager, "toolbar", None)
+        if toolbar is None or not hasattr(toolbar, "set_message"):
+            return
+
+        def format_lat(lat_deg: float) -> str:
+            hemisphere = "N" if lat_deg >= 0 else "S"
+            return f"{abs(lat_deg):.1f}°{hemisphere}"
+
+        def format_lon(lon_deg: float) -> str:
+            lon_wrapped = ((lon_deg + 180.0) % 360.0) - 180.0
+            hemisphere = "E" if lon_wrapped >= 0 else "W"
+            return f"{abs(lon_wrapped):.1f}°{hemisphere}"
+
+        def on_move(event):
+            if event.inaxes != ax or event.xdata is None or event.ydata is None:
+                toolbar.set_message("")
+                return
+
+            lon = event.xdata % 360.0
+            lat = event.ydata
+
+            if not np.isfinite(lon) or not np.isfinite(lat):
+                return
+
+            lon_idx = int(np.abs(lons - lon).argmin())
+            lat_idx = int(np.abs(lats - lat).argmin())
+
+            sample_lon = lon2d[lat_idx, lon_idx]
+            sample_lat = lat2d[lat_idx, lon_idx]
+            temperature = current_field["data"][lat_idx, lon_idx]
+
+            toolbar.set_message(
+                f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {temperature:.1f} °C"
+            )
+
+        fig.canvas.mpl_connect("motion_notify_event", on_move)
+        fig.canvas.mpl_connect("figure_leave_event", lambda _evt: toolbar.set_message(""))
+
+    update_status_handler()
+
+    def on_update(idx: float) -> None:
+        month_index = int(idx)
+        data = monthly_field[month_index]
+        mesh.set_array(data.ravel())
+        ax.set_title(f"{title} – {month_names[month_index]}")
+        current_field["data"] = data
+        fig.canvas.draw_idle()
+
+    slider.on_changed(on_update)
+    plt.show()
