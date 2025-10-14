@@ -1,8 +1,11 @@
 import argparse
 
+import numpy as np
+
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
+from climate_sim.utils.math import spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
 
@@ -67,10 +70,19 @@ def main() -> None:
     )
     surface_cycle = layers["surface"]
 
+    cell_areas = spherical_cell_area(
+        lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
+    )
+    surface_area_mean = float(
+        np.average(surface_cycle.mean(axis=0), weights=cell_areas)
+    )
+
     print(
-        f"Annual Tmin={surface_cycle.min():.1f}°C, "
-        f"Annual Tmax={surface_cycle.max():.1f}°C, "
-        f"Annual mean={surface_cycle.mean():.1f}°C"
+        "Surface layer: "
+        f"Tmin={surface_cycle.min():.1f}°C, "
+        f"Tmax={surface_cycle.max():.1f}°C, "
+        f"simple mean={surface_cycle.mean():.1f}°C, "
+        f"area-weighted mean={surface_area_mean:.1f}°C"
     )
 
     plot_monthly_temperature_cycle(
@@ -79,6 +91,25 @@ def main() -> None:
         surface_cycle,
         title="Surface Temperature Cycle",
     )
+
+    atmosphere_cycle = layers.get("atmosphere")
+    if atmosphere_cycle is not None:
+        atmosphere_area_mean = float(
+            np.average(atmosphere_cycle.mean(axis=0), weights=cell_areas)
+        )
+        print(
+            "Atmosphere layer: "
+            f"Tmin={atmosphere_cycle.min():.1f}°C, "
+            f"Tmax={atmosphere_cycle.max():.1f}°C, "
+            f"simple mean={atmosphere_cycle.mean():.1f}°C, "
+            f"area-weighted mean={atmosphere_area_mean:.1f}°C"
+        )
+        plot_monthly_temperature_cycle(
+            lon2d,
+            lat2d,
+            atmosphere_cycle,
+            title="Atmosphere Temperature Cycle",
+        )
 
 
 if __name__ == "__main__":

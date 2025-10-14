@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Tuple
 
 import numpy as np
-from scipy import optimize, sparse
+from scipy import sparse
 from scipy.sparse import linalg as splinalg
 
 import climate_sim.modeling.radiation as radiation
@@ -27,7 +27,7 @@ from climate_sim.utils.landmask import (
 NEWTON_TOLERANCE = 1e-5  # K
 NEWTON_MAX_ITERS = 16
 NEWTON_DAMPING = 0.5
-FIXED_POINT_MAX_ITERS = 120
+FIXED_POINT_MAX_ITERS = 300
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
@@ -174,10 +174,13 @@ def find_periodic_temperature(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
 ) -> np.ndarray:
-    """Solve P(T) = T for the annual map using a damped fixed-point iteration."""
+    """Solve P(T) = T for the annual map using under-relaxed substitution."""
 
-    def annual_map_flat(state_flat: np.ndarray) -> np.ndarray:
-        state = state_flat.reshape(initial_temperature.shape)
+    state = np.maximum(initial_temperature, temperature_floor)
+    damping = NEWTON_DAMPING
+    previous_residual = np.inf
+
+    for _iter in range(FIXED_POINT_MAX_ITERS):
         advanced = apply_annual_map(
             state,
             monthly_insolation,
@@ -186,16 +189,25 @@ def find_periodic_temperature(
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
         )
-        damped = NEWTON_DAMPING * advanced + (1.0 - NEWTON_DAMPING) * state
-        return damped.ravel()
 
-    solution_flat = optimize.fixed_point(
-        annual_map_flat,
-        initial_temperature.ravel(),
-        xtol=NEWTON_TOLERANCE,
-        maxiter=FIXED_POINT_MAX_ITERS,
+        residual = advanced - state
+        max_residual = float(np.max(np.abs(residual)))
+
+        if max_residual < NEWTON_TOLERANCE:
+            return advanced
+
+        if max_residual > previous_residual:
+            damping = max(damping * 0.5, 0.1)
+        else:
+            damping = min(damping * 1.1, 0.8)
+
+        state = np.maximum(state + damping * residual, temperature_floor)
+        previous_residual = max_residual
+
+    raise RuntimeError(
+        "Failed to converge to a periodic solution after "
+        f"{FIXED_POINT_MAX_ITERS} iterations (residual {previous_residual:.3e} K)"
     )
-    return solution_flat.reshape(initial_temperature.shape)
 
 
 def integrate_periodic_cycle(
@@ -315,12 +327,12 @@ def compute_periodic_cycle_celsius(
         config: RadiationConfig,
     ):
         surface_matrix = (
-            diffusion_operator.surface.to_sparse_matrix()
+            diffusion_operator.surface.matrix
             if diffusion_operator.surface.enabled
             else None
         )
         atmosphere_matrix = (
-            diffusion_operator.atmosphere.to_sparse_matrix()
+            diffusion_operator.atmosphere.matrix
             if config.include_atmosphere and diffusion_operator.atmosphere.enabled
             else None
         )

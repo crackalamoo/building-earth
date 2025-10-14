@@ -17,6 +17,7 @@ class RadiationConfig:
     include_atmosphere: bool = True
     atmosphere_heat_capacity: float = 1.0e7  # J m-2 K-1, ~2-3 km troposphere column
     temperature_floor: float = 10.0  # K
+    atmospheric_shortwave_albedo: float = 0.23  # Dimensionless cloud/air reflectivity
 
 
 def _with_floor(values: np.ndarray, floor: float) -> np.ndarray:
@@ -35,10 +36,15 @@ def radiative_balance_rhs(
 
     floor = config.temperature_floor
 
+    shortwave_transmissivity = 1.0
+    if config.include_atmosphere:
+        shortwave_transmissivity -= np.clip(config.atmospheric_shortwave_albedo, 0.0, 1.0)
+        shortwave_transmissivity = np.clip(shortwave_transmissivity, 0.0, 1.0)
+
     if not config.include_atmosphere:
         temperature = _with_floor(temperature_K, floor)
         emitted = config.emissivity_surface * config.stefan_boltzmann * np.power(temperature, 4)
-        absorbed = insolation_W_m2 * (1.0 - albedo_field)
+        absorbed = insolation_W_m2 * shortwave_transmissivity * (1.0 - albedo_field)
         return (absorbed - emitted) / heat_capacity_field
 
     surface = _with_floor(temperature_K[0], floor)
@@ -50,7 +56,7 @@ def radiative_balance_rhs(
 
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
     emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
-    absorbed_shortwave = insolation_W_m2 * (1.0 - albedo_field)
+    absorbed_shortwave = insolation_W_m2 * shortwave_transmissivity * (1.0 - albedo_field)
 
     downward_longwave = emitted_atmosphere
     absorbed_from_surface = eps_atm * emitted_surface
@@ -124,7 +130,11 @@ def radiative_equilibrium_initial_guess(
     """Initial temperature guess via local radiative equilibrium."""
 
     sigma = config.stefan_boltzmann
-    absorbed = monthly_insolation.mean(axis=0) * (1.0 - albedo_field)
+    shortwave_transmissivity = 1.0
+    if config.include_atmosphere:
+        shortwave_transmissivity -= np.clip(config.atmospheric_shortwave_albedo, 0.0, 1.0)
+        shortwave_transmissivity = np.clip(shortwave_transmissivity, 0.0, 1.0)
+    absorbed = monthly_insolation.mean(axis=0) * shortwave_transmissivity * (1.0 - albedo_field)
     absorbed = np.maximum(absorbed, 1e-6)
 
     if not config.include_atmosphere:

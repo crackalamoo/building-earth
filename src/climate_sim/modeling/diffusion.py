@@ -15,6 +15,64 @@ from climate_sim.utils.math import (
 )
 
 
+def _assemble_sparse_matrix(
+    north_coeff: np.ndarray,
+    south_coeff: np.ndarray,
+    east_coeff: np.ndarray,
+    west_coeff: np.ndarray,
+    diagonal: np.ndarray,
+) -> sparse.csr_matrix | None:
+    """Construct the sparse linear operator matching the diffusion tendency."""
+
+    nlat, nlon = diagonal.shape
+    size = nlat * nlon
+    if size == 0:
+        return sparse.csr_matrix((0, 0))
+
+    rows: list[int] = []
+    cols: list[int] = []
+    data: list[float] = []
+
+    def add_entry(row: int, col: int, value: float) -> None:
+        if value == 0.0:
+            return
+        rows.append(row)
+        cols.append(col)
+        data.append(value)
+
+    for lat_idx in range(nlat):
+        for lon_idx in range(nlon):
+            row_index = lat_idx * nlon + lon_idx
+            add_entry(row_index, row_index, diagonal[lat_idx, lon_idx])
+
+            if lat_idx + 1 < nlat:
+                coeff = north_coeff[lat_idx, lon_idx]
+                if coeff != 0.0:
+                    neighbor_index = (lat_idx + 1) * nlon + lon_idx
+                    add_entry(row_index, neighbor_index, coeff)
+
+            if lat_idx > 0:
+                coeff = south_coeff[lat_idx, lon_idx]
+                if coeff != 0.0:
+                    neighbor_index = (lat_idx - 1) * nlon + lon_idx
+                    add_entry(row_index, neighbor_index, coeff)
+
+            coeff = east_coeff[lat_idx, lon_idx]
+            if coeff != 0.0:
+                neighbor_index = lat_idx * nlon + ((lon_idx + 1) % nlon)
+                add_entry(row_index, neighbor_index, coeff)
+
+            coeff = west_coeff[lat_idx, lon_idx]
+            if coeff != 0.0:
+                neighbor_index = lat_idx * nlon + ((lon_idx - 1) % nlon)
+                add_entry(row_index, neighbor_index, coeff)
+
+    if not rows:
+        return sparse.csr_matrix((size, size))
+
+    return sparse.csr_matrix((data, (rows, cols)), shape=(size, size))
+
+
 @dataclass(frozen=True)
 class DiffusionConfig:
     """Container for lateral diffusion parameters."""
@@ -33,6 +91,7 @@ class DiffusionOperator:
     east_coeff: np.ndarray
     west_coeff: np.ndarray
     diagonal: np.ndarray
+    matrix: sparse.csr_matrix | None
 
     enabled: bool = True
 
@@ -45,6 +104,7 @@ class DiffusionOperator:
             east_coeff=zeros,
             west_coeff=zeros,
             diagonal=zeros,
+            matrix=None,
             enabled=False,
         )
 
@@ -62,66 +122,6 @@ class DiffusionOperator:
             south_term[0, :] = 0.0
 
         return north_term + south_term + east_term + west_term
-
-    def to_sparse_matrix(self) -> sparse.csr_matrix:
-        """Return the linear diffusion operator as a sparse matrix."""
-
-        nlat, nlon = self.diagonal.shape
-        size = nlat * nlon
-
-        if size == 0:
-            return sparse.csr_matrix((0, 0))
-
-        if not self.enabled:
-            return sparse.csr_matrix((size, size))
-
-        if hasattr(self, "_sparse_matrix"):
-            matrix = getattr(self, "_sparse_matrix")
-            if isinstance(matrix, sparse.csr_matrix):
-                return matrix
-
-        rows: list[int] = []
-        cols: list[int] = []
-        data: list[float] = []
-
-        def add_entry(row: int, col: int, value: float) -> None:
-            if value == 0.0:
-                return
-            rows.append(row)
-            cols.append(col)
-            data.append(value)
-
-        for lat_idx in range(nlat):
-            for lon_idx in range(nlon):
-                row_index = lat_idx * nlon + lon_idx
-                add_entry(row_index, row_index, self.diagonal[lat_idx, lon_idx])
-
-                if lat_idx + 1 < nlat:
-                    coeff = self.north_coeff[lat_idx, lon_idx]
-                    if coeff != 0.0:
-                        neighbor_index = (lat_idx + 1) * nlon + lon_idx
-                        add_entry(row_index, neighbor_index, coeff)
-
-                if lat_idx > 0:
-                    coeff = self.south_coeff[lat_idx, lon_idx]
-                    if coeff != 0.0:
-                        neighbor_index = (lat_idx - 1) * nlon + lon_idx
-                        add_entry(row_index, neighbor_index, coeff)
-
-                coeff = self.east_coeff[lat_idx, lon_idx]
-                if coeff != 0.0:
-                    neighbor_index = lat_idx * nlon + ((lon_idx + 1) % nlon)
-                    add_entry(row_index, neighbor_index, coeff)
-
-                coeff = self.west_coeff[lat_idx, lon_idx]
-                if coeff != 0.0:
-                    neighbor_index = lat_idx * nlon + ((lon_idx - 1) % nlon)
-                    add_entry(row_index, neighbor_index, coeff)
-
-        matrix = sparse.csr_matrix((data, (rows, cols)), shape=(size, size))
-        setattr(self, "_sparse_matrix", matrix)
-        return matrix
-
 
 @dataclass
 class LayeredDiffusionOperator:
@@ -259,12 +259,21 @@ def _build_single_layer_operator(
 
     diagonal = -(north_coeff + south_coeff + east_coeff + west_coeff)
 
+    matrix = _assemble_sparse_matrix(
+        north_coeff,
+        south_coeff,
+        east_coeff,
+        west_coeff,
+        diagonal,
+    )
+
     return DiffusionOperator(
         north_coeff=north_coeff,
         south_coeff=south_coeff,
         east_coeff=east_coeff,
         west_coeff=west_coeff,
         diagonal=diagonal,
+        matrix=matrix,
     )
 
 
