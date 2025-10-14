@@ -291,15 +291,19 @@ def compute_periodic_cycle_kelvin(
     radiation_config: RadiationConfig,
     diffusion_config: DiffusionConfig,
     snow_config: SnowAlbedoConfig | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Solve for the periodic temperature cycle and return results in Kelvin."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Solve for the periodic temperature cycle and return results in Kelvin with the converged albedo field."""
     lon2d, lat2d = create_lat_lon_grid(resolution_deg)
 
     monthly_insolation_lat = monthly_insolation_lat_fn(lat2d)
     monthly_insolation = expand_latitude_field(monthly_insolation_lat, lon2d.shape[1])
 
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
-    base_albedo_field = compute_albedo_field(lon2d, lat2d)
+    snow_cfg = snow_config or SnowAlbedoConfig()
+    albedo_kwargs: dict[str, float] = {}
+    if snow_cfg.enabled:
+        albedo_kwargs = {"land_albedo": 0.25, "ocean_albedo": 0.25}
+    base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
     land_mask = compute_land_mask(lon2d, lat2d)
     diffusion_operator = create_diffusion_operator(
         lon2d,
@@ -310,7 +314,6 @@ def compute_periodic_cycle_kelvin(
         config=diffusion_config,
     )
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
-    snow_cfg = snow_config or SnowAlbedoConfig()
 
     def solve_with_albedo(
         albedo_field: np.ndarray,
@@ -378,7 +381,7 @@ def compute_periodic_cycle_kelvin(
 
     assert final_monthly is not None
 
-    return lon2d, lat2d, final_monthly
+    return lon2d, lat2d, final_monthly, albedo_field
 
 
 def compute_periodic_cycle_celsius(
@@ -481,7 +484,7 @@ def compute_periodic_cycle_celsius(
             config=config,
         )
 
-    lon2d, lat2d, monthly_temperatures_K = compute_periodic_cycle_kelvin(
+    lon2d, lat2d, monthly_temperatures_K, final_albedo = compute_periodic_cycle_kelvin(
         resolution_deg=resolution_deg,
         monthly_insolation_lat_fn=monthly_insolation_lat_fn,
         heat_capacity_field_fn=heat_capacity_field_fn,
@@ -502,6 +505,8 @@ def compute_periodic_cycle_celsius(
             "surface": monthly_surface_K - 273.15,
             "atmosphere": monthly_atmosphere_K - 273.15,
         }
+
+    layers_map["albedo"] = final_albedo
 
     if return_layer_map:
         return lon2d, lat2d, layers_map
