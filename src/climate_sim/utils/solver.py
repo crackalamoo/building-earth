@@ -24,7 +24,7 @@ from climate_sim.utils.landmask import (
     compute_land_mask,
 )
 
-NEWTON_TOLERANCE = 1e-5  # K
+NEWTON_TOLERANCE = 1  # K
 NEWTON_MAX_ITERS = 16
 NEWTON_DAMPING = 0.5
 FIXED_POINT_MAX_ITERS = 300
