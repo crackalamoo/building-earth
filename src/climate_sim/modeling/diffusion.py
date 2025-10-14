@@ -9,9 +9,9 @@ from scipy import sparse
 
 from climate_sim.utils.math import (
     harmonic_mean,
-    meridional_boundary_length,
+    regular_latitude_edges,
+    regular_longitude_edges,
     spherical_cell_area,
-    zonal_boundary_length,
 )
 
 
@@ -161,103 +161,93 @@ def _build_single_layer_operator(
     elif active_mask.shape != heat_capacity_field.shape:
         raise ValueError("Active mask must match the grid shape")
 
-    total_heat_capacity = heat_capacity_field * cell_area_field
-    safe_capacity = np.where(active_mask, total_heat_capacity, 1.0)
-    diffusivity_field = np.where(
-        active_mask,
-        config.meridional_diffusivity_m2_s * heat_capacity_field,
-        0.0,
-    )
-
-    delta_lat_deg = float(abs(lat2d[1, 0] - lat2d[0, 0])) if nlat > 1 else 0.0
-    delta_lon_deg = float(abs(lon2d[0, 1] - lon2d[0, 0])) if nlon > 1 else 0.0
-
-    delta_lat_rad = np.deg2rad(delta_lat_deg)
-    delta_lon_rad = np.deg2rad(delta_lon_deg)
-
     earth_radius = config.earth_radius_m
 
-    delta_lat_m = earth_radius * delta_lat_rad if delta_lat_rad > 0.0 else np.inf
+    total_capacity = np.zeros_like(heat_capacity_field)
+    total_capacity[active_mask] = (
+        heat_capacity_field[active_mask] * cell_area_field[active_mask]
+    )
+    inv_capacity = np.zeros_like(total_capacity)
+    inv_capacity[active_mask] = 1.0 / total_capacity[active_mask]
+
+    diffusivity_field = np.zeros_like(heat_capacity_field)
+    diffusivity_field[active_mask] = (
+        config.meridional_diffusivity_m2_s * heat_capacity_field[active_mask]
+    )
+
+    lat_centers = lat2d[:, 0]
+    lon_centers = lon2d[0, :]
+    lat_edges = regular_latitude_edges(lat_centers)
+    lon_edges = regular_longitude_edges(lon_centers)
+
+    lat_edges_rad = np.deg2rad(lat_edges)
+    lon_edges_rad = np.deg2rad(lon_edges)
+
+    delta_lon_rad = lon_edges_rad[1:] - lon_edges_rad[:-1]
+    if np.any(delta_lon_rad <= 0.0):
+        raise ValueError("Longitude edges must be strictly increasing")
 
     north_coeff = np.zeros_like(heat_capacity_field)
     south_coeff = np.zeros_like(heat_capacity_field)
     east_coeff = np.zeros_like(heat_capacity_field)
     west_coeff = np.zeros_like(heat_capacity_field)
 
-    if nlat > 1 and np.isfinite(delta_lat_m):
-        inv_delta_lat = 1.0 / delta_lat_m
-        lat_rad = np.deg2rad(lat2d)
-        north_lat_interface = 0.5 * (lat_rad + np.roll(lat_rad, -1, axis=0))
-        boundary_length_north = meridional_boundary_length(
-            north_lat_interface,
-            earth_radius_m=earth_radius,
-            delta_lon_rad=delta_lon_rad,
+    if nlat > 1:
+        delta_lat_centers = np.diff(lat_centers)
+        if np.any(delta_lat_centers <= 0.0):
+            raise ValueError("Latitude centres must be strictly increasing")
+
+        delta_lat_centers_rad = np.deg2rad(delta_lat_centers)
+        delta_y = earth_radius * delta_lat_centers_rad
+
+        interface_lat_rad = np.deg2rad(0.5 * (lat_centers[:-1] + lat_centers[1:]))
+        boundary_length_north = (
+            earth_radius
+            * np.cos(interface_lat_rad)[:, np.newaxis]
+            * delta_lon_rad[np.newaxis, :]
         )
-        neighbor_mask_north = active_mask & np.roll(active_mask, -1, axis=0)
+
+        north_mask = active_mask[:-1] & active_mask[1:]
         north_diffusivity = harmonic_mean(
-            diffusivity_field, np.roll(diffusivity_field, -1, axis=0)
+            diffusivity_field[:-1], diffusivity_field[1:]
         )
-        north_conductance = north_diffusivity * boundary_length_north * inv_delta_lat
-        north_coeff = np.where(
-            neighbor_mask_north,
-            north_conductance / safe_capacity,
-            0.0,
-        )
-        north_coeff[-1, :] = 0.0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            north_conductance = (
+                north_diffusivity * boundary_length_north / delta_y[:, np.newaxis]
+            )
+        north_conductance = np.where(north_mask, north_conductance, 0.0)
 
-        south_lat_interface = 0.5 * (lat_rad + np.roll(lat_rad, 1, axis=0))
-        boundary_length_south = meridional_boundary_length(
-            south_lat_interface,
-            earth_radius_m=earth_radius,
-            delta_lon_rad=delta_lon_rad,
-        )
-        neighbor_mask_south = active_mask & np.roll(active_mask, 1, axis=0)
-        south_diffusivity = harmonic_mean(
-            diffusivity_field, np.roll(diffusivity_field, 1, axis=0)
-        )
-        south_conductance = south_diffusivity * boundary_length_south * inv_delta_lat
-        south_coeff = np.where(
-            neighbor_mask_south,
-            south_conductance / safe_capacity,
-            0.0,
-        )
-        south_coeff[0, :] = 0.0
+        north_coeff[:-1] = north_conductance * inv_capacity[:-1]
+        south_coeff[1:] = north_conductance * inv_capacity[1:]
 
-    if nlon > 1 and delta_lon_rad > 0.0:
-        lat_rad = np.deg2rad(lat2d)
-        delta_lon_m = earth_radius * np.cos(lat_rad) * delta_lon_rad
-        valid_lon = np.abs(delta_lon_m) > 1e-12
-        inv_delta_lon = np.zeros_like(delta_lon_m)
-        inv_delta_lon[valid_lon] = 1.0 / delta_lon_m[valid_lon]
-        boundary_length_east = zonal_boundary_length(
-            earth_radius_m=earth_radius,
-            delta_lat_rad=delta_lat_rad,
-            shape=heat_capacity_field.shape,
+    if nlon > 1:
+        delta_lat_band = lat_edges_rad[1:] - lat_edges_rad[:-1]
+        if np.any(delta_lat_band <= 0.0):
+            raise ValueError("Latitude edges must be strictly increasing")
+
+        boundary_length_zonal = earth_radius * delta_lat_band[:, np.newaxis]
+        delta_x = (
+            earth_radius
+            * np.cos(np.deg2rad(lat_centers))[:, np.newaxis]
+            * delta_lon_rad[np.newaxis, :]
         )
 
-        neighbor_mask_east = active_mask & np.roll(active_mask, -1, axis=1)
+        east_mask = active_mask & np.roll(active_mask, -1, axis=1)
         east_diffusivity = harmonic_mean(
             diffusivity_field, np.roll(diffusivity_field, -1, axis=1)
         )
-        east_conductance = east_diffusivity * boundary_length_east * inv_delta_lon
-        east_coeff = np.where(
-            neighbor_mask_east & valid_lon,
-            east_conductance / safe_capacity,
-            0.0,
-        )
 
-        neighbor_mask_west = active_mask & np.roll(active_mask, 1, axis=1)
-        west_diffusivity = harmonic_mean(
-            diffusivity_field, np.roll(diffusivity_field, 1, axis=1)
-        )
-        west_conductance = west_diffusivity * boundary_length_east * inv_delta_lon
-        west_coeff = np.where(
-            neighbor_mask_west & valid_lon,
-            west_conductance / safe_capacity,
-            0.0,
-        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            east_conductance_raw = east_diffusivity * boundary_length_zonal / delta_x
+
+        valid_lon = (np.abs(delta_x) > 1.0e-12) & east_mask
+        east_conductance = np.where(valid_lon, east_conductance_raw, 0.0)
+
+        east_coeff = east_conductance * inv_capacity
+        west_coeff = np.roll(east_conductance, 1, axis=1) * inv_capacity
 
     diagonal = -(north_coeff + south_coeff + east_coeff + west_coeff)
+    diagonal = np.where(active_mask, diagonal, 0.0)
 
     matrix = _assemble_sparse_matrix(
         north_coeff,

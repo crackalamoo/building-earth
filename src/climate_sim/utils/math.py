@@ -18,6 +18,65 @@ def harmonic_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return result
 
 
+def _ensure_strictly_increasing(values: np.ndarray, name: str) -> None:
+    if np.any(np.diff(values) <= 0.0):
+        raise ValueError(f"{name} must be strictly increasing for a regular grid")
+
+
+def regular_latitude_edges(lat_centers_deg: np.ndarray) -> np.ndarray:
+    """Infer latitude edges for a regularly spaced grid of cell centres."""
+
+    if lat_centers_deg.ndim != 1:
+        raise ValueError("Latitude centres must be a one-dimensional array")
+
+    nlat = lat_centers_deg.size
+    if nlat == 0:
+        raise ValueError("Latitude centres array must be non-empty")
+
+    if nlat > 1:
+        _ensure_strictly_increasing(lat_centers_deg, "Latitude centres")
+        spacing = np.diff(lat_centers_deg)
+        if not np.allclose(spacing, spacing[0]):
+            raise ValueError("Latitude grid must have constant spacing")
+        delta = float(spacing[0])
+    else:
+        delta = 180.0
+
+    edges = np.empty(nlat + 1, dtype=float)
+    edges[1:-1] = 0.5 * (lat_centers_deg[:-1] + lat_centers_deg[1:])
+    edges[0] = lat_centers_deg[0] - 0.5 * delta
+    edges[-1] = lat_centers_deg[-1] + 0.5 * delta
+
+    edges[0] = max(edges[0], -90.0)
+    edges[-1] = min(edges[-1], 90.0)
+    return edges
+
+
+def regular_longitude_edges(lon_centers_deg: np.ndarray) -> np.ndarray:
+    """Infer longitude edges for a regularly spaced, wrapped grid."""
+
+    if lon_centers_deg.ndim != 1:
+        raise ValueError("Longitude centres must be a one-dimensional array")
+
+    nlon = lon_centers_deg.size
+    if nlon == 0:
+        raise ValueError("Longitude centres array must be non-empty")
+
+    if nlon > 1:
+        spacing = np.diff(lon_centers_deg)
+        if not np.allclose(spacing, spacing[0]):
+            raise ValueError("Longitude grid must have constant spacing")
+        delta = float(spacing[0])
+    else:
+        delta = 360.0
+
+    edges = np.empty(nlon + 1, dtype=float)
+    edges[1:-1] = 0.5 * (lon_centers_deg[:-1] + lon_centers_deg[1:])
+    edges[0] = lon_centers_deg[0] - 0.5 * delta
+    edges[-1] = lon_centers_deg[-1] + 0.5 * delta
+    return edges
+
+
 def spherical_cell_area(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
@@ -30,39 +89,21 @@ def spherical_cell_area(
         raise ValueError("Longitude and latitude grids must share the same shape")
 
     nlat, nlon = lon2d.shape
-
     if nlat < 1 or nlon < 1:
         raise ValueError("Longitude/latitude grids must be non-empty")
 
-    delta_lat_deg = float(abs(lat2d[1, 0] - lat2d[0, 0])) if nlat > 1 else 180.0
-    delta_lon_deg = float(abs(lon2d[0, 1] - lon2d[0, 0])) if nlon > 1 else 360.0
+    lat_centers = lat2d[:, 0]
+    lon_centers = lon2d[0, :]
 
-    delta_lat_rad = np.deg2rad(delta_lat_deg)
-    delta_lon_rad = np.deg2rad(delta_lon_deg)
+    lat_edges = regular_latitude_edges(lat_centers)
+    lon_edges = regular_longitude_edges(lon_centers)
 
-    lat_rad = np.deg2rad(lat2d)
-    cos_lat = np.clip(np.cos(lat_rad), 0.0, None)
+    lat_edges_rad = np.deg2rad(lat_edges)
+    lon_edges_rad = np.deg2rad(lon_edges)
 
-    area = (earth_radius_m**2) * delta_lat_rad * delta_lon_rad * cos_lat
+    delta_sin = np.sin(lat_edges_rad[1:]) - np.sin(lat_edges_rad[:-1])
+    delta_lon = lon_edges_rad[1:] - lon_edges_rad[:-1]
+
+    area = (earth_radius_m**2) * delta_sin[:, np.newaxis] * delta_lon[np.newaxis, :]
     return area
-
-
-def meridional_boundary_length(
-    lat_center_rad: np.ndarray,
-    *,
-    earth_radius_m: float,
-    delta_lon_rad: float,
-) -> np.ndarray:
-    """Compute east-west boundary length for north/south interfaces."""
-
-    cos_lat = np.clip(np.cos(lat_center_rad), 0.0, None)
-    return earth_radius_m * delta_lon_rad * cos_lat
-
-
-def zonal_boundary_length(
-    *, earth_radius_m: float, delta_lat_rad: float, shape: tuple[int, int]
-) -> np.ndarray:
-    """Compute north-south boundary length for east/west interfaces."""
-
-    return np.full(shape, earth_radius_m * delta_lat_rad, dtype=float)
 
