@@ -21,7 +21,7 @@ def _build_configs(
     return radiation_cfg, diffusion_cfg
 
 
-def _summarise(flags: Dict[str, bool]) -> str:
+def _summarize(flags: Dict[str, bool]) -> str:
     return ", ".join(f"{key}={'on' if value else 'off'}" for key, value in flags.items())
 
 
@@ -44,28 +44,56 @@ def main() -> None:
 
     parser.add_argument(
         "--base-diffusion",
-        action=argparse.BooleanOptionalAction,
+        dest="base_diffusion",
+        action="store_true",
         default=True,
-        help="Enable lateral diffusion in the baseline case",
+        help="Enable lateral diffusion in the baseline case (default)",
+    )
+    parser.add_argument(
+        "--no-base-diffusion",
+        dest="base_diffusion",
+        action="store_false",
+        help="Disable lateral diffusion in the baseline case",
     )
     parser.add_argument(
         "--base-atmosphere",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Include an explicit atmospheric layer in the baseline case",
+        dest="base_atmosphere",
+        action="store_true",
+        default=True,
+        help="Include an explicit atmospheric layer in the baseline case (default)",
+    )
+    parser.add_argument(
+        "--no-base-atmosphere",
+        dest="base_atmosphere",
+        action="store_false",
+        help="Exclude the atmospheric layer in the baseline case",
     )
 
     parser.add_argument(
         "--experiment-diffusion",
-        action=argparse.BooleanOptionalAction,
+        dest="experiment_diffusion",
+        action="store_true",
         default=True,
-        help="Enable lateral diffusion in the experiment case",
+        help="Enable lateral diffusion in the experiment case (default)",
+    )
+    parser.add_argument(
+        "--no-experiment-diffusion",
+        dest="experiment_diffusion",
+        action="store_false",
+        help="Disable lateral diffusion in the experiment case",
     )
     parser.add_argument(
         "--experiment-atmosphere",
-        action=argparse.BooleanOptionalAction,
+        dest="experiment_atmosphere",
+        action="store_true",
         default=True,
-        help="Include an explicit atmospheric layer in the experiment case",
+        help="Include an explicit atmospheric layer in the experiment case (default)",
+    )
+    parser.add_argument(
+        "--no-experiment-atmosphere",
+        dest="experiment_atmosphere",
+        action="store_false",
+        help="Exclude the atmospheric layer in the experiment case",
     )
 
     args = parser.parse_args()
@@ -107,8 +135,8 @@ def main() -> None:
         "atmosphere": args.experiment_atmosphere,
     }
 
-    print("Baseline configuration:", _summarise(base_summary))
-    print("Experiment configuration:", _summarise(exp_summary))
+    print("Baseline configuration:", _summarize(base_summary))
+    print("Experiment configuration:", _summarize(exp_summary))
     print(
         f"Annual mean anomaly = {anomaly.mean():.2f} °C, "
         f"min = {anomaly.min():.2f} °C, max = {anomaly.max():.2f} °C",
