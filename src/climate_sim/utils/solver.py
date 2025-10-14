@@ -11,6 +11,7 @@ from scipy.sparse import linalg as splinalg
 
 import climate_sim.modeling.radiation as radiation
 from climate_sim.modeling.radiation import RadiationConfig
+from climate_sim.modeling.snow_albedo import SnowAlbedoConfig, apply_snow_albedo
 from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
 from climate_sim.modeling.diffusion import (
@@ -245,6 +246,7 @@ def compute_periodic_cycle_kelvin(
     initial_guess_fn: InitialGuessFunc,
     radiation_config: RadiationConfig,
     diffusion_config: DiffusionConfig,
+    snow_config: SnowAlbedoConfig | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Solve for the periodic temperature cycle and return results in Kelvin."""
     lon2d, lat2d = create_lat_lon_grid(resolution_deg)
@@ -253,7 +255,7 @@ def compute_periodic_cycle_kelvin(
     monthly_insolation = expand_latitude_field(monthly_insolation_lat, lon2d.shape[1])
 
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
-    albedo_field = compute_albedo_field(lon2d, lat2d)
+    base_albedo_field = compute_albedo_field(lon2d, lat2d)
     land_mask = compute_land_mask(lon2d, lat2d)
     diffusion_operator = create_diffusion_operator(
         lon2d,
@@ -263,35 +265,76 @@ def compute_periodic_cycle_kelvin(
         atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
         config=diffusion_config,
     )
-    rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
-        heat_capacity_field, albedo_field, diffusion_operator, radiation_config
-    )
-
-    initial_temperature = initial_guess_fn(
-        monthly_insolation, albedo_field, radiation_config
-    )
-
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
+    snow_cfg = snow_config or SnowAlbedoConfig()
 
-    periodic_temperature = find_periodic_temperature(
-        initial_temperature,
-        monthly_insolation,
-        month_durations,
-        rhs_fn=rhs_fn,
-        rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-        temperature_floor=radiation_config.temperature_floor,
-    )
+    def solve_with_albedo(
+        albedo_field: np.ndarray,
+        initial_temperature: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
+            heat_capacity_field, albedo_field, diffusion_operator, radiation_config
+        )
 
-    monthly_temperatures = integrate_periodic_cycle(
-        periodic_temperature,
-        monthly_insolation,
-        month_durations,
-        rhs_fn=rhs_fn,
-        rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-        temperature_floor=radiation_config.temperature_floor,
-    )
+        if initial_temperature is None:
+            guess = initial_guess_fn(
+                monthly_insolation, albedo_field, radiation_config
+            )
+        else:
+            guess = initial_temperature
 
-    return lon2d, lat2d, monthly_temperatures
+        periodic_temperature = find_periodic_temperature(
+            guess,
+            monthly_insolation,
+            month_durations,
+            rhs_fn=rhs_fn,
+            rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
+            temperature_floor=radiation_config.temperature_floor,
+        )
+
+        monthly_temperatures = integrate_periodic_cycle(
+            periodic_temperature,
+            monthly_insolation,
+            month_durations,
+            rhs_fn=rhs_fn,
+            rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
+            temperature_floor=radiation_config.temperature_floor,
+        )
+
+        return periodic_temperature, monthly_temperatures
+
+    albedo_field = base_albedo_field
+    previous_periodic: np.ndarray | None = None
+    final_monthly: np.ndarray | None = None
+
+    iterations = snow_cfg.picard_iterations if snow_cfg.enabled else 1
+
+    for iteration in range(iterations):
+        previous_periodic, final_monthly = solve_with_albedo(
+            albedo_field, previous_periodic
+        )
+
+        if not snow_cfg.enabled:
+            break
+
+        if iteration == iterations - 1:
+            break
+
+        updated_albedo = apply_snow_albedo(
+            base_albedo_field,
+            land_mask,
+            final_monthly,
+            config=snow_cfg,
+        )
+
+        if np.array_equal(updated_albedo, albedo_field):
+            break
+
+        albedo_field = updated_albedo
+
+    assert final_monthly is not None
+
+    return lon2d, lat2d, final_monthly
 
 
 def compute_periodic_cycle_celsius(
@@ -302,6 +345,7 @@ def compute_periodic_cycle_celsius(
     land_heat_capacity: float = None,
     radiation_config: RadiationConfig | None = None,
     diffusion_config: DiffusionConfig | None = None,
+    snow_config: SnowAlbedoConfig | None = None,
     return_layer_map: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Convenience wrapper wiring the radiation component into the solver."""
@@ -319,6 +363,7 @@ def compute_periodic_cycle_celsius(
 
     resolved_radiation = radiation_config or RadiationConfig()
     resolved_diffusion = diffusion_config or DiffusionConfig()
+    resolved_snow = snow_config or SnowAlbedoConfig()
 
     def rhs_factory(
         heat_capacity_field: np.ndarray,
@@ -397,6 +442,7 @@ def compute_periodic_cycle_celsius(
         initial_guess_fn=initial_guess_fn,
         radiation_config=resolved_radiation,
         diffusion_config=resolved_diffusion,
+        snow_config=resolved_snow,
     )
 
     if monthly_temperatures_K.ndim == 3:

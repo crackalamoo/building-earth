@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-import numpy as np
+if TYPE_CHECKING:
+    from climate_sim.modeling.radiation import RadiationConfig
+    from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
+    from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
-from climate_sim.modeling.radiation import RadiationConfig
-from climate_sim.utils.solver import compute_periodic_cycle_celsius
+if TYPE_CHECKING:
+    import numpy as np
 
 
 @dataclass(frozen=True)
@@ -17,9 +22,31 @@ class Location:
     longitude: float
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Summarise the model climate at a few reference locations.",
+    )
+    parser.add_argument(
+        "--snow",
+        dest="snow",
+        action="store_true",
+        default=True,
+        help="Enable diagnostic snow-albedo adjustments (default)",
+    )
+    parser.add_argument(
+        "--no-snow",
+        dest="snow",
+        action="store_false",
+        help="Disable snow-albedo adjustments",
+    )
+    return parser.parse_args()
+
+
 def _nearest_cell_indices(
-    lon2d: np.ndarray, lat2d: np.ndarray, latitude: float, longitude: float
+    lon2d: "np.ndarray", lat2d: "np.ndarray", latitude: float, longitude: float
 ) -> tuple[int, int]:
+    import numpy as np
+
     lon_wrapped = longitude % 360.0
     lat_idx = int(np.abs(lat2d[:, 0] - latitude).argmin())
     lon_idx = int(np.abs(lon2d[0] - lon_wrapped).argmin())
@@ -28,10 +55,12 @@ def _nearest_cell_indices(
 
 def _summarise_location(
     location: Location,
-    monthly_surface_cycle: np.ndarray,
-    lon2d: np.ndarray,
-    lat2d: np.ndarray,
+    monthly_surface_cycle: "np.ndarray",
+    lon2d: "np.ndarray",
+    lat2d: "np.ndarray",
 ) -> None:
+    import numpy as np
+
     lat_idx, lon_idx = _nearest_cell_indices(
         lon2d, lat2d, location.latitude, location.longitude
     )
@@ -52,9 +81,17 @@ def _summarise_location(
 
 
 def main() -> None:
+    args = _parse_args()
+
+    from climate_sim.modeling.radiation import RadiationConfig
+    from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
+    from climate_sim.utils.solver import compute_periodic_cycle_celsius
+
     config = RadiationConfig(include_atmosphere=True)
+    snow_config = SnowAlbedoConfig(enabled=args.snow)
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(
         radiation_config=config,
+        snow_config=snow_config,
         return_layer_map=True,
     )
     surface_cycle = layers["surface"]

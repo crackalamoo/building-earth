@@ -4,6 +4,7 @@ import numpy as np
 
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
+from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.utils.math import spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
@@ -65,6 +66,20 @@ def _parse_args() -> argparse.Namespace:
         help="Exclude the atmospheric layer",
     )
 
+    parser.add_argument(
+        "--snow",
+        dest="snow",
+        action="store_true",
+        default=True,
+        help="Enable diagnostic snow-albedo adjustments (default)",
+    )
+    parser.add_argument(
+        "--no-snow",
+        dest="snow",
+        action="store_false",
+        help="Disable snow-albedo adjustments",
+    )
+
     return parser.parse_args()
 
 
@@ -75,12 +90,14 @@ def main() -> None:
     diffusion_config = DiffusionConfig(
         enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
     )
+    snow_config = SnowAlbedoConfig(enabled=args.snow)
 
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         radiation_config=radiation_config,
         diffusion_config=diffusion_config,
+        snow_config=snow_config,
         return_layer_map=True,
     )
     surface_cycle = layers["surface"]
