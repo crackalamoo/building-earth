@@ -5,8 +5,8 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib.widgets import Slider
-from typing import Iterable, Optional, Tuple
+from matplotlib.widgets import RadioButtons, Slider
+from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
 
 def build_temperature_cmap() -> Tuple[LinearSegmentedColormap, np.ndarray]:
@@ -198,6 +198,53 @@ def plot_monthly_temperature_cycle(
     colorbar_ticks: Optional[Iterable[float]] = None,
 ) -> None:
     """Interactive monthly cycle viewer driven by a slider."""
+    plot_layered_monthly_temperature_cycle(
+        lon2d,
+        lat2d,
+        {"Surface": monthly_field},
+        title=title,
+        cmap=cmap,
+        norm=norm,
+        colorbar_label=colorbar_label,
+        colorbar_ticks=colorbar_ticks,
+    )
+
+
+def plot_layered_monthly_temperature_cycle(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    layer_fields: Mapping[str, np.ndarray] | Sequence[tuple[str, np.ndarray]],
+    *,
+    title: str = "Monthly Temperature Cycle",
+    cmap: Optional[LinearSegmentedColormap] = None,
+    norm: Optional[Normalize] = None,
+    colorbar_label: str = "Temperature (°C)",
+    colorbar_ticks: Optional[Iterable[float]] = None,
+) -> None:
+    """Interactive monthly cycle viewer with month slider and layer selector."""
+
+    if isinstance(layer_fields, Mapping):
+        items = list(layer_fields.items())
+    else:
+        items = list(layer_fields)
+
+    if not items:
+        raise ValueError("layer_fields must contain at least one entry")
+
+    layer_names = [str(name) for name, _ in items]
+    data_stack = [np.asarray(field) for _, field in items]
+
+    reference_shape = data_stack[0].shape
+    if len(reference_shape) != 3:
+        raise ValueError("Each layer field must be a 3-D array of shape (month, lat, lon)")
+
+    for field in data_stack:
+        if field.shape != reference_shape:
+            raise ValueError("All layer fields must share the same shape")
+
+    if reference_shape[0] != 12:
+        raise ValueError("Expected 12 monthly slices per layer")
+
     month_names = [
         "January",
         "February",
@@ -212,6 +259,7 @@ def plot_monthly_temperature_cycle(
         "November",
         "December",
     ]
+
     default_cmap, bounds = build_temperature_cmap()
     if cmap is None:
         cmap = default_cmap
@@ -226,16 +274,26 @@ def plot_monthly_temperature_cycle(
     ax.add_feature(cfeature.BORDERS, linewidth=0.2)
     ax.add_feature(cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0)
 
+    current_state = {"layer": 0, "month": 0}
+
     mesh = ax.pcolormesh(
         lon2d,
         lat2d,
-        monthly_field[0],
+        data_stack[current_state["layer"]][current_state["month"]],
         cmap=cmap,
         norm=norm,
         shading="auto",
         transform=projection,
     )
-    ax.set_title(f"{title} – {month_names[0]}")
+
+    def format_title() -> str:
+        month_label = month_names[current_state["month"]]
+        if len(layer_names) == 1:
+            return f"{title} – {month_label}"
+        layer_label = layer_names[current_state["layer"]]
+        return f"{title} – {layer_label} – {month_label}"
+
+    ax.set_title(format_title())
 
     cbar = fig.colorbar(mesh, ax=ax, orientation="vertical", pad=0.04, fraction=0.046)
     if colorbar_label:
@@ -245,18 +303,20 @@ def plot_monthly_temperature_cycle(
     elif cmap is default_cmap:
         cbar.set_ticks(bounds)
 
-    slider_ax = fig.add_axes([0.12, 0.1, 0.76, 0.03])
+    slider_ax = fig.add_axes([0.15, 0.1, 0.7, 0.03])
     slider = Slider(
         slider_ax,
         label="Month",
         valmin=0,
         valmax=11,
-        valinit=0,
+        valinit=current_state["month"],
         valstep=1,
         valfmt="%0.0f",
     )
 
-    current_field = {"data": monthly_field[0]}
+    current_field = {
+        "data": data_stack[current_state["layer"]][current_state["month"]]
+    }
 
     def update_status_handler() -> None:
         lons = lon2d[0, :]
@@ -302,13 +362,28 @@ def plot_monthly_temperature_cycle(
 
     update_status_handler()
 
-    def on_update(idx: float) -> None:
-        month_index = int(idx)
-        data = monthly_field[month_index]
+    def update_plot() -> None:
+        data = data_stack[current_state["layer"]][current_state["month"]]
         mesh.set_array(data.ravel())
-        ax.set_title(f"{title} – {month_names[month_index]}")
+        ax.set_title(format_title())
         current_field["data"] = data
         fig.canvas.draw_idle()
 
+    def on_update(idx: float) -> None:
+        current_state["month"] = int(idx)
+        update_plot()
+
     slider.on_changed(on_update)
+
+    if len(layer_names) > 1:
+        radio_ax = fig.add_axes([0.02, 0.45, 0.12, 0.25])
+        radio_ax.set_title("Layer", fontsize=10)
+        _layer_selector = RadioButtons(radio_ax, layer_names, active=current_state["layer"])
+
+        def on_layer(label: str) -> None:
+            current_state["layer"] = layer_names.index(label)
+            update_plot()
+
+        _layer_selector.on_clicked(on_layer)
+
     plt.show()

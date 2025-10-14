@@ -5,7 +5,7 @@ import numpy as np
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
-from climate_sim.plotting import plot_monthly_temperature_cycle
+from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.utils.math import spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
@@ -125,13 +125,6 @@ def main() -> None:
 
     print(" ".join(summary_parts))
 
-    plot_monthly_temperature_cycle(
-        lon2d,
-        lat2d,
-        surface_cycle,
-        title="Surface Temperature Cycle",
-    )
-
     atmosphere_cycle = layers.get("atmosphere")
     if atmosphere_cycle is not None:
         atmosphere_area_mean = float(
@@ -144,12 +137,17 @@ def main() -> None:
             f"simple mean={atmosphere_cycle.mean():.1f}°C, "
             f"area-weighted mean={atmosphere_area_mean:.1f}°C"
         )
-        plot_monthly_temperature_cycle(
-            lon2d,
-            lat2d,
-            atmosphere_cycle,
-            title="Atmosphere Temperature Cycle",
-        )
+
+    layer_cycles: dict[str, np.ndarray] = {"Surface": surface_cycle}
+    if atmosphere_cycle is not None:
+        layer_cycles["Atmosphere"] = atmosphere_cycle
+
+    plot_layered_monthly_temperature_cycle(
+        lon2d,
+        lat2d,
+        layer_cycles,
+        title="Temperature Cycle",
+    )
 
 
 if __name__ == "__main__":

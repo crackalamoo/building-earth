@@ -255,7 +255,11 @@ def compute_periodic_cycle_kelvin(
     monthly_insolation = expand_latitude_field(monthly_insolation_lat, lon2d.shape[1])
 
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
-    base_albedo_field = compute_albedo_field(lon2d, lat2d)
+    snow_cfg = snow_config or SnowAlbedoConfig()
+    albedo_kwargs: dict[str, float] = {}
+    if snow_cfg.enabled:
+        albedo_kwargs = {"land_albedo": 0.25, "ocean_albedo": 0.25}
+    base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
     land_mask = compute_land_mask(lon2d, lat2d)
     diffusion_operator = create_diffusion_operator(
         lon2d,
@@ -266,7 +270,6 @@ def compute_periodic_cycle_kelvin(
         config=diffusion_config,
     )
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
-    snow_cfg = snow_config or SnowAlbedoConfig()
 
     def solve_with_albedo(
         albedo_field: np.ndarray,
