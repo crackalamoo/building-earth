@@ -1,4 +1,4 @@
-"""Meridional diffusion utilities for lateral energy transport on the climate grid."""
+"""Lateral (meridional + zonal) diffusion utilities for energy transport."""
 
 from __future__ import annotations
 
@@ -75,10 +75,9 @@ def _assemble_sparse_matrix(
 
 @dataclass(frozen=True)
 class DiffusionConfig:
-    """Container for lateral diffusion parameters."""
-
     earth_radius_m: float = 6.371e6
-    meridional_diffusivity_m2_s: float = 5.0e7
+    surface_diffusivity_m2_s: float = 1.0e4
+    atmosphere_diffusivity_m2_s: float = 1.0e5
     enabled: bool = True
     use_spherical_geometry: bool = True
 
@@ -145,6 +144,7 @@ def _build_single_layer_operator(
     *,
     config: DiffusionConfig,
     active_mask: np.ndarray | None = None,
+    diffusivity_m2_s: float,
 ) -> DiffusionOperator:
     if lon2d.shape != lat2d.shape or lon2d.shape != heat_capacity_field.shape:
         raise ValueError("Grid and heat capacity field must share the same shape")
@@ -174,7 +174,7 @@ def _build_single_layer_operator(
 
     diffusivity_field = np.zeros_like(heat_capacity_field)
     diffusivity_field[active_mask] = (
-        config.meridional_diffusivity_m2_s * heat_capacity_field[active_mask]
+        diffusivity_m2_s * heat_capacity_field[active_mask]
     )
 
     lat_centers = lat2d[:, 0]
@@ -231,9 +231,47 @@ def _build_single_layer_operator(
         north_coeff[:-1] = north_conductance * inv_capacity[:-1]
         south_coeff[1:] = north_conductance * inv_capacity[1:]
 
-    # Meridional-only diffusion: retain zero zonal coefficients so polar rows have three neighbors.
+    # Zonal diffusion (periodic in longitude)
+    if nlon > 1:
+        if use_geometry:
+            # Horizontal distance between centres: R cos(phi) * d(lambda)
+            delta_x = (
+                earth_radius
+                * np.cos(np.deg2rad(lat_centers))[:, np.newaxis]
+                * (lon_edges_rad[1:] - lon_edges_rad[:-1])[np.newaxis, :]
+            )
+            # Length of north-south faces: R * d(phi)
+            boundary_length_east = (
+                earth_radius
+                * (lat_edges_rad[1:] - lat_edges_rad[:-1])[:, np.newaxis]
+            )
+        else:
+            # Uniform planar geometry
+            if lon_centers.size > 1:
+                delta_lon_uniform = float(np.deg2rad(lon_centers[1] - lon_centers[0]))
+            else:
+                delta_lon_uniform = 2.0 * np.pi
+            if lat_centers.size > 1:
+                delta_lat_uniform = float(np.deg2rad(lat_centers[1] - lat_centers[0]))
+            else:
+                delta_lat_uniform = np.pi
+            delta_x = earth_radius * delta_lon_uniform * np.ones_like(heat_capacity_field)
+            boundary_length_east = earth_radius * delta_lat_uniform * np.ones_like(
+                heat_capacity_field
+            )
 
-    diagonal = -(north_coeff + south_coeff)
+        east_mask = active_mask & np.roll(active_mask, -1, axis=1)
+        east_diffusivity = harmonic_mean(
+            diffusivity_field, np.roll(diffusivity_field, -1, axis=1)
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            east_conductance = east_diffusivity * (boundary_length_east / delta_x)
+        east_conductance = np.where(east_mask, east_conductance, 0.0)
+
+        east_coeff = east_conductance * inv_capacity
+        west_coeff = np.roll(east_conductance, 1, axis=1) * inv_capacity
+
+    diagonal = -(north_coeff + south_coeff + east_coeff + west_coeff)
     diagonal = np.where(active_mask, diagonal, 0.0)
 
     matrix = _assemble_sparse_matrix(
@@ -314,6 +352,7 @@ def create_diffusion_operator(
         cell_area_field,
         config=config,
         active_mask=~land_mask,
+        diffusivity_m2_s=config.surface_diffusivity_m2_s,
     )
     atmosphere_operator = _build_single_layer_operator(
         lon2d,
@@ -321,6 +360,7 @@ def create_diffusion_operator(
         atmosphere_heat_capacity_field,
         cell_area_field,
         config=config,
+        diffusivity_m2_s=config.atmosphere_diffusivity_m2_s,
     )
 
     return LayeredDiffusionOperator(

@@ -15,7 +15,7 @@ from typing import Optional
 
 OCEAN_HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
 LAND_HEAT_CAPACITY_M2 = 6.0e6  # J m-2 K-1, ~3 m soil skin depth
-OCEAN_ALBEDO = 0.05
+OCEAN_ALBEDO = 0.3
 LAND_ALBEDO = 0.3
 
 _MASK_CACHE: dict[Tuple[int, int, float, float, float, float], np.ndarray] = {}
