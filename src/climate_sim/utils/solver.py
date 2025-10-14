@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Callable, Dict, Tuple
 
 import numpy as np
-from scipy import optimize
 
 import climate_sim.modeling.radiation as radiation
 from climate_sim.modeling.radiation import RadiationConfig
@@ -25,6 +24,7 @@ from climate_sim.utils.landmask import (
 NEWTON_TOLERANCE = 1e-5  # K
 NEWTON_MAX_ITERS = 16
 NEWTON_DAMPING = 0.5
+PERIODIC_MAX_ITERS = 120
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
@@ -118,10 +118,10 @@ def find_periodic_temperature(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
 ) -> np.ndarray:
-    """Solve P(T) = T for the annual map using a fixed-point iteration."""
+    """Solve P(T) = T for the annual map using a damped spin-up iteration."""
 
-    def annual_map_flat(state_flat: np.ndarray) -> np.ndarray:
-        state = state_flat.reshape(initial_temperature.shape)
+    state = initial_temperature
+    for iteration in range(PERIODIC_MAX_ITERS):
         advanced = apply_annual_map(
             state,
             monthly_insolation,
@@ -130,16 +130,15 @@ def find_periodic_temperature(
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
         )
-        damped = NEWTON_DAMPING * advanced + (1.0 - NEWTON_DAMPING) * state
-        return damped.ravel()
+        residual = np.max(np.abs(advanced - state))
+        if residual < NEWTON_TOLERANCE:
+            return advanced
+        state = NEWTON_DAMPING * advanced + (1.0 - NEWTON_DAMPING) * state
 
-    solution_flat = optimize.fixed_point(
-        annual_map_flat,
-        initial_temperature.ravel(),
-        xtol=NEWTON_TOLERANCE,
-        maxiter=NEWTON_MAX_ITERS,
+    raise RuntimeError(
+        f"Failed to converge after {PERIODIC_MAX_ITERS} annual iterations; "
+        f"residual={residual:.3e} K"
     )
-    return solution_flat.reshape(initial_temperature.shape)
 
 
 def integrate_periodic_cycle(

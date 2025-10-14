@@ -14,7 +14,7 @@ class RadiationConfig:
     stefan_boltzmann: float = 5.670374419e-8  # W m-2 K-4
     emissivity_surface: float = 1.0
     emissivity_atmosphere: float = 0.77
-    include_atmosphere: bool = False
+    include_atmosphere: bool = True
     atmosphere_heat_capacity: float = 1.0e7  # J m-2 K-1, ~2-3 km troposphere column
     temperature_floor: float = 10.0  # K
 
