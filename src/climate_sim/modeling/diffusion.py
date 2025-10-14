@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy import sparse
 
 from climate_sim.utils.math import (
     harmonic_mean,
@@ -61,6 +62,65 @@ class DiffusionOperator:
             south_term[0, :] = 0.0
 
         return north_term + south_term + east_term + west_term
+
+    def to_sparse_matrix(self) -> sparse.csr_matrix:
+        """Return the linear diffusion operator as a sparse matrix."""
+
+        nlat, nlon = self.diagonal.shape
+        size = nlat * nlon
+
+        if size == 0:
+            return sparse.csr_matrix((0, 0))
+
+        if not self.enabled:
+            return sparse.csr_matrix((size, size))
+
+        if hasattr(self, "_sparse_matrix"):
+            matrix = getattr(self, "_sparse_matrix")
+            if isinstance(matrix, sparse.csr_matrix):
+                return matrix
+
+        rows: list[int] = []
+        cols: list[int] = []
+        data: list[float] = []
+
+        def add_entry(row: int, col: int, value: float) -> None:
+            if value == 0.0:
+                return
+            rows.append(row)
+            cols.append(col)
+            data.append(value)
+
+        for lat_idx in range(nlat):
+            for lon_idx in range(nlon):
+                row_index = lat_idx * nlon + lon_idx
+                add_entry(row_index, row_index, self.diagonal[lat_idx, lon_idx])
+
+                if lat_idx + 1 < nlat:
+                    coeff = self.north_coeff[lat_idx, lon_idx]
+                    if coeff != 0.0:
+                        neighbor_index = (lat_idx + 1) * nlon + lon_idx
+                        add_entry(row_index, neighbor_index, coeff)
+
+                if lat_idx > 0:
+                    coeff = self.south_coeff[lat_idx, lon_idx]
+                    if coeff != 0.0:
+                        neighbor_index = (lat_idx - 1) * nlon + lon_idx
+                        add_entry(row_index, neighbor_index, coeff)
+
+                coeff = self.east_coeff[lat_idx, lon_idx]
+                if coeff != 0.0:
+                    neighbor_index = lat_idx * nlon + ((lon_idx + 1) % nlon)
+                    add_entry(row_index, neighbor_index, coeff)
+
+                coeff = self.west_coeff[lat_idx, lon_idx]
+                if coeff != 0.0:
+                    neighbor_index = lat_idx * nlon + ((lon_idx - 1) % nlon)
+                    add_entry(row_index, neighbor_index, coeff)
+
+        matrix = sparse.csr_matrix((data, (rows, cols)), shape=(size, size))
+        setattr(self, "_sparse_matrix", matrix)
+        return matrix
 
 
 @dataclass

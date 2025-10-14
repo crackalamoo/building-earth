@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, Dict, Tuple
 
 import numpy as np
-from scipy import optimize
+from scipy import optimize, sparse
+from scipy.sparse import linalg as splinalg
 
 import climate_sim.modeling.radiation as radiation
 from climate_sim.modeling.radiation import RadiationConfig
@@ -29,7 +31,15 @@ FIXED_POINT_MAX_ITERS = 120
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
-RhsDerivative = np.ndarray | tuple[np.ndarray, np.ndarray]
+@dataclass
+class Linearisation:
+    diag: np.ndarray
+    cross: np.ndarray | None = None
+    surface_diffusion_matrix: sparse.csr_matrix | None = None
+    atmosphere_diffusion_matrix: sparse.csr_matrix | None = None
+
+
+RhsDerivative = Linearisation
 RhsDerivativeFunc = Callable[[np.ndarray, np.ndarray], RhsDerivative]
 RhsFactory = Callable[[np.ndarray, np.ndarray, LayeredDiffusionOperator, RadiationConfig], Tuple[RhsFunc, RhsDerivativeFunc]]
 InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig], np.ndarray]
@@ -53,30 +63,75 @@ def implicit_monthly_step(
         temp_capped = np.maximum(temp_next, temperature_floor)
         rhs_value = rhs_fn(temp_capped, insolation_W_m2)
         residual = temp_capped - temperature_K - dt_seconds * rhs_value
-        derivative_info = rhs_temperature_derivative_fn(temp_capped, insolation_W_m2)
+        linearisation = rhs_temperature_derivative_fn(temp_capped, insolation_W_m2)
 
-        if isinstance(derivative_info, tuple):
-            diag, cross = derivative_info
+        if temp_capped.ndim == 2:
+            diag = linearisation.diag
+            diffusion_matrix = linearisation.surface_diffusion_matrix
+
+            size = temp_capped.size
+            residual_flat = residual.ravel()
+
+            jacobian = sparse.identity(size, format="csr") - dt_seconds * sparse.diags(
+                diag.ravel(), format="csr"
+            )
+
+            if diffusion_matrix is not None:
+                jacobian = jacobian - dt_seconds * diffusion_matrix
+
+            correction_flat = splinalg.spsolve(jacobian, residual_flat)
+            correction = correction_flat.reshape(temp_capped.shape)
+        else:
             if temp_capped.ndim < 1 or temp_capped.shape[0] != 2:
                 raise ValueError("Layered derivative requires a two-layer temperature field")
 
-            j11 = 1.0 - dt_seconds * diag[0]
-            j22 = 1.0 - dt_seconds * diag[1]
-            j12 = -dt_seconds * cross[0, 1]
-            j21 = -dt_seconds * cross[1, 0]
+            diag = linearisation.diag
+            cross = linearisation.cross
+            if cross is None:
+                raise ValueError("Missing cross-layer coupling for layered system")
 
-            determinant = j11 * j22 - j12 * j21
-            determinant = np.where(
-                np.abs(determinant) < 1e-12,
-                np.copysign(1e-12, determinant),
-                determinant,
+            surface_diag = diag[0]
+            atmosphere_diag = diag[1]
+            surface_matrix = linearisation.surface_diffusion_matrix
+            atmosphere_matrix = linearisation.atmosphere_diffusion_matrix
+
+            nlat, nlon = surface_diag.shape
+            size = nlat * nlon
+
+            identity = sparse.identity(size, format="csr")
+            surface_block = identity - dt_seconds * sparse.diags(
+                surface_diag.ravel(), format="csr"
             )
-            correction_surface = (j22 * residual[0] - j12 * residual[1]) / determinant
-            correction_atmosphere = (-j21 * residual[0] + j11 * residual[1]) / determinant
+            atmosphere_block = identity - dt_seconds * sparse.diags(
+                atmosphere_diag.ravel(), format="csr"
+            )
+
+            if surface_matrix is not None:
+                surface_block = surface_block - dt_seconds * surface_matrix
+            if atmosphere_matrix is not None:
+                atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
+
+            coupling_surface_atm = -dt_seconds * sparse.diags(
+                cross[0, 1].ravel(), format="csr"
+            )
+            coupling_atm_surface = -dt_seconds * sparse.diags(
+                cross[1, 0].ravel(), format="csr"
+            )
+
+            jacobian = sparse.bmat(
+                [[surface_block, coupling_surface_atm], [coupling_atm_surface, atmosphere_block]],
+                format="csr",
+            )
+
+            residual_flat = np.concatenate(
+                [residual[0].ravel(), residual[1].ravel()],
+                axis=0,
+            )
+
+            correction_flat = splinalg.spsolve(jacobian, residual_flat)
+            correction_surface = correction_flat[:size].reshape(surface_diag.shape)
+            correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
             correction = np.stack([correction_surface, correction_atmosphere])
-        else:
-            derivative = 1.0 - dt_seconds * derivative_info
-            correction = residual / derivative
 
         temp_candidate = temp_next - correction
         temp_next = np.maximum(temp_candidate, temperature_floor)
@@ -259,6 +314,17 @@ def compute_periodic_cycle_celsius(
         diffusion_operator: LayeredDiffusionOperator,
         config: RadiationConfig,
     ):
+        surface_matrix = (
+            diffusion_operator.surface.to_sparse_matrix()
+            if diffusion_operator.surface.enabled
+            else None
+        )
+        atmosphere_matrix = (
+            diffusion_operator.atmosphere.to_sparse_matrix()
+            if config.include_atmosphere and diffusion_operator.atmosphere.enabled
+            else None
+        )
+
         def rhs(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
                 temperature,
@@ -269,13 +335,14 @@ def compute_periodic_cycle_celsius(
             )
             if config.include_atmosphere:
                 radiative = radiative.copy()
-                surface_diffusion = diffusion_operator.surface.tendency(temperature[0])
-                atmosphere_diffusion = diffusion_operator.atmosphere.tendency(temperature[1])
-                radiative[0] += surface_diffusion
-                radiative[1] += atmosphere_diffusion
+                if diffusion_operator.surface.enabled:
+                    radiative[0] += diffusion_operator.surface.tendency(temperature[0])
+                if diffusion_operator.atmosphere.enabled:
+                    radiative[1] += diffusion_operator.atmosphere.tendency(temperature[1])
                 return radiative
-            diffusion = diffusion_operator.surface.tendency(temperature)
-            return radiative + diffusion
+            if diffusion_operator.surface.enabled:
+                return radiative + diffusion_operator.surface.tendency(temperature)
+            return radiative
 
         def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> RhsDerivative:
             del insolation
@@ -286,11 +353,16 @@ def compute_periodic_cycle_celsius(
             )
             if config.include_atmosphere:
                 diag, cross = radiative_derivative
-                diag = diag.copy()
-                diag[0] += diffusion_operator.surface.diagonal
-                diag[1] += diffusion_operator.atmosphere.diagonal
-                return diag, cross
-            return radiative_derivative + diffusion_operator.surface.diagonal
+                return Linearisation(
+                    diag=diag,
+                    cross=cross,
+                    surface_diffusion_matrix=surface_matrix,
+                    atmosphere_diffusion_matrix=atmosphere_matrix,
+                )
+            return Linearisation(
+                diag=radiative_derivative,
+                surface_diffusion_matrix=surface_matrix,
+            )
 
         return rhs, rhs_derivative
 
