@@ -273,6 +273,17 @@ def plot_layered_monthly_temperature_cycle(
     ax.coastlines(linewidth=0.4)
     ax.add_feature(cfeature.BORDERS, linewidth=0.2)
     ax.add_feature(cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0)
+    ax.add_feature(
+        cfeature.NaturalEarthFeature(
+            "physical",
+            "lakes",
+            scale="110m",
+            edgecolor="#1f78b4",
+            facecolor="none",
+        ),
+        linewidth=0.4,
+        zorder=1,
+    )
 
     current_state = {"layer": 0, "month": 0}
 
@@ -376,7 +387,7 @@ def plot_layered_monthly_temperature_cycle(
     slider.on_changed(on_update)
 
     if len(layer_names) > 1:
-        radio_ax = fig.add_axes([0.02, 0.45, 0.12, 0.25])
+        radio_ax = fig.add_axes([0.01, 0.45, 0.11, 0.25])
         radio_ax.set_title("Layer", fontsize=10)
         _layer_selector = RadioButtons(radio_ax, layer_names, active=current_state["layer"])
 
