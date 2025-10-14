@@ -11,6 +11,7 @@ from matplotlib.colors import TwoSlopeNorm
 
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
+from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
@@ -47,6 +48,20 @@ def main() -> None:
         type=float,
         default=None,
         help="Override the solar constant (W m^-2)",
+    )
+
+    parser.add_argument(
+        "--base-snow",
+        dest="base_snow",
+        action="store_true",
+        default=False,
+        help="Enable snow-albedo adjustments in the baseline case",
+    )
+    parser.add_argument(
+        "--no-base-snow",
+        dest="base_snow",
+        action="store_false",
+        help="Disable snow-albedo adjustments in the baseline case (default)",
     )
 
     parser.add_argument(
@@ -128,6 +143,19 @@ def main() -> None:
         action="store_false",
         help="Use planar diffusion geometry in the experiment case",
     )
+    parser.add_argument(
+        "--exp-snow",
+        dest="experiment_snow",
+        action="store_true",
+        default=False,
+        help="Enable snow-albedo adjustments in the experiment case",
+    )
+    parser.add_argument(
+        "--no-exp-snow",
+        dest="experiment_snow",
+        action="store_false",
+        help="Disable snow-albedo adjustments in the experiment case (default)",
+    )
 
     args = parser.parse_args()
 
@@ -142,11 +170,15 @@ def main() -> None:
         use_geometry=args.experiment_geometry,
     )
 
+    base_snow = SnowAlbedoConfig(enabled=args.base_snow)
+    exp_snow = SnowAlbedoConfig(enabled=args.experiment_snow)
+
     lon2d, lat2d, base_layers = compute_periodic_cycle_celsius(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         radiation_config=base_rad,
         diffusion_config=base_diff,
+        snow_config=base_snow,
         return_layer_map=True,
     )
     _, _, exp_layers = compute_periodic_cycle_celsius(
@@ -154,6 +186,7 @@ def main() -> None:
         solar_constant=args.solar_constant,
         radiation_config=exp_rad,
         diffusion_config=exp_diff,
+        snow_config=exp_snow,
         return_layer_map=True,
     )
 
@@ -165,11 +198,13 @@ def main() -> None:
         "diffusion": args.base_diffusion,
         "atmosphere": args.base_atmosphere,
         "geometry": args.base_geometry,
+        "snow": args.base_snow,
     }
     exp_summary = {
         "diffusion": args.experiment_diffusion,
         "atmosphere": args.experiment_atmosphere,
         "geometry": args.experiment_geometry,
+        "snow": args.experiment_snow,
     }
 
     print("Baseline configuration:", _summarize(base_summary))
