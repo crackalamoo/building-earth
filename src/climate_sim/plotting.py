@@ -271,19 +271,12 @@ def plot_layered_monthly_temperature_cycle(
     fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
     ax.set_global()
     ax.coastlines(linewidth=0.4)
-    ax.add_feature(cfeature.BORDERS, linewidth=0.2)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.2, facecolor="#000000", edgecolor="#444444")
+    ax.add_feature(cfeature.NaturalEarthFeature(
+        'physical', 'lakes', '110m',
+        edgecolor='#000000', facecolor='none'),
+        linewidth=0.2)
     ax.add_feature(cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0)
-    ax.add_feature(
-        cfeature.NaturalEarthFeature(
-            "physical",
-            "lakes",
-            scale="110m",
-            edgecolor="#1f78b4",
-            facecolor="none",
-        ),
-        linewidth=0.4,
-        zorder=1,
-    )
 
     current_state = {"layer": 0, "month": 0}
 
