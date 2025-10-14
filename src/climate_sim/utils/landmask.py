@@ -14,7 +14,9 @@ from shapely.prepared import prep
 from typing import Optional
 
 OCEAN_HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
-LAND_HEAT_CAPACITY_M2 = 3.0e6  # J m-2 K-1, ~1.5 m soil
+LAND_HEAT_CAPACITY_M2 = 6.0e6  # J m-2 K-1, ~3 m soil skin depth
+OCEAN_ALBEDO = 0.05
+LAND_ALBEDO = 0.3
 
 _MASK_CACHE: dict[Tuple[int, int, float, float, float, float], np.ndarray] = {}
 
@@ -71,6 +73,20 @@ def compute_heat_capacity_field(
     ocean_heat_capacity = ocean_heat_capacity if ocean_heat_capacity is not None else OCEAN_HEAT_CAPACITY_M2
     land_heat_capacity = land_heat_capacity if land_heat_capacity is not None else LAND_HEAT_CAPACITY_M2
     return np.where(land_mask, land_heat_capacity, ocean_heat_capacity)
+
+
+def compute_albedo_field(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    *,
+    land_albedo: Optional[float] = None,
+    ocean_albedo: Optional[float] = None,
+) -> np.ndarray:
+    """Assign per-cell albedo based on the land/sea classification."""
+    land_mask = compute_land_mask(lon2d, lat2d)
+    land_albedo = land_albedo if land_albedo is not None else LAND_ALBEDO
+    ocean_albedo = ocean_albedo if ocean_albedo is not None else OCEAN_ALBEDO
+    return np.where(land_mask, land_albedo, ocean_albedo)
 
 def _default_grid(resolution_deg: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
     """Generate a lon/lat grid matching the modeling module defaults."""
