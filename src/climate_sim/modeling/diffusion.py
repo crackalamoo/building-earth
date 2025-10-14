@@ -6,7 +6,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.utils.math import harmonic_mean
+from climate_sim.utils.math import (
+    harmonic_mean,
+    meridional_boundary_length,
+    spherical_cell_area,
+    zonal_boundary_length,
+)
 
 
 @dataclass(frozen=True)
@@ -75,12 +80,16 @@ def _build_single_layer_operator(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     heat_capacity_field: np.ndarray,
+    cell_area_field: np.ndarray,
     *,
     config: DiffusionConfig,
     active_mask: np.ndarray | None = None,
 ) -> DiffusionOperator:
     if lon2d.shape != lat2d.shape or lon2d.shape != heat_capacity_field.shape:
         raise ValueError("Grid and heat capacity field must share the same shape")
+
+    if cell_area_field.shape != heat_capacity_field.shape:
+        raise ValueError("Cell area field must match the grid shape")
 
     if not config.enabled:
         return DiffusionOperator.disabled(heat_capacity_field.shape)
@@ -92,7 +101,8 @@ def _build_single_layer_operator(
     elif active_mask.shape != heat_capacity_field.shape:
         raise ValueError("Active mask must match the grid shape")
 
-    safe_capacity = np.where(active_mask, heat_capacity_field, 1.0)
+    total_heat_capacity = heat_capacity_field * cell_area_field
+    safe_capacity = np.where(active_mask, total_heat_capacity, 1.0)
     diffusivity_field = np.where(
         active_mask,
         config.meridional_diffusivity_m2_s * heat_capacity_field,
@@ -108,11 +118,6 @@ def _build_single_layer_operator(
     earth_radius = config.earth_radius_m
 
     delta_lat_m = earth_radius * delta_lat_rad if delta_lat_rad > 0.0 else np.inf
-    if delta_lon_rad > 0.0:
-        cos_lat = np.cos(np.deg2rad(lat2d))
-        delta_lon_m = earth_radius * cos_lat * delta_lon_rad
-    else:
-        delta_lon_m = np.full_like(heat_capacity_field, np.inf, dtype=float)
 
     north_coeff = np.zeros_like(heat_capacity_field)
     south_coeff = np.zeros_like(heat_capacity_field)
@@ -120,49 +125,75 @@ def _build_single_layer_operator(
     west_coeff = np.zeros_like(heat_capacity_field)
 
     if nlat > 1 and np.isfinite(delta_lat_m):
-        inv_delta_lat_sq = 1.0 / (delta_lat_m**2)
+        inv_delta_lat = 1.0 / delta_lat_m
+        lat_rad = np.deg2rad(lat2d)
+        north_lat_interface = 0.5 * (lat_rad + np.roll(lat_rad, -1, axis=0))
+        boundary_length_north = meridional_boundary_length(
+            north_lat_interface,
+            earth_radius_m=earth_radius,
+            delta_lon_rad=delta_lon_rad,
+        )
+        neighbor_mask_north = active_mask & np.roll(active_mask, -1, axis=0)
         north_diffusivity = harmonic_mean(
             diffusivity_field, np.roll(diffusivity_field, -1, axis=0)
         )
+        north_conductance = north_diffusivity * boundary_length_north * inv_delta_lat
         north_coeff = np.where(
-            active_mask,
-            north_diffusivity * inv_delta_lat_sq / safe_capacity,
+            neighbor_mask_north,
+            north_conductance / safe_capacity,
             0.0,
         )
         north_coeff[-1, :] = 0.0
 
+        south_lat_interface = 0.5 * (lat_rad + np.roll(lat_rad, 1, axis=0))
+        boundary_length_south = meridional_boundary_length(
+            south_lat_interface,
+            earth_radius_m=earth_radius,
+            delta_lon_rad=delta_lon_rad,
+        )
+        neighbor_mask_south = active_mask & np.roll(active_mask, 1, axis=0)
         south_diffusivity = harmonic_mean(
             diffusivity_field, np.roll(diffusivity_field, 1, axis=0)
         )
+        south_conductance = south_diffusivity * boundary_length_south * inv_delta_lat
         south_coeff = np.where(
-            active_mask,
-            south_diffusivity * inv_delta_lat_sq / safe_capacity,
+            neighbor_mask_south,
+            south_conductance / safe_capacity,
             0.0,
         )
         south_coeff[0, :] = 0.0
 
     if nlon > 1 and delta_lon_rad > 0.0:
-        cos_lat = np.cos(np.deg2rad(lat2d))
-        delta_lon_m = earth_radius * cos_lat * delta_lon_rad
-        valid_lon = np.abs(delta_lon_m) > 0.0
-        inv_delta_lon_sq = np.zeros_like(delta_lon_m)
-        inv_delta_lon_sq[valid_lon] = 1.0 / (delta_lon_m[valid_lon] ** 2)
+        lat_rad = np.deg2rad(lat2d)
+        delta_lon_m = earth_radius * np.cos(lat_rad) * delta_lon_rad
+        valid_lon = np.abs(delta_lon_m) > 1e-12
+        inv_delta_lon = np.zeros_like(delta_lon_m)
+        inv_delta_lon[valid_lon] = 1.0 / delta_lon_m[valid_lon]
+        boundary_length_east = zonal_boundary_length(
+            earth_radius_m=earth_radius,
+            delta_lat_rad=delta_lat_rad,
+            shape=heat_capacity_field.shape,
+        )
 
+        neighbor_mask_east = active_mask & np.roll(active_mask, -1, axis=1)
         east_diffusivity = harmonic_mean(
             diffusivity_field, np.roll(diffusivity_field, -1, axis=1)
         )
+        east_conductance = east_diffusivity * boundary_length_east * inv_delta_lon
         east_coeff = np.where(
-            active_mask & valid_lon,
-            east_diffusivity * inv_delta_lon_sq / safe_capacity,
+            neighbor_mask_east & valid_lon,
+            east_conductance / safe_capacity,
             0.0,
         )
 
+        neighbor_mask_west = active_mask & np.roll(active_mask, 1, axis=1)
         west_diffusivity = harmonic_mean(
             diffusivity_field, np.roll(diffusivity_field, 1, axis=1)
         )
+        west_conductance = west_diffusivity * boundary_length_east * inv_delta_lon
         west_coeff = np.where(
-            active_mask & valid_lon,
-            west_diffusivity * inv_delta_lon_sq / safe_capacity,
+            neighbor_mask_west & valid_lon,
+            west_conductance / safe_capacity,
             0.0,
         )
 
@@ -208,10 +239,17 @@ def create_diffusion_operator(
         heat_capacity_field, atmosphere_heat_capacity, dtype=float
     )
 
+    cell_area_field = spherical_cell_area(
+        lon2d,
+        lat2d,
+        earth_radius_m=config.earth_radius_m,
+    )
+
     surface_operator = _build_single_layer_operator(
         lon2d,
         lat2d,
         heat_capacity_field,
+        cell_area_field,
         config=config,
         active_mask=~land_mask,
     )
@@ -219,6 +257,7 @@ def create_diffusion_operator(
         lon2d,
         lat2d,
         atmosphere_heat_capacity_field,
+        cell_area_field,
         config=config,
     )
 
