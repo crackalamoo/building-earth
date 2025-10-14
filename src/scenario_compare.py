@@ -54,14 +54,14 @@ def main() -> None:
         "--base-snow",
         dest="base_snow",
         action="store_true",
-        default=False,
-        help="Enable snow-albedo adjustments in the baseline case",
+        default=True,
+        help="Enable snow-albedo adjustments in the baseline case (default)",
     )
     parser.add_argument(
         "--no-base-snow",
         dest="base_snow",
         action="store_false",
-        help="Disable snow-albedo adjustments in the baseline case (default)",
+        help="Disable snow-albedo adjustments in the baseline case",
     )
 
     parser.add_argument(
@@ -147,14 +147,14 @@ def main() -> None:
         "--exp-snow",
         dest="experiment_snow",
         action="store_true",
-        default=False,
-        help="Enable snow-albedo adjustments in the experiment case",
+        default=True,
+        help="Enable snow-albedo adjustments in the experiment case (default)",
     )
     parser.add_argument(
         "--no-exp-snow",
         dest="experiment_snow",
         action="store_false",
-        help="Disable snow-albedo adjustments in the experiment case (default)",
+        help="Disable snow-albedo adjustments in the experiment case",
     )
 
     args = parser.parse_args()
