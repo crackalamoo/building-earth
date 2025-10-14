@@ -101,6 +101,7 @@ def main() -> None:
         return_layer_map=True,
     )
     surface_cycle = layers["surface"]
+    albedo_field = layers.get("albedo")
 
     cell_areas = spherical_cell_area(
         lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
@@ -108,14 +109,21 @@ def main() -> None:
     surface_area_mean = float(
         np.average(surface_cycle.mean(axis=0), weights=cell_areas)
     )
+    albedo_area_mean: float | None = None
+    if albedo_field is not None:
+        albedo_area_mean = float(np.average(albedo_field, weights=cell_areas))
 
-    print(
-        "Surface layer: "
-        f"Tmin={surface_cycle.min():.1f}°C, "
-        f"Tmax={surface_cycle.max():.1f}°C, "
-        f"simple mean={surface_cycle.mean():.1f}°C, "
-        f"area-weighted mean={surface_area_mean:.1f}°C"
-    )
+    summary_parts = [
+        "Surface layer:",
+        f"Tmin={surface_cycle.min():.1f}°C",
+        f"Tmax={surface_cycle.max():.1f}°C",
+        f"simple mean={surface_cycle.mean():.1f}°C",
+        f"area-weighted mean={surface_area_mean:.1f}°C",
+    ]
+    if albedo_area_mean is not None:
+        summary_parts.append(f"area-weighted mean albedo={albedo_area_mean:.3f}")
+
+    print(" ".join(summary_parts))
 
     plot_monthly_temperature_cycle(
         lon2d,

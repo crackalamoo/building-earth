@@ -8,6 +8,7 @@ from typing import Tuple
 import numpy as np
 from cartopy.io import shapereader
 import matplotlib.pyplot as plt
+from matplotlib.colors import BoundaryNorm, ListedColormap
 from shapely.geometry import Point
 from shapely.ops import unary_union
 from shapely.prepared import prep
@@ -18,13 +19,24 @@ LAND_HEAT_CAPACITY_M2 = 6.0e6  # J m-2 K-1, ~3 m soil skin depth
 OCEAN_ALBEDO = 0.3
 LAND_ALBEDO = 0.3
 
-_MASK_CACHE: dict[Tuple[int, int, float, float, float, float], np.ndarray] = {}
+_MASK_CACHE: dict[
+    Tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]
+] = {}
 
 
 @functools.lru_cache(maxsize=1)
 def _prepared_land_geometry():
     """Load and cache Natural Earth land polygons as a prepared geometry."""
     shapefile = shapereader.natural_earth(resolution="110m", category="physical", name="land")
+    reader = shapereader.Reader(shapefile)
+    geometry = unary_union(list(reader.geometries()))
+    return prep(geometry)
+
+
+@functools.lru_cache(maxsize=1)
+def _prepared_lake_geometry():
+    """Load and cache Natural Earth lake polygons as a prepared geometry."""
+    shapefile = shapereader.natural_earth(resolution="110m", category="physical", name="lakes")
     reader = shapereader.Reader(shapefile)
     geometry = unary_union(list(reader.geometries()))
     return prep(geometry)
@@ -40,26 +52,44 @@ def _grid_signature(lon2d: np.ndarray, lat2d: np.ndarray) -> Tuple[int, int, flo
     return (nlat, nlon, lon0, lat0, lon_step, lat_step)
 
 
-def _compute_land_mask(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
-    """Determine the land/sea classification for each grid centre."""
+def _compute_land_and_lake_masks(
+    lon2d: np.ndarray, lat2d: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Determine the land/sea classification and highlight lakes for each grid centre."""
     prepared_land = _prepared_land_geometry()
+    prepared_lakes = _prepared_lake_geometry()
     flat_lon = lon2d.ravel()
     flat_lat = lat2d.ravel()
 
-    mask_flat = np.empty(flat_lon.size, dtype=bool)
+    land_flat = np.empty(flat_lon.size, dtype=bool)
+    lake_flat = np.empty(flat_lon.size, dtype=bool)
     for idx, (lon, lat) in enumerate(zip(flat_lon, flat_lat, strict=True)):
         lon_wrapped = ((lon + 180.0) % 360.0) - 180.0
-        mask_flat[idx] = prepared_land.covers(Point(lon_wrapped, lat))
+        point = Point(lon_wrapped, lat)
+        is_lake = prepared_lakes.covers(point)
+        lake_flat[idx] = is_lake
+        land_flat[idx] = prepared_land.covers(point) and not is_lake
 
-    return mask_flat.reshape(lon2d.shape)
+    shape = lon2d.shape
+    return land_flat.reshape(shape), lake_flat.reshape(shape)
 
 
 def compute_land_mask(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
     """Return True where the grid cell centre lies on land, with caching."""
     key = _grid_signature(lon2d, lat2d)
     if key not in _MASK_CACHE:
-        _MASK_CACHE[key] = _compute_land_mask(lon2d, lat2d)
-    return _MASK_CACHE[key]
+        _MASK_CACHE[key] = _compute_land_and_lake_masks(lon2d, lat2d)
+    land_mask, _ = _MASK_CACHE[key]
+    return land_mask
+
+
+def compute_lake_mask(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
+    """Return True where the grid cell centre lies on a lake surface, with caching."""
+    key = _grid_signature(lon2d, lat2d)
+    if key not in _MASK_CACHE:
+        _MASK_CACHE[key] = _compute_land_and_lake_masks(lon2d, lat2d)
+    _, lake_mask = _MASK_CACHE[key]
+    return lake_mask
 
 def compute_heat_capacity_field(
     lon2d: np.ndarray,
@@ -96,31 +126,47 @@ def _default_grid(resolution_deg: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
     return lon2d, lat2d
 
 
-def _plot_mask(mask: np.ndarray, lon2d: np.ndarray, lat2d: np.ndarray) -> None:
-    """Render the boolean mask for quick inspection."""
+def _plot_mask(land_mask: np.ndarray, lake_mask: np.ndarray, lon2d: np.ndarray, lat2d: np.ndarray) -> None:
+    """Render the land and lake masks for quick inspection."""
     lon_centers = lon2d[0, :]
     lon_wrapped = ((lon_centers + 180.0) % 360.0) - 180.0
     sort_idx = np.argsort(lon_wrapped)
     lon_sorted = lon_wrapped[sort_idx]
-    mask_sorted = mask[:, sort_idx]
-    lon2d_sorted = np.repeat(lon_sorted[np.newaxis, :], mask_sorted.shape[0], axis=0)
+    lon2d_sorted = np.repeat(lon_sorted[np.newaxis, :], land_mask.shape[0], axis=0)
     lat2d_sorted = lat2d[:, sort_idx]
 
+    classification = np.zeros_like(land_mask, dtype=int)
+    classification[land_mask] = 2
+    classification[lake_mask] = 1
+    classification_sorted = classification[:, sort_idx]
+
+    cmap = ListedColormap(["#4C72B0", "#A6CEE3", "#55A868"])
+    norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], cmap.N)
+
     fig, ax = plt.subplots(figsize=(10, 5))
-    im = ax.pcolormesh(lon2d_sorted, lat2d_sorted, mask_sorted.astype(float), shading="auto", cmap="Greens")
-    ax.set_title("Land Mask (1° resolution)")
+    im = ax.pcolormesh(
+        lon2d_sorted,
+        lat2d_sorted,
+        classification_sorted,
+        shading="auto",
+        cmap=cmap,
+        norm=norm,
+    )
+    ax.set_title("Surface Classification (1° resolution)")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     cbar = fig.colorbar(im, ax=ax, orientation="vertical", fraction=0.046, pad=0.04)
-    cbar.set_label("Land=1, Ocean=0")
+    cbar.set_ticks([0, 1, 2])
+    cbar.set_ticklabels(["Ocean", "Lake", "Land"])
     plt.show()
 
 
 def main() -> None:
     """Entry point to visualise the cached land mask."""
     lon2d, lat2d = _default_grid()
-    mask = compute_land_mask(lon2d, lat2d)
-    _plot_mask(mask, lon2d, lat2d)
+    land_mask = compute_land_mask(lon2d, lat2d)
+    lake_mask = compute_lake_mask(lon2d, lat2d)
+    _plot_mask(land_mask, lake_mask, lon2d, lat2d)
 
 
 if __name__ == "__main__":
