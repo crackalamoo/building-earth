@@ -28,7 +28,9 @@ from climate_sim.utils.landmask import (
 NEWTON_TOLERANCE = 1e-5  # K
 NEWTON_MAX_ITERS = 16
 NEWTON_DAMPING = 0.5
-FIXED_POINT_MAX_ITERS = 300
+NEWTON_BACKTRACK_REDUCTION = 0.5
+NEWTON_BACKTRACK_CUTOFF = 1e-3
+FIXED_POINT_MAX_ITERS = 100
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
@@ -60,6 +62,15 @@ def implicit_monthly_step(
     """Advance the column temperature one implicit backward-Euler step."""
     temp_next = np.maximum(temperature_K, temperature_floor)
 
+    if temperature_K.ndim == 2:
+        identity_single_layer = sparse.eye(temperature_K.size, format="csc")
+    elif temperature_K.ndim == 3 and temperature_K.shape[0] == 2:
+        identity_single_layer = sparse.eye(
+            temperature_K.shape[1] * temperature_K.shape[2], format="csc"
+        )
+    else:
+        identity_single_layer = None
+
     for _ in range(NEWTON_MAX_ITERS):
         temp_capped = np.maximum(temp_next, temperature_floor)
         rhs_value = rhs_fn(temp_capped, insolation_W_m2)
@@ -73,14 +84,21 @@ def implicit_monthly_step(
             size = temp_capped.size
             residual_flat = residual.ravel()
 
-            jacobian = sparse.identity(size, format="csr") - dt_seconds * sparse.diags(
-                diag.ravel(), format="csr"
-            )
+            if (
+                identity_single_layer is None
+                or identity_single_layer.shape[0] != size
+                or identity_single_layer.shape[1] != size
+            ):
+                jacobian = sparse.eye(size, format="csc")
+            else:
+                jacobian = identity_single_layer.copy()
+            jacobian -= dt_seconds * sparse.diags(diag.ravel(), format="csc")
 
             if diffusion_matrix is not None:
                 jacobian = jacobian - dt_seconds * diffusion_matrix
 
-            correction_flat = splinalg.spsolve(jacobian, residual_flat)
+            solve_linear = splinalg.factorized(jacobian)
+            correction_flat = solve_linear(residual_flat)
             correction = correction_flat.reshape(temp_capped.shape)
         else:
             if temp_capped.ndim < 1 or temp_capped.shape[0] != 2:
@@ -99,13 +117,17 @@ def implicit_monthly_step(
             nlat, nlon = surface_diag.shape
             size = nlat * nlon
 
-            identity = sparse.identity(size, format="csr")
-            surface_block = identity - dt_seconds * sparse.diags(
-                surface_diag.ravel(), format="csr"
-            )
-            atmosphere_block = identity - dt_seconds * sparse.diags(
-                atmosphere_diag.ravel(), format="csr"
-            )
+            identity = identity_single_layer
+            if (
+                identity is None
+                or identity.shape[0] != size
+                or identity.shape[1] != size
+            ):
+                identity = sparse.eye(size, format="csc")
+            surface_block = identity.copy()
+            surface_block -= dt_seconds * sparse.diags(surface_diag.ravel(), format="csc")
+            atmosphere_block = identity.copy()
+            atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
 
             if surface_matrix is not None:
                 surface_block = surface_block - dt_seconds * surface_matrix
@@ -113,15 +135,15 @@ def implicit_monthly_step(
                 atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
 
             coupling_surface_atm = -dt_seconds * sparse.diags(
-                cross[0, 1].ravel(), format="csr"
+                cross[0, 1].ravel(), format="csc"
             )
             coupling_atm_surface = -dt_seconds * sparse.diags(
-                cross[1, 0].ravel(), format="csr"
+                cross[1, 0].ravel(), format="csc"
             )
 
             jacobian = sparse.bmat(
                 [[surface_block, coupling_surface_atm], [coupling_atm_surface, atmosphere_block]],
-                format="csr",
+                format="csc",
             )
 
             residual_flat = np.concatenate(
@@ -129,15 +151,37 @@ def implicit_monthly_step(
                 axis=0,
             )
 
-            correction_flat = splinalg.spsolve(jacobian, residual_flat)
+            solve_linear = splinalg.factorized(jacobian)
+            correction_flat = solve_linear(residual_flat)
             correction_surface = correction_flat[:size].reshape(surface_diag.shape)
             correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
             correction = np.stack([correction_surface, correction_atmosphere])
 
-        temp_candidate = temp_next - correction
-        temp_next = np.maximum(temp_candidate, temperature_floor)
+        damping = 1.0
+        max_residual = float(np.max(np.abs(residual)))
+        accepted = False
+        prev_temp = temp_next
 
-        if np.max(np.abs(correction)) < NEWTON_TOLERANCE:
+        while damping >= NEWTON_BACKTRACK_CUTOFF:
+            temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
+            rhs_candidate = rhs_fn(temp_candidate, insolation_W_m2)
+            residual_candidate = temp_candidate - temperature_K - dt_seconds * rhs_candidate
+            candidate_norm = float(np.max(np.abs(residual_candidate)))
+
+            if candidate_norm <= (1.0 - 1e-4 * damping) * max_residual:
+                temp_next = temp_candidate
+                residual = residual_candidate
+                accepted = True
+                break
+
+            damping *= NEWTON_BACKTRACK_REDUCTION
+
+        if not accepted:
+            temp_next = temp_candidate
+            residual = residual_candidate
+
+        step = prev_temp - temp_next
+        if np.max(np.abs(step)) < NEWTON_TOLERANCE:
             break
 
     return temp_next
@@ -220,7 +264,7 @@ def integrate_periodic_cycle(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
 ) -> np.ndarray:
-    """Return the 12-month sequence of start-of-month temperatures for the periodic solution."""
+    """Return the 12-month sequence of month-midpoint temperatures for the periodic solution."""
     temps = np.empty((12,) + initial_temperature.shape, dtype=float)
     state = initial_temperature
     for month in range(12):
@@ -371,16 +415,19 @@ def compute_periodic_cycle_celsius(
         diffusion_operator: LayeredDiffusionOperator,
         config: RadiationConfig,
     ):
-        surface_matrix = (
-            diffusion_operator.surface.matrix
-            if diffusion_operator.surface.enabled
-            else None
-        )
-        atmosphere_matrix = (
-            diffusion_operator.atmosphere.matrix
-            if config.include_atmosphere and diffusion_operator.atmosphere.enabled
-            else None
-        )
+        surface_matrix = None
+        if diffusion_operator.surface.enabled:
+            surface_matrix = diffusion_operator.surface.matrix
+            if not sparse.isspmatrix_csc(surface_matrix):
+                surface_matrix = surface_matrix.tocsc()
+
+        atmosphere_matrix = None
+        if config.include_atmosphere and diffusion_operator.atmosphere.enabled:
+            atmosphere_matrix = diffusion_operator.atmosphere.matrix
+            if not sparse.isspmatrix_csc(atmosphere_matrix):
+                atmosphere_matrix = atmosphere_matrix.tocsc()
+        # The diffusion matrices are already expressed as d(rhs)/dT in 1/s because the
+        # discrete operator divides by the local heat capacity when it is assembled.
 
         def rhs(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
