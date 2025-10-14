@@ -58,18 +58,29 @@ class DiffusionOperator:
         return north_term + south_term + east_term + west_term
 
 
-def create_diffusion_operator(
+@dataclass
+class LayeredDiffusionOperator:
+    """Diffusion operators for the surface ocean and atmosphere layers."""
+
+    surface: DiffusionOperator
+    atmosphere: DiffusionOperator
+
+    @classmethod
+    def disabled(cls, shape: tuple[int, int]) -> LayeredDiffusionOperator:
+        disabled = DiffusionOperator.disabled(shape)
+        return cls(surface=disabled, atmosphere=disabled)
+
+
+def _build_single_layer_operator(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     heat_capacity_field: np.ndarray,
     *,
-    config: DiffusionConfig | None = None,
+    config: DiffusionConfig,
 ) -> DiffusionOperator:
-    """Create a discrete diffusion operator for the supplied grid and materials."""
     if lon2d.shape != lat2d.shape or lon2d.shape != heat_capacity_field.shape:
         raise ValueError("Grid and heat capacity field must share the same shape")
 
-    config = config or DiffusionConfig()
     if not config.enabled:
         return DiffusionOperator.disabled(heat_capacity_field.shape)
 
@@ -127,4 +138,51 @@ def create_diffusion_operator(
         east_coeff=east_coeff,
         west_coeff=west_coeff,
         diagonal=diagonal,
+    )
+
+
+def create_diffusion_operator(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    heat_capacity_field: np.ndarray,
+    *,
+    land_mask: np.ndarray | None = None,
+    atmosphere_heat_capacity: float | None = None,
+    config: DiffusionConfig | None = None,
+) -> LayeredDiffusionOperator:
+    """Create diffusion operators for the surface ocean and atmosphere layers."""
+
+    if lon2d.shape != lat2d.shape or lon2d.shape != heat_capacity_field.shape:
+        raise ValueError("Grid and heat capacity field must share the same shape")
+
+    config = config or DiffusionConfig()
+    if not config.enabled:
+        return LayeredDiffusionOperator.disabled(heat_capacity_field.shape)
+
+    if land_mask is None:
+        land_mask = np.zeros_like(heat_capacity_field, dtype=bool)
+
+    if land_mask.shape != heat_capacity_field.shape:
+        raise ValueError("Land mask must share the same shape as the heat capacity field")
+
+    surface_heat_capacity = np.array(heat_capacity_field, copy=True)
+    surface_heat_capacity[land_mask] = np.inf
+
+    if atmosphere_heat_capacity is None:
+        atmosphere_heat_capacity = 1.0
+
+    atmosphere_heat_capacity_field = np.full_like(
+        heat_capacity_field, atmosphere_heat_capacity, dtype=float
+    )
+
+    surface_operator = _build_single_layer_operator(
+        lon2d, lat2d, surface_heat_capacity, config=config
+    )
+    atmosphere_operator = _build_single_layer_operator(
+        lon2d, lat2d, atmosphere_heat_capacity_field, config=config
+    )
+
+    return LayeredDiffusionOperator(
+        surface=surface_operator,
+        atmosphere=atmosphere_operator,
     )
