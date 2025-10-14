@@ -27,7 +27,9 @@ from climate_sim.utils.landmask import (
 NEWTON_TOLERANCE = 1e-5  # K
 NEWTON_MAX_ITERS = 16
 NEWTON_DAMPING = 0.5
-FIXED_POINT_MAX_ITERS = 300
+NEWTON_BACKTRACK_REDUCTION = 0.5
+NEWTON_BACKTRACK_CUTOFF = 1e-3
+FIXED_POINT_MAX_ITERS = 100
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
@@ -79,7 +81,8 @@ def implicit_monthly_step(
             if diffusion_matrix is not None:
                 jacobian = jacobian - dt_seconds * diffusion_matrix
 
-            correction_flat = splinalg.spsolve(jacobian, residual_flat)
+            solve_linear = splinalg.factorized(jacobian)
+            correction_flat = solve_linear(residual_flat)
             correction = correction_flat.reshape(temp_capped.shape)
         else:
             if temp_capped.ndim < 1 or temp_capped.shape[0] != 2:
@@ -128,15 +131,37 @@ def implicit_monthly_step(
                 axis=0,
             )
 
-            correction_flat = splinalg.spsolve(jacobian, residual_flat)
+            solve_linear = splinalg.factorized(jacobian)
+            correction_flat = solve_linear(residual_flat)
             correction_surface = correction_flat[:size].reshape(surface_diag.shape)
             correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
             correction = np.stack([correction_surface, correction_atmosphere])
 
-        temp_candidate = temp_next - correction
-        temp_next = np.maximum(temp_candidate, temperature_floor)
+        damping = 1.0
+        max_residual = float(np.max(np.abs(residual)))
+        accepted = False
+        prev_temp = temp_next
 
-        if np.max(np.abs(correction)) < NEWTON_TOLERANCE:
+        while damping >= NEWTON_BACKTRACK_CUTOFF:
+            temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
+            rhs_candidate = rhs_fn(temp_candidate, insolation_W_m2)
+            residual_candidate = temp_candidate - temperature_K - dt_seconds * rhs_candidate
+            candidate_norm = float(np.max(np.abs(residual_candidate)))
+
+            if candidate_norm <= (1.0 - 1e-4 * damping) * max_residual:
+                temp_next = temp_candidate
+                residual = residual_candidate
+                accepted = True
+                break
+
+            damping *= NEWTON_BACKTRACK_REDUCTION
+
+        if not accepted:
+            temp_next = temp_candidate
+            residual = residual_candidate
+
+        step = prev_temp - temp_next
+        if np.max(np.abs(step)) < NEWTON_TOLERANCE:
             break
 
     return temp_next
@@ -219,7 +244,7 @@ def integrate_periodic_cycle(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
 ) -> np.ndarray:
-    """Return the 12-month sequence of start-of-month temperatures for the periodic solution."""
+    """Return the 12-month sequence of month-midpoint temperatures for the periodic solution."""
     temps = np.empty((12,) + initial_temperature.shape, dtype=float)
     state = initial_temperature
     for month in range(12):
@@ -336,6 +361,8 @@ def compute_periodic_cycle_celsius(
             if config.include_atmosphere and diffusion_operator.atmosphere.enabled
             else None
         )
+        # The diffusion matrices are already expressed as d(rhs)/dT in 1/s because the
+        # discrete operator divides by the local heat capacity when it is assembled.
 
         def rhs(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
