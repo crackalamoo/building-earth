@@ -61,6 +61,15 @@ def implicit_monthly_step(
     """Advance the column temperature one implicit backward-Euler step."""
     temp_next = np.maximum(temperature_K, temperature_floor)
 
+    if temperature_K.ndim == 2:
+        identity_single_layer = sparse.eye(temperature_K.size, format="csc")
+    elif temperature_K.ndim == 3 and temperature_K.shape[0] == 2:
+        identity_single_layer = sparse.eye(
+            temperature_K.shape[1] * temperature_K.shape[2], format="csc"
+        )
+    else:
+        identity_single_layer = None
+
     for _ in range(NEWTON_MAX_ITERS):
         temp_capped = np.maximum(temp_next, temperature_floor)
         rhs_value = rhs_fn(temp_capped, insolation_W_m2)
@@ -74,9 +83,15 @@ def implicit_monthly_step(
             size = temp_capped.size
             residual_flat = residual.ravel()
 
-            jacobian = sparse.identity(size, format="csr") - dt_seconds * sparse.diags(
-                diag.ravel(), format="csr"
-            )
+            if (
+                identity_single_layer is None
+                or identity_single_layer.shape[0] != size
+                or identity_single_layer.shape[1] != size
+            ):
+                jacobian = sparse.eye(size, format="csc")
+            else:
+                jacobian = identity_single_layer.copy()
+            jacobian -= dt_seconds * sparse.diags(diag.ravel(), format="csc")
 
             if diffusion_matrix is not None:
                 jacobian = jacobian - dt_seconds * diffusion_matrix
@@ -101,13 +116,17 @@ def implicit_monthly_step(
             nlat, nlon = surface_diag.shape
             size = nlat * nlon
 
-            identity = sparse.identity(size, format="csr")
-            surface_block = identity - dt_seconds * sparse.diags(
-                surface_diag.ravel(), format="csr"
-            )
-            atmosphere_block = identity - dt_seconds * sparse.diags(
-                atmosphere_diag.ravel(), format="csr"
-            )
+            identity = identity_single_layer
+            if (
+                identity is None
+                or identity.shape[0] != size
+                or identity.shape[1] != size
+            ):
+                identity = sparse.eye(size, format="csc")
+            surface_block = identity.copy()
+            surface_block -= dt_seconds * sparse.diags(surface_diag.ravel(), format="csc")
+            atmosphere_block = identity.copy()
+            atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
 
             if surface_matrix is not None:
                 surface_block = surface_block - dt_seconds * surface_matrix
@@ -115,15 +134,15 @@ def implicit_monthly_step(
                 atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
 
             coupling_surface_atm = -dt_seconds * sparse.diags(
-                cross[0, 1].ravel(), format="csr"
+                cross[0, 1].ravel(), format="csc"
             )
             coupling_atm_surface = -dt_seconds * sparse.diags(
-                cross[1, 0].ravel(), format="csr"
+                cross[1, 0].ravel(), format="csc"
             )
 
             jacobian = sparse.bmat(
                 [[surface_block, coupling_surface_atm], [coupling_atm_surface, atmosphere_block]],
-                format="csr",
+                format="csc",
             )
 
             residual_flat = np.concatenate(
@@ -351,16 +370,17 @@ def compute_periodic_cycle_celsius(
         diffusion_operator: LayeredDiffusionOperator,
         config: RadiationConfig,
     ):
-        surface_matrix = (
-            diffusion_operator.surface.matrix
-            if diffusion_operator.surface.enabled
-            else None
-        )
-        atmosphere_matrix = (
-            diffusion_operator.atmosphere.matrix
-            if config.include_atmosphere and diffusion_operator.atmosphere.enabled
-            else None
-        )
+        surface_matrix = None
+        if diffusion_operator.surface.enabled:
+            surface_matrix = diffusion_operator.surface.matrix
+            if not sparse.isspmatrix_csc(surface_matrix):
+                surface_matrix = surface_matrix.tocsc()
+
+        atmosphere_matrix = None
+        if config.include_atmosphere and diffusion_operator.atmosphere.enabled:
+            atmosphere_matrix = diffusion_operator.atmosphere.matrix
+            if not sparse.isspmatrix_csc(atmosphere_matrix):
+                atmosphere_matrix = atmosphere_matrix.tocsc()
         # The diffusion matrices are already expressed as d(rhs)/dT in 1/s because the
         # discrete operator divides by the local heat capacity when it is assembled.
 
