@@ -5,6 +5,10 @@ from __future__ import annotations
 import argparse
 from typing import Dict, Tuple
 
+import cmocean
+import numpy as np
+from matplotlib.colors import TwoSlopeNorm
+
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
@@ -70,27 +74,27 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "--experiment-diffusion",
+        "--exp-diffusion",
         dest="experiment_diffusion",
         action="store_true",
         default=True,
         help="Enable lateral diffusion in the experiment case (default)",
     )
     parser.add_argument(
-        "--no-experiment-diffusion",
+        "--no-exp-diffusion",
         dest="experiment_diffusion",
         action="store_false",
         help="Disable lateral diffusion in the experiment case",
     )
     parser.add_argument(
-        "--experiment-atmosphere",
+        "--exp-atmosphere",
         dest="experiment_atmosphere",
         action="store_true",
         default=True,
         help="Include an explicit atmospheric layer in the experiment case (default)",
     )
     parser.add_argument(
-        "--no-experiment-atmosphere",
+        "--no-exp-atmosphere",
         dest="experiment_atmosphere",
         action="store_false",
         help="Exclude the atmospheric layer in the experiment case",
@@ -142,11 +146,18 @@ def main() -> None:
         f"min = {anomaly.min():.2f} °C, max = {anomaly.max():.2f} °C",
     )
 
+    anomaly_abs = float(np.max(np.abs(anomaly)))
+    vmax = anomaly_abs if anomaly_abs > 0 else 1.0
+    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
+
     plot_monthly_temperature_cycle(
         lon2d,
         lat2d,
         anomaly,
         title="Experiment − Baseline Surface Temperature (°C)",
+        cmap=cmocean.cm.balance,
+        norm=norm,
+        colorbar_label="Temperature anomaly (°C)",
     )
 
 

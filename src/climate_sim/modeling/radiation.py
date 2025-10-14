@@ -52,12 +52,15 @@ def radiative_balance_rhs(
     emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
     absorbed_shortwave = insolation_W_m2 * (1.0 - albedo_field)
 
+    downward_longwave = emitted_atmosphere
+    absorbed_from_surface = eps_atm * emitted_surface
+
     surface_tendency = (
-        absorbed_shortwave + eps_atm * emitted_atmosphere - emitted_surface
+        absorbed_shortwave + downward_longwave - emitted_surface
     ) / heat_capacity_field
 
     atmosphere_tendency = (
-        emitted_surface - 2.0 * eps_atm * emitted_atmosphere
+        absorbed_from_surface - 2.0 * emitted_atmosphere
     ) / config.atmosphere_heat_capacity
 
     return np.stack([surface_tendency, atmosphere_tendency])
@@ -68,8 +71,8 @@ def radiative_balance_rhs_temperature_derivative(
     *,
     heat_capacity_field: np.ndarray,
     config: RadiationConfig,
-) -> np.ndarray:
-    """Partial derivative d(dT/dt)/dT for the configured model (diagonal terms)."""
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Partial derivatives of the radiative tendency with respect to temperature."""
 
     floor = config.temperature_floor
     sigma = config.stefan_boltzmann
@@ -82,14 +85,34 @@ def radiative_balance_rhs_temperature_derivative(
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
 
-    surface_coeff = (
+    surface_diag = (
         -4.0 * config.emissivity_surface * sigma * np.power(surface, 3)
     ) / heat_capacity_field
-    atmosphere_coeff = (
+    atmosphere_diag = (
         -8.0 * config.emissivity_atmosphere * sigma * np.power(atmosphere, 3)
     ) / config.atmosphere_heat_capacity
 
-    return np.stack([surface_coeff, atmosphere_coeff])
+    surface_coupling = (
+        4.0
+        * config.emissivity_atmosphere
+        * sigma
+        * np.power(atmosphere, 3)
+        / heat_capacity_field
+    )
+    atmosphere_coupling = (
+        4.0
+        * config.emissivity_atmosphere
+        * config.emissivity_surface
+        * sigma
+        * np.power(surface, 3)
+        / config.atmosphere_heat_capacity
+    )
+
+    diag = np.stack([surface_diag, atmosphere_diag])
+    cross = np.zeros((2, 2) + surface.shape, dtype=float)
+    cross[0, 1] = surface_coupling
+    cross[1, 0] = atmosphere_coupling
+    return diag, cross
 
 
 def radiative_equilibrium_initial_guess(
@@ -108,14 +131,10 @@ def radiative_equilibrium_initial_guess(
         surface = np.power(absorbed / (config.emissivity_surface * sigma), 0.25)
         return np.maximum(surface, config.temperature_floor)
 
-    surface = np.power(
-        2.0 * absorbed / (config.emissivity_surface * sigma),
-        0.25,
-    )
-    atmosphere = np.power(
-        absorbed / (config.emissivity_atmosphere * sigma),
-        0.25,
-    )
+    epsilon_atm = config.emissivity_atmosphere
+    denom = np.maximum(2.0 - epsilon_atm, 1e-6)
+    atmosphere = np.power(absorbed / (denom * sigma), 0.25)
+    surface = np.power(2.0 * absorbed / (denom * sigma), 0.25)
 
     stacked = np.stack([surface, atmosphere])
     return _with_floor(stacked, config.temperature_floor)

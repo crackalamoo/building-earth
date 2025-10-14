@@ -28,7 +28,8 @@ NEWTON_DAMPING = 0.5
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
-RhsDerivativeFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
+RhsDerivative = np.ndarray | tuple[np.ndarray, np.ndarray]
+RhsDerivativeFunc = Callable[[np.ndarray, np.ndarray], RhsDerivative]
 RhsFactory = Callable[[np.ndarray, np.ndarray, LayeredDiffusionOperator, RadiationConfig], Tuple[RhsFunc, RhsDerivativeFunc]]
 InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig], np.ndarray]
 MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
@@ -51,10 +52,31 @@ def implicit_monthly_step(
         temp_capped = np.maximum(temp_next, temperature_floor)
         rhs_value = rhs_fn(temp_capped, insolation_W_m2)
         residual = temp_capped - temperature_K - dt_seconds * rhs_value
-        rhs_derivative = rhs_temperature_derivative_fn(temp_capped, insolation_W_m2)
-        derivative = 1.0 - dt_seconds * rhs_derivative
+        derivative_info = rhs_temperature_derivative_fn(temp_capped, insolation_W_m2)
 
-        correction = residual / derivative
+        if isinstance(derivative_info, tuple):
+            diag, cross = derivative_info
+            if temp_capped.ndim < 1 or temp_capped.shape[0] != 2:
+                raise ValueError("Layered derivative requires a two-layer temperature field")
+
+            j11 = 1.0 - dt_seconds * diag[0]
+            j22 = 1.0 - dt_seconds * diag[1]
+            j12 = -dt_seconds * cross[0, 1]
+            j21 = -dt_seconds * cross[1, 0]
+
+            determinant = j11 * j22 - j12 * j21
+            determinant = np.where(
+                np.abs(determinant) < 1e-12,
+                np.copysign(1e-12, determinant),
+                determinant,
+            )
+            correction_surface = (j22 * residual[0] - j12 * residual[1]) / determinant
+            correction_atmosphere = (-j21 * residual[0] + j11 * residual[1]) / determinant
+            correction = np.stack([correction_surface, correction_atmosphere])
+        else:
+            derivative = 1.0 - dt_seconds * derivative_info
+            correction = residual / derivative
+
         temp_candidate = temp_next - correction
         temp_next = np.maximum(temp_candidate, temperature_floor)
 
@@ -253,7 +275,7 @@ def compute_periodic_cycle_celsius(
             diffusion = diffusion_operator.surface.tendency(temperature)
             return radiative + diffusion
 
-        def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
+        def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> RhsDerivative:
             del insolation
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 temperature,
@@ -261,10 +283,11 @@ def compute_periodic_cycle_celsius(
                 config=config,
             )
             if config.include_atmosphere:
-                radiative_derivative = radiative_derivative.copy()
-                radiative_derivative[0] += diffusion_operator.surface.diagonal
-                radiative_derivative[1] += diffusion_operator.atmosphere.diagonal
-                return radiative_derivative
+                diag, cross = radiative_derivative
+                diag = diag.copy()
+                diag[0] += diffusion_operator.surface.diagonal
+                diag[1] += diffusion_operator.atmosphere.diagonal
+                return diag, cross
             return radiative_derivative + diffusion_operator.surface.diagonal
 
         return rhs, rhs_derivative
