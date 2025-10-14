@@ -192,6 +192,10 @@ def plot_monthly_temperature_cycle(
     monthly_field: np.ndarray,
     *,
     title: str = "Monthly Temperature Cycle",
+    cmap: Optional[LinearSegmentedColormap] = None,
+    norm: Optional[Normalize] = None,
+    colorbar_label: str = "Temperature (°C)",
+    colorbar_ticks: Optional[Iterable[float]] = None,
 ) -> None:
     """Interactive monthly cycle viewer driven by a slider."""
     month_names = [
@@ -208,9 +212,12 @@ def plot_monthly_temperature_cycle(
         "November",
         "December",
     ]
-    cmap, bounds = build_temperature_cmap()
-    vmin, vmax = bounds[0], bounds[-1]
-    norm = Normalize(vmin=vmin, vmax=vmax)
+    default_cmap, bounds = build_temperature_cmap()
+    if cmap is None:
+        cmap = default_cmap
+    if norm is None:
+        vmin, vmax = bounds[0], bounds[-1]
+        norm = Normalize(vmin=vmin, vmax=vmax)
 
     projection = ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
@@ -231,8 +238,12 @@ def plot_monthly_temperature_cycle(
     ax.set_title(f"{title} – {month_names[0]}")
 
     cbar = fig.colorbar(mesh, ax=ax, orientation="vertical", pad=0.04, fraction=0.046)
-    cbar.set_label("Temperature (°C)")
-    cbar.set_ticks(bounds)
+    if colorbar_label:
+        cbar.set_label(colorbar_label)
+    if colorbar_ticks is not None:
+        cbar.set_ticks(colorbar_ticks)
+    elif cmap is default_cmap:
+        cbar.set_ticks(bounds)
 
     slider_ax = fig.add_axes([0.12, 0.1, 0.76, 0.03])
     slider = Slider(

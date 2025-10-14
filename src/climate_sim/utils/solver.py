@@ -2,26 +2,47 @@
 
 from __future__ import annotations
 
-from typing import Callable, Tuple
+from dataclasses import dataclass
+from typing import Callable, Dict, Tuple
 
 import numpy as np
-from scipy import optimize
+from scipy import sparse
+from scipy.sparse import linalg as splinalg
 
 import climate_sim.modeling.radiation as radiation
+from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
-from climate_sim.utils.landmask import compute_heat_capacity_field
+from climate_sim.modeling.diffusion import (
+    DiffusionConfig,
+    LayeredDiffusionOperator,
+    create_diffusion_operator,
+)
+from climate_sim.utils.landmask import (
+    compute_albedo_field,
+    compute_heat_capacity_field,
+    compute_land_mask,
+)
 
 NEWTON_TOLERANCE = 1e-5  # K
 NEWTON_MAX_ITERS = 16
 NEWTON_DAMPING = 0.5
-TEMPERATURE_FLOOR_K = 10.0  # K
+FIXED_POINT_MAX_ITERS = 300
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
-RhsDerivativeFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
-RhsFactory = Callable[[np.ndarray], Tuple[RhsFunc, RhsDerivativeFunc]]
-InitialGuessFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
+@dataclass
+class Linearisation:
+    diag: np.ndarray
+    cross: np.ndarray | None = None
+    surface_diffusion_matrix: sparse.csr_matrix | None = None
+    atmosphere_diffusion_matrix: sparse.csr_matrix | None = None
+
+
+RhsDerivative = Linearisation
+RhsDerivativeFunc = Callable[[np.ndarray, np.ndarray], RhsDerivative]
+RhsFactory = Callable[[np.ndarray, np.ndarray, LayeredDiffusionOperator, RadiationConfig], Tuple[RhsFunc, RhsDerivativeFunc]]
+InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig], np.ndarray]
 MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
 HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
@@ -42,10 +63,76 @@ def implicit_monthly_step(
         temp_capped = np.maximum(temp_next, temperature_floor)
         rhs_value = rhs_fn(temp_capped, insolation_W_m2)
         residual = temp_capped - temperature_K - dt_seconds * rhs_value
-        rhs_derivative = rhs_temperature_derivative_fn(temp_capped, insolation_W_m2)
-        derivative = 1.0 - dt_seconds * rhs_derivative
+        linearisation = rhs_temperature_derivative_fn(temp_capped, insolation_W_m2)
 
-        correction = residual / derivative
+        if temp_capped.ndim == 2:
+            diag = linearisation.diag
+            diffusion_matrix = linearisation.surface_diffusion_matrix
+
+            size = temp_capped.size
+            residual_flat = residual.ravel()
+
+            jacobian = sparse.identity(size, format="csr") - dt_seconds * sparse.diags(
+                diag.ravel(), format="csr"
+            )
+
+            if diffusion_matrix is not None:
+                jacobian = jacobian - dt_seconds * diffusion_matrix
+
+            correction_flat = splinalg.spsolve(jacobian, residual_flat)
+            correction = correction_flat.reshape(temp_capped.shape)
+        else:
+            if temp_capped.ndim < 1 or temp_capped.shape[0] != 2:
+                raise ValueError("Layered derivative requires a two-layer temperature field")
+
+            diag = linearisation.diag
+            cross = linearisation.cross
+            if cross is None:
+                raise ValueError("Missing cross-layer coupling for layered system")
+
+            surface_diag = diag[0]
+            atmosphere_diag = diag[1]
+            surface_matrix = linearisation.surface_diffusion_matrix
+            atmosphere_matrix = linearisation.atmosphere_diffusion_matrix
+
+            nlat, nlon = surface_diag.shape
+            size = nlat * nlon
+
+            identity = sparse.identity(size, format="csr")
+            surface_block = identity - dt_seconds * sparse.diags(
+                surface_diag.ravel(), format="csr"
+            )
+            atmosphere_block = identity - dt_seconds * sparse.diags(
+                atmosphere_diag.ravel(), format="csr"
+            )
+
+            if surface_matrix is not None:
+                surface_block = surface_block - dt_seconds * surface_matrix
+            if atmosphere_matrix is not None:
+                atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
+
+            coupling_surface_atm = -dt_seconds * sparse.diags(
+                cross[0, 1].ravel(), format="csr"
+            )
+            coupling_atm_surface = -dt_seconds * sparse.diags(
+                cross[1, 0].ravel(), format="csr"
+            )
+
+            jacobian = sparse.bmat(
+                [[surface_block, coupling_surface_atm], [coupling_atm_surface, atmosphere_block]],
+                format="csr",
+            )
+
+            residual_flat = np.concatenate(
+                [residual[0].ravel(), residual[1].ravel()],
+                axis=0,
+            )
+
+            correction_flat = splinalg.spsolve(jacobian, residual_flat)
+            correction_surface = correction_flat[:size].reshape(surface_diag.shape)
+            correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
+            correction = np.stack([correction_surface, correction_atmosphere])
+
         temp_candidate = temp_next - correction
         temp_next = np.maximum(temp_candidate, temperature_floor)
 
@@ -87,10 +174,13 @@ def find_periodic_temperature(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
 ) -> np.ndarray:
-    """Solve P(T) = T for the annual map using a fixed-point iteration."""
+    """Solve P(T) = T for the annual map using under-relaxed substitution."""
 
-    def annual_map_flat(state_flat: np.ndarray) -> np.ndarray:
-        state = state_flat.reshape(initial_temperature.shape)
+    state = np.maximum(initial_temperature, temperature_floor)
+    damping = NEWTON_DAMPING
+    previous_residual = np.inf
+
+    for _iter in range(FIXED_POINT_MAX_ITERS):
         advanced = apply_annual_map(
             state,
             monthly_insolation,
@@ -99,16 +189,25 @@ def find_periodic_temperature(
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
         )
-        damped = NEWTON_DAMPING * advanced + (1.0 - NEWTON_DAMPING) * state
-        return damped.ravel()
 
-    solution_flat = optimize.fixed_point(
-        annual_map_flat,
-        initial_temperature.ravel(),
-        xtol=NEWTON_TOLERANCE,
-        maxiter=NEWTON_MAX_ITERS,
+        residual = advanced - state
+        max_residual = float(np.max(np.abs(residual)))
+
+        if max_residual < NEWTON_TOLERANCE:
+            return advanced
+
+        if max_residual > previous_residual:
+            damping = max(damping * 0.5, 0.1)
+        else:
+            damping = min(damping * 1.1, 0.8)
+
+        state = np.maximum(state + damping * residual, temperature_floor)
+        previous_residual = max_residual
+
+    raise RuntimeError(
+        "Failed to converge to a periodic solution after "
+        f"{FIXED_POINT_MAX_ITERS} iterations (residual {previous_residual:.3e} K)"
     )
-    return solution_flat.reshape(initial_temperature.shape)
 
 
 def integrate_periodic_cycle(
@@ -124,8 +223,7 @@ def integrate_periodic_cycle(
     temps = np.empty((12,) + initial_temperature.shape, dtype=float)
     state = initial_temperature
     for month in range(12):
-        temps[month] = state
-        state = implicit_monthly_step(
+        next_state = implicit_monthly_step(
             state,
             monthly_insolation[month],
             month_durations[month],
@@ -133,6 +231,8 @@ def integrate_periodic_cycle(
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
         )
+        temps[month] = 0.5 * (state + next_state)
+        state = next_state
     return temps
 
 
@@ -143,7 +243,8 @@ def compute_periodic_cycle_kelvin(
     heat_capacity_field_fn: HeatCapacityFieldFunc,
     rhs_factory: RhsFactory,
     initial_guess_fn: InitialGuessFunc,
-    temperature_floor: float,
+    radiation_config: RadiationConfig,
+    diffusion_config: DiffusionConfig,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Solve for the periodic temperature cycle and return results in Kelvin."""
     lon2d, lat2d = create_lat_lon_grid(resolution_deg)
@@ -152,9 +253,23 @@ def compute_periodic_cycle_kelvin(
     monthly_insolation = expand_latitude_field(monthly_insolation_lat, lon2d.shape[1])
 
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
-    rhs_fn, rhs_temperature_derivative_fn = rhs_factory(heat_capacity_field)
+    albedo_field = compute_albedo_field(lon2d, lat2d)
+    land_mask = compute_land_mask(lon2d, lat2d)
+    diffusion_operator = create_diffusion_operator(
+        lon2d,
+        lat2d,
+        heat_capacity_field,
+        land_mask=land_mask,
+        atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
+        config=diffusion_config,
+    )
+    rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
+        heat_capacity_field, albedo_field, diffusion_operator, radiation_config
+    )
 
-    initial_temperature = initial_guess_fn(monthly_insolation, heat_capacity_field)
+    initial_temperature = initial_guess_fn(
+        monthly_insolation, albedo_field, radiation_config
+    )
 
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
 
@@ -164,7 +279,7 @@ def compute_periodic_cycle_kelvin(
         month_durations,
         rhs_fn=rhs_fn,
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-        temperature_floor=temperature_floor,
+        temperature_floor=radiation_config.temperature_floor,
     )
 
     monthly_temperatures = integrate_periodic_cycle(
@@ -173,7 +288,7 @@ def compute_periodic_cycle_kelvin(
         month_durations,
         rhs_fn=rhs_fn,
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-        temperature_floor=temperature_floor,
+        temperature_floor=radiation_config.temperature_floor,
     )
 
     return lon2d, lat2d, monthly_temperatures
@@ -185,9 +300,10 @@ def compute_periodic_cycle_celsius(
     solar_constant: float = None,
     ocean_heat_capacity: float = None,
     land_heat_capacity: float = None,
-    emissivity_sfc: float = None,
-    emissivity_atm: float = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    radiation_config: RadiationConfig | None = None,
+    diffusion_config: DiffusionConfig | None = None,
+    return_layer_map: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Convenience wrapper wiring the radiation component into the solver."""
 
     def monthly_insolation_lat_fn(lat2d: np.ndarray) -> np.ndarray:
@@ -201,36 +317,76 @@ def compute_periodic_cycle_celsius(
             land_heat_capacity=land_heat_capacity,
         )
 
-    def rhs_factory(heat_capacity_field: np.ndarray):
+    resolved_radiation = radiation_config or RadiationConfig()
+    resolved_diffusion = diffusion_config or DiffusionConfig()
+
+    def rhs_factory(
+        heat_capacity_field: np.ndarray,
+        albedo_field: np.ndarray,
+        diffusion_operator: LayeredDiffusionOperator,
+        config: RadiationConfig,
+    ):
+        surface_matrix = (
+            diffusion_operator.surface.matrix
+            if diffusion_operator.surface.enabled
+            else None
+        )
+        atmosphere_matrix = (
+            diffusion_operator.atmosphere.matrix
+            if config.include_atmosphere and diffusion_operator.atmosphere.enabled
+            else None
+        )
+
         def rhs(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
-            return radiation.radiative_balance_rhs(
+            radiative = radiation.radiative_balance_rhs(
                 temperature,
                 insolation,
                 heat_capacity_field=heat_capacity_field,
-                emissivity_sfc=emissivity_sfc,
-                emissivity_atm=emissivity_atm,
+                albedo_field=albedo_field,
+                config=config,
             )
+            if config.include_atmosphere:
+                radiative = radiative.copy()
+                if diffusion_operator.surface.enabled:
+                    radiative[0] += diffusion_operator.surface.tendency(temperature[0])
+                if diffusion_operator.atmosphere.enabled:
+                    radiative[1] += diffusion_operator.atmosphere.tendency(temperature[1])
+                return radiative
+            if diffusion_operator.surface.enabled:
+                return radiative + diffusion_operator.surface.tendency(temperature)
+            return radiative
 
-        def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
+        def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> RhsDerivative:
             del insolation
-            return radiation.radiative_balance_rhs_temperature_derivative(
+            radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 temperature,
                 heat_capacity_field=heat_capacity_field,
-                emissivity_sfc=emissivity_sfc,
-                emissivity_atm=emissivity_atm,
+                config=config,
+            )
+            if config.include_atmosphere:
+                diag, cross = radiative_derivative
+                return Linearisation(
+                    diag=diag,
+                    cross=cross,
+                    surface_diffusion_matrix=surface_matrix,
+                    atmosphere_diffusion_matrix=atmosphere_matrix,
+                )
+            return Linearisation(
+                diag=radiative_derivative,
+                surface_diffusion_matrix=surface_matrix,
             )
 
         return rhs, rhs_derivative
 
     def initial_guess_fn(
         monthly_insolation: np.ndarray,
-        heat_capacity_field: np.ndarray,
+        albedo_field: np.ndarray,
+        config: RadiationConfig,
     ) -> np.ndarray:
-        del heat_capacity_field
         return radiation.radiative_equilibrium_initial_guess(
             monthly_insolation,
-            emissivity_sfc=emissivity_sfc,
-            emissivity_atm=emissivity_atm,
+            albedo_field=albedo_field,
+            config=config,
         )
 
     lon2d, lat2d, monthly_temperatures_K = compute_periodic_cycle_kelvin(
@@ -239,8 +395,22 @@ def compute_periodic_cycle_celsius(
         heat_capacity_field_fn=heat_capacity_field_fn,
         rhs_factory=rhs_factory,
         initial_guess_fn=initial_guess_fn,
-        temperature_floor=TEMPERATURE_FLOOR_K,
+        radiation_config=resolved_radiation,
+        diffusion_config=resolved_diffusion,
     )
 
-    monthly_temperatures_C = monthly_temperatures_K - 273.15
-    return lon2d, lat2d, monthly_temperatures_C
+    if monthly_temperatures_K.ndim == 3:
+        monthly_surface_K = monthly_temperatures_K
+        layers_map = {"surface": monthly_surface_K - 273.15}
+    else:
+        monthly_surface_K = monthly_temperatures_K[:, 0]
+        monthly_atmosphere_K = monthly_temperatures_K[:, 1]
+        layers_map = {
+            "surface": monthly_surface_K - 273.15,
+            "atmosphere": monthly_atmosphere_K - 273.15,
+        }
+
+    if return_layer_map:
+        return lon2d, lat2d, layers_map
+
+    return lon2d, lat2d, layers_map["surface"]
