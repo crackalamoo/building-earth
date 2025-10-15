@@ -60,7 +60,11 @@ def compute_bulk_flux(
         return zeros, zeros
 
     U = np.where(ocean_mask, config.U_ocean, config.U_land)
-    G = config.rho_air * config.c_p * config.C_H * U
+    layer_fraction = config.boundary_layer_fraction()
+    if layer_fraction <= 0.0:
+        zeros = np.zeros_like(surface_K, dtype=float)
+        return zeros, zeros
+    G = config.rho_air * config.c_p * config.C_H * U * layer_fraction
     H = G * (surface_K - atmosphere_K)
     return G, H
 
@@ -83,15 +87,15 @@ def bulk_coupling_tendencies(
         zeros = np.zeros_like(surface_K, dtype=float)
         return zeros, zeros
 
+    if np.any(~np.isfinite(heat_capacity_field)):
+        raise ValueError("Surface heat capacity field must contain finite values")
+
     surface_tendency = (-H) / heat_capacity_field
-    Ca_eff = (
-        config.atmosphere_heat_capacity * config.boundary_layer_fraction()
-    )
-    if Ca_eff <= 0.0 or not np.isfinite(Ca_eff):
-        raise ValueError(
-            "Effective atmospheric heat capacity must be a positive finite value"
-        )
-    atmosphere_tendency = (+H) / Ca_eff
+
+    C_a = config.atmosphere_heat_capacity
+    if C_a <= 0.0 or not np.isfinite(C_a):
+        raise ValueError("Atmosphere heat capacity must be a positive finite value")
+    atmosphere_tendency = (+H) / C_a
     return surface_tendency, atmosphere_tendency
 
 
@@ -110,18 +114,21 @@ def bulk_coupling_jacobian(
         cross = np.zeros((2, 2) + heat_capacity_field.shape, dtype=float)
         return zeros, zeros, cross
 
-    U = np.where(ocean_mask, config.U_ocean, config.U_land)
-    G = config.rho_air * config.c_p * config.C_H * U
-    C_s = heat_capacity_field
-    C_a = (
-        config.atmosphere_heat_capacity * config.boundary_layer_fraction()
-    )
-    if np.any(~np.isfinite(C_s)):
+    if np.any(~np.isfinite(heat_capacity_field)):
         raise ValueError("Surface heat capacity field must contain finite values")
+
+    U = np.where(ocean_mask, config.U_ocean, config.U_land)
+    layer_fraction = config.boundary_layer_fraction()
+    if layer_fraction <= 0.0:
+        zeros = np.zeros_like(heat_capacity_field, dtype=float)
+        cross = np.zeros((2, 2) + heat_capacity_field.shape, dtype=float)
+        return zeros, zeros, cross
+
+    G = config.rho_air * config.c_p * config.C_H * U * layer_fraction
+    C_s = heat_capacity_field
+    C_a = config.atmosphere_heat_capacity
     if C_a <= 0.0 or not np.isfinite(C_a):
-        raise ValueError(
-            "Effective atmospheric heat capacity must be a positive finite value"
-        )
+        raise ValueError("Atmosphere heat capacity must be a positive finite value")
 
     surface_diag = (-G) / C_s
     atmosphere_diag = (-G) / C_a
