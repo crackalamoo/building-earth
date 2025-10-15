@@ -25,7 +25,7 @@ from climate_sim.utils.landmask import (
     compute_land_mask,
 )
 
-NEWTON_TOLERANCE = 1e-1  # K
+NEWTON_TOLERANCE = 1  # K
 NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
@@ -211,7 +211,7 @@ def apply_annual_map(
 
 
 def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | None:
-    """Return coefficients that minimise the combined residual subject to sum(alpha)=1."""
+    """Return coefficients that minimize the combined residual subject to sum(alpha)=1."""
 
     m = len(residuals)
     if m == 0:

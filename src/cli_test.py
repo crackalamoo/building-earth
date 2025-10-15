@@ -4,15 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from climate_sim.modeling.radiation import RadiationConfig
-    from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
-    from climate_sim.utils.solver import compute_periodic_cycle_celsius
-
-if TYPE_CHECKING:
-    import numpy as np
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -24,7 +16,7 @@ class Location:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Summarise the model climate at a few reference locations.",
+        description="Summarize the model climate at a few reference locations.",
     )
     parser.add_argument(
         "--snow",
@@ -53,14 +45,12 @@ def _nearest_cell_indices(
     return lat_idx, lon_idx
 
 
-def _summarise_location(
+def _summarize_location(
     location: Location,
     monthly_surface_cycle: "np.ndarray",
     lon2d: "np.ndarray",
     lat2d: "np.ndarray",
 ) -> None:
-    import numpy as np
-
     lat_idx, lon_idx = _nearest_cell_indices(
         lon2d, lat2d, location.latitude, location.longitude
     )
@@ -104,7 +94,7 @@ def main() -> None:
     ]
 
     for location in locations:
-        _summarise_location(location, surface_cycle, lon2d, lat2d)
+        _summarize_location(location, surface_cycle, lon2d, lat2d)
 
 
 if __name__ == "__main__":
