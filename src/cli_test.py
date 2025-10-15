@@ -19,6 +19,58 @@ def _parse_args() -> argparse.Namespace:
         description="Summarize the model climate at a few reference locations.",
     )
     parser.add_argument(
+        "--resolution",
+        type=float,
+        default=1.0,
+        help="Grid resolution in degrees",
+    )
+    parser.add_argument(
+        "--solar-constant",
+        type=float,
+        default=None,
+        help="Override the solar constant (W m^-2)",
+    )
+    parser.add_argument(
+        "--diffusion",
+        dest="diffusion",
+        action="store_true",
+        default=True,
+        help="Enable lateral diffusion (default)",
+    )
+    parser.add_argument(
+        "--no-diffusion",
+        dest="diffusion",
+        action="store_false",
+        help="Disable lateral diffusion",
+    )
+    parser.add_argument(
+        "--diffusion-geometry",
+        dest="diffusion_geometry",
+        action="store_true",
+        default=True,
+        help="Use spherical geometry scalings in the diffusion operator (default)",
+    )
+    parser.add_argument(
+        "--no-diffusion-geometry",
+        dest="diffusion_geometry",
+        action="store_false",
+        help="Treat diffusion with uniform planar geometry",
+    )
+
+    parser.add_argument(
+        "--atmosphere",
+        dest="atmosphere",
+        action="store_true",
+        default=True,
+        help="Include an explicit atmospheric layer",
+    )
+    parser.add_argument(
+        "--no-atmosphere",
+        dest="atmosphere",
+        action="store_false",
+        help="Exclude the atmospheric layer",
+    )
+    parser.add_argument(
         "--snow",
         dest="snow",
         action="store_true",
@@ -30,6 +82,19 @@ def _parse_args() -> argparse.Namespace:
         dest="snow",
         action="store_false",
         help="Disable snow-albedo adjustments",
+    )
+    parser.add_argument(
+        "--bulk-coupling",
+        dest="bulk_coupling",
+        action="store_true",
+        default=True,
+        help="Enable atmosphere-ocean bulk coupling (default)",
+    )
+    parser.add_argument(
+        "--no-bulk-coupling",
+        dest="bulk_coupling",
+        action="store_false",
+        help="Disable atmosphere-ocean bulk coupling",
     )
     return parser.parse_args()
 
@@ -73,14 +138,27 @@ def _summarize_location(
 def main() -> None:
     args = _parse_args()
 
+    from climate_sim.modeling.bulk_coupling import BulkCouplingConfig
+    from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
     from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
-    config = RadiationConfig(include_atmosphere=True)
+    radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
+    diffusion_config = DiffusionConfig(
+        enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
+    )
     snow_config = SnowAlbedoConfig(enabled=args.snow)
+    bulk_config = BulkCouplingConfig(
+        enabled=args.bulk_coupling,
+        atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
+    )
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(
-        radiation_config=config,
+        resolution_deg=args.resolution,
+        solar_constant=args.solar_constant,
+        radiation_config=radiation_config,
+        diffusion_config=diffusion_config,
+        bulk_coupling_config=bulk_config,
         snow_config=snow_config,
         return_layer_map=True,
     )
