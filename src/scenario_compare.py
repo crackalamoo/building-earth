@@ -20,12 +20,9 @@ def _build_configs(
     *,
     enable_diffusion: bool,
     include_atmosphere: bool,
-    use_geometry: bool,
 ) -> Tuple[RadiationConfig, DiffusionConfig]:
     radiation_cfg = RadiationConfig(include_atmosphere=include_atmosphere)
-    diffusion_cfg = DiffusionConfig(
-        enabled=enable_diffusion, use_spherical_geometry=use_geometry
-    )
+    diffusion_cfg = DiffusionConfig(enabled=enable_diffusion)
     return radiation_cfg, diffusion_cfg
 
 
@@ -91,20 +88,6 @@ def main() -> None:
         help="Exclude the atmospheric layer in the baseline case",
     )
     parser.add_argument(
-        "--base-diffusion-geometry",
-        dest="base_geometry",
-        action="store_true",
-        default=True,
-        help="Use spherical geometry in baseline diffusion (default)",
-    )
-    parser.add_argument(
-        "--no-base-diffusion-geometry",
-        dest="base_geometry",
-        action="store_false",
-        help="Use planar diffusion geometry in the baseline case",
-    )
-
-    parser.add_argument(
         "--exp-diffusion",
         dest="experiment_diffusion",
         action="store_true",
@@ -131,19 +114,6 @@ def main() -> None:
         help="Exclude the atmospheric layer in the experiment case",
     )
     parser.add_argument(
-        "--exp-diffusion-geometry",
-        dest="experiment_geometry",
-        action="store_true",
-        default=True,
-        help="Use spherical geometry in experiment diffusion (default)",
-    )
-    parser.add_argument(
-        "--no-exp-diffusion-geometry",
-        dest="experiment_geometry",
-        action="store_false",
-        help="Use planar diffusion geometry in the experiment case",
-    )
-    parser.add_argument(
         "--exp-snow",
         dest="experiment_snow",
         action="store_true",
@@ -162,12 +132,10 @@ def main() -> None:
     base_rad, base_diff = _build_configs(
         enable_diffusion=args.base_diffusion,
         include_atmosphere=args.base_atmosphere,
-        use_geometry=args.base_geometry,
     )
     exp_rad, exp_diff = _build_configs(
         enable_diffusion=args.experiment_diffusion,
         include_atmosphere=args.experiment_atmosphere,
-        use_geometry=args.experiment_geometry,
     )
 
     base_snow = SnowAlbedoConfig(enabled=args.base_snow)
@@ -197,13 +165,11 @@ def main() -> None:
     base_summary = {
         "diffusion": args.base_diffusion,
         "atmosphere": args.base_atmosphere,
-        "geometry": args.base_geometry,
         "snow": args.base_snow,
     }
     exp_summary = {
         "diffusion": args.experiment_diffusion,
         "atmosphere": args.experiment_atmosphere,
-        "geometry": args.experiment_geometry,
         "snow": args.experiment_snow,
     }
 

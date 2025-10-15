@@ -9,9 +9,9 @@ from scipy import sparse
 
 from climate_sim.utils.math import (
     harmonic_mean,
-    regular_latitude_edges,
-    regular_longitude_edges,
     spherical_cell_area,
+    spherical_meridional_metrics,
+    spherical_zonal_metrics,
 )
 
 
@@ -79,7 +79,6 @@ class DiffusionConfig:
     surface_diffusivity_m2_s: float = 1.0e4
     atmosphere_diffusivity_m2_s: float = 1.0e5
     enabled: bool = True
-    use_spherical_geometry: bool = True
 
 
 @dataclass
@@ -163,7 +162,6 @@ def _build_single_layer_operator(
         raise ValueError("Active mask must match the grid shape")
 
     earth_radius = config.earth_radius_m
-    use_geometry = config.use_spherical_geometry
 
     total_capacity = np.zeros_like(heat_capacity_field)
     total_capacity[active_mask] = (
@@ -177,46 +175,15 @@ def _build_single_layer_operator(
         diffusivity_m2_s * heat_capacity_field[active_mask]
     )
 
-    lat_centers = lat2d[:, 0]
-    lon_centers = lon2d[0, :]
-    lat_edges = regular_latitude_edges(lat_centers)
-    lon_edges = regular_longitude_edges(lon_centers)
-
-    lat_edges_rad = np.deg2rad(lat_edges)
-    lon_edges_rad = np.deg2rad(lon_edges)
-
-    delta_lon_rad = lon_edges_rad[1:] - lon_edges_rad[:-1]
-    if np.any(delta_lon_rad <= 0.0):
-        raise ValueError("Longitude edges must be strictly increasing")
-
     north_coeff = np.zeros_like(heat_capacity_field)
     south_coeff = np.zeros_like(heat_capacity_field)
     east_coeff = np.zeros_like(heat_capacity_field)
     west_coeff = np.zeros_like(heat_capacity_field)
 
     if nlat > 1:
-        delta_lat_centers = np.diff(lat_centers)
-        if np.any(delta_lat_centers <= 0.0):
-            raise ValueError("Latitude centres must be strictly increasing")
-
-        delta_lat_centers_rad = np.deg2rad(delta_lat_centers)
-        delta_y = earth_radius * delta_lat_centers_rad
-
-        interface_lat_rad = np.deg2rad(0.5 * (lat_centers[:-1] + lat_centers[1:]))
-        if use_geometry:
-            boundary_length_north = (
-                earth_radius
-                * np.cos(interface_lat_rad)[:, np.newaxis]
-                * delta_lon_rad[np.newaxis, :]
-            )
-        else:
-            if lon_centers.size > 1:
-                delta_lon_uniform = float(np.deg2rad(lon_centers[1] - lon_centers[0]))
-            else:
-                delta_lon_uniform = 2.0 * np.pi
-            boundary_length_north = np.full(
-                (nlat - 1, nlon), earth_radius * delta_lon_uniform, dtype=float
-            )
+        boundary_length_north, delta_y = spherical_meridional_metrics(
+            lon2d, lat2d, earth_radius_m=earth_radius
+        )
 
         north_mask = active_mask[:-1] & active_mask[1:]
         north_diffusivity = harmonic_mean(
@@ -233,32 +200,9 @@ def _build_single_layer_operator(
 
     # Zonal diffusion (periodic in longitude)
     if nlon > 1:
-        if use_geometry:
-            # Horizontal distance between centres: R cos(phi) * d(lambda)
-            delta_x = (
-                earth_radius
-                * np.cos(np.deg2rad(lat_centers))[:, np.newaxis]
-                * (lon_edges_rad[1:] - lon_edges_rad[:-1])[np.newaxis, :]
-            )
-            # Length of north-south faces: R * d(phi)
-            boundary_length_east = (
-                earth_radius
-                * (lat_edges_rad[1:] - lat_edges_rad[:-1])[:, np.newaxis]
-            )
-        else:
-            # Uniform planar geometry
-            if lon_centers.size > 1:
-                delta_lon_uniform = float(np.deg2rad(lon_centers[1] - lon_centers[0]))
-            else:
-                delta_lon_uniform = 2.0 * np.pi
-            if lat_centers.size > 1:
-                delta_lat_uniform = float(np.deg2rad(lat_centers[1] - lat_centers[0]))
-            else:
-                delta_lat_uniform = np.pi
-            delta_x = earth_radius * delta_lon_uniform * np.ones_like(heat_capacity_field)
-            boundary_length_east = earth_radius * delta_lat_uniform * np.ones_like(
-                heat_capacity_field
-            )
+        boundary_length_east, delta_x = spherical_zonal_metrics(
+            lon2d, lat2d, earth_radius_m=earth_radius
+        )
 
         east_mask = active_mask & np.roll(active_mask, -1, axis=1)
         east_diffusivity = harmonic_mean(
@@ -323,27 +267,11 @@ def create_diffusion_operator(
         heat_capacity_field, atmosphere_heat_capacity, dtype=float
     )
 
-    if config.use_spherical_geometry:
-        cell_area_field = spherical_cell_area(
-            lon2d,
-            lat2d,
-            earth_radius_m=config.earth_radius_m,
-        )
-    else:
-        lat_centers = lat2d[:, 0]
-        lon_centers = lon2d[0, :]
-        if lat_centers.size > 1:
-            delta_lat_deg = float(lat_centers[1] - lat_centers[0])
-        else:
-            delta_lat_deg = 180.0
-        if lon_centers.size > 1:
-            delta_lon_deg = float(lon_centers[1] - lon_centers[0])
-        else:
-            delta_lon_deg = 360.0
-        delta_lat_rad = np.deg2rad(delta_lat_deg)
-        delta_lon_rad = np.deg2rad(delta_lon_deg)
-        area = (config.earth_radius_m**2) * delta_lat_rad * delta_lon_rad
-        cell_area_field = np.full_like(heat_capacity_field, area, dtype=float)
+    cell_area_field = spherical_cell_area(
+        lon2d,
+        lat2d,
+        earth_radius_m=config.earth_radius_m,
+    )
 
     surface_operator = _build_single_layer_operator(
         lon2d,
