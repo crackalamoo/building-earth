@@ -518,7 +518,6 @@ def compute_periodic_cycle_celsius(
             U_ocean=resolved_bulk.U_ocean,
             U_land=resolved_bulk.U_land,
             atmosphere_heat_capacity=resolved_radiation.atmosphere_heat_capacity,
-            boundary_layer_depth_m=resolved_bulk.boundary_layer_depth_m,
         )
     resolved_snow = snow_config or SnowAlbedoConfig()
 
