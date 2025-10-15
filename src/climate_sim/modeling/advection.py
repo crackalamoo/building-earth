@@ -51,6 +51,8 @@ class GeostrophicAdvectionOperator:
         else:
             self._ocean_mask = np.ones_like(self._lon2d, dtype=bool)
 
+        self._cos_lat = np.cos(np.deg2rad(self._lat2d))
+
         nlat, nlon = self._lon2d.shape
         if nlat < 1 or nlon < 1:
             raise ValueError("Longitude/latitude grids must be non-empty")
@@ -58,27 +60,33 @@ class GeostrophicAdvectionOperator:
         lat_centers = self._lat2d[:, 0]
         lon_centers = self._lon2d[0, :]
 
+        self._delta_phi_rad: float | None
         if nlat > 1:
             lat_spacing = np.diff(lat_centers)
             if not np.allclose(lat_spacing, lat_spacing[0]):
                 raise ValueError("Latitude grid must have constant spacing for gradients")
-            self._delta_y = config.earth_radius_m * np.deg2rad(float(lat_spacing[0]))
+            self._delta_phi_rad = float(np.deg2rad(lat_spacing[0]))
+            self._delta_y = config.earth_radius_m * self._delta_phi_rad
         else:
             self._delta_y = np.inf
+            self._delta_phi_rad = None
 
+        self._delta_lambda_rad: float | None
         if nlon > 1:
             lon_spacing = np.diff(lon_centers)
             if not np.allclose(lon_spacing, lon_spacing[0]):
                 raise ValueError("Longitude grid must have constant spacing for gradients")
-            delta_lon_rad = np.deg2rad(float(lon_spacing[0]))
+            delta_lon_rad = float(np.deg2rad(lon_spacing[0]))
             cos_lat = np.cos(np.deg2rad(lat_centers))[:, np.newaxis]
             delta_x = config.earth_radius_m * cos_lat * delta_lon_rad
             with np.errstate(divide="ignore", invalid="ignore"):
                 self._inv_two_delta_x = np.zeros_like(delta_x)
                 valid = np.abs(delta_x) > 0.0
                 self._inv_two_delta_x[valid] = 1.0 / (2.0 * delta_x[valid])
+            self._delta_lambda_rad = delta_lon_rad
         else:
             self._inv_two_delta_x = np.zeros_like(self._lon2d)
+            self._delta_lambda_rad = None
 
         coriolis = 2.0 * config.earth_rotation_rate_rad_s * np.sin(
             np.deg2rad(self._lat2d)
@@ -136,11 +144,12 @@ class GeostrophicAdvectionOperator:
 
         return grad_x, grad_y
 
-    def tendency(self, temperature: np.ndarray) -> np.ndarray:
-        """Return the geostrophic advection tendency (K/s) for the given field."""
+    def velocity_field(self, temperature: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return the (u, v) geostrophic wind components for ``temperature``."""
 
         if not self.enabled:
-            return np.zeros_like(temperature)
+            shape = temperature.shape
+            return np.zeros(shape, dtype=float), np.zeros(shape, dtype=float)
 
         grad_x, grad_y = self._horizontal_gradient(temperature)
         temp_safe = np.maximum(temperature, self._config.minimum_temperature_K)
@@ -172,5 +181,75 @@ class GeostrophicAdvectionOperator:
                 velocity_x[valid] = ux
                 velocity_y[valid] = uy
 
-        tendency = -(velocity_x * grad_x + velocity_y * grad_y)
+        return velocity_x, velocity_y
+
+    def _flux_form_tendency(
+        self, temperature: np.ndarray, velocity_x: np.ndarray, velocity_y: np.ndarray
+    ) -> np.ndarray:
+        cos_lat = self._cos_lat
+
+        flux_x = temperature * velocity_x * cos_lat
+        flux_y = temperature * velocity_y
+
+        div_lambda = np.zeros_like(temperature)
+        if temperature.shape[1] > 1 and self._delta_lambda_rad is not None:
+            inv_two_delta_lambda = 0.5 / self._delta_lambda_rad
+            diff_east = np.roll(flux_x, -1, axis=1) - np.roll(flux_x, 1, axis=1)
+            div_lambda = diff_east * inv_two_delta_lambda
+
+        div_phi = np.zeros_like(temperature)
+        if temperature.shape[0] > 1 and self._delta_phi_rad is not None:
+            inv_delta_phi = 1.0 / self._delta_phi_rad
+            inv_two_delta_phi = 0.5 * inv_delta_phi
+            div_phi[1:-1] = (flux_y[2:] - flux_y[:-2]) * inv_two_delta_phi
+            div_phi[0] = (flux_y[1] - flux_y[0]) * inv_delta_phi
+            div_phi[-1] = (flux_y[-1] - flux_y[-2]) * inv_delta_phi
+
+        denom = self._config.earth_radius_m * cos_lat
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tendency = -(div_lambda + div_phi) / denom
+
+        tendency = np.where(np.isfinite(tendency), tendency, 0.0)
+        tendency = np.where(np.abs(denom) > 0.0, tendency, 0.0)
         return tendency
+
+    def tendency(self, temperature: np.ndarray) -> np.ndarray:
+        """Return the geostrophic advection tendency (K/s) for the given field."""
+
+        if not self.enabled:
+            return np.zeros_like(temperature)
+
+        velocity_x, velocity_y = self.velocity_field(temperature)
+        return self._flux_form_tendency(temperature, velocity_x, velocity_y)
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
+    lats = np.linspace(-80.0, 80.0, 33)
+    lons = np.linspace(0.0, 360.0, 65, endpoint=False)
+    lon2d, lat2d = np.meshgrid(lons, lats)
+
+    base_temp = 288.0 - 40.0 * np.sin(np.deg2rad(lat2d)) ** 2
+    wave = 5.0 * np.cos(np.deg2rad(lon2d)) * np.cos(np.deg2rad(lat2d))
+    temperature = base_temp + wave
+
+    ocean_mask = lat2d < 0.0
+    config = GeostrophicAdvectionConfig()
+    operator = GeostrophicAdvectionOperator(
+        lon2d, lat2d, ocean_mask=ocean_mask, config=config
+    )
+
+    u, v = operator.velocity_field(temperature)
+    tendency = operator.tendency(temperature)
+    speed = np.hypot(u, v)
+
+    plt.figure(figsize=(10, 5))
+    quiver = plt.quiver(lon2d, lat2d, u, v, speed, scale=200.0, pivot="middle")
+    plt.xlabel("Longitude (°)")
+    plt.ylabel("Latitude (°)")
+    plt.title("Diagnostic geostrophic velocity field")
+    plt.colorbar(quiver, label="Speed (m s⁻¹)")
+    plt.contour(lon2d, lat2d, temperature, colors="k", linewidths=0.5)
+    plt.tight_layout()
+    plt.show()
