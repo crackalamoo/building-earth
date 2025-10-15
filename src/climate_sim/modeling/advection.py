@@ -187,23 +187,31 @@ class GeostrophicAdvectionOperator:
         self, temperature: np.ndarray, velocity_x: np.ndarray, velocity_y: np.ndarray
     ) -> np.ndarray:
         cos_lat = self._cos_lat
+        tendency = np.zeros_like(temperature)
 
-        flux_x = temperature * velocity_x * cos_lat
-        flux_y = temperature * velocity_y
-
-        div_lambda = np.zeros_like(temperature)
         if temperature.shape[1] > 1 and self._delta_lambda_rad is not None:
-            inv_two_delta_lambda = 0.5 / self._delta_lambda_rad
-            diff_east = np.roll(flux_x, -1, axis=1) - np.roll(flux_x, 1, axis=1)
-            div_lambda = diff_east * inv_two_delta_lambda
+            u_east = 0.5 * (velocity_x + np.roll(velocity_x, -1, axis=1))
+            temp_east = np.where(
+                u_east >= 0.0, temperature, np.roll(temperature, -1, axis=1)
+            )
+            flux_east = temp_east * u_east * cos_lat
+            flux_west = np.roll(flux_east, 1, axis=1)
+            div_lambda = (flux_east - flux_west) / self._delta_lambda_rad
+        else:
+            div_lambda = np.zeros_like(temperature)
 
-        div_phi = np.zeros_like(temperature)
         if temperature.shape[0] > 1 and self._delta_phi_rad is not None:
-            inv_delta_phi = 1.0 / self._delta_phi_rad
-            inv_two_delta_phi = 0.5 * inv_delta_phi
-            div_phi[1:-1] = (flux_y[2:] - flux_y[:-2]) * inv_two_delta_phi
-            div_phi[0] = (flux_y[1] - flux_y[0]) * inv_delta_phi
-            div_phi[-1] = (flux_y[-1] - flux_y[-2]) * inv_delta_phi
+            v_faces = np.zeros((temperature.shape[0] + 1, temperature.shape[1]), dtype=float)
+            v_faces[1:-1] = 0.5 * (velocity_y[:-1] + velocity_y[1:])
+
+            temp_faces = np.zeros_like(v_faces)
+            temp_faces[1:-1] = np.where(
+                v_faces[1:-1] >= 0.0, temperature[:-1], temperature[1:]
+            )
+            flux_phi = temp_faces * v_faces
+            div_phi = (flux_phi[1:] - flux_phi[:-1]) / self._delta_phi_rad
+        else:
+            div_phi = np.zeros_like(temperature)
 
         denom = self._config.earth_radius_m * cos_lat
         with np.errstate(divide="ignore", invalid="ignore"):
