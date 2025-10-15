@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, NamedTuple, Tuple
 
 import numpy as np
 from scipy import sparse
@@ -25,12 +25,12 @@ from climate_sim.utils.landmask import (
     compute_land_mask,
 )
 
-NEWTON_TOLERANCE = 1e-5  # K
+NEWTON_TOLERANCE = 1e-1  # K
 NEWTON_MAX_ITERS = 16
-NEWTON_DAMPING = 0.5
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
+ANDERSON_MAX_HISTORY = 5
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
@@ -40,6 +40,55 @@ class Linearisation:
     cross: np.ndarray | None = None
     surface_diffusion_matrix: sparse.csr_matrix | None = None
     atmosphere_diffusion_matrix: sparse.csr_matrix | None = None
+
+
+class _SymbolicFactorization(NamedTuple):
+    perm_r: np.ndarray
+    perm_c: np.ndarray
+    inv_perm_c: np.ndarray
+    shape: tuple[int, int]
+
+
+_SYMBOLIC_LU_CACHE: Dict[tuple[str, int], _SymbolicFactorization] = {}
+
+
+def _get_symbolic_factorization_key(matrix: sparse.spmatrix, *, system: str) -> tuple[str, int]:
+    rows, _ = matrix.shape
+    return system, rows
+
+
+def _solve_with_symbolic_cache(
+    matrix: sparse.csc_matrix,
+    rhs: np.ndarray,
+    *,
+    system: str,
+) -> np.ndarray:
+    """Solve a sparse linear system using cached symbolic LU permutations."""
+
+    if matrix.shape[0] != matrix.shape[1]:
+        raise ValueError("Jacobian must be square")
+
+    key = _get_symbolic_factorization_key(matrix, system=system)
+    cache_entry = _SYMBOLIC_LU_CACHE.get(key)
+
+    if cache_entry is None or cache_entry.shape != matrix.shape:
+        lu = splinalg.splu(matrix, permc_spec="COLAMD")
+        perm_r = lu.perm_r.copy()
+        perm_c = lu.perm_c.copy()
+        inv_perm_c = np.argsort(perm_c)
+        cache_entry = _SymbolicFactorization(perm_r, perm_c, inv_perm_c, matrix.shape)
+        _SYMBOLIC_LU_CACHE[key] = cache_entry
+        return lu.solve(rhs)
+
+    perm_r, perm_c, inv_perm_c, _ = cache_entry
+    permuted = matrix[perm_r, :][:, perm_c]
+    if not sparse.isspmatrix_csc(permuted):
+        permuted = permuted.tocsc()
+
+    lu = splinalg.splu(permuted, permc_spec="NATURAL")
+    rhs_perm = rhs[perm_r]
+    solution_perm = lu.solve(rhs_perm)
+    return solution_perm[inv_perm_c]
 
 
 RhsDerivative = Linearisation
@@ -97,8 +146,12 @@ def implicit_monthly_step(
             if diffusion_matrix is not None:
                 jacobian = jacobian - dt_seconds * diffusion_matrix
 
-            solve_linear = splinalg.factorized(jacobian)
-            correction_flat = solve_linear(residual_flat)
+            if not sparse.isspmatrix_csc(jacobian):
+                jacobian = jacobian.tocsc()
+
+            correction_flat = _solve_with_symbolic_cache(
+                jacobian, residual_flat, system="single-layer"
+            )
             correction = correction_flat.reshape(temp_capped.shape)
         else:
             if temp_capped.ndim < 1 or temp_capped.shape[0] != 2:
@@ -151,8 +204,9 @@ def implicit_monthly_step(
                 axis=0,
             )
 
-            solve_linear = splinalg.factorized(jacobian)
-            correction_flat = solve_linear(residual_flat)
+            correction_flat = _solve_with_symbolic_cache(
+                jacobian, residual_flat, system="layered"
+            )
             correction_surface = correction_flat[:size].reshape(surface_diag.shape)
             correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
             correction = np.stack([correction_surface, correction_atmosphere])
@@ -219,13 +273,16 @@ def find_periodic_temperature(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
 ) -> np.ndarray:
-    """Solve P(T) = T for the annual map using under-relaxed substitution."""
+    """Solve P(T) = T for the annual map using Anderson acceleration."""
 
     state = np.maximum(initial_temperature, temperature_floor)
-    damping = NEWTON_DAMPING
-    previous_residual = np.inf
+    state_history = [state.ravel().copy()]
+    delta_states: list[np.ndarray] = []
+    delta_residuals: list[np.ndarray] = []
+    previous_residual_flat: np.ndarray | None = None
+    max_residual = np.inf
 
-    for _iter in range(FIXED_POINT_MAX_ITERS):
+    for _ in range(FIXED_POINT_MAX_ITERS):
         advanced = apply_annual_map(
             state,
             monthly_insolation,
@@ -237,21 +294,47 @@ def find_periodic_temperature(
 
         residual = advanced - state
         max_residual = float(np.max(np.abs(residual)))
-
         if max_residual < NEWTON_TOLERANCE:
             return advanced
 
-        if max_residual > previous_residual:
-            damping = max(damping * 0.5, 0.1)
-        else:
-            damping = min(damping * 1.1, 0.8)
+        residual_flat = residual.ravel()
 
-        state = np.maximum(state + damping * residual, temperature_floor)
-        previous_residual = max_residual
+        if previous_residual_flat is not None and len(state_history) >= 2:
+            delta_residuals.append(residual_flat - previous_residual_flat)
+            delta_states.append(state_history[-1] - state_history[-2])
+            if len(delta_residuals) > ANDERSON_MAX_HISTORY:
+                delta_residuals.pop(0)
+                delta_states.pop(0)
+
+        if delta_residuals:
+            delta_residual_matrix = np.column_stack(delta_residuals)
+            try:
+                gamma, *_ = np.linalg.lstsq(delta_residual_matrix, residual_flat, rcond=None)
+            except np.linalg.LinAlgError:
+                gamma = None
+
+            if gamma is not None and np.all(np.isfinite(gamma)):
+                delta_state_matrix = np.column_stack(delta_states)
+                correction = delta_state_matrix @ gamma
+                next_flat = advanced.ravel() - correction
+                next_state = next_flat.reshape(state.shape)
+            else:
+                next_state = advanced
+        else:
+            next_state = advanced
+
+        previous_residual_flat = residual_flat
+        state = np.maximum(next_state, temperature_floor)
+        state_history.append(state.ravel().copy())
+        if len(state_history) > ANDERSON_MAX_HISTORY + 1:
+            state_history.pop(0)
+            if delta_states:
+                delta_states.pop(0)
+                delta_residuals.pop(0)
 
     raise RuntimeError(
         "Failed to converge to a periodic solution after "
-        f"{FIXED_POINT_MAX_ITERS} iterations (residual {previous_residual:.3e} K)"
+        f"{FIXED_POINT_MAX_ITERS} Anderson iterations (residual {max_residual:.3e} K)"
     )
 
 
