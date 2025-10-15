@@ -23,12 +23,15 @@ def _build_configs(
     enable_advection: bool,
     include_atmosphere: bool,
     use_geometry: bool,
+    ekman_friction: bool,
 ) -> Tuple[RadiationConfig, DiffusionConfig, GeostrophicAdvectionConfig]:
     radiation_cfg = RadiationConfig(include_atmosphere=include_atmosphere)
     diffusion_cfg = DiffusionConfig(
         enabled=enable_diffusion, use_spherical_geometry=use_geometry
     )
-    advection_cfg = GeostrophicAdvectionConfig(enabled=enable_advection)
+    advection_cfg = GeostrophicAdvectionConfig(
+        enabled=enable_advection, ekman_friction=ekman_friction
+    )
     return radiation_cfg, diffusion_cfg, advection_cfg
 
 
@@ -94,6 +97,19 @@ def main() -> None:
         help="Disable geostrophic atmospheric advection in the baseline case",
     )
     parser.add_argument(
+        "--base-ekman-friction",
+        dest="base_ekman",
+        action="store_true",
+        default=True,
+        help="Include Ekman friction in the baseline advection balance (default)",
+    )
+    parser.add_argument(
+        "--no-base-ekman-friction",
+        dest="base_ekman",
+        action="store_false",
+        help="Exclude Ekman friction from the baseline advection balance",
+    )
+    parser.add_argument(
         "--base-atmosphere",
         dest="base_atmosphere",
         action="store_true",
@@ -147,6 +163,19 @@ def main() -> None:
         help="Disable geostrophic atmospheric advection in the experiment case",
     )
     parser.add_argument(
+        "--exp-ekman-friction",
+        dest="experiment_ekman",
+        action="store_true",
+        default=True,
+        help="Include Ekman friction in the experiment advection balance (default)",
+    )
+    parser.add_argument(
+        "--no-exp-ekman-friction",
+        dest="experiment_ekman",
+        action="store_false",
+        help="Exclude Ekman friction from the experiment advection balance",
+    )
+    parser.add_argument(
         "--exp-atmosphere",
         dest="experiment_atmosphere",
         action="store_true",
@@ -193,12 +222,14 @@ def main() -> None:
         enable_advection=args.base_advection,
         include_atmosphere=args.base_atmosphere,
         use_geometry=args.base_geometry,
+        ekman_friction=args.base_ekman,
     )
     exp_rad, exp_diff, exp_adv = _build_configs(
         enable_diffusion=args.experiment_diffusion,
         enable_advection=args.experiment_advection,
         include_atmosphere=args.experiment_atmosphere,
         use_geometry=args.experiment_geometry,
+        ekman_friction=args.experiment_ekman,
     )
 
     base_snow = SnowAlbedoConfig(enabled=args.base_snow)
@@ -230,6 +261,7 @@ def main() -> None:
     base_summary = {
         "diffusion": args.base_diffusion,
         "advection": args.base_advection,
+        "ekman": args.base_ekman,
         "atmosphere": args.base_atmosphere,
         "geometry": args.base_geometry,
         "snow": args.base_snow,
@@ -237,6 +269,7 @@ def main() -> None:
     exp_summary = {
         "diffusion": args.experiment_diffusion,
         "advection": args.experiment_advection,
+        "ekman": args.experiment_ekman,
         "atmosphere": args.experiment_atmosphere,
         "geometry": args.experiment_geometry,
         "snow": args.experiment_snow,

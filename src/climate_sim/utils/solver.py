@@ -411,6 +411,7 @@ def compute_periodic_cycle_kelvin(
         advection_operator = GeostrophicAdvectionOperator(
             lon2d,
             lat2d,
+            ocean_mask=ocean_mask,
             config=advection_config,
         )
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY

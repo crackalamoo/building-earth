@@ -12,12 +12,16 @@ class GeostrophicAdvectionConfig:
     """Configuration for geostrophic advection tendencies."""
 
     enabled: bool = True
+    ekman_friction: bool = True
     earth_radius_m: float = 6.371e6
     earth_rotation_rate_rad_s: float = 7.2921e-5
     gravity_m_s2: float = 9.81
     troposphere_scale_height_m: float = 8000.0
     coriolis_floor_s: float = 1.0e-5
     minimum_temperature_K: float = 150.0
+    boundary_layer_depth_m: float = 1000.0
+    land_eddy_viscosity_m2_s: float = 1.0
+    ocean_eddy_viscosity_m2_s: float = 2.0
 
 
 class GeostrophicAdvectionOperator:
@@ -28,6 +32,7 @@ class GeostrophicAdvectionOperator:
         lon2d: np.ndarray,
         lat2d: np.ndarray,
         *,
+        ocean_mask: np.ndarray | None = None,
         config: GeostrophicAdvectionConfig,
     ) -> None:
         if lon2d.shape != lat2d.shape:
@@ -38,6 +43,13 @@ class GeostrophicAdvectionOperator:
         self._lon2d = np.asarray(lon2d, dtype=float)
         self._lat2d = np.asarray(lat2d, dtype=float)
         self._config = config
+
+        if ocean_mask is not None:
+            if ocean_mask.shape != self._lon2d.shape:
+                raise ValueError("Ocean mask must match the longitude/latitude grid shape")
+            self._ocean_mask = np.asarray(ocean_mask, dtype=bool)
+        else:
+            self._ocean_mask = np.ones_like(self._lon2d, dtype=bool)
 
         nlat, nlon = self._lon2d.shape
         if nlat < 1 or nlon < 1:
@@ -68,11 +80,37 @@ class GeostrophicAdvectionOperator:
         else:
             self._inv_two_delta_x = np.zeros_like(self._lon2d)
 
-        self._lat_sign = np.sign(self._lat2d)
         coriolis = 2.0 * config.earth_rotation_rate_rad_s * np.sin(
             np.deg2rad(self._lat2d)
         )
+        self._coriolis = coriolis
         self._abs_coriolis = np.abs(coriolis)
+
+        if config.ekman_friction:
+            boundary_layer_depth = float(config.boundary_layer_depth_m)
+            if boundary_layer_depth <= 0.0:
+                raise ValueError("Boundary-layer depth must be positive when using Ekman friction")
+
+            land_viscosity = float(config.land_eddy_viscosity_m2_s)
+            ocean_viscosity = float(config.ocean_eddy_viscosity_m2_s)
+            if land_viscosity < 0.0 or ocean_viscosity < 0.0:
+                raise ValueError("Eddy viscosities must be non-negative")
+
+            viscosity = np.where(
+                self._ocean_mask, ocean_viscosity, land_viscosity
+            )
+            tau = np.full_like(self._lon2d, np.inf, dtype=float)
+            valid = viscosity > 0.0
+            if np.any(valid):
+                denom = (np.pi**2) * viscosity[valid]
+                tau[valid] = (boundary_layer_depth**2) / denom
+            inverse_tau = np.zeros_like(self._lon2d, dtype=float)
+            finite = np.isfinite(tau) & (tau > 0.0)
+            inverse_tau[finite] = 1.0 / tau[finite]
+        else:
+            inverse_tau = np.zeros_like(self._lon2d, dtype=float)
+
+        self._inverse_tau = inverse_tau
 
     @property
     def enabled(self) -> bool:
@@ -105,40 +143,34 @@ class GeostrophicAdvectionOperator:
             return np.zeros_like(temperature)
 
         grad_x, grad_y = self._horizontal_gradient(temperature)
-        grad_mag = np.hypot(grad_x, grad_y)
-
         temp_safe = np.maximum(temperature, self._config.minimum_temperature_K)
         scale = self._config.gravity_m_s2 * self._config.troposphere_scale_height_m
-        abs_coriolis = np.maximum(self._abs_coriolis, self._config.coriolis_floor_s)
+        forcing_x = -scale * grad_x / temp_safe
+        forcing_y = -scale * grad_y / temp_safe
+        forcing_x = np.where(np.isfinite(forcing_x), forcing_x, 0.0)
+        forcing_y = np.where(np.isfinite(forcing_y), forcing_y, 0.0)
 
-        with np.errstate(divide="ignore", invalid="ignore"):
-            speed = scale * grad_mag / (abs_coriolis * temp_safe)
+        velocity_x = np.zeros_like(temperature)
+        velocity_y = np.zeros_like(temperature)
 
-        speed = np.where(np.isfinite(speed), speed, 0.0)
-        speed = np.where(grad_mag > 0.0, speed, 0.0)
-        speed = np.where(self._abs_coriolis >= self._config.coriolis_floor_s, speed, 0.0)
-
-        unit_x = np.zeros_like(grad_x)
-        unit_y = np.zeros_like(grad_y)
-        nonzero = grad_mag > 0.0
-        unit_x[nonzero] = grad_x[nonzero] / grad_mag[nonzero]
-        unit_y[nonzero] = grad_y[nonzero] / grad_mag[nonzero]
-
-        velocity_x = np.zeros_like(unit_x)
-        velocity_y = np.zeros_like(unit_y)
-
-        nh = self._lat_sign > 0.0
-        sh = self._lat_sign < 0.0
-
-        velocity_x[nh] = unit_y[nh]
-        velocity_y[nh] = -unit_x[nh]
-
-        velocity_x[sh] = -unit_y[sh]
-        velocity_y[sh] = unit_x[sh]
-
-        # Equator (lat == 0) retains zero velocity
-        velocity_x *= speed
-        velocity_y *= speed
+        abs_coriolis = self._abs_coriolis
+        valid = abs_coriolis >= self._config.coriolis_floor_s
+        if np.any(valid):
+            coriolis = self._coriolis[valid]
+            inverse_tau = self._inverse_tau[valid]
+            px = forcing_x[valid]
+            py = forcing_y[valid]
+            det = inverse_tau**2 + coriolis**2
+            nonzero = det > 0.0
+            if np.any(nonzero):
+                ux = np.zeros_like(px)
+                uy = np.zeros_like(py)
+                ux[nonzero] = (-px[nonzero] * inverse_tau[nonzero] - coriolis[nonzero] * py[nonzero]) / det[nonzero]
+                uy[nonzero] = (
+                    coriolis[nonzero] * px[nonzero] - py[nonzero] * inverse_tau[nonzero]
+                ) / det[nonzero]
+                velocity_x[valid] = ux
+                velocity_y[valid] = uy
 
         tendency = -(velocity_x * grad_x + velocity_y * grad_y)
         return tendency

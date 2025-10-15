@@ -65,6 +65,19 @@ def _parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable geostrophic atmospheric advection",
     )
+    parser.add_argument(
+        "--ekman-friction",
+        dest="ekman_friction",
+        action="store_true",
+        default=True,
+        help="Include Ekman friction in the advection balance (default)",
+    )
+    parser.add_argument(
+        "--no-ekman-friction",
+        dest="ekman_friction",
+        action="store_false",
+        help="Exclude Ekman friction from the advection balance",
+    )
 
     default_atmosphere = RadiationConfig().include_atmosphere
     parser.add_argument(
@@ -105,7 +118,9 @@ def main() -> None:
     diffusion_config = DiffusionConfig(
         enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
     )
-    advection_config = GeostrophicAdvectionConfig(enabled=args.advection)
+    advection_config = GeostrophicAdvectionConfig(
+        enabled=args.advection, ekman_friction=args.ekman_friction
+    )
     snow_config = SnowAlbedoConfig(enabled=args.snow)
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(
         resolution_deg=args.resolution,
