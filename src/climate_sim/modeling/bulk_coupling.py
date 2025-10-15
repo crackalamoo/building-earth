@@ -61,10 +61,8 @@ def compute_bulk_flux(
 
     U = np.where(ocean_mask, config.U_ocean, config.U_land)
     G = config.rho_air * config.c_p * config.C_H * U
-    layer_fraction = config.boundary_layer_fraction()
-    G_effective = layer_fraction * G
-    H = G_effective * (surface_K - atmosphere_K)
-    return G_effective, H
+    H = G * (surface_K - atmosphere_K)
+    return G, H
 
 
 def bulk_coupling_tendencies(
@@ -86,7 +84,14 @@ def bulk_coupling_tendencies(
         return zeros, zeros
 
     surface_tendency = (-H) / heat_capacity_field
-    atmosphere_tendency = (+H) / config.atmosphere_heat_capacity
+    Ca_eff = (
+        config.atmosphere_heat_capacity * config.boundary_layer_fraction()
+    )
+    if Ca_eff <= 0.0 or not np.isfinite(Ca_eff):
+        raise ValueError(
+            "Effective atmospheric heat capacity must be a positive finite value"
+        )
+    atmosphere_tendency = (+H) / Ca_eff
     return surface_tendency, atmosphere_tendency
 
 
@@ -107,10 +112,16 @@ def bulk_coupling_jacobian(
 
     U = np.where(ocean_mask, config.U_ocean, config.U_land)
     G = config.rho_air * config.c_p * config.C_H * U
-    layer_fraction = config.boundary_layer_fraction()
-    G *= layer_fraction
     C_s = heat_capacity_field
-    C_a = config.atmosphere_heat_capacity
+    C_a = (
+        config.atmosphere_heat_capacity * config.boundary_layer_fraction()
+    )
+    if np.any(~np.isfinite(C_s)):
+        raise ValueError("Surface heat capacity field must contain finite values")
+    if C_a <= 0.0 or not np.isfinite(C_a):
+        raise ValueError(
+            "Effective atmospheric heat capacity must be a positive finite value"
+        )
 
     surface_diag = (-G) / C_s
     atmosphere_diag = (-G) / C_a
