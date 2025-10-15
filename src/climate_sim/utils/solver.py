@@ -27,10 +27,11 @@ from climate_sim.utils.landmask import (
 
 NEWTON_TOLERANCE = 1e-1  # K
 NEWTON_MAX_ITERS = 16
+NEWTON_DAMPING = 0.5
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
-ANDERSON_MAX_HISTORY = 5
+ARCTIC_CIRCLE_LAT_DEG = 66.5622
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
@@ -276,15 +277,13 @@ def find_periodic_temperature(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
 ) -> np.ndarray:
-    """Solve P(T) = T for the annual map using Anderson acceleration."""
+    """Solve P(T) = T for the annual map using under-relaxed substitution."""
 
     state = np.maximum(initial_temperature, temperature_floor)
-    f_history: list[np.ndarray] = []
-    g_history: list[np.ndarray] = []
-    max_residual = np.inf
-    max_history = ANDERSON_MAX_HISTORY + 1
+    damping = NEWTON_DAMPING
+    previous_residual = np.inf
 
-    for _ in range(FIXED_POINT_MAX_ITERS):
+    for _iter in range(FIXED_POINT_MAX_ITERS):
         advanced = apply_annual_map(
             state,
             monthly_insolation,
@@ -296,52 +295,21 @@ def find_periodic_temperature(
 
         residual = advanced - state
         max_residual = float(np.max(np.abs(residual)))
+
         if max_residual < NEWTON_TOLERANCE:
             return advanced
 
-        residual_flat = residual.ravel().copy()
-        advanced_flat = advanced.ravel().copy()
-
-        f_history.append(residual_flat)
-        g_history.append(advanced_flat)
-        if len(f_history) > max_history:
-            f_history.pop(0)
-            g_history.pop(0)
-
-        m_k = min(ANDERSON_MAX_HISTORY, len(f_history) - 1)
-        if m_k <= 0:
-            next_state = advanced
+        if max_residual > previous_residual:
+            damping = max(damping * 0.5, 0.1)
         else:
-            cols = m_k + 1
-            f_matrix = np.column_stack(f_history[-cols:])
-            gram = f_matrix.T @ f_matrix
-            gram += 1e-12 * np.eye(cols)
-            ones = np.ones(cols)
-            lhs = np.empty((cols + 1, cols + 1), dtype=f_matrix.dtype)
-            lhs[:cols, :cols] = gram
-            lhs[:cols, -1] = ones
-            lhs[-1, :cols] = ones
-            lhs[-1, -1] = 0.0
-            rhs = np.zeros(cols + 1, dtype=f_matrix.dtype)
-            rhs[-1] = 1.0
+            damping = min(damping * 1.1, 0.8)
 
-            try:
-                solution = np.linalg.solve(lhs, rhs)
-                beta = solution[:-1]
-                if np.all(np.isfinite(beta)):
-                    g_matrix = np.column_stack(g_history[-cols:])
-                    next_flat = g_matrix @ beta
-                    next_state = next_flat.reshape(state.shape)
-                else:
-                    next_state = advanced
-            except np.linalg.LinAlgError:
-                next_state = advanced
-
-        state = np.maximum(next_state, temperature_floor)
+        state = np.maximum(state + damping * residual, temperature_floor)
+        previous_residual = max_residual
 
     raise RuntimeError(
         "Failed to converge to a periodic solution after "
-        f"{FIXED_POINT_MAX_ITERS} Anderson iterations (residual {max_residual:.3e} K)"
+        f"{FIXED_POINT_MAX_ITERS} iterations (residual {previous_residual:.3e} K)"
     )
 
 
@@ -404,6 +372,7 @@ def compute_periodic_cycle_kelvin(
         config=diffusion_config,
     )
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
+    arctic_land_mask = land_mask & (lat2d >= ARCTIC_CIRCLE_LAT_DEG)
 
     def solve_with_albedo(
         albedo_field: np.ndarray,
@@ -414,8 +383,14 @@ def compute_periodic_cycle_kelvin(
         )
 
         if initial_temperature is None:
+            guess_albedo = albedo_field
+            if snow_cfg.enabled:
+                guess_albedo = np.full_like(albedo_field, 0.25)
+                if np.any(arctic_land_mask):
+                    guess_albedo = guess_albedo.copy()
+                    guess_albedo[arctic_land_mask] = snow_cfg.snow_albedo
             guess = initial_guess_fn(
-                monthly_insolation, albedo_field, radiation_config
+                monthly_insolation, guess_albedo, radiation_config
             )
         else:
             guess = initial_temperature
