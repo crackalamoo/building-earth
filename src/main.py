@@ -37,6 +37,20 @@ def _parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable lateral diffusion",
     )
+    parser.add_argument(
+        "--diffusion-geometry",
+        dest="diffusion_geometry",
+        action="store_true",
+        default=True,
+        help="Use spherical geometry scalings in the diffusion operator (default)",
+    )
+    parser.add_argument(
+        "--no-diffusion-geometry",
+        dest="diffusion_geometry",
+        action="store_false",
+        help="Treat diffusion with uniform planar geometry",
+    )
+
     default_atmosphere = RadiationConfig().include_atmosphere
     parser.add_argument(
         "--atmosphere",
@@ -73,7 +87,9 @@ def main() -> None:
     args = _parse_args()
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
-    diffusion_config = DiffusionConfig(enabled=args.diffusion)
+    diffusion_config = DiffusionConfig(
+        enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
+    )
     snow_config = SnowAlbedoConfig(enabled=args.snow)
 
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(

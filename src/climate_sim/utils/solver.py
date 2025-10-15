@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, NamedTuple, Tuple
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 from scipy import sparse
@@ -27,11 +27,10 @@ from climate_sim.utils.landmask import (
 
 NEWTON_TOLERANCE = 1e-1  # K
 NEWTON_MAX_ITERS = 16
-NEWTON_DAMPING = 0.5
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
-ARCTIC_CIRCLE_LAT_DEG = 66.5622
+ARCTIC_CIRCLE_LATITUDE_DEG = 66.5
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
@@ -41,58 +40,6 @@ class Linearisation:
     cross: np.ndarray | None = None
     surface_diffusion_matrix: sparse.csr_matrix | None = None
     atmosphere_diffusion_matrix: sparse.csr_matrix | None = None
-
-
-class _SymbolicFactorization(NamedTuple):
-    perm_r: np.ndarray
-    perm_c: np.ndarray
-    inv_perm_c: np.ndarray
-    shape: tuple[int, int]
-
-
-_SYMBOLIC_LU_CACHE: Dict[tuple[str, int], _SymbolicFactorization] = {}
-
-
-def _get_symbolic_factorization_key(matrix: sparse.spmatrix, *, system: str) -> tuple[str, int]:
-    rows, _ = matrix.shape
-    return system, rows
-
-
-def _solve_with_symbolic_cache(
-    matrix: sparse.csc_matrix,
-    rhs: np.ndarray,
-    *,
-    system: str,
-) -> np.ndarray:
-    """Solve a sparse linear system using cached symbolic LU permutations."""
-
-    if matrix.shape[0] != matrix.shape[1]:
-        raise ValueError("Jacobian must be square")
-
-    key = _get_symbolic_factorization_key(matrix, system=system)
-    cache_entry = _SYMBOLIC_LU_CACHE.get(key)
-
-    if not sparse.isspmatrix_csc(matrix):
-        matrix = matrix.tocsc()
-
-    if cache_entry is None or cache_entry.shape != matrix.shape:
-        lu = splinalg.splu(matrix, permc_spec="COLAMD")
-        perm_r = lu.perm_r.copy()
-        perm_c = lu.perm_c.copy()
-        inv_perm_c = np.argsort(perm_c)
-        cache_entry = _SymbolicFactorization(perm_r, perm_c, inv_perm_c, matrix.shape)
-        _SYMBOLIC_LU_CACHE[key] = cache_entry
-        return lu.solve(rhs)
-
-    perm_r, perm_c, inv_perm_c, _ = cache_entry
-    permuted = matrix[perm_r, :][:, perm_c]
-    if not sparse.isspmatrix_csc(permuted):
-        permuted = permuted.tocsc()
-
-    lu = splinalg.splu(permuted, permc_spec="NATURAL")
-    rhs_perm = rhs[perm_r]
-    solution_perm = lu.solve(rhs_perm)
-    return solution_perm[inv_perm_c]
 
 
 RhsDerivative = Linearisation
@@ -150,12 +97,8 @@ def implicit_monthly_step(
             if diffusion_matrix is not None:
                 jacobian = jacobian - dt_seconds * diffusion_matrix
 
-            if not sparse.isspmatrix_csc(jacobian):
-                jacobian = jacobian.tocsc()
-
-            correction_flat = _solve_with_symbolic_cache(
-                jacobian, residual_flat, system="single-layer"
-            )
+            solve_linear = splinalg.factorized(jacobian)
+            correction_flat = solve_linear(residual_flat)
             correction = correction_flat.reshape(temp_capped.shape)
         else:
             if temp_capped.ndim < 1 or temp_capped.shape[0] != 2:
@@ -208,9 +151,8 @@ def implicit_monthly_step(
                 axis=0,
             )
 
-            correction_flat = _solve_with_symbolic_cache(
-                jacobian, residual_flat, system="layered"
-            )
+            solve_linear = splinalg.factorized(jacobian)
+            correction_flat = solve_linear(residual_flat)
             correction_surface = correction_flat[:size].reshape(surface_diag.shape)
             correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
             correction = np.stack([correction_surface, correction_atmosphere])
@@ -268,6 +210,42 @@ def apply_annual_map(
     return state
 
 
+def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | None:
+    """Return coefficients that minimise the combined residual subject to sum(alpha)=1."""
+
+    m = len(residuals)
+    if m == 0:
+        return None
+
+    residual_matrix = np.column_stack(residuals)
+    gram = residual_matrix.T @ residual_matrix
+    scale = np.linalg.norm(gram, ord=np.inf)
+    if not np.isfinite(scale):
+        scale = 1.0
+    regularisation = 1e-12 * scale + 1e-14
+    gram = gram + regularisation * np.eye(m)
+
+    ones = np.ones(m)
+    augmented = np.empty((m + 1, m + 1), dtype=float)
+    augmented[:m, :m] = gram
+    augmented[:m, m] = ones
+    augmented[m, :m] = ones
+    augmented[m, m] = 0.0
+
+    rhs = np.zeros(m + 1, dtype=float)
+    rhs[-1] = 1.0
+
+    try:
+        solution = np.linalg.solve(augmented, rhs)
+    except np.linalg.LinAlgError:
+        return None
+
+    alpha = solution[:m]
+    if not np.all(np.isfinite(alpha)):
+        return None
+    return alpha
+
+
 def find_periodic_temperature(
     initial_temperature: np.ndarray,
     monthly_insolation: np.ndarray,
@@ -277,13 +255,14 @@ def find_periodic_temperature(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
 ) -> np.ndarray:
-    """Solve P(T) = T for the annual map using under-relaxed substitution."""
+    """Solve P(T) = T for the annual map using Anderson acceleration."""
 
     state = np.maximum(initial_temperature, temperature_floor)
-    damping = NEWTON_DAMPING
-    previous_residual = np.inf
+    residual_history: list[np.ndarray] = []
+    advanced_history: list[np.ndarray] = []
+    history_limit = 5
 
-    for _iter in range(FIXED_POINT_MAX_ITERS):
+    for _ in range(FIXED_POINT_MAX_ITERS):
         advanced = apply_annual_map(
             state,
             monthly_insolation,
@@ -299,17 +278,46 @@ def find_periodic_temperature(
         if max_residual < NEWTON_TOLERANCE:
             return advanced
 
-        if max_residual > previous_residual:
-            damping = max(damping * 0.5, 0.1)
-        else:
-            damping = min(damping * 1.1, 0.8)
+        residual_flat = residual.ravel()
+        advanced_flat = advanced.ravel()
 
-        state = np.maximum(state + damping * residual, temperature_floor)
-        previous_residual = max_residual
+        if len(residual_history) == history_limit:
+            residual_history.pop(0)
+            advanced_history.pop(0)
+
+        residual_history.append(residual_flat)
+        advanced_history.append(advanced_flat)
+
+        coefficients = None
+        if len(residual_history) > 1:
+            coefficients = _solve_anderson_coefficients(residual_history)
+            if coefficients is not None:
+                coeff_sum = float(np.sum(coefficients))
+                if not np.isfinite(coeff_sum) or abs(coeff_sum) < 1e-12:
+                    coefficients = None
+                else:
+                    coefficients = coefficients / coeff_sum
+
+        if coefficients is None:
+            state_next = advanced
+            residual_history = residual_history[-1:]
+            advanced_history = advanced_history[-1:]
+        else:
+            combined = np.zeros_like(advanced_flat)
+            for weight, advanced_state in zip(coefficients, advanced_history, strict=True):
+                combined += weight * advanced_state
+            state_next = combined.reshape(state.shape)
+
+            if not np.all(np.isfinite(state_next)):
+                state_next = advanced
+                residual_history = residual_history[-1:]
+                advanced_history = advanced_history[-1:]
+
+        state = np.maximum(state_next, temperature_floor)
 
     raise RuntimeError(
         "Failed to converge to a periodic solution after "
-        f"{FIXED_POINT_MAX_ITERS} iterations (residual {previous_residual:.3e} K)"
+        f"{FIXED_POINT_MAX_ITERS} iterations (last residual {max_residual:.3e} K)"
     )
 
 
@@ -363,6 +371,13 @@ def compute_periodic_cycle_kelvin(
         albedo_kwargs = {"land_albedo": 0.25, "ocean_albedo": 0.25}
     base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
     land_mask = compute_land_mask(lon2d, lat2d)
+
+    if snow_cfg.enabled:
+        arctic_land = (lat2d >= ARCTIC_CIRCLE_LATITUDE_DEG) & land_mask
+        if np.any(arctic_land):
+            base_albedo_field = np.where(
+                arctic_land, snow_cfg.snow_albedo, base_albedo_field
+            )
     diffusion_operator = create_diffusion_operator(
         lon2d,
         lat2d,
@@ -372,7 +387,6 @@ def compute_periodic_cycle_kelvin(
         config=diffusion_config,
     )
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
-    arctic_land_mask = land_mask & (lat2d >= ARCTIC_CIRCLE_LAT_DEG)
 
     def solve_with_albedo(
         albedo_field: np.ndarray,
@@ -383,14 +397,8 @@ def compute_periodic_cycle_kelvin(
         )
 
         if initial_temperature is None:
-            guess_albedo = albedo_field
-            if snow_cfg.enabled:
-                guess_albedo = np.full_like(albedo_field, 0.25)
-                if np.any(arctic_land_mask):
-                    guess_albedo = guess_albedo.copy()
-                    guess_albedo[arctic_land_mask] = snow_cfg.snow_albedo
             guess = initial_guess_fn(
-                monthly_insolation, guess_albedo, radiation_config
+                monthly_insolation, albedo_field, radiation_config
             )
         else:
             guess = initial_temperature
