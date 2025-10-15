@@ -2,6 +2,7 @@ import argparse
 
 import numpy as np
 
+from climate_sim.modeling.advection import GeostrophicAdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
@@ -51,6 +52,20 @@ def _parse_args() -> argparse.Namespace:
         help="Treat diffusion with uniform planar geometry",
     )
 
+    parser.add_argument(
+        "--advection",
+        dest="advection",
+        action="store_true",
+        default=True,
+        help="Enable geostrophic atmospheric advection (default)",
+    )
+    parser.add_argument(
+        "--no-advection",
+        dest="advection",
+        action="store_false",
+        help="Disable geostrophic atmospheric advection",
+    )
+
     default_atmosphere = RadiationConfig().include_atmosphere
     parser.add_argument(
         "--atmosphere",
@@ -90,12 +105,14 @@ def main() -> None:
     diffusion_config = DiffusionConfig(
         enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
     )
+    advection_config = GeostrophicAdvectionConfig(enabled=args.advection)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         radiation_config=radiation_config,
         diffusion_config=diffusion_config,
+        advection_config=advection_config,
         snow_config=snow_config,
         return_layer_map=True,
     )
