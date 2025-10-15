@@ -13,10 +13,87 @@ class RadiationConfig:
 
     stefan_boltzmann: float = 5.670374419e-8  # W m-2 K-4
     emissivity_surface: float = 1.0
-    emissivity_atmosphere: float = 0.77
     include_atmosphere: bool = True
     atmosphere_heat_capacity: float = 1.0e7  # J m-2 K-1, ~2-3 km troposphere column
     temperature_floor: float = 10.0  # K
+    relative_humidity: float = 0.7
+    water_vapor_absorption_coefficient: float = 120.0
+    reference_surface_pressure: float = 101325.0  # Pa
+
+
+_WATER_VAPOR_TO_DRY_AIR_MASS_RATIO = 0.622
+_LATENT_HEAT_VAPORIZATION = 2.5e6  # J kg-1
+_VAPOR_GAS_CONSTANT = 461.5  # J kg-1 K-1
+_TRIPLE_POINT_TEMPERATURE = 273.16  # K
+_TRIPLE_POINT_SATURATION_PRESSURE = 611.2  # Pa
+
+
+def _saturation_vapor_pressure(temperature_K: np.ndarray) -> np.ndarray:
+    """Saturation vapor pressure following the Clausius-Clapeyron relation."""
+
+    temperature = np.asarray(temperature_K)
+    exponent = (
+        _LATENT_HEAT_VAPORIZATION
+        / _VAPOR_GAS_CONSTANT
+        * (1.0 / _TRIPLE_POINT_TEMPERATURE - 1.0 / temperature)
+    )
+    return _TRIPLE_POINT_SATURATION_PRESSURE * np.exp(exponent)
+
+
+def _saturation_specific_humidity(
+    temperature_K: np.ndarray, pressure_Pa: float
+) -> np.ndarray:
+    """Saturation specific humidity for moist air at the given pressure."""
+
+    e_s = _saturation_vapor_pressure(temperature_K)
+    epsilon = _WATER_VAPOR_TO_DRY_AIR_MASS_RATIO
+    denominator = np.maximum(pressure_Pa - (1.0 - epsilon) * e_s, 1e-6)
+    return epsilon * e_s / denominator
+
+
+def _saturation_specific_humidity_derivative(
+    temperature_K: np.ndarray, pressure_Pa: float
+) -> np.ndarray:
+    """Temperature derivative of the saturation specific humidity."""
+
+    temperature = np.asarray(temperature_K)
+    e_s = _saturation_vapor_pressure(temperature)
+    de_s_dT = (
+        e_s
+        * _LATENT_HEAT_VAPORIZATION
+        / _VAPOR_GAS_CONSTANT
+        / np.power(temperature, 2)
+    )
+
+    epsilon = _WATER_VAPOR_TO_DRY_AIR_MASS_RATIO
+    denominator = np.maximum(pressure_Pa - (1.0 - epsilon) * e_s, 1e-6)
+    numerator = epsilon * e_s
+
+    dnumerator_dT = epsilon * de_s_dT
+    ddenominator_dT = -(1.0 - epsilon) * de_s_dT
+
+    return (dnumerator_dT * denominator - numerator * ddenominator_dT) / np.power(
+        denominator, 2
+    )
+
+
+def _clear_sky_emissivity(
+    temperature_K: np.ndarray, config: RadiationConfig
+) -> tuple[np.ndarray, np.ndarray]:
+    """Clear-sky atmospheric emissivity and its temperature derivative."""
+
+    rh = config.relative_humidity
+    kappa = config.water_vapor_absorption_coefficient
+    pressure = config.reference_surface_pressure
+
+    q_sat = _saturation_specific_humidity(temperature_K, pressure)
+    dq_dT = _saturation_specific_humidity_derivative(temperature_K, pressure)
+
+    optical_depth = kappa * rh * q_sat
+    emissivity = 1.0 - np.exp(-optical_depth)
+    d_emissivity_dT = np.exp(-optical_depth) * kappa * rh * dq_dT
+
+    return emissivity, d_emissivity_dT
 
 
 def _with_floor(values: np.ndarray, floor: float) -> np.ndarray:
@@ -46,7 +123,7 @@ def radiative_balance_rhs(
 
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
-    eps_atm = config.emissivity_atmosphere
+    eps_atm, _ = _clear_sky_emissivity(atmosphere, config)
 
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
     emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
@@ -85,23 +162,28 @@ def radiative_balance_rhs_temperature_derivative(
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
 
+    eps_atm, deps_dT = _clear_sky_emissivity(atmosphere, config)
+
     surface_diag = (
         -4.0 * config.emissivity_surface * sigma * np.power(surface, 3)
     ) / heat_capacity_field
     atmosphere_diag = (
-        -8.0 * config.emissivity_atmosphere * sigma * np.power(atmosphere, 3)
-    ) / config.atmosphere_heat_capacity
+        sigma
+        * (
+            deps_dT * np.power(surface, 4)
+            - 2.0 * (deps_dT * np.power(atmosphere, 4) + 4.0 * eps_atm * np.power(atmosphere, 3))
+        )
+        / config.atmosphere_heat_capacity
+    )
 
     surface_coupling = (
-        4.0
-        * config.emissivity_atmosphere
-        * sigma
-        * np.power(atmosphere, 3)
+        sigma
+        * (4.0 * eps_atm * np.power(atmosphere, 3) + deps_dT * np.power(atmosphere, 4))
         / heat_capacity_field
     )
     atmosphere_coupling = (
         4.0
-        * config.emissivity_atmosphere
+        * eps_atm
         * config.emissivity_surface
         * sigma
         * np.power(surface, 3)
@@ -131,10 +213,12 @@ def radiative_equilibrium_initial_guess(
         surface = np.power(absorbed / (config.emissivity_surface * sigma), 0.25)
         return np.maximum(surface, config.temperature_floor)
 
-    epsilon_atm = config.emissivity_atmosphere
-    denom = np.maximum(2.0 - epsilon_atm, 1e-6)
-    atmosphere = np.power(absorbed / (denom * sigma), 0.25)
-    surface = np.power(2.0 * absorbed / (denom * sigma), 0.25)
+    atmosphere = np.power(absorbed / sigma, 0.25)
+    for _ in range(4):
+        epsilon_atm, _ = _clear_sky_emissivity(atmosphere, config)
+        denom = np.maximum(1.0 - 0.5 * epsilon_atm, 1e-6)
+        surface = np.power(absorbed / (denom * sigma), 0.25)
+        atmosphere = np.power(0.5, 0.25) * surface
 
     stacked = np.stack([surface, atmosphere])
     return _with_floor(stacked, config.temperature_floor)
