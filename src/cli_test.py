@@ -83,19 +83,6 @@ def _parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable snow-albedo adjustments",
     )
-    parser.add_argument(
-        "--bulk-coupling",
-        dest="bulk_coupling",
-        action="store_true",
-        default=True,
-        help="Enable atmosphere-ocean bulk coupling (default)",
-    )
-    parser.add_argument(
-        "--no-bulk-coupling",
-        dest="bulk_coupling",
-        action="store_false",
-        help="Disable atmosphere-ocean bulk coupling",
-    )
     return parser.parse_args()
 
 
@@ -138,7 +125,6 @@ def _summarize_location(
 def main() -> None:
     args = _parse_args()
 
-    from climate_sim.modeling.bulk_coupling import BulkCouplingConfig
     from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
@@ -149,16 +135,11 @@ def main() -> None:
         enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
     )
     snow_config = SnowAlbedoConfig(enabled=args.snow)
-    bulk_config = BulkCouplingConfig(
-        enabled=args.bulk_coupling,
-        atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
-    )
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         radiation_config=radiation_config,
         diffusion_config=diffusion_config,
-        bulk_coupling_config=bulk_config,
         snow_config=snow_config,
         return_layer_map=True,
     )

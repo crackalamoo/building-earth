@@ -9,7 +9,6 @@ import cmocean
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
 
-from climate_sim.modeling.bulk_coupling import BulkCouplingConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
@@ -22,17 +21,12 @@ def _build_configs(
     enable_diffusion: bool,
     include_atmosphere: bool,
     use_geometry: bool,
-    enable_bulk: bool,
-) -> Tuple[RadiationConfig, DiffusionConfig, BulkCouplingConfig]:
+) -> Tuple[RadiationConfig, DiffusionConfig]:
     radiation_cfg = RadiationConfig(include_atmosphere=include_atmosphere)
     diffusion_cfg = DiffusionConfig(
         enabled=enable_diffusion, use_spherical_geometry=use_geometry
     )
-    bulk_cfg = BulkCouplingConfig(
-        enabled=enable_bulk,
-        atmosphere_heat_capacity=radiation_cfg.atmosphere_heat_capacity,
-    )
-    return radiation_cfg, diffusion_cfg, bulk_cfg
+    return radiation_cfg, diffusion_cfg
 
 
 def _summarize(flags: Dict[str, bool]) -> str:
@@ -97,19 +91,6 @@ def main() -> None:
         help="Exclude the atmospheric layer in the baseline case",
     )
     parser.add_argument(
-        "--base-bulk-coupling",
-        dest="base_bulk",
-        action="store_true",
-        default=True,
-        help="Enable atmosphere-ocean bulk coupling in the baseline case (default)",
-    )
-    parser.add_argument(
-        "--no-base-bulk-coupling",
-        dest="base_bulk",
-        action="store_false",
-        help="Disable atmosphere-ocean bulk coupling in the baseline case",
-    )
-    parser.add_argument(
         "--base-diffusion-geometry",
         dest="base_geometry",
         action="store_true",
@@ -150,19 +131,6 @@ def main() -> None:
         help="Exclude the atmospheric layer in the experiment case",
     )
     parser.add_argument(
-        "--exp-bulk-coupling",
-        dest="experiment_bulk",
-        action="store_true",
-        default=True,
-        help="Enable atmosphere-ocean bulk coupling in the experiment case (default)",
-    )
-    parser.add_argument(
-        "--no-exp-bulk-coupling",
-        dest="experiment_bulk",
-        action="store_false",
-        help="Disable atmosphere-ocean bulk coupling in the experiment case",
-    )
-    parser.add_argument(
         "--exp-diffusion-geometry",
         dest="experiment_geometry",
         action="store_true",
@@ -191,17 +159,15 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    base_rad, base_diff, base_bulk = _build_configs(
+    base_rad, base_diff = _build_configs(
         enable_diffusion=args.base_diffusion,
         include_atmosphere=args.base_atmosphere,
         use_geometry=args.base_geometry,
-        enable_bulk=args.base_bulk,
     )
-    exp_rad, exp_diff, exp_bulk = _build_configs(
+    exp_rad, exp_diff = _build_configs(
         enable_diffusion=args.experiment_diffusion,
         include_atmosphere=args.experiment_atmosphere,
         use_geometry=args.experiment_geometry,
-        enable_bulk=args.experiment_bulk,
     )
 
     base_snow = SnowAlbedoConfig(enabled=args.base_snow)
@@ -212,7 +178,6 @@ def main() -> None:
         solar_constant=args.solar_constant,
         radiation_config=base_rad,
         diffusion_config=base_diff,
-        bulk_coupling_config=base_bulk,
         snow_config=base_snow,
         return_layer_map=True,
     )
@@ -221,7 +186,6 @@ def main() -> None:
         solar_constant=args.solar_constant,
         radiation_config=exp_rad,
         diffusion_config=exp_diff,
-        bulk_coupling_config=exp_bulk,
         snow_config=exp_snow,
         return_layer_map=True,
     )
@@ -235,14 +199,12 @@ def main() -> None:
         "atmosphere": args.base_atmosphere,
         "geometry": args.base_geometry,
         "snow": args.base_snow,
-        "bulk": args.base_bulk,
     }
     exp_summary = {
         "diffusion": args.experiment_diffusion,
         "atmosphere": args.experiment_atmosphere,
         "geometry": args.experiment_geometry,
         "snow": args.experiment_snow,
-        "bulk": args.experiment_bulk,
     }
 
     print("Baseline configuration:", _summarize(base_summary))

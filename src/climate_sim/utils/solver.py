@@ -10,11 +10,6 @@ from scipy import sparse
 from scipy.sparse import linalg as splinalg
 
 import climate_sim.modeling.radiation as radiation
-from climate_sim.modeling.bulk_coupling import (
-    BulkCouplingConfig,
-    bulk_coupling_jacobian,
-    bulk_coupling_tendencies,
-)
 from climate_sim.modeling.diffusion import (
     DiffusionConfig,
     LayeredDiffusionOperator,
@@ -55,7 +50,6 @@ RhsFactory = Callable[
         np.ndarray,
         LayeredDiffusionOperator,
         RadiationConfig,
-        BulkCouplingConfig,
         np.ndarray,
     ],
     Tuple[RhsFunc, RhsDerivativeFunc],
@@ -371,7 +365,6 @@ def compute_periodic_cycle_kelvin(
     initial_guess_fn: InitialGuessFunc,
     radiation_config: RadiationConfig,
     diffusion_config: DiffusionConfig,
-    bulk_coupling_config: BulkCouplingConfig,
     snow_config: SnowAlbedoConfig | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Solve for the periodic temperature cycle and return results in Kelvin with the converged albedo field."""
@@ -414,7 +407,6 @@ def compute_periodic_cycle_kelvin(
             albedo_field,
             diffusion_operator,
             radiation_config,
-            bulk_coupling_config,
             ocean_mask,
         )
 
@@ -487,7 +479,6 @@ def compute_periodic_cycle_celsius(
     land_heat_capacity: float = None,
     radiation_config: RadiationConfig | None = None,
     diffusion_config: DiffusionConfig | None = None,
-    bulk_coupling_config: BulkCouplingConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     return_layer_map: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
@@ -506,19 +497,6 @@ def compute_periodic_cycle_celsius(
 
     resolved_radiation = radiation_config or RadiationConfig()
     resolved_diffusion = diffusion_config or DiffusionConfig()
-    resolved_bulk = bulk_coupling_config or BulkCouplingConfig(
-        atmosphere_heat_capacity=resolved_radiation.atmosphere_heat_capacity
-    )
-    if resolved_bulk.atmosphere_heat_capacity != resolved_radiation.atmosphere_heat_capacity:
-        resolved_bulk = BulkCouplingConfig(
-            enabled=resolved_bulk.enabled,
-            rho_air=resolved_bulk.rho_air,
-            c_p=resolved_bulk.c_p,
-            C_H=resolved_bulk.C_H,
-            U_ocean=resolved_bulk.U_ocean,
-            U_land=resolved_bulk.U_land,
-            atmosphere_heat_capacity=resolved_radiation.atmosphere_heat_capacity,
-        )
     resolved_snow = snow_config or SnowAlbedoConfig()
 
     def rhs_factory(
@@ -526,7 +504,6 @@ def compute_periodic_cycle_celsius(
         albedo_field: np.ndarray,
         diffusion_operator: LayeredDiffusionOperator,
         config: RadiationConfig,
-        bulk_config: BulkCouplingConfig,
         ocean_mask: np.ndarray,
     ):
         surface_matrix = None
@@ -557,16 +534,6 @@ def compute_periodic_cycle_celsius(
                     radiative[0] += diffusion_operator.surface.tendency(temperature[0])
                 if diffusion_operator.atmosphere.enabled:
                     radiative[1] += diffusion_operator.atmosphere.tendency(temperature[1])
-                if bulk_config.enabled:
-                    surface_bulk, atmosphere_bulk = bulk_coupling_tendencies(
-                        temperature[0],
-                        temperature[1],
-                        heat_capacity_field,
-                        ocean_mask,
-                        config=bulk_config,
-                    )
-                    radiative[0] += surface_bulk
-                    radiative[1] += atmosphere_bulk
                 return radiative
             if diffusion_operator.surface.enabled:
                 return radiative + diffusion_operator.surface.tendency(temperature)
@@ -581,17 +548,6 @@ def compute_periodic_cycle_celsius(
             )
             if config.include_atmosphere:
                 diag, cross = radiative_derivative
-                if bulk_config.enabled:
-                    surface_diag, atmosphere_diag, coupling_cross = bulk_coupling_jacobian(
-                        heat_capacity_field,
-                        ocean_mask,
-                        config=bulk_config,
-                    )
-                    diag = diag.copy()
-                    diag[0] += surface_diag
-                    diag[1] += atmosphere_diag
-                    cross = cross.copy()
-                    cross += coupling_cross
                 return Linearisation(
                     diag=diag,
                     cross=cross,
@@ -624,7 +580,6 @@ def compute_periodic_cycle_celsius(
         initial_guess_fn=initial_guess_fn,
         radiation_config=resolved_radiation,
         diffusion_config=resolved_diffusion,
-        bulk_coupling_config=resolved_bulk,
         snow_config=resolved_snow,
     )
 
