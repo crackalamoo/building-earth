@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
     from climate_sim.utils.solver import compute_periodic_cycle_celsius
@@ -25,6 +26,47 @@ class Location:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Summarise the model climate at a few reference locations.",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=float,
+        default=1.0,
+        help="Grid resolution in degrees",
+    )
+    parser.add_argument(
+        "--solar-constant",
+        type=float,
+        default=None,
+        help="Override the solar constant (W m^-2)",
+    )
+    parser.add_argument(
+        "--diffusion",
+        dest="diffusion",
+        action="store_true",
+        default=True,
+        help="Enable lateral diffusion (default)",
+    )
+    parser.add_argument(
+        "--no-diffusion",
+        dest="diffusion",
+        action="store_false",
+        help="Disable lateral diffusion",
+    )
+    from climate_sim.modeling.radiation import RadiationConfig as _RadiationConfig
+
+    default_atmosphere = _RadiationConfig().include_atmosphere
+    parser.add_argument(
+        "--atmosphere",
+        dest="atmosphere",
+        action="store_true",
+        default=default_atmosphere,
+        help="Include an explicit atmospheric layer",
+    )
+    parser.add_argument(
+        "--no-atmosphere",
+        dest="atmosphere",
+        action="store_false",
+        help="Exclude the atmospheric layer",
     )
     parser.add_argument(
         "--snow",
@@ -83,14 +125,19 @@ def _summarise_location(
 def main() -> None:
     args = _parse_args()
 
+    from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
     from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
-    config = RadiationConfig(include_atmosphere=True)
+    radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
+    diffusion_config = DiffusionConfig(enabled=args.diffusion)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(
-        radiation_config=config,
+        resolution_deg=args.resolution,
+        solar_constant=args.solar_constant,
+        radiation_config=radiation_config,
+        diffusion_config=diffusion_config,
         snow_config=snow_config,
         return_layer_map=True,
     )
