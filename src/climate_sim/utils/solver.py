@@ -71,6 +71,9 @@ def _solve_with_symbolic_cache(
     key = _get_symbolic_factorization_key(matrix, system=system)
     cache_entry = _SYMBOLIC_LU_CACHE.get(key)
 
+    if not sparse.isspmatrix_csc(matrix):
+        matrix = matrix.tocsc()
+
     if cache_entry is None or cache_entry.shape != matrix.shape:
         lu = splinalg.splu(matrix, permc_spec="COLAMD")
         perm_r = lu.perm_r.copy()
@@ -276,11 +279,10 @@ def find_periodic_temperature(
     """Solve P(T) = T for the annual map using Anderson acceleration."""
 
     state = np.maximum(initial_temperature, temperature_floor)
-    state_history = [state.ravel().copy()]
-    delta_states: list[np.ndarray] = []
-    delta_residuals: list[np.ndarray] = []
-    previous_residual_flat: np.ndarray | None = None
+    f_history: list[np.ndarray] = []
+    g_history: list[np.ndarray] = []
     max_residual = np.inf
+    max_history = ANDERSON_MAX_HISTORY + 1
 
     for _ in range(FIXED_POINT_MAX_ITERS):
         advanced = apply_annual_map(
@@ -297,40 +299,45 @@ def find_periodic_temperature(
         if max_residual < NEWTON_TOLERANCE:
             return advanced
 
-        residual_flat = residual.ravel()
+        residual_flat = residual.ravel().copy()
+        advanced_flat = advanced.ravel().copy()
 
-        if previous_residual_flat is not None and len(state_history) >= 2:
-            delta_residuals.append(residual_flat - previous_residual_flat)
-            delta_states.append(state_history[-1] - state_history[-2])
-            if len(delta_residuals) > ANDERSON_MAX_HISTORY:
-                delta_residuals.pop(0)
-                delta_states.pop(0)
+        f_history.append(residual_flat)
+        g_history.append(advanced_flat)
+        if len(f_history) > max_history:
+            f_history.pop(0)
+            g_history.pop(0)
 
-        if delta_residuals:
-            delta_residual_matrix = np.column_stack(delta_residuals)
-            try:
-                gamma, *_ = np.linalg.lstsq(delta_residual_matrix, residual_flat, rcond=None)
-            except np.linalg.LinAlgError:
-                gamma = None
-
-            if gamma is not None and np.all(np.isfinite(gamma)):
-                delta_state_matrix = np.column_stack(delta_states)
-                correction = delta_state_matrix @ gamma
-                next_flat = advanced.ravel() - correction
-                next_state = next_flat.reshape(state.shape)
-            else:
-                next_state = advanced
-        else:
+        m_k = min(ANDERSON_MAX_HISTORY, len(f_history) - 1)
+        if m_k <= 0:
             next_state = advanced
+        else:
+            cols = m_k + 1
+            f_matrix = np.column_stack(f_history[-cols:])
+            gram = f_matrix.T @ f_matrix
+            gram += 1e-12 * np.eye(cols)
+            ones = np.ones(cols)
+            lhs = np.empty((cols + 1, cols + 1), dtype=f_matrix.dtype)
+            lhs[:cols, :cols] = gram
+            lhs[:cols, -1] = ones
+            lhs[-1, :cols] = ones
+            lhs[-1, -1] = 0.0
+            rhs = np.zeros(cols + 1, dtype=f_matrix.dtype)
+            rhs[-1] = 1.0
 
-        previous_residual_flat = residual_flat
+            try:
+                solution = np.linalg.solve(lhs, rhs)
+                beta = solution[:-1]
+                if np.all(np.isfinite(beta)):
+                    g_matrix = np.column_stack(g_history[-cols:])
+                    next_flat = g_matrix @ beta
+                    next_state = next_flat.reshape(state.shape)
+                else:
+                    next_state = advanced
+            except np.linalg.LinAlgError:
+                next_state = advanced
+
         state = np.maximum(next_state, temperature_floor)
-        state_history.append(state.ravel().copy())
-        if len(state_history) > ANDERSON_MAX_HISTORY + 1:
-            state_history.pop(0)
-            if delta_states:
-                delta_states.pop(0)
-                delta_residuals.pop(0)
 
     raise RuntimeError(
         "Failed to converge to a periodic solution after "
