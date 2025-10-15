@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Tuple
+
 import numpy as np
 
 
@@ -77,13 +80,70 @@ def regular_longitude_edges(lon_centers_deg: np.ndarray) -> np.ndarray:
     return edges
 
 
+@dataclass(slots=True)
+class _GridGeometryCacheEntry:
+    """Reusable geometry terms for a regularly spaced spherical grid."""
+
+    delta_sin: np.ndarray
+    delta_lon: np.ndarray
+    area_by_radius: dict[float, np.ndarray] = field(default_factory=dict)
+
+
+_GRID_GEOMETRY_CACHE: dict[Tuple[Tuple[int, float, float, str], Tuple[int, float, float, str]], _GridGeometryCacheEntry] = {}
+
+
+def _regular_grid_signature(centers: np.ndarray) -> Tuple[int, float, float, str]:
+    """Return a lightweight signature for a 1-D regularly spaced grid."""
+
+    size = centers.size
+    if size == 0:
+        raise ValueError("Grid centre arrays must be non-empty")
+
+    start = float(np.round(float(centers[0]), 12))
+    if size > 1:
+        step = float(np.round(float(centers[1] - centers[0]), 12))
+    else:
+        step = 0.0
+    return size, start, step, centers.dtype.str
+
+
+def _grid_geometry_from_cache(
+    lat_centers: np.ndarray, lon_centers: np.ndarray
+) -> _GridGeometryCacheEntry:
+    """Fetch or create cached geometry terms for the given regular grid."""
+
+    key = (_regular_grid_signature(lat_centers), _regular_grid_signature(lon_centers))
+    cached = _GRID_GEOMETRY_CACHE.get(key)
+    if cached is None:
+        lat_edges = regular_latitude_edges(lat_centers)
+        lon_edges = regular_longitude_edges(lon_centers)
+
+        lat_edges_rad = np.deg2rad(lat_edges)
+        lon_edges_rad = np.deg2rad(lon_edges)
+
+        delta_sin = np.sin(lat_edges_rad[1:]) - np.sin(lat_edges_rad[:-1])
+        delta_lon = lon_edges_rad[1:] - lon_edges_rad[:-1]
+
+        delta_sin.setflags(write=False)
+        delta_lon.setflags(write=False)
+
+        cached = _GridGeometryCacheEntry(delta_sin=delta_sin, delta_lon=delta_lon)
+        _GRID_GEOMETRY_CACHE[key] = cached
+
+    return cached
+
+
 def spherical_cell_area(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     *,
     earth_radius_m: float,
 ) -> np.ndarray:
-    """Return the physical surface area of each lon/lat grid cell."""
+    """Return the physical surface area of each lon/lat grid cell.
+
+    The returned array is cached per grid/earth-radius combination and marked
+    read-only so callers should treat it as immutable.
+    """
 
     if lon2d.shape != lat2d.shape:
         raise ValueError("Longitude and latitude grids must share the same shape")
@@ -95,15 +155,14 @@ def spherical_cell_area(
     lat_centers = lat2d[:, 0]
     lon_centers = lon2d[0, :]
 
-    lat_edges = regular_latitude_edges(lat_centers)
-    lon_edges = regular_longitude_edges(lon_centers)
+    geometry = _grid_geometry_from_cache(lat_centers, lon_centers)
 
-    lat_edges_rad = np.deg2rad(lat_edges)
-    lon_edges_rad = np.deg2rad(lon_edges)
+    radius = float(earth_radius_m)
+    area = geometry.area_by_radius.get(radius)
+    if area is None:
+        area = (radius**2) * geometry.delta_sin[:, np.newaxis] * geometry.delta_lon[np.newaxis, :]
+        area.setflags(write=False)
+        geometry.area_by_radius[radius] = area
 
-    delta_sin = np.sin(lat_edges_rad[1:]) - np.sin(lat_edges_rad[:-1])
-    delta_lon = lon_edges_rad[1:] - lon_edges_rad[:-1]
-
-    area = (earth_radius_m**2) * delta_sin[:, np.newaxis] * delta_lon[np.newaxis, :]
     return area
 
