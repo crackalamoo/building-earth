@@ -21,6 +21,25 @@ class BulkCouplingConfig:
     U_ocean: float = 6.0  # m s-1 characteristic marine wind speed
     U_land: float = 3.0  # m s-1 characteristic continental wind speed
     atmosphere_heat_capacity: float = 1.0e7  # J m-2 K-1, consistent with RadiationConfig
+    boundary_layer_depth_m: float = 500.0  # m, depth of the well-mixed surface layer
+
+    def boundary_layer_fraction(self) -> float:
+        """Return the fraction of the atmospheric column that participates in the exchange."""
+
+        column_heat_capacity = self.atmosphere_heat_capacity
+        if column_heat_capacity <= 0.0 or not np.isfinite(column_heat_capacity):
+            raise ValueError("Atmosphere heat capacity must be a positive finite value")
+
+        column_depth = column_heat_capacity / (self.rho_air * self.c_p)
+        if column_depth <= 0.0 or not np.isfinite(column_depth):
+            raise ValueError("Atmospheric column depth inferred from heat capacity is invalid")
+
+        fraction = self.boundary_layer_depth_m / column_depth
+        if fraction < 0.0:
+            return 0.0
+        if fraction > 1.0:
+            return 1.0
+        return float(fraction)
 
 
 def compute_bulk_flux(
@@ -42,8 +61,10 @@ def compute_bulk_flux(
 
     U = np.where(ocean_mask, config.U_ocean, config.U_land)
     G = config.rho_air * config.c_p * config.C_H * U
-    H = G * (surface_K - atmosphere_K)
-    return G, H
+    layer_fraction = config.boundary_layer_fraction()
+    G_effective = layer_fraction * G
+    H = G_effective * (surface_K - atmosphere_K)
+    return G_effective, H
 
 
 def bulk_coupling_tendencies(
@@ -86,6 +107,8 @@ def bulk_coupling_jacobian(
 
     U = np.where(ocean_mask, config.U_ocean, config.U_land)
     G = config.rho_air * config.c_p * config.C_H * U
+    layer_fraction = config.boundary_layer_fraction()
+    G *= layer_fraction
     C_s = heat_capacity_field
     C_a = config.atmosphere_heat_capacity
 
@@ -94,5 +117,5 @@ def bulk_coupling_jacobian(
 
     cross = np.zeros((2, 2) + C_s.shape, dtype=float)
     cross[0, 1] = (+G) / C_s
-    cross[1, 0] = (-G) / C_a
+    cross[1, 0] = (+G) / C_a
     return surface_diag, atmosphere_diag, cross
