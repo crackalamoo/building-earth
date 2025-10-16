@@ -155,6 +155,7 @@ def main() -> None:
     from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
+    from climate_sim.utils.math import spherical_cell_area
     from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
@@ -175,6 +176,20 @@ def main() -> None:
         return_layer_map=True,
     )
     surface_cycle = layers["surface"]
+    cell_areas = spherical_cell_area(
+        lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
+    )
+    surface_area_mean = float(
+        np.average(surface_cycle.mean(axis=0), weights=cell_areas)
+    )
+
+    print(
+        "Global surface summary: "
+        f"Tmin={surface_cycle.min():.1f} °C, "
+        f"Tmax={surface_cycle.max():.1f} °C, "
+        f"simple mean={surface_cycle.mean():.1f} °C, "
+        f"area-weighted mean={surface_area_mean:.1f} °C"
+    )
 
     locations = [
         Location("Chicago (IL)", 41.5, -87.6),
