@@ -1,6 +1,8 @@
 import rioxarray
 from pathlib import Path
 import urllib.request
+from dotenv import load_dotenv
+import os
 
 def download_etopo(dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -17,7 +19,12 @@ def download_etopo(dest_dir: Path) -> Path:
     return dest
 
 if __name__ == "__main__":
-    data_dir = Path("./data")
+    load_dotenv()
+    data_dir = os.getenv("DATA_DIR")
+    if data_dir is None:
+        raise ValueError("Please set the DATA_DIR environment variable.")
+    data_dir = Path(data_dir)
+
     print(data_dir)
     etopo_path = download_etopo(data_dir)
 
