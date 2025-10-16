@@ -23,12 +23,15 @@ def _build_configs(
     enable_advection: bool,
     include_atmosphere: bool,
     use_geometry: bool,
+    use_pressure_gradients: bool,
 ) -> Tuple[RadiationConfig, DiffusionConfig, GeostrophicAdvectionConfig]:
     radiation_cfg = RadiationConfig(include_atmosphere=include_atmosphere)
     diffusion_cfg = DiffusionConfig(
         enabled=enable_diffusion, use_spherical_geometry=use_geometry
     )
-    advection_cfg = GeostrophicAdvectionConfig(enabled=enable_advection)
+    advection_cfg = GeostrophicAdvectionConfig(
+        enabled=enable_advection, use_pressure_gradients=use_pressure_gradients
+    )
     return radiation_cfg, diffusion_cfg, advection_cfg
 
 
@@ -94,6 +97,19 @@ def main() -> None:
         help="Disable geostrophic atmospheric advection in the baseline case",
     )
     parser.add_argument(
+        "--base-pressure-gradients",
+        dest="base_pressure_gradients",
+        action="store_true",
+        default=True,
+        help="Diagnose baseline winds from pressure gradients (default)",
+    )
+    parser.add_argument(
+        "--no-base-pressure-gradients",
+        dest="base_pressure_gradients",
+        action="store_false",
+        help="Diagnose baseline winds from temperature gradients",
+    )
+    parser.add_argument(
         "--base-atmosphere",
         dest="base_atmosphere",
         action="store_true",
@@ -147,6 +163,19 @@ def main() -> None:
         help="Disable geostrophic atmospheric advection in the experiment case",
     )
     parser.add_argument(
+        "--exp-pressure-gradients",
+        dest="experiment_pressure_gradients",
+        action="store_true",
+        default=True,
+        help="Diagnose experiment winds from pressure gradients (default)",
+    )
+    parser.add_argument(
+        "--no-exp-pressure-gradients",
+        dest="experiment_pressure_gradients",
+        action="store_false",
+        help="Diagnose experiment winds from temperature gradients",
+    )
+    parser.add_argument(
         "--exp-atmosphere",
         dest="experiment_atmosphere",
         action="store_true",
@@ -193,12 +222,14 @@ def main() -> None:
         enable_advection=args.base_advection,
         include_atmosphere=args.base_atmosphere,
         use_geometry=args.base_geometry,
+        use_pressure_gradients=args.base_pressure_gradients,
     )
     exp_rad, exp_diff, exp_adv = _build_configs(
         enable_diffusion=args.experiment_diffusion,
         enable_advection=args.experiment_advection,
         include_atmosphere=args.experiment_atmosphere,
         use_geometry=args.experiment_geometry,
+        use_pressure_gradients=args.experiment_pressure_gradients,
     )
 
     base_snow = SnowAlbedoConfig(enabled=args.base_snow)
@@ -232,6 +263,7 @@ def main() -> None:
         "advection": args.base_advection,
         "atmosphere": args.base_atmosphere,
         "geometry": args.base_geometry,
+        "pressure": args.base_pressure_gradients,
         "snow": args.base_snow,
     }
     exp_summary = {
@@ -239,6 +271,7 @@ def main() -> None:
         "advection": args.experiment_advection,
         "atmosphere": args.experiment_atmosphere,
         "geometry": args.experiment_geometry,
+        "pressure": args.experiment_pressure_gradients,
         "snow": args.experiment_snow,
     }
 

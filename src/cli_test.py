@@ -84,6 +84,19 @@ def _parse_args() -> argparse.Namespace:
         help="Disable geostrophic atmospheric advection",
     )
     parser.add_argument(
+        "--pressure-gradients",
+        dest="pressure_gradients",
+        action="store_true",
+        default=True,
+        help="Diagnose winds from pressure gradients (default)",
+    )
+    parser.add_argument(
+        "--no-pressure-gradients",
+        dest="pressure_gradients",
+        action="store_false",
+        help="Diagnose winds from temperature gradients",
+    )
+    parser.add_argument(
         "--snow",
         dest="snow",
         action="store_true",
@@ -148,7 +161,9 @@ def main() -> None:
     diffusion_config = DiffusionConfig(
         enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
     )
-    advection_config = GeostrophicAdvectionConfig(enabled=args.advection)
+    advection_config = GeostrophicAdvectionConfig(
+        enabled=args.advection, use_pressure_gradients=args.pressure_gradients
+    )
     snow_config = SnowAlbedoConfig(enabled=args.snow)
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(
         resolution_deg=args.resolution,

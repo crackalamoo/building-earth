@@ -26,6 +26,19 @@ parser.add_argument(
     default=1.0,
     help="Grid resolution in degrees (must be positive).",
 )
+parser.add_argument(
+    "--pressure-gradients",
+    dest="pressure_gradients",
+    action="store_true",
+    default=True,
+    help="Diagnose winds from pressure gradients when computing advection (default)",
+)
+parser.add_argument(
+    "--no-pressure-gradients",
+    dest="pressure_gradients",
+    action="store_false",
+    help="Diagnose winds from temperature gradients",
+)
 args = parser.parse_args()
 
 if args.resolution <= 0:
@@ -33,7 +46,9 @@ if args.resolution <= 0:
 
 radiation_config = RadiationConfig()
 diffusion_config = DiffusionConfig()
-advection_config = GeostrophicAdvectionConfig()
+advection_config = GeostrophicAdvectionConfig(
+    use_pressure_gradients=args.pressure_gradients
+)
 snow_config = SnowAlbedoConfig()
 
 lon2d, lat2d, layers = compute_periodic_cycle_celsius(
