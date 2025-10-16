@@ -10,6 +10,9 @@ from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.utils.math_core import spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
+from dotenv import load_dotenv
+load_dotenv()
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the climate model and plot the cycle.")

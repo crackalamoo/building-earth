@@ -6,6 +6,8 @@ import urllib.request
 import numpy as np
 import rioxarray
 from PIL import Image
+from functools import lru_cache
+import xarray as xr
 
 def download_etopo(dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -22,6 +24,111 @@ def download_etopo(dest_dir: Path) -> Path:
     print("Download complete.")
     return dest
 
+def _wrap_longitudes(lon_deg: np.ndarray) -> np.ndarray:
+    """Wrap longitudes to the [-180, 180) range."""
+
+    return ((lon_deg + 180.0) % 360.0) - 180.0
+
+
+@lru_cache(maxsize=1)
+def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
+    """Return an elevation dataset registered to WGS84 coordinates."""
+
+    if path is None:
+        data_dir = os.getenv("DATA_DIR")
+        if data_dir is None:
+            raise ValueError("Please set the DATA_DIR environment variable.")
+        data_dir = Path(data_dir)
+
+        path = data_dir / "etopo_60s.tif"
+
+    dataset_path = Path(path)
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Elevation data file not found at {dataset_path}")
+
+    data = rioxarray.open_rasterio(dataset_path).squeeze()
+    if data.rio.crs is None:
+        data = data.rio.write_crs("EPSG:4326", inplace=False)
+    return data
+
+def compute_cell_elevation(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    *,
+    data: xr.DataArray | None = None,
+    sample_method: str = "center",
+) -> np.ndarray:
+    """Return the elevation (m) for the provided grid cells."""
+
+    if lon2d.shape != lat2d.shape:
+        raise ValueError("Longitude and latitude grids must share the same shape")
+
+    lon_array = np.asarray(lon2d, dtype=float)
+    lat_array = np.asarray(lat2d, dtype=float)
+
+    dataset = data if data is not None else load_elevation_data()
+    if dataset is None:
+        return np.zeros_like(lon_array)
+
+    if sample_method != "center":
+        raise ValueError("Only 'center' sampling is currently supported")
+
+    if dataset.rio.crs is None:
+        dataset = dataset.rio.write_crs("EPSG:4326", inplace=False)
+
+    lon_wrapped = _wrap_longitudes(lon_array)
+    lat_clamped = np.clip(lat_array, -90.0, 90.0)
+
+    lon_flat = lon_wrapped.ravel()
+    lat_flat = lat_clamped.ravel()
+
+    # Sample the dataset at the cell centre using bilinear interpolation when possible.
+    coords = {
+        "x": ("points", lon_flat),
+        "y": ("points", lat_flat),
+    }
+
+    try:
+        sampled = dataset.interp(
+            x=coords["x"], y=coords["y"], method="linear", kwargs={"fill_value": None}
+        )
+    except TypeError:
+        sampled = dataset.interp(x=coords["x"], y=coords["y"], method="linear")
+
+    values = np.asarray(sampled.values, dtype=float).reshape(lon_array.shape)
+
+    if np.any(~np.isfinite(values)):
+        sampled_nearest = dataset.interp(
+            x=coords["x"], y=coords["y"], method="nearest"
+        )
+        nearest_values = np.asarray(sampled_nearest.values, dtype=float).reshape(
+            lon_array.shape
+        )
+        mask = ~np.isfinite(values)
+        values[mask] = nearest_values[mask]
+
+    return np.nan_to_num(values, nan=0.0)
+
+
+def pressure_from_temperature_elevation(
+    temperature_K: np.ndarray,
+    elevation_m: np.ndarray,
+    *,
+    sea_level_pressure_pa: float = 101_325.0,
+    gravity_m_s2: float = 9.81,
+    gas_constant_J_kgK: float = 287.0,
+) -> np.ndarray:
+    """Compute surface pressure (Pa) from temperature and elevation using a hydrostatic profile."""
+
+    if temperature_K.shape != elevation_m.shape:
+        raise ValueError("Temperature and elevation fields must share the same shape")
+
+    temp_safe = np.maximum(np.asarray(temperature_K, dtype=float), 1.0)
+    elev = np.asarray(elevation_m, dtype=float)
+
+    exponent = -gravity_m_s2 * elev / (gas_constant_J_kgK * temp_safe)
+    pressure = sea_level_pressure_pa * np.exp(exponent)
+    return pressure
 
 def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolution: float = 0.1, contrast_water: bool = True) -> Path:
     if out_dir is None:

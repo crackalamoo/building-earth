@@ -16,6 +16,9 @@ from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
+from dotenv import load_dotenv
+load_dotenv()
+
 
 def _build_configs(
     *,
