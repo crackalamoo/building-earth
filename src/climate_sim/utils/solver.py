@@ -37,9 +37,7 @@ FIXED_POINT_MAX_ITERS = 100
 ARCTIC_CIRCLE_LATITUDE_DEG = 66.5
 
 
-WindField = tuple[np.ndarray, np.ndarray, np.ndarray] | None
-
-RhsFunc = Callable[[np.ndarray, np.ndarray, WindField], np.ndarray]
+RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 @dataclass
 class Linearisation:
     diag: np.ndarray
@@ -73,7 +71,6 @@ def implicit_monthly_step(
     *,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
-    wind_field: WindField,
     temperature_floor: float,
 ) -> np.ndarray:
     """Advance the column temperature one implicit backward-Euler step."""
@@ -90,7 +87,7 @@ def implicit_monthly_step(
 
     for _ in range(NEWTON_MAX_ITERS):
         temp_capped = np.maximum(temp_next, temperature_floor)
-        rhs_value = rhs_fn(temp_capped, insolation_W_m2, wind_field)
+        rhs_value = rhs_fn(temp_capped, insolation_W_m2)
         residual = temp_capped - temperature_K - dt_seconds * rhs_value
         linearisation = rhs_temperature_derivative_fn(temp_capped, insolation_W_m2)
 
@@ -181,7 +178,7 @@ def implicit_monthly_step(
 
         while damping >= NEWTON_BACKTRACK_CUTOFF:
             temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
-            rhs_candidate = rhs_fn(temp_candidate, insolation_W_m2, wind_field)
+            rhs_candidate = rhs_fn(temp_candidate, insolation_W_m2)
             residual_candidate = temp_candidate - temperature_K - dt_seconds * rhs_candidate
             candidate_norm = float(np.max(np.abs(residual_candidate)))
 
@@ -212,12 +209,9 @@ def apply_annual_map(
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
-    wind_factory: Callable[[], WindField] | None,
-    wind_update_fn: Callable[[np.ndarray], WindField] | None,
 ) -> np.ndarray:
     """Propagate the state through 12 implicit steps and return the end-of-December temperature."""
     state = temperature_K
-    winds = wind_factory() if wind_factory is not None else None
     for month in range(12):
         state = implicit_monthly_step(
             state,
@@ -225,11 +219,8 @@ def apply_annual_map(
             month_durations[month],
             rhs_fn=rhs_fn,
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-            wind_field=winds,
             temperature_floor=temperature_floor,
         )
-        if wind_update_fn is not None:
-            winds = wind_update_fn(state)
     return state
 
 
@@ -277,8 +268,6 @@ def find_periodic_temperature(
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
-    initial_wind_factory: Callable[[], WindField] | None,
-    wind_update_fn: Callable[[np.ndarray], WindField] | None,
 ) -> np.ndarray:
     """Solve P(T) = T for the annual map using Anderson acceleration."""
 
@@ -295,8 +284,6 @@ def find_periodic_temperature(
             rhs_fn=rhs_fn,
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
-            wind_factory=initial_wind_factory,
-            wind_update_fn=wind_update_fn,
         )
 
         residual = advanced - state
@@ -356,13 +343,10 @@ def integrate_periodic_cycle(
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
-    initial_wind_factory: Callable[[], WindField] | None,
-    wind_update_fn: Callable[[np.ndarray], WindField] | None,
 ) -> np.ndarray:
     """Return the 12-month sequence of month-midpoint temperatures for the periodic solution."""
     temps = np.empty((12,) + initial_temperature.shape, dtype=float)
     state = initial_temperature
-    winds = initial_wind_factory() if initial_wind_factory is not None else None
     for month in range(12):
         next_state = implicit_monthly_step(
             state,
@@ -370,13 +354,10 @@ def integrate_periodic_cycle(
             month_durations[month],
             rhs_fn=rhs_fn,
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-            wind_field=winds,
             temperature_floor=temperature_floor,
         )
         temps[month] = 0.5 * (state + next_state)
         state = next_state
-        if wind_update_fn is not None:
-            winds = wind_update_fn(state)
     return temps
 
 
@@ -447,20 +428,6 @@ def compute_periodic_cycle_kelvin(
             advection_operator,
         )
 
-        wind_factory: Callable[[], WindField] | None = None
-        wind_update_fn: Callable[[np.ndarray], WindField] | None = None
-        if advection_operator is not None and advection_operator.enabled:
-            def make_zero_wind() -> WindField:
-                return advection_operator.zero_wind_field()
-
-            def update_wind(temperature: np.ndarray) -> WindField:
-                if radiation_config.include_atmosphere:
-                    return advection_operator.wind_field(temperature[1])
-                return advection_operator.wind_field(temperature)
-
-            wind_factory = make_zero_wind
-            wind_update_fn = update_wind
-
         if initial_temperature is None:
             guess = initial_guess_fn(
                 monthly_insolation, albedo_field, radiation_config
@@ -475,8 +442,6 @@ def compute_periodic_cycle_kelvin(
             rhs_fn=rhs_fn,
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=radiation_config.temperature_floor,
-            initial_wind_factory=wind_factory,
-            wind_update_fn=wind_update_fn,
         )
 
         monthly_temperatures = integrate_periodic_cycle(
@@ -486,8 +451,6 @@ def compute_periodic_cycle_kelvin(
             rhs_fn=rhs_fn,
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=radiation_config.temperature_floor,
-            initial_wind_factory=wind_factory,
-            wind_update_fn=wind_update_fn,
         )
 
         return periodic_temperature, monthly_temperatures
@@ -578,9 +541,7 @@ def compute_periodic_cycle_celsius(
         # The diffusion matrices are already expressed as d(rhs)/dT in 1/s because the
         # discrete operator divides by the local heat capacity when it is assembled.
 
-        def rhs(
-            temperature: np.ndarray, insolation: np.ndarray, wind_field: WindField
-        ) -> np.ndarray:
+        def rhs(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
                 temperature,
                 insolation,
@@ -595,16 +556,12 @@ def compute_periodic_cycle_celsius(
                 if diffusion_operator.atmosphere.enabled:
                     radiative[1] += diffusion_operator.atmosphere.tendency(temperature[1])
                 if advection_operator is not None and advection_operator.enabled:
-                    radiative[1] += advection_operator.tendency_from_wind(
-                        temperature[1], wind_field
-                    )
+                    radiative[1] += advection_operator.tendency(temperature[1])
                 return radiative
             if diffusion_operator.surface.enabled:
                 radiative = radiative + diffusion_operator.surface.tendency(temperature)
             if advection_operator is not None and advection_operator.enabled:
-                radiative = radiative + advection_operator.tendency_from_wind(
-                    temperature, wind_field
-                )
+                radiative = radiative + advection_operator.tendency(temperature)
             return radiative
 
         def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> RhsDerivative:
