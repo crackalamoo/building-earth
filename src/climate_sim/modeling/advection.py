@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from climate_sim.utils.elevation import load_elevation_data, compute_cell_elevation, pressure_from_temperature_elevation
 
 def _compute_geostrophic_wind_components(
     grad_x: np.ndarray,
@@ -13,44 +14,25 @@ def _compute_geostrophic_wind_components(
     temperature: np.ndarray,
     *,
     abs_coriolis: np.ndarray,
-    lat_sign: np.ndarray,
     config: "GeostrophicAdvectionConfig",
+    pressure: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return the geostrophic wind given horizontal temperature gradients."""
 
-    grad_mag = np.hypot(grad_x, grad_y)
+    coriolis = np.maximum(abs_coriolis, config.coriolis_floor_s)
+    if pressure is not None:
+        pressure_safe = np.maximum(pressure, 100.0)
+        velocity_x = grad_y / (coriolis * pressure_safe)
+        velocity_y = -grad_x / (coriolis * pressure_safe)
+        speed = np.hypot(velocity_x, velocity_y)
+        return velocity_x, velocity_y, speed
 
     temp_safe = np.maximum(temperature, config.minimum_temperature_K)
     scale = config.gravity_m_s2 * config.troposphere_scale_height_m
-    coriolis = np.maximum(abs_coriolis, config.coriolis_floor_s)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        speed = scale * grad_mag / (coriolis * temp_safe)
-
-    speed = np.where(np.isfinite(speed), speed, 0.0)
-    speed = np.where(grad_mag > 0.0, speed, 0.0)
-    speed = np.where(abs_coriolis >= config.coriolis_floor_s, speed, 0.0)
-
-    unit_x = np.zeros_like(grad_x)
-    unit_y = np.zeros_like(grad_y)
-    nonzero = grad_mag > 0.0
-    unit_x[nonzero] = grad_x[nonzero] / grad_mag[nonzero]
-    unit_y[nonzero] = grad_y[nonzero] / grad_mag[nonzero]
-
-    velocity_x = np.zeros_like(unit_x)
-    velocity_y = np.zeros_like(unit_y)
-
-    nh = lat_sign > 0.0
-    sh = lat_sign < 0.0
-
-    velocity_x[nh] = unit_y[nh]
-    velocity_y[nh] = -unit_x[nh]
-
-    velocity_x[sh] = -unit_y[sh]
-    velocity_y[sh] = unit_x[sh]
-
-    velocity_x *= speed
-    velocity_y *= speed
+    velocity_x = scale * grad_y / (coriolis * temp_safe)
+    velocity_y = -scale * grad_x / (coriolis * temp_safe)
+    speed = np.hypot(velocity_x, velocity_y)
 
     return velocity_x, velocity_y, speed
 
@@ -66,7 +48,7 @@ class GeostrophicAdvectionConfig:
     troposphere_scale_height_m: float = 8000.0
     coriolis_floor_s: float = 1.0e-5
     minimum_temperature_K: float = 150.0
-
+    use_pressure_gradients: bool = True
 
 class GeostrophicAdvectionOperator:
     """Evaluate geostrophic advection tendencies on a fixed longitude/latitude grid."""
@@ -94,33 +76,34 @@ class GeostrophicAdvectionOperator:
         lat_centers = self._lat2d[:, 0]
         lon_centers = self._lon2d[0, :]
 
-        if nlat > 1:
-            lat_spacing = np.diff(lat_centers)
-            if not np.allclose(lat_spacing, lat_spacing[0]):
-                raise ValueError("Latitude grid must have constant spacing for gradients")
-            self._delta_y = config.earth_radius_m * np.deg2rad(float(lat_spacing[0]))
-        else:
-            self._delta_y = np.inf
+        lat_spacing = np.diff(lat_centers)
+        if not np.allclose(lat_spacing, lat_spacing[0]):
+            raise ValueError("Latitude grid must have constant spacing for gradients")
+        self._delta_y = config.earth_radius_m * np.deg2rad(float(lat_spacing[0]))
 
-        if nlon > 1:
-            lon_spacing = np.diff(lon_centers)
-            if not np.allclose(lon_spacing, lon_spacing[0]):
-                raise ValueError("Longitude grid must have constant spacing for gradients")
-            delta_lon_rad = np.deg2rad(float(lon_spacing[0]))
-            cos_lat = np.cos(np.deg2rad(lat_centers))[:, np.newaxis]
-            delta_x = config.earth_radius_m * cos_lat * delta_lon_rad
-            with np.errstate(divide="ignore", invalid="ignore"):
-                self._inv_two_delta_x = np.zeros_like(delta_x)
-                valid = np.abs(delta_x) > 0.0
-                self._inv_two_delta_x[valid] = 1.0 / (2.0 * delta_x[valid])
-        else:
-            self._inv_two_delta_x = np.zeros_like(self._lon2d)
+        lon_spacing = np.diff(lon_centers)
+        if not np.allclose(lon_spacing, lon_spacing[0]):
+            raise ValueError("Longitude grid must have constant spacing for gradients")
+        delta_lon_rad = np.deg2rad(float(lon_spacing[0]))
+        cos_lat = np.cos(np.deg2rad(lat_centers))[:, np.newaxis]
+        delta_x = config.earth_radius_m * cos_lat * delta_lon_rad
+        with np.errstate(divide="ignore", invalid="ignore"):
+            self._inv_two_delta_x = np.zeros_like(delta_x)
+            valid = np.abs(delta_x) > 0.0
+            self._inv_two_delta_x[valid] = 1.0 / (2.0 * delta_x[valid])
 
-        self._lat_sign = np.sign(self._lat2d)
         coriolis = 2.0 * config.earth_rotation_rate_rad_s * np.sin(
             np.deg2rad(self._lat2d)
         )
         self._abs_coriolis = np.abs(coriolis)
+
+        if config.use_pressure_gradients:
+            elevation_data = load_elevation_data()
+            assert elevation_data is not None, "Elevation data could not be loaded"
+            self.elevation_m = compute_cell_elevation(
+                self._lon2d, self._lat2d, data=elevation_data, sample_method="center"
+            )
+            self.elevation_m = np.maximum(self.elevation_m, 0.0)
 
     @property
     def enabled(self) -> bool:
@@ -128,7 +111,7 @@ class GeostrophicAdvectionOperator:
 
     def wind_field(
         self, temperature: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], np.ndarray, np.ndarray]:
         """Compute the geostrophic wind field (u, v, speed) for the given temperatures."""
 
         if temperature.shape != self._lon2d.shape:
@@ -138,35 +121,42 @@ class GeostrophicAdvectionOperator:
 
         if not self.enabled:
             zeros = np.zeros_like(temperature)
-            return zeros, zeros, zeros
+            return (zeros, zeros, zeros), zeros, zeros
 
-        grad_x, grad_y = self._horizontal_gradient(temperature)
+        pressure = None
+        if self._config.use_pressure_gradients:
+            pressure = pressure_from_temperature_elevation(
+                temperature + 273.15, self.elevation_m
+            )
+            grad_x, grad_y = self._horizontal_gradient(pressure)
+        else:
+            grad_x, grad_y = self._horizontal_gradient(temperature)
         return _compute_geostrophic_wind_components(
             grad_x,
             grad_y,
             temperature,
             abs_coriolis=self._abs_coriolis,
-            lat_sign=self._lat_sign,
             config=self._config,
-        )
+            pressure=pressure,
+        ), grad_x, grad_y
 
-    def _horizontal_gradient(self, temperature: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        if temperature.shape != self._lon2d.shape:
-            raise ValueError("Temperature field must match the longitude/latitude grid shape")
+    def _horizontal_gradient(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if field.shape != self._lon2d.shape:
+            raise ValueError("Field must match the longitude/latitude grid shape")
 
-        grad_y = np.zeros_like(temperature)
-        if np.isfinite(self._delta_y) and self._delta_y > 0.0 and temperature.shape[0] > 1:
+        grad_y = np.zeros_like(field)
+        if np.isfinite(self._delta_y) and self._delta_y > 0.0 and field.shape[0] > 1:
             inv_delta_y = 1.0 / self._delta_y
             inv_two_delta_y = 0.5 * inv_delta_y
-            grad_y[1:-1] = (temperature[2:] - temperature[:-2]) * inv_two_delta_y
-            grad_y[0] = (temperature[1] - temperature[0]) * inv_delta_y
-            grad_y[-1] = (temperature[-1] - temperature[-2]) * inv_delta_y
+            grad_y[1:-1] = (field[2:] - field[:-2]) * inv_two_delta_y
+            grad_y[0] = (field[1] - field[0]) * inv_delta_y
+            grad_y[-1] = (field[-1] - field[-2]) * inv_delta_y
 
-        if temperature.shape[1] > 1:
-            diff_east = np.roll(temperature, -1, axis=1) - np.roll(temperature, 1, axis=1)
+        if field.shape[1] > 1:
+            diff_east = np.roll(field, -1, axis=1) - np.roll(field, 1, axis=1)
             grad_x = diff_east * self._inv_two_delta_x
         else:
-            grad_x = np.zeros_like(temperature)
+            grad_x = np.zeros_like(field)
 
         return grad_x, grad_y
 
@@ -176,14 +166,21 @@ class GeostrophicAdvectionOperator:
         if not self.enabled:
             return np.zeros_like(temperature)
 
-        grad_x, grad_y = self._horizontal_gradient(temperature)
+        pressure = None
+        if self._config.use_pressure_gradients:
+            pressure = pressure_from_temperature_elevation(
+                temperature, self.elevation_m
+            )
+            grad_x, grad_y = self._horizontal_gradient(pressure)
+        else:
+            grad_x, grad_y = self._horizontal_gradient(temperature)
         velocity_x, velocity_y, _speed = _compute_geostrophic_wind_components(
             grad_x,
             grad_y,
             temperature,
             abs_coriolis=self._abs_coriolis,
-            lat_sign=self._lat_sign,
             config=self._config,
+            pressure=pressure,
         )
 
         tendency = -(velocity_x * grad_x + velocity_y * grad_y)

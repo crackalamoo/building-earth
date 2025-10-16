@@ -17,6 +17,9 @@ from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
+from dotenv import load_dotenv
+load_dotenv()
+
 parser = argparse.ArgumentParser(
     description="Visualise the monthly geostrophic wind diagnosed from the model."
 )
@@ -66,7 +69,7 @@ wind_v = np.zeros_like(temperature_cycle_k)
 wind_speed = np.zeros_like(temperature_cycle_k)
 
 for idx in range(months):
-    u_field, v_field, speed_field = operator.wind_field(temperature_cycle_k[idx])
+    (u_field, v_field, speed_field), _grad_x, _grad_y = operator.wind_field(temperature_cycle_k[idx])
     wind_u[idx] = u_field
     wind_v[idx] = v_field
     wind_speed[idx] = speed_field

@@ -6,6 +6,9 @@ import argparse
 from dataclasses import dataclass
 import numpy as np
 
+from dotenv import load_dotenv
+load_dotenv()
+
 
 @dataclass(frozen=True)
 class Location:
