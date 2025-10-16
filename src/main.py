@@ -7,7 +7,7 @@ from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
-from climate_sim.utils.math import spherical_cell_area
+from climate_sim.utils.math_core import spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
 
