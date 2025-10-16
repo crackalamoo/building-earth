@@ -572,17 +572,41 @@ def compute_periodic_cycle_celsius(
                 heat_capacity_field=heat_capacity_field,
                 config=config,
             )
+
+            advection_matrix = None
+            if advection_operator is not None and advection_operator.enabled:
+                target_temperature = (
+                    temperature[1] if config.include_atmosphere else temperature
+                )
+                advection_matrix = advection_operator.linearised_matrix(target_temperature)
+                if advection_matrix is not None:
+                    advection_matrix = advection_matrix.tocsc()
+
+            surface_linear = surface_matrix
+            if advection_matrix is not None and not config.include_atmosphere:
+                if surface_linear is None:
+                    surface_linear = advection_matrix
+                else:
+                    surface_linear = (surface_linear + advection_matrix).tocsc()
+
+            atmosphere_linear = atmosphere_matrix
+            if advection_matrix is not None and config.include_atmosphere:
+                if atmosphere_linear is None:
+                    atmosphere_linear = advection_matrix
+                else:
+                    atmosphere_linear = (atmosphere_linear + advection_matrix).tocsc()
+
             if config.include_atmosphere:
                 diag, cross = radiative_derivative
                 return Linearisation(
                     diag=diag,
                     cross=cross,
-                    surface_diffusion_matrix=surface_matrix,
-                    atmosphere_diffusion_matrix=atmosphere_matrix,
+                    surface_diffusion_matrix=surface_linear,
+                    atmosphere_diffusion_matrix=atmosphere_linear,
                 )
             return Linearisation(
                 diag=radiative_derivative,
-                surface_diffusion_matrix=surface_matrix,
+                surface_diffusion_matrix=surface_linear,
             )
 
         return rhs, rhs_derivative

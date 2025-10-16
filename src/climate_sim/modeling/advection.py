@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy import sparse
 
 
 @dataclass(frozen=True)
@@ -221,6 +222,104 @@ class GeostrophicAdvectionOperator:
         tendency = np.where(np.abs(denom) > 0.0, tendency, 0.0)
         return tendency
 
+    def _flux_form_matrix(
+        self, velocity_x: np.ndarray, velocity_y: np.ndarray
+    ) -> sparse.csr_matrix | None:
+        nlat, nlon = velocity_x.shape
+        size = nlat * nlon
+        if size == 0:
+            return sparse.csr_matrix((0, 0))
+
+        cos_lat = self._cos_lat
+        valid_cos = np.abs(cos_lat) > 1.0e-12
+        cell_index = (
+            np.arange(nlat, dtype=int)[:, np.newaxis] * nlon
+            + np.arange(nlon, dtype=int)[np.newaxis, :]
+        )
+
+        row_entries: list[np.ndarray] = []
+        col_entries: list[np.ndarray] = []
+        data_entries: list[np.ndarray] = []
+
+        earth_radius = self._config.earth_radius_m
+
+        if nlon > 1 and self._delta_lambda_rad is not None:
+            u_east = 0.5 * (velocity_x + np.roll(velocity_x, -1, axis=1))
+            east_source = np.where(
+                u_east >= 0.0,
+                cell_index,
+                np.roll(cell_index, -1, axis=1),
+            )
+            coeff = -u_east / (earth_radius * self._delta_lambda_rad)
+            coeff = np.where(valid_cos, coeff, 0.0)
+
+            row_entries.append(cell_index.ravel())
+            col_entries.append(east_source.ravel())
+            data_entries.append(coeff.ravel())
+
+            u_west = np.roll(u_east, 1, axis=1)
+            west_from_neighbor = np.roll(u_east >= 0.0, 1, axis=1)
+            west_source = np.where(
+                west_from_neighbor,
+                np.roll(cell_index, 1, axis=1),
+                cell_index,
+            )
+            coeff_west = u_west / (earth_radius * self._delta_lambda_rad)
+            coeff_west = np.where(valid_cos, coeff_west, 0.0)
+
+            row_entries.append(cell_index.ravel())
+            col_entries.append(west_source.ravel())
+            data_entries.append(coeff_west.ravel())
+
+        if nlat > 1 and self._delta_phi_rad is not None:
+            v_faces = np.zeros((nlat + 1, nlon), dtype=float)
+            v_faces[1:-1] = 0.5 * (velocity_y[:-1] + velocity_y[1:])
+
+            inv_cos = np.zeros_like(cos_lat)
+            inv_cos[valid_cos] = 1.0 / cos_lat[valid_cos]
+            base = 1.0 / (earth_radius * self._delta_phi_rad)
+
+            north_faces = v_faces[1:]
+            north_source = np.where(
+                north_faces >= 0.0,
+                cell_index,
+                np.roll(cell_index, -1, axis=0),
+            )
+            coeff_north = -north_faces * base * inv_cos
+            coeff_north = np.where(valid_cos, coeff_north, 0.0)
+
+            row_entries.append(cell_index.ravel())
+            col_entries.append(north_source.ravel())
+            data_entries.append(coeff_north.ravel())
+
+            south_faces = v_faces[:-1]
+            south_source = np.where(
+                south_faces >= 0.0,
+                np.roll(cell_index, 1, axis=0),
+                cell_index,
+            )
+            coeff_south = south_faces * base * inv_cos
+            coeff_south = np.where(valid_cos, coeff_south, 0.0)
+
+            row_entries.append(cell_index.ravel())
+            col_entries.append(south_source.ravel())
+            data_entries.append(coeff_south.ravel())
+
+        if not row_entries:
+            return sparse.csr_matrix((size, size))
+
+        rows = np.concatenate(row_entries)
+        cols = np.concatenate(col_entries)
+        data = np.concatenate(data_entries)
+
+        nonzero = np.abs(data) > 0.0
+        if not np.any(nonzero):
+            return sparse.csr_matrix((size, size))
+
+        matrix = sparse.csr_matrix((data[nonzero], (rows[nonzero], cols[nonzero])), shape=(size, size))
+        matrix.sum_duplicates()
+        return matrix
+
     def tendency(self, temperature: np.ndarray) -> np.ndarray:
         """Return the geostrophic advection tendency (K/s) for the given field."""
 
@@ -229,6 +328,15 @@ class GeostrophicAdvectionOperator:
 
         velocity_x, velocity_y = self.velocity_field(temperature)
         return self._flux_form_tendency(temperature, velocity_x, velocity_y)
+
+    def linearised_matrix(self, temperature: np.ndarray) -> sparse.csr_matrix | None:
+        """Return the linearised advection operator for ``temperature``."""
+
+        if not self.enabled:
+            return None
+
+        velocity_x, velocity_y = self.velocity_field(temperature)
+        return self._flux_form_matrix(velocity_x, velocity_y)
 
 
 if __name__ == "__main__":
