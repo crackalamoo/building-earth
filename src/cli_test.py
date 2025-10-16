@@ -84,19 +84,6 @@ def _parse_args() -> argparse.Namespace:
         help="Disable geostrophic atmospheric advection",
     )
     parser.add_argument(
-        "--ekman-friction",
-        dest="ekman_friction",
-        action="store_true",
-        default=True,
-        help="Include Ekman friction in the advection balance (default)",
-    )
-    parser.add_argument(
-        "--no-ekman-friction",
-        dest="ekman_friction",
-        action="store_false",
-        help="Exclude Ekman friction from the advection balance",
-    )
-    parser.add_argument(
         "--snow",
         dest="snow",
         action="store_true",
@@ -155,16 +142,13 @@ def main() -> None:
     from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
-    from climate_sim.utils.math import spherical_cell_area
     from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(
         enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
     )
-    advection_config = GeostrophicAdvectionConfig(
-        enabled=args.advection, ekman_friction=args.ekman_friction
-    )
+    advection_config = GeostrophicAdvectionConfig(enabled=args.advection)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
     lon2d, lat2d, layers = compute_periodic_cycle_celsius(
         resolution_deg=args.resolution,
@@ -175,29 +159,7 @@ def main() -> None:
         snow_config=snow_config,
         return_layer_map=True,
     )
-    print(
-        "Configuration: "
-        f"atmosphere={'on' if args.atmosphere else 'off'}, "
-        f"diffusion={'on' if args.diffusion else 'off'}, "
-        f"advection={'on' if args.advection else 'off'}, "
-        f"Ekman friction={'on' if args.ekman_friction else 'off'}, "
-        f"snow={'on' if args.snow else 'off'}"
-    )
     surface_cycle = layers["surface"]
-    cell_areas = spherical_cell_area(
-        lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
-    )
-    surface_area_mean = float(
-        np.average(surface_cycle.mean(axis=0), weights=cell_areas)
-    )
-
-    print(
-        "Global surface summary: "
-        f"Tmin={surface_cycle.min():.1f} °C, "
-        f"Tmax={surface_cycle.max():.1f} °C, "
-        f"simple mean={surface_cycle.mean():.1f} °C, "
-        f"area-weighted mean={surface_area_mean:.1f} °C"
-    )
 
     locations = [
         Location("Chicago (IL)", 41.5, -87.6),

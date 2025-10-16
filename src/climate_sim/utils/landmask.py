@@ -1,9 +1,8 @@
-"""Land/sea masking utilities with optional Natural Earth support."""
+"""Land/sea masking utilities backed by Natural Earth geometry."""
 
 from __future__ import annotations
 
 import functools
-import os
 from typing import Tuple
 
 import numpy as np
@@ -23,11 +22,6 @@ LAND_ALBEDO = 0.3
 _MASK_CACHE: dict[
     Tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]
 ] = {}
-
-USE_NATURAL_EARTH = (
-    os.environ.get("CLIMATE_SIM_USE_NATURAL_EARTH", "").strip().lower()
-    in {"1", "true", "yes"}
-)
 
 
 @functools.lru_cache(maxsize=1)
@@ -58,47 +52,12 @@ def _grid_signature(lon2d: np.ndarray, lat2d: np.ndarray) -> Tuple[int, int, flo
     return (nlat, nlon, lon0, lat0, lon_step, lat_step)
 
 
-def _fallback_land_lake_masks(
-    lon2d: np.ndarray, lat2d: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return coarse analytic land and lake masks when Natural Earth data are unavailable."""
-    lon_wrapped = ((lon2d + 180.0) % 360.0) - 180.0
-    land_mask = np.zeros_like(lon2d, dtype=bool)
-
-    def add_box(lon_min: float, lon_max: float, lat_min: float, lat_max: float) -> None:
-        lon_cond = (lon_wrapped >= lon_min) & (lon_wrapped <= lon_max)
-        lat_cond = (lat2d >= lat_min) & (lat2d <= lat_max)
-        land_mask[:] |= lon_cond & lat_cond
-
-    # Rough continental approximations to preserve large-scale contrasts for diagnostics.
-    add_box(-170.0, -50.0, 15.0, 75.0)   # North America
-    add_box(-85.0, -35.0, -55.0, 15.0)   # South America
-    add_box(-20.0, 60.0, -35.0, 75.0)    # Africa and Europe
-    add_box(40.0, 180.0, 5.0, 80.0)      # Asia
-    add_box(110.0, 155.0, -45.0, -10.0)  # Australia
-    add_box(-75.0, -15.0, 60.0, 85.0)    # Greenland
-    add_box(165.0, 180.0, -50.0, -30.0)  # New Zealand (west lon)
-    add_box(-180.0, -165.0, -50.0, -30.0)  # New Zealand (east lon)
-
-    # Antarctica
-    land_mask |= lat2d <= -60.0
-
-    lake_mask = np.zeros_like(land_mask, dtype=bool)
-    return land_mask, lake_mask
-
-
 def _compute_land_and_lake_masks(
     lon2d: np.ndarray, lat2d: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """Determine the land/sea classification and highlight lakes for each grid centre."""
-    if USE_NATURAL_EARTH:
-        try:
-            prepared_land = _prepared_land_geometry()
-            prepared_lakes = _prepared_lake_geometry()
-        except Exception:
-            return _fallback_land_lake_masks(lon2d, lat2d)
-    else:
-        return _fallback_land_lake_masks(lon2d, lat2d)
+    prepared_land = _prepared_land_geometry()
+    prepared_lakes = _prepared_lake_geometry()
     flat_lon = lon2d.ravel()
     flat_lat = lat2d.ravel()
 
