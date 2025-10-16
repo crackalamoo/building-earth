@@ -15,6 +15,27 @@ from climate_sim.utils.math import (
 )
 
 
+def _infer_spacing_deg(coordinates: np.ndarray, fallback: float) -> float:
+    if coordinates.size <= 1:
+        return fallback
+    deltas = np.diff(coordinates)
+    if np.any(deltas <= 0.0):
+        raise ValueError("Grid coordinates must be strictly increasing")
+    return float(np.mean(deltas))
+
+
+def _infer_grid_resolution_deg(lon2d: np.ndarray, lat2d: np.ndarray) -> float:
+    if lon2d.shape != lat2d.shape:
+        raise ValueError("Longitude and latitude grids must share the same shape")
+    lat_centers = lat2d[:, 0]
+    lon_centers = lon2d[0, :]
+    delta_lat_deg = _infer_spacing_deg(lat_centers, fallback=180.0)
+    delta_lon_deg = _infer_spacing_deg(lon_centers, fallback=360.0)
+    if delta_lat_deg <= 0.0 or delta_lon_deg <= 0.0:
+        raise ValueError("Grid resolution must be positive in both dimensions")
+    return float(np.sqrt(delta_lat_deg * delta_lon_deg))
+
+
 def _assemble_sparse_matrix(
     north_coeff: np.ndarray,
     south_coeff: np.ndarray,
@@ -76,10 +97,39 @@ def _assemble_sparse_matrix(
 @dataclass(frozen=True)
 class DiffusionConfig:
     earth_radius_m: float = 6.371e6
-    surface_diffusivity_m2_s: float = 1.0e4
-    atmosphere_diffusivity_m2_s: float = 1.0e5
+    surface_kappa_ref_m2_s: float = 1.0e3
+    surface_resolution_ref_deg: float = 1.0
+    atmosphere_kappa_ref_m2_s: float = 5.0e3
+    atmosphere_resolution_ref_deg: float = 1.0
     enabled: bool = True
     use_spherical_geometry: bool = True
+
+    @staticmethod
+    def _scaled_diffusivity(
+        grid_resolution_deg: float, kappa_ref: float, resolution_ref_deg: float
+    ) -> float:
+        if grid_resolution_deg <= 0.0:
+            raise ValueError("Grid resolution must be positive to scale diffusivity")
+        if resolution_ref_deg <= 0.0:
+            raise ValueError(
+                "Reference resolution must be positive to scale diffusivity"
+            )
+        scale = (grid_resolution_deg / resolution_ref_deg) ** 2
+        return kappa_ref * scale
+
+    def surface_diffusivity(self, grid_resolution_deg: float) -> float:
+        return self._scaled_diffusivity(
+            grid_resolution_deg,
+            self.surface_kappa_ref_m2_s,
+            self.surface_resolution_ref_deg,
+        )
+
+    def atmosphere_diffusivity(self, grid_resolution_deg: float) -> float:
+        return self._scaled_diffusivity(
+            grid_resolution_deg,
+            self.atmosphere_kappa_ref_m2_s,
+            self.atmosphere_resolution_ref_deg,
+        )
 
 
 @dataclass
@@ -310,6 +360,10 @@ def create_diffusion_operator(
     if not config.enabled:
         return LayeredDiffusionOperator.disabled(heat_capacity_field.shape)
 
+    grid_resolution_deg = _infer_grid_resolution_deg(lon2d, lat2d)
+    surface_diffusivity_m2_s = config.surface_diffusivity(grid_resolution_deg)
+    atmosphere_diffusivity_m2_s = config.atmosphere_diffusivity(grid_resolution_deg)
+
     if land_mask is None:
         land_mask = np.zeros_like(heat_capacity_field, dtype=bool)
 
@@ -352,7 +406,7 @@ def create_diffusion_operator(
         cell_area_field,
         config=config,
         active_mask=~land_mask,
-        diffusivity_m2_s=config.surface_diffusivity_m2_s,
+        diffusivity_m2_s=surface_diffusivity_m2_s,
     )
     atmosphere_operator = _build_single_layer_operator(
         lon2d,
@@ -360,7 +414,7 @@ def create_diffusion_operator(
         atmosphere_heat_capacity_field,
         cell_area_field,
         config=config,
-        diffusivity_m2_s=config.atmosphere_diffusivity_m2_s,
+        diffusivity_m2_s=atmosphere_diffusivity_m2_s,
     )
 
     return LayeredDiffusionOperator(

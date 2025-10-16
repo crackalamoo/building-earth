@@ -9,6 +9,7 @@ import cmocean
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
 
+from climate_sim.modeling.advection import GeostrophicAdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
@@ -19,14 +20,16 @@ from climate_sim.utils.solver import compute_periodic_cycle_celsius
 def _build_configs(
     *,
     enable_diffusion: bool,
+    enable_advection: bool,
     include_atmosphere: bool,
     use_geometry: bool,
-) -> Tuple[RadiationConfig, DiffusionConfig]:
+) -> Tuple[RadiationConfig, DiffusionConfig, GeostrophicAdvectionConfig]:
     radiation_cfg = RadiationConfig(include_atmosphere=include_atmosphere)
     diffusion_cfg = DiffusionConfig(
         enabled=enable_diffusion, use_spherical_geometry=use_geometry
     )
-    return radiation_cfg, diffusion_cfg
+    advection_cfg = GeostrophicAdvectionConfig(enabled=enable_advection)
+    return radiation_cfg, diffusion_cfg, advection_cfg
 
 
 def _summarize(flags: Dict[str, bool]) -> str:
@@ -78,6 +81,19 @@ def main() -> None:
         help="Disable lateral diffusion in the baseline case",
     )
     parser.add_argument(
+        "--base-advection",
+        dest="base_advection",
+        action="store_true",
+        default=True,
+        help="Enable geostrophic atmospheric advection in the baseline case (default)",
+    )
+    parser.add_argument(
+        "--no-base-advection",
+        dest="base_advection",
+        action="store_false",
+        help="Disable geostrophic atmospheric advection in the baseline case",
+    )
+    parser.add_argument(
         "--base-atmosphere",
         dest="base_atmosphere",
         action="store_true",
@@ -116,6 +132,19 @@ def main() -> None:
         dest="experiment_diffusion",
         action="store_false",
         help="Disable lateral diffusion in the experiment case",
+    )
+    parser.add_argument(
+        "--exp-advection",
+        dest="experiment_advection",
+        action="store_true",
+        default=True,
+        help="Enable geostrophic atmospheric advection in the experiment case (default)",
+    )
+    parser.add_argument(
+        "--no-exp-advection",
+        dest="experiment_advection",
+        action="store_false",
+        help="Disable geostrophic atmospheric advection in the experiment case",
     )
     parser.add_argument(
         "--exp-atmosphere",
@@ -159,13 +188,15 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    base_rad, base_diff = _build_configs(
+    base_rad, base_diff, base_adv = _build_configs(
         enable_diffusion=args.base_diffusion,
+        enable_advection=args.base_advection,
         include_atmosphere=args.base_atmosphere,
         use_geometry=args.base_geometry,
     )
-    exp_rad, exp_diff = _build_configs(
+    exp_rad, exp_diff, exp_adv = _build_configs(
         enable_diffusion=args.experiment_diffusion,
+        enable_advection=args.experiment_advection,
         include_atmosphere=args.experiment_atmosphere,
         use_geometry=args.experiment_geometry,
     )
@@ -178,6 +209,7 @@ def main() -> None:
         solar_constant=args.solar_constant,
         radiation_config=base_rad,
         diffusion_config=base_diff,
+        advection_config=base_adv,
         snow_config=base_snow,
         return_layer_map=True,
     )
@@ -186,6 +218,7 @@ def main() -> None:
         solar_constant=args.solar_constant,
         radiation_config=exp_rad,
         diffusion_config=exp_diff,
+        advection_config=exp_adv,
         snow_config=exp_snow,
         return_layer_map=True,
     )
@@ -196,12 +229,14 @@ def main() -> None:
 
     base_summary = {
         "diffusion": args.base_diffusion,
+        "advection": args.base_advection,
         "atmosphere": args.base_atmosphere,
         "geometry": args.base_geometry,
         "snow": args.base_snow,
     }
     exp_summary = {
         "diffusion": args.experiment_diffusion,
+        "advection": args.experiment_advection,
         "atmosphere": args.experiment_atmosphere,
         "geometry": args.experiment_geometry,
         "snow": args.experiment_snow,

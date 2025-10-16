@@ -10,15 +10,19 @@ from scipy import sparse
 from scipy.sparse import linalg as splinalg
 
 import climate_sim.modeling.radiation as radiation
-from climate_sim.modeling.radiation import RadiationConfig
-from climate_sim.modeling.snow_albedo import SnowAlbedoConfig, apply_snow_albedo
-from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
-from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
+from climate_sim.modeling.advection import (
+    GeostrophicAdvectionConfig,
+    GeostrophicAdvectionOperator,
+)
 from climate_sim.modeling.diffusion import (
     DiffusionConfig,
     LayeredDiffusionOperator,
     create_diffusion_operator,
 )
+from climate_sim.modeling.radiation import RadiationConfig
+from climate_sim.modeling.snow_albedo import SnowAlbedoConfig, apply_snow_albedo
+from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
+from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
 from climate_sim.utils.landmask import (
     compute_albedo_field,
     compute_heat_capacity_field,
@@ -44,7 +48,17 @@ class Linearisation:
 
 RhsDerivative = Linearisation
 RhsDerivativeFunc = Callable[[np.ndarray, np.ndarray], RhsDerivative]
-RhsFactory = Callable[[np.ndarray, np.ndarray, LayeredDiffusionOperator, RadiationConfig], Tuple[RhsFunc, RhsDerivativeFunc]]
+RhsFactory = Callable[
+    [
+        np.ndarray,
+        np.ndarray,
+        LayeredDiffusionOperator,
+        RadiationConfig,
+        np.ndarray,
+        GeostrophicAdvectionOperator | None,
+    ],
+    Tuple[RhsFunc, RhsDerivativeFunc],
+]
 InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig], np.ndarray]
 MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
 HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
@@ -356,6 +370,7 @@ def compute_periodic_cycle_kelvin(
     initial_guess_fn: InitialGuessFunc,
     radiation_config: RadiationConfig,
     diffusion_config: DiffusionConfig,
+    advection_config: GeostrophicAdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Solve for the periodic temperature cycle and return results in Kelvin with the converged albedo field."""
@@ -386,6 +401,18 @@ def compute_periodic_cycle_kelvin(
         atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
         config=diffusion_config,
     )
+    ocean_mask = ~land_mask
+    advection_operator: GeostrophicAdvectionOperator | None = None
+    if (
+        advection_config is not None
+        and advection_config.enabled
+        and radiation_config.include_atmosphere
+    ):
+        advection_operator = GeostrophicAdvectionOperator(
+            lon2d,
+            lat2d,
+            config=advection_config,
+        )
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
 
     def solve_with_albedo(
@@ -393,7 +420,12 @@ def compute_periodic_cycle_kelvin(
         initial_temperature: np.ndarray | None,
     ) -> tuple[np.ndarray, np.ndarray]:
         rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
-            heat_capacity_field, albedo_field, diffusion_operator, radiation_config
+            heat_capacity_field,
+            albedo_field,
+            diffusion_operator,
+            radiation_config,
+            ocean_mask,
+            advection_operator,
         )
 
         if initial_temperature is None:
@@ -465,6 +497,7 @@ def compute_periodic_cycle_celsius(
     land_heat_capacity: float = None,
     radiation_config: RadiationConfig | None = None,
     diffusion_config: DiffusionConfig | None = None,
+    advection_config: GeostrophicAdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     return_layer_map: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
@@ -483,6 +516,7 @@ def compute_periodic_cycle_celsius(
 
     resolved_radiation = radiation_config or RadiationConfig()
     resolved_diffusion = diffusion_config or DiffusionConfig()
+    resolved_advection = advection_config or GeostrophicAdvectionConfig()
     resolved_snow = snow_config or SnowAlbedoConfig()
 
     def rhs_factory(
@@ -490,6 +524,8 @@ def compute_periodic_cycle_celsius(
         albedo_field: np.ndarray,
         diffusion_operator: LayeredDiffusionOperator,
         config: RadiationConfig,
+        ocean_mask: np.ndarray,
+        advection_operator: GeostrophicAdvectionOperator | None,
     ):
         surface_matrix = None
         if diffusion_operator.surface.enabled:
@@ -519,9 +555,13 @@ def compute_periodic_cycle_celsius(
                     radiative[0] += diffusion_operator.surface.tendency(temperature[0])
                 if diffusion_operator.atmosphere.enabled:
                     radiative[1] += diffusion_operator.atmosphere.tendency(temperature[1])
+                if advection_operator is not None and advection_operator.enabled:
+                    radiative[1] += advection_operator.tendency(temperature[1])
                 return radiative
             if diffusion_operator.surface.enabled:
-                return radiative + diffusion_operator.surface.tendency(temperature)
+                radiative = radiative + diffusion_operator.surface.tendency(temperature)
+            if advection_operator is not None and advection_operator.enabled:
+                radiative = radiative + advection_operator.tendency(temperature)
             return radiative
 
         def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> RhsDerivative:
@@ -565,6 +605,7 @@ def compute_periodic_cycle_celsius(
         initial_guess_fn=initial_guess_fn,
         radiation_config=resolved_radiation,
         diffusion_config=resolved_diffusion,
+        advection_config=resolved_advection,
         snow_config=resolved_snow,
     )
 
