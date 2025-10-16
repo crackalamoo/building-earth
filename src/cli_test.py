@@ -175,6 +175,14 @@ def main() -> None:
         snow_config=snow_config,
         return_layer_map=True,
     )
+    print(
+        "Configuration: "
+        f"atmosphere={'on' if args.atmosphere else 'off'}, "
+        f"diffusion={'on' if args.diffusion else 'off'}, "
+        f"advection={'on' if args.advection else 'off'}, "
+        f"Ekman friction={'on' if args.ekman_friction else 'off'}, "
+        f"snow={'on' if args.snow else 'off'}"
+    )
     surface_cycle = layers["surface"]
     cell_areas = spherical_cell_area(
         lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
