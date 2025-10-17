@@ -175,7 +175,7 @@ def main() -> None:
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
     from climate_sim.utils.solver import compute_periodic_cycle_celsius
-    from climate_sim.utils.math_core import spherical_cell_area
+    from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(
@@ -198,7 +198,7 @@ def main() -> None:
         lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
     )
     surface_area_mean = float(
-        np.average(surface_cycle.mean(axis=0), weights=cell_areas)
+        area_weighted_mean(surface_cycle.mean(axis=0), cell_areas)
     )
     unit = _temperature_unit(args.fahrenheit)
     print(

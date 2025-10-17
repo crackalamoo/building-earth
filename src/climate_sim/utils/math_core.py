@@ -107,3 +107,32 @@ def spherical_cell_area(
     area = (earth_radius_m**2) * delta_sin[:, np.newaxis] * delta_lon[np.newaxis, :]
     return area
 
+
+def area_weighted_mean(
+    values: np.ndarray,
+    weights: np.ndarray,
+    *,
+    axis: int | tuple[int, ...] | None = None,
+) -> np.ndarray:
+    """Compute an area-weighted mean with explicit weight validation."""
+
+    values_arr, weights_arr = np.broadcast_arrays(
+        np.asarray(values, dtype=float), np.asarray(weights, dtype=float)
+    )
+
+    if axis is None:
+        total_weight = np.sum(weights_arr)
+        if total_weight <= 0.0:
+            raise ValueError("Total weight must be positive for a weighted mean")
+        return np.sum(values_arr * weights_arr) / total_weight
+
+    numerator = np.sum(values_arr * weights_arr, axis=axis)
+    weight_sum = np.sum(weights_arr, axis=axis)
+
+    if np.any(weight_sum <= 0.0):
+        raise ValueError("Weight sums must be positive along the specified axis")
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        result = numerator / weight_sum
+    return result
+
