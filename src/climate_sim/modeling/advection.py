@@ -18,6 +18,7 @@ from climate_sim.utils.math_core import (
     regular_longitude_edges,
     spherical_cell_area,
 )
+from climate_sim.utils.landmask import compute_land_mask
 
 def compute_surface_roughness(
     lon2d: np.ndarray,
@@ -196,6 +197,11 @@ class GeostrophicAdvectionOperator:
         )
         self._coriolis = coriolis
 
+        self._land_mask = compute_land_mask(self._lon2d, self._lat2d)
+        self._drag_coefficient = compute_surface_roughness(
+            self._lon2d, self._lat2d, self._land_mask
+        )
+
         if config.use_pressure_gradients:
             elevation_data = load_elevation_data()
             assert elevation_data is not None, "Elevation data could not be loaded"
@@ -228,14 +234,19 @@ class GeostrophicAdvectionOperator:
             grad_x, grad_y = self._horizontal_gradient(pressure)
         else:
             grad_x, grad_y = self._horizontal_gradient(temperature)
-        return _compute_geostrophic_wind_components(
+        geostrophic = _compute_geostrophic_wind_components(
             grad_x,
             grad_y,
             temperature,
             coriolis=self._coriolis,
             config=self._config,
             pressure=pressure,
-        ), grad_x, grad_y
+        )
+
+        u_geo, v_geo, speed_geo = geostrophic
+        u_final, v_final, speed_final = self._apply_surface_drag(u_geo, v_geo, speed_geo)
+
+        return (u_final, v_final, speed_final), grad_x, grad_y
 
     def _horizontal_gradient(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if field.shape != self._lon2d.shape:
@@ -256,4 +267,74 @@ class GeostrophicAdvectionOperator:
             grad_x = np.zeros_like(field)
 
         return grad_x, grad_y
+
+    def _apply_surface_drag(
+        self,
+        u_geo: np.ndarray,
+        v_geo: np.ndarray,
+        speed_geo: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Adjust the geostrophic wind for Rayleigh drag and turning."""
+
+        drag_coeff = self._drag_coefficient
+        coriolis = self._coriolis
+        coriolis_abs = np.maximum(np.abs(coriolis), self._config.coriolis_floor_s)
+
+        h_m = 1000.0
+        k = drag_coeff / h_m
+
+        geo_speed_safe = np.maximum(speed_geo, 1.0e-6)
+        inv_g2 = 1.0 / (geo_speed_safe**2)
+        inv_g4 = inv_g2**2
+
+        ratio = (k**2) / (coriolis_abs**2 * geo_speed_safe**2)
+
+        sqrt_term = np.sqrt(inv_g4 + 4.0 * ratio)
+        numerator = -inv_g2 + sqrt_term
+        denominator = 2.0 * ratio
+
+        x = np.zeros_like(geo_speed_safe)
+        near_zero = ratio < 1.0e-14
+        x[near_zero] = geo_speed_safe[near_zero] ** 2
+
+        valid = ~near_zero
+        if np.any(valid):
+            with np.errstate(divide="ignore", invalid="ignore"):
+                x_valid = numerator[valid] / denominator[valid]
+            x[valid] = np.clip(x_valid, 0.0, None)
+
+        u_mag = np.sqrt(np.clip(x, 0.0, None))
+
+        zero_geo = speed_geo < 1.0e-6
+        if np.any(zero_geo):
+            u_mag[zero_geo] = 0.0
+
+        r = k * u_mag
+        if np.any(zero_geo):
+            r[zero_geo] = 0.0
+
+        r_over_f = r / coriolis_abs
+        alpha = np.arctan(r_over_f)
+        if np.any(zero_geo):
+            alpha[zero_geo] = 0.0
+
+        scale = 1.0 / np.sqrt(1.0 + r_over_f**2)
+        if np.any(zero_geo):
+            scale[zero_geo] = 1.0
+
+        rotation_angle = np.where(coriolis >= 0.0, -alpha, alpha)
+        cos_a = np.cos(rotation_angle)
+        sin_a = np.sin(rotation_angle)
+
+        u_rot = u_geo * cos_a - v_geo * sin_a
+        v_rot = u_geo * sin_a + v_geo * cos_a
+
+        u_final = scale * u_rot
+        v_final = scale * v_rot
+        speed_final = np.hypot(u_final, v_final)
+
+        if np.any(zero_geo):
+            speed_final[zero_geo] = 0.0
+
+        return u_final, v_final, speed_final
 

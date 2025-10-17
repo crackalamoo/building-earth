@@ -138,6 +138,8 @@ def compute_cell_neutral_drag_coefficient(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     data: xr.DataArray | None = None,
+    *,
+    land_mask: np.ndarray | None = None,
     cache: bool = True,
 ) -> np.ndarray:
     """Return the neutral 10 m drag coefficient for the provided grid cells."""
@@ -145,7 +147,12 @@ def compute_cell_neutral_drag_coefficient(
     if lon2d.shape != lat2d.shape:
         raise ValueError("Longitude and latitude grids must share the same shape")
 
-    if cache:
+    if land_mask is not None and land_mask.shape != lon2d.shape:
+        raise ValueError("Provided land mask must match the longitude/latitude grid shape")
+
+    use_cache = cache and land_mask is None
+
+    if use_cache:
         data_dir = os.getenv("DATA_DIR")
         if data_dir is not None:
             data_dir = Path(data_dir)
@@ -153,7 +160,11 @@ def compute_cell_neutral_drag_coefficient(
             if cache_path.exists():
                 try:
                     with np.load(cache_path) as cached:
-                        drag_coeff = cached["drag_coefficient"]
+                        drag_coeff = cached.get("drag_coefficient")
+                        if drag_coeff is None:
+                            drag_coeff = cached.get("drag_coefficient_base")
+                        if drag_coeff is None:
+                            raise KeyError("drag coefficient cache missing expected arrays")
                         if drag_coeff.shape == lon2d.shape:
                             return drag_coeff
                 except Exception as exc:  # pragma: no cover - logging path
@@ -166,7 +177,7 @@ def compute_cell_neutral_drag_coefficient(
 
     dataset = data if data is not None else load_elevation_data()
     if dataset is None:
-        return np.full_like(lon_array, 0.02, dtype=float)
+        return np.full_like(lon_array, 2.0e-4, dtype=float)
 
     elevation_m = compute_cell_elevation(
         lon_array,
@@ -219,27 +230,37 @@ def compute_cell_neutral_drag_coefficient(
     z0_orographic = np.minimum(z0_orographic, 0.8)
 
     z0_total = np.full_like(elevation_m, z0_base_land, dtype=float)
-    land_mask = elevation_m >= 0.0
-    if np.any(land_mask):
+    terrain_land_mask = elevation_m >= 0.0
+    if np.any(terrain_land_mask):
         combined = z0_base_land + z0_orographic
         combined = np.clip(combined, 0.02, 2.0)
-        z0_total[land_mask] = combined[land_mask]
+        z0_total[terrain_land_mask] = combined[terrain_land_mask]
 
     kappa = 0.4
     with np.errstate(divide="ignore", invalid="ignore"):
         log_argument = 10.0 / np.maximum(z0_total, 1.0e-6)
         drag_coefficient = (kappa / np.log(log_argument)) ** 2
 
-    if cache:
+    water_mask: np.ndarray
+    if land_mask is not None:
+        water_mask = ~np.asarray(land_mask, dtype=bool)
+    else:
+        water_mask = ~terrain_land_mask
+
+    drag_result = np.array(drag_coefficient, copy=True)
+    if np.any(water_mask):
+        drag_result[water_mask] = 2.0e-4
+
+    if use_cache:
         data_dir = os.getenv("DATA_DIR")
         assert (
             data_dir is not None
         ), "Please set the DATA_DIR environment variable to enable drag coefficient caching."
         data_dir = Path(data_dir)
         cache_path = data_dir / "drag_coefficient_cache.npz"
-        np.savez_compressed(cache_path, drag_coefficient=drag_coefficient)
+        np.savez_compressed(cache_path, drag_coefficient=drag_result)
 
-    return drag_coefficient
+    return drag_result
 
 
 def roughness_length_from_neutral_drag(drag_coefficient: np.ndarray) -> np.ndarray:
