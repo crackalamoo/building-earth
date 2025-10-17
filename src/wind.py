@@ -18,6 +18,8 @@ from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 from climate_sim.utils.constants import R_EARTH_METERS
+from climate_sim.utils.math_core import spherical_cell_area
+from climate_sim.utils.elevation import pressure_from_temperature_elevation
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -59,10 +61,16 @@ else:
 
 temperature_cycle_k = temperature_cycle_c + 273.15
 
+pressure = pressure_from_temperature_elevation(temperature_cycle_k)
+
 operator = GeostrophicAdvectionOperator(
     lon2d,
     lat2d,
     config=advection_config,
+)
+
+cell_areas = spherical_cell_area(
+    lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
 )
 
 months = temperature_cycle_k.shape[0]
@@ -143,6 +151,17 @@ v0 = wind_v[0, ::stride, ::stride]
 s0 = wind_speed[0, ::stride, ::stride]
 u0_deg, v0_deg = to_deg_per_sec(u0, v0)
 
+avg_wind_speed = np.average(
+    wind_speed, weights=cell_areas, axis=(1, 2)
+)
+print("Average wind speeds (m/s) per month:")
+for month_idx in range(months):
+    month_name = month_names[month_idx % len(month_names)]
+    speed = avg_wind_speed[month_idx]
+    print(f"  {month_name}: {speed:.2f} m/s")
+print("Max wind speed overall: {:.2f} m/s".format(float(np.max(wind_speed))))
+print("Min wind speed overall: {:.2f} m/s".format(float(np.min(wind_speed[np.nonzero(wind_speed)]))))
+
 def _draw_streamplot(
     u_field: np.ndarray, v_field: np.ndarray, magnitude: np.ndarray
 ) -> StreamplotSet:
@@ -167,10 +186,21 @@ stream = _draw_streamplot(
     s0,
 )
 
+pressure_i = pressure[0]
+pressure_plot = ax.imshow(
+    pressure_i,
+    origin="lower",
+    transform=projection,
+    extent=(lon_sorted[0], lon_sorted[-1], lat2d[0,0], lat2d[-1,0]),
+    cmap="plasma",
+    alpha=0.3,
+)
+
 cbar = fig.colorbar(stream.lines, ax=ax, orientation="vertical", pad=0.04, fraction=0.046)
 cbar.set_label("Wind speed (m/s)")
 
 stream_container = {"obj": stream}
+pressure_container = {"obj": pressure_plot}
 
 
 def _clear_streamplot_artists(stream_set: StreamplotSet) -> None:
@@ -184,7 +214,7 @@ def _clear_streamplot_artists(stream_set: StreamplotSet) -> None:
     for art in ax.get_children():
         if not isinstance(art, matplotlib.patches.FancyArrowPatch):
             continue
-        art.remove()        # Method 1
+        art.remove()
 
 initial_label = month_names[0 % len(month_names)]
 ax.set_title(f"Geostrophic Wind ({layer_label}) – {initial_label}")
@@ -215,6 +245,16 @@ def update(month_idx: float) -> None:
         u_deg,
         v_deg,
         speed_field,
+    )
+
+    pressure_i = pressure[index]
+    ax.imshow(
+        pressure_i,
+        origin="lower",
+        transform=projection,
+        extent=(lon_sorted[0], lon_sorted[-1], lat2d[0,0], lat2d[-1,0]),
+        cmap="plasma",
+        alpha=0.3,
     )
 
     stream_container["obj"] = new_stream

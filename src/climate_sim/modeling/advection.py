@@ -7,31 +7,34 @@ from dataclasses import dataclass
 import numpy as np
 
 from climate_sim.utils.elevation import load_elevation_data, compute_cell_elevation, pressure_from_temperature_elevation
+from climate_sim.utils.constants import GAS_CONSTANT_J_KG_K
 
 def _compute_geostrophic_wind_components(
     grad_x: np.ndarray,
     grad_y: np.ndarray,
     temperature: np.ndarray,
     *,
-    abs_coriolis: np.ndarray,
+    coriolis: np.ndarray,
     config: "GeostrophicAdvectionConfig",
     pressure: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return the geostrophic wind given horizontal temperature gradients."""
 
-    coriolis = np.maximum(abs_coriolis, config.coriolis_floor_s)
+    # coriolis = np.maximum(coriolis, config.coriolis_floor_s)
+    coriolis_safe = np.sign(coriolis) * np.maximum(np.abs(coriolis), config.coriolis_floor_s)
     if pressure is not None:
         pressure_safe = np.maximum(pressure, 100.0)
-        velocity_x = grad_y / (coriolis * pressure_safe)
-        velocity_y = -grad_x / (coriolis * pressure_safe)
+        scale = GAS_CONSTANT_J_KG_K * temperature / (coriolis_safe * pressure_safe + 1e-8)
+        velocity_x = -grad_y * scale
+        velocity_y = grad_x * scale
         speed = np.hypot(velocity_x, velocity_y)
         return velocity_x, velocity_y, speed
 
     temp_safe = np.maximum(temperature, config.minimum_temperature_K)
     scale = config.gravity_m_s2 * config.troposphere_scale_height_m
 
-    velocity_x = scale * grad_y / (coriolis * temp_safe)
-    velocity_y = -scale * grad_x / (coriolis * temp_safe)
+    velocity_x = -scale * grad_y / (coriolis_safe * temp_safe + 1e-8)
+    velocity_y = scale * grad_x / (coriolis_safe * temp_safe + 1e-8)
     speed = np.hypot(velocity_x, velocity_y)
 
     return velocity_x, velocity_y, speed
@@ -46,7 +49,7 @@ class GeostrophicAdvectionConfig:
     earth_rotation_rate_rad_s: float = 7.2921e-5
     gravity_m_s2: float = 9.81
     troposphere_scale_height_m: float = 8000.0
-    coriolis_floor_s: float = 1.0e-5
+    coriolis_floor_s: float = 1e-4
     minimum_temperature_K: float = 150.0
     use_pressure_gradients: bool = True
 
@@ -95,7 +98,7 @@ class GeostrophicAdvectionOperator:
         coriolis = 2.0 * config.earth_rotation_rate_rad_s * np.sin(
             np.deg2rad(self._lat2d)
         )
-        self._abs_coriolis = np.abs(coriolis)
+        self._coriolis = coriolis
 
         if config.use_pressure_gradients:
             elevation_data = load_elevation_data()
@@ -133,7 +136,7 @@ class GeostrophicAdvectionOperator:
             grad_x,
             grad_y,
             temperature,
-            abs_coriolis=self._abs_coriolis,
+            coriolis=self._coriolis,
             config=self._config,
             pressure=pressure,
         ), grad_x, grad_y
@@ -164,20 +167,7 @@ class GeostrophicAdvectionOperator:
         if not self.enabled:
             return np.zeros_like(temperature)
 
-        pressure = None
-        if self._config.use_pressure_gradients:
-            pressure = pressure_from_temperature_elevation(temperature)
-            grad_x, grad_y = self._horizontal_gradient(pressure)
-        else:
-            grad_x, grad_y = self._horizontal_gradient(temperature)
-        velocity_x, velocity_y, _speed = _compute_geostrophic_wind_components(
-            grad_x,
-            grad_y,
-            temperature,
-            abs_coriolis=self._abs_coriolis,
-            config=self._config,
-            pressure=pressure,
-        )
+        (velocity_x, velocity_y, _speed), grad_x, grad_y = self.wind_field(temperature)
 
         tendency = -(velocity_x * grad_x + velocity_y * grad_y)
         return tendency

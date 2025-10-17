@@ -9,7 +9,7 @@ from PIL import Image
 from functools import lru_cache
 import xarray as xr
 
-from climate_sim.utils.constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2
+from climate_sim.utils.constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2, GAS_CONSTANT_J_KG_K
 
 def download_etopo(dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -139,20 +139,35 @@ def pressure_from_temperature_elevation(
     temperature_K: np.ndarray,
     elevation_m: np.ndarray | None = None,
     gravity_m_s2: float = 9.81,
-    gas_constant_J_kgK: float = 287.0,
 ) -> np.ndarray:
     """Compute surface pressure (Pa) from temperature and elevation using a hydrostatic profile."""
 
     if elevation_m is not None and temperature_K.shape != elevation_m.shape:
         raise ValueError("Temperature and elevation fields must share the same shape")
 
-    temp_safe = np.maximum(np.asarray(temperature_K, dtype=float), 1.0)
-    elev = elevation_m if elevation_m is not None else 0
-    exponent = -gravity_m_s2 * elev / (gas_constant_J_kgK * temp_safe)
-    sea_level_pressure_pa = 10 * np.exp(gravity_m_s2 * 12500 / (gas_constant_J_kgK * temp_safe))
-    sea_level_pressure_pa *= ATMOSPHERE_MASS / EARTH_SURFACE_AREA_M2 * gravity_m_s2 / np.mean(sea_level_pressure_pa)
-    pressure = sea_level_pressure_pa * np.exp(exponent)
-    return pressure
+    # temp_safe = np.maximum(np.asarray(temperature_K, dtype=float), 1.0)
+    # elev = elevation_m if elevation_m is not None else 0
+    # exponent = -gravity_m_s2 * elev / (GAS_CONSTANT_J_KG_K * temp_safe)
+    # sea_level_pressure_pa = 10 * np.exp(gravity_m_s2 * 12500 / (GAS_CONSTANT_J_KG_K * temp_safe))
+    # sea_level_pressure_pa *= ATMOSPHERE_MASS / EARTH_SURFACE_AREA_M2 * gravity_m_s2 / np.mean(sea_level_pressure_pa)
+    # pressure = sea_level_pressure_pa * np.exp(exponent)
+
+    temp_safe = np.maximum(temperature_K, 1.0)
+    elev = 0.0 if elevation_m is None else elevation_m
+
+    # Base mean pressure from global mass balance
+    mean_p = ATMOSPHERE_MASS * gravity_m_s2 / EARTH_SURFACE_AREA_M2
+
+    # Warmer columns (larger T) produce slightly higher geopotential height for same top pressure
+    # -> lower surface pressure (thermal low)
+    # The factor exp(-g * H / (R T)) captures that effect
+    p_surface = mean_p * np.exp(-gravity_m_s2 * elev / (GAS_CONSTANT_J_KG_K * temp_safe))
+    p_surface *= np.exp(-gravity_m_s2 * 12500 / (GAS_CONSTANT_J_KG_K * temp_safe))
+
+    # Normalize to conserve total mass
+    p_surface *= mean_p / np.nanmean(p_surface)
+
+    return p_surface
 
 def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolution: float = 0.1, contrast_water: bool = True) -> Path:
     if out_dir is None:
