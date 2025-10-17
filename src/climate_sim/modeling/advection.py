@@ -161,13 +161,3 @@ class GeostrophicAdvectionOperator:
 
         return grad_x, grad_y
 
-    def tendency(self, temperature: np.ndarray) -> np.ndarray:
-        """Return the geostrophic advection tendency (K/s) for the given field."""
-
-        if not self.enabled:
-            return np.zeros_like(temperature)
-
-        (velocity_x, velocity_y, _speed), grad_x, grad_y = self.wind_field(temperature)
-
-        tendency = -(velocity_x * grad_x + velocity_y * grad_y)
-        return tendency

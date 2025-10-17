@@ -555,13 +555,9 @@ def compute_periodic_cycle_celsius(
                     radiative[0] += diffusion_operator.surface.tendency(temperature[0])
                 if diffusion_operator.atmosphere.enabled:
                     radiative[1] += diffusion_operator.atmosphere.tendency(temperature[1])
-                if advection_operator is not None and advection_operator.enabled:
-                    radiative[1] += advection_operator.tendency(temperature[1])
                 return radiative
             if diffusion_operator.surface.enabled:
                 radiative = radiative + diffusion_operator.surface.tendency(temperature)
-            if advection_operator is not None and advection_operator.enabled:
-                radiative = radiative + advection_operator.tendency(temperature)
             return radiative
 
         def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> RhsDerivative:
