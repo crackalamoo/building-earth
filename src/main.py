@@ -97,8 +97,31 @@ def _parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable snow-albedo adjustments",
     )
+    parser.add_argument(
+        "--fahrenheit",
+        dest="fahrenheit",
+        action="store_true",
+        help="Display temperatures in degrees Fahrenheit instead of Celsius",
+    )
 
     return parser.parse_args()
+
+
+def _convert_temperature(
+    values: np.ndarray | float, use_fahrenheit: bool
+) -> np.ndarray | float:
+    if not use_fahrenheit:
+        return values
+    converted = (np.asarray(values) * (9.0 / 5.0)) + 32.0
+    if isinstance(values, np.ndarray):
+        return converted
+    if np.isscalar(values):
+        return float(converted)
+    return converted
+
+
+def _temperature_unit(use_fahrenheit: bool) -> str:
+    return "°F" if use_fahrenheit else "°C"
 
 
 def main() -> None:
@@ -132,12 +155,13 @@ def main() -> None:
     if albedo_field is not None:
         albedo_area_mean = float(np.average(albedo_field, weights=cell_areas))
 
+    unit = _temperature_unit(args.fahrenheit)
     summary_parts = [
         "Surface layer:",
-        f"Tmin={surface_cycle.min():.1f}°C",
-        f"Tmax={surface_cycle.max():.1f}°C",
-        f"simple mean={surface_cycle.mean():.1f}°C",
-        f"area-weighted mean={surface_area_mean:.1f}°C",
+        f"Tmin={_convert_temperature(surface_cycle.min(), args.fahrenheit):.1f}{unit}",
+        f"Tmax={_convert_temperature(surface_cycle.max(), args.fahrenheit):.1f}{unit}",
+        f"simple mean={_convert_temperature(surface_cycle.mean(), args.fahrenheit):.1f}{unit}",
+        f"area-weighted mean={_convert_temperature(surface_area_mean, args.fahrenheit):.1f}{unit}",
     ]
     if albedo_area_mean is not None:
         summary_parts.append(f"area-weighted mean albedo={albedo_area_mean:.3f}")
@@ -151,10 +175,10 @@ def main() -> None:
         )
         print(
             "Atmosphere layer: "
-            f"Tmin={atmosphere_cycle.min():.1f}°C, "
-            f"Tmax={atmosphere_cycle.max():.1f}°C, "
-            f"simple mean={atmosphere_cycle.mean():.1f}°C, "
-            f"area-weighted mean={atmosphere_area_mean:.1f}°C"
+            f"Tmin={_convert_temperature(atmosphere_cycle.min(), args.fahrenheit):.1f}{unit}, "
+            f"Tmax={_convert_temperature(atmosphere_cycle.max(), args.fahrenheit):.1f}{unit}, "
+            f"simple mean={_convert_temperature(atmosphere_cycle.mean(), args.fahrenheit):.1f}{unit}, "
+            f"area-weighted mean={_convert_temperature(atmosphere_area_mean, args.fahrenheit):.1f}{unit}"
         )
 
     layer_cycles: dict[str, np.ndarray] = {"Surface": surface_cycle}
