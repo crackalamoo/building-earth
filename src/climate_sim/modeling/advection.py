@@ -6,8 +6,34 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.utils.elevation import load_elevation_data, compute_cell_elevation, pressure_from_temperature_elevation
+from climate_sim.utils.elevation import (
+    load_elevation_data,
+    compute_cell_elevation,
+    compute_cell_roughness_length,
+    pressure_from_temperature_elevation,
+)
 from climate_sim.utils.constants import GAS_CONSTANT_J_KG_K
+
+def compute_surface_roughness(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    land_mask: np.ndarray,
+) -> np.ndarray:
+    """Return the surface roughness length (m) over the provided grid."""
+
+    if lon2d.shape != lat2d.shape:
+        raise ValueError("Longitude and latitude grids must share the same shape")
+    if lon2d.shape != land_mask.shape:
+        raise ValueError("Land mask must match the longitude/latitude grid shape")
+
+    land_mask_bool = np.asarray(land_mask, dtype=bool)
+
+    elevation_data = load_elevation_data()
+    assert elevation_data is not None, "Elevation data could not be loaded"
+
+    roughness = compute_cell_roughness_length(lon2d, lat2d, data=elevation_data)
+    return np.where(land_mask_bool, roughness, 2.0e-4)
+
 
 def _compute_geostrophic_wind_components(
     grad_x: np.ndarray,
