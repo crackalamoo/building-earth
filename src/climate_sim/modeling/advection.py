@@ -6,8 +6,105 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.utils.elevation import load_elevation_data, compute_cell_elevation, pressure_from_temperature_elevation
-from climate_sim.utils.constants import GAS_CONSTANT_J_KG_K
+from climate_sim.utils.elevation import (
+    load_elevation_data,
+    compute_cell_elevation,
+    compute_cell_neutral_drag_coefficient,
+    pressure_from_temperature_elevation,
+)
+from climate_sim.utils.constants import GAS_CONSTANT_J_KG_K, R_EARTH_METERS
+from climate_sim.utils.math_core import (
+    regular_latitude_edges,
+    regular_longitude_edges,
+    spherical_cell_area,
+)
+from climate_sim.utils.landmask import compute_land_mask
+
+def compute_surface_roughness(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    land_mask: np.ndarray,
+) -> np.ndarray:
+    """Return the neutral 10 m drag coefficient over the provided grid."""
+
+    if lon2d.shape != lat2d.shape:
+        raise ValueError("Longitude and latitude grids must share the same shape")
+    if lon2d.shape != land_mask.shape:
+        raise ValueError("Land mask must match the longitude/latitude grid shape")
+
+    land_mask_bool = np.asarray(land_mask, dtype=bool)
+
+    elevation_data = load_elevation_data()
+    assert elevation_data is not None, "Elevation data could not be loaded"
+    land_shape = land_mask_bool.shape
+
+    lat_centers = lat2d[:, 0]
+    lon_centers = lon2d[0, :]
+
+    lat_edges = regular_latitude_edges(lat_centers)
+    lon_edges = regular_longitude_edges(lon_centers)
+
+    high_res_deg = 0.05
+
+    def _aligned_edges(min_edge: float, max_edge: float) -> np.ndarray:
+        start = np.floor(min_edge / high_res_deg) * high_res_deg
+        end = np.ceil(max_edge / high_res_deg) * high_res_deg
+        return np.arange(start, end + 1e-9, high_res_deg)
+
+    lat_edges_hr = _aligned_edges(lat_edges[0], lat_edges[-1])
+    lon_edges_hr = _aligned_edges(lon_edges[0], lon_edges[-1])
+
+    if lat_edges_hr.size < 2 or lon_edges_hr.size < 2:
+        raise ValueError("High-resolution grid could not be constructed for roughness aggregation")
+
+    lat_centers_hr = lat_edges_hr[:-1] + 0.5 * high_res_deg
+    lon_centers_hr = lon_edges_hr[:-1] + 0.5 * high_res_deg
+
+    lon_hr2d, lat_hr2d = np.meshgrid(lon_centers_hr, lat_centers_hr)
+
+    drag_hr = compute_cell_neutral_drag_coefficient(lon_hr2d, lat_hr2d, data=elevation_data)
+    area_hr = spherical_cell_area(lon_hr2d, lat_hr2d, earth_radius_m=R_EARTH_METERS)
+
+    lat_idx_hr = np.searchsorted(lat_edges, lat_centers_hr, side="right") - 1
+    lon_idx_hr = np.searchsorted(lon_edges, lon_centers_hr, side="right") - 1
+
+    lat_idx_matrix = lat_idx_hr[:, np.newaxis]
+    lon_idx_matrix = lon_idx_hr[np.newaxis, :]
+
+    lat_idx_flat = np.broadcast_to(lat_idx_matrix, drag_hr.shape).ravel()
+    lon_idx_flat = np.broadcast_to(lon_idx_matrix, drag_hr.shape).ravel()
+    values_flat = drag_hr.ravel()
+    weights_flat = area_hr.ravel()
+
+    valid = (
+        (lat_idx_flat >= 0)
+        & (lat_idx_flat < land_shape[0])
+        & (lon_idx_flat >= 0)
+        & (lon_idx_flat < land_shape[1])
+    )
+
+    weighted_sum = np.zeros(land_shape, dtype=float)
+    weight_sum = np.zeros(land_shape, dtype=float)
+
+    np.add.at(
+        weighted_sum,
+        (lat_idx_flat[valid], lon_idx_flat[valid]),
+        values_flat[valid] * weights_flat[valid],
+    )
+    np.add.at(
+        weight_sum,
+        (lat_idx_flat[valid], lon_idx_flat[valid]),
+        weights_flat[valid],
+    )
+
+    if np.any(weight_sum <= 0.0):
+        raise ValueError("Encountered zero total area during roughness aggregation")
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        aggregated_drag = weighted_sum / weight_sum
+
+    return np.where(land_mask_bool, aggregated_drag, 2.0e-4)
+
 
 def _compute_geostrophic_wind_components(
     grad_x: np.ndarray,
@@ -100,6 +197,11 @@ class GeostrophicAdvectionOperator:
         )
         self._coriolis = coriolis
 
+        self._land_mask = compute_land_mask(self._lon2d, self._lat2d)
+        self._drag_coefficient = compute_surface_roughness(
+            self._lon2d, self._lat2d, self._land_mask
+        )
+
         if config.use_pressure_gradients:
             elevation_data = load_elevation_data()
             assert elevation_data is not None, "Elevation data could not be loaded"
@@ -132,14 +234,19 @@ class GeostrophicAdvectionOperator:
             grad_x, grad_y = self._horizontal_gradient(pressure)
         else:
             grad_x, grad_y = self._horizontal_gradient(temperature)
-        return _compute_geostrophic_wind_components(
+        geostrophic = _compute_geostrophic_wind_components(
             grad_x,
             grad_y,
             temperature,
             coriolis=self._coriolis,
             config=self._config,
             pressure=pressure,
-        ), grad_x, grad_y
+        )
+
+        u_geo, v_geo, speed_geo = geostrophic
+        u_final, v_final, speed_final = self._apply_surface_drag(u_geo, v_geo, speed_geo)
+
+        return (u_final, v_final, speed_final), grad_x, grad_y
 
     def _horizontal_gradient(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if field.shape != self._lon2d.shape:
@@ -160,4 +267,74 @@ class GeostrophicAdvectionOperator:
             grad_x = np.zeros_like(field)
 
         return grad_x, grad_y
+
+    def _apply_surface_drag(
+        self,
+        u_geo: np.ndarray,
+        v_geo: np.ndarray,
+        speed_geo: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Adjust the geostrophic wind for Rayleigh drag and turning."""
+
+        drag_coeff = self._drag_coefficient
+        coriolis = self._coriolis
+        coriolis_abs = np.maximum(np.abs(coriolis), self._config.coriolis_floor_s)
+
+        h_m = np.where(self._land_mask, 1000.0, 500.0)
+        k = drag_coeff / h_m
+
+        geo_speed_safe = np.maximum(speed_geo, 1.0e-6)
+        inv_g2 = 1.0 / (geo_speed_safe**2)
+        inv_g4 = inv_g2**2
+
+        ratio = (k**2) / (coriolis_abs**2 * geo_speed_safe**2)
+
+        sqrt_term = np.sqrt(inv_g4 + 4.0 * ratio)
+        numerator = -inv_g2 + sqrt_term
+        denominator = 2.0 * ratio
+
+        x = np.zeros_like(geo_speed_safe)
+        near_zero = ratio < 1.0e-14
+        x[near_zero] = geo_speed_safe[near_zero] ** 2
+
+        valid = ~near_zero
+        if np.any(valid):
+            with np.errstate(divide="ignore", invalid="ignore"):
+                x_valid = numerator[valid] / denominator[valid]
+            x[valid] = np.clip(x_valid, 0.0, None)
+
+        u_mag = np.sqrt(np.clip(x, 0.0, None))
+
+        zero_geo = speed_geo < 1.0e-6
+        if np.any(zero_geo):
+            u_mag[zero_geo] = 0.0
+
+        r = k * u_mag
+        if np.any(zero_geo):
+            r[zero_geo] = 0.0
+
+        r_over_f = r / coriolis_abs
+        alpha = np.arctan(r_over_f)
+        if np.any(zero_geo):
+            alpha[zero_geo] = 0.0
+
+        scale = 1.0 / np.sqrt(1.0 + r_over_f**2)
+        if np.any(zero_geo):
+            scale[zero_geo] = 1.0
+
+        rotation_angle = np.where(coriolis >= 0.0, -alpha, alpha)
+        cos_a = np.cos(rotation_angle)
+        sin_a = np.sin(rotation_angle)
+
+        u_rot = u_geo * cos_a - v_geo * sin_a
+        v_rot = u_geo * sin_a + v_geo * cos_a
+
+        u_final = scale * u_rot
+        v_final = scale * v_rot
+        speed_final = np.hypot(u_final, v_final)
+
+        if np.any(zero_geo):
+            speed_final[zero_geo] = 0.0
+
+        return u_final, v_final, speed_final
 

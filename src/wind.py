@@ -18,7 +18,7 @@ from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 from climate_sim.utils.constants import R_EARTH_METERS
-from climate_sim.utils.math_core import spherical_cell_area
+from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.utils.elevation import pressure_from_temperature_elevation
 
 from dotenv import load_dotenv
@@ -151,8 +151,8 @@ v0 = wind_v[0, ::stride, ::stride]
 s0 = wind_speed[0, ::stride, ::stride]
 u0_deg, v0_deg = to_deg_per_sec(u0, v0)
 
-avg_wind_speed = np.average(
-    wind_speed, weights=cell_areas, axis=(1, 2)
+avg_wind_speed = area_weighted_mean(
+    wind_speed, cell_areas, axis=(1, 2)
 )
 print("Average wind speeds (m/s) per month:")
 for month_idx in range(months):

@@ -31,7 +31,6 @@ def _wrap_longitudes(lon_deg: np.ndarray) -> np.ndarray:
 
     return ((lon_deg + 180.0) % 360.0) - 180.0
 
-
 @lru_cache(maxsize=1)
 def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
     """Return an elevation dataset registered to WGS84 coordinates."""
@@ -135,6 +134,147 @@ def compute_cell_elevation(
     return res
 
 
+def compute_cell_neutral_drag_coefficient(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    data: xr.DataArray | None = None,
+    *,
+    land_mask: np.ndarray | None = None,
+    cache: bool = True,
+) -> np.ndarray:
+    """Return the neutral 10 m drag coefficient for the provided grid cells."""
+
+    if lon2d.shape != lat2d.shape:
+        raise ValueError("Longitude and latitude grids must share the same shape")
+
+    if land_mask is not None and land_mask.shape != lon2d.shape:
+        raise ValueError("Provided land mask must match the longitude/latitude grid shape")
+
+    use_cache = cache and land_mask is None
+
+    if use_cache:
+        data_dir = os.getenv("DATA_DIR")
+        if data_dir is not None:
+            data_dir = Path(data_dir)
+            cache_path = data_dir / "drag_coefficient_cache.npz"
+            if cache_path.exists():
+                try:
+                    with np.load(cache_path) as cached:
+                        drag_coeff = cached.get("drag_coefficient")
+                        if drag_coeff is None:
+                            drag_coeff = cached.get("drag_coefficient_base")
+                        if drag_coeff is None:
+                            raise KeyError("drag coefficient cache missing expected arrays")
+                        if drag_coeff.shape == lon2d.shape:
+                            return drag_coeff
+                except Exception as exc:  # pragma: no cover - logging path
+                    print(
+                        f"Failed to load cached drag coefficient data: {exc}, recomputing..."
+                    )
+
+    lon_array = np.asarray(lon2d, dtype=float)
+    lat_array = np.asarray(lat2d, dtype=float)
+
+    dataset = data if data is not None else load_elevation_data()
+    if dataset is None:
+        return np.full_like(lon_array, 2.0e-4, dtype=float)
+
+    elevation_m = compute_cell_elevation(
+        lon_array,
+        lat_array,
+        data=dataset,
+        sample_method="center",
+        cache=cache,
+    )
+
+    earth_radius_m = 6.371e6
+    lat_centers = lat_array[:, 0]
+    lon_centers = lon_array[0, :]
+
+    nlat, nlon = elevation_m.shape
+
+    grad_x = np.zeros_like(elevation_m)
+    grad_y = np.zeros_like(elevation_m)
+
+    if nlon > 1:
+        lon_diff = np.diff(lon_centers)
+        if not np.allclose(lon_diff, lon_diff[0]):
+            raise ValueError("Longitude grid must have constant spacing for roughness calculation")
+        dlon_rad = np.deg2rad(lon_diff[0])
+        delta_x = earth_radius_m * np.cos(np.deg2rad(lat_centers)) * dlon_rad
+        inv_two_delta_x = np.zeros_like(delta_x)
+        valid_dx = np.abs(delta_x) > 0.0
+        inv_two_delta_x[valid_dx] = 1.0 / (2.0 * delta_x[valid_dx])
+        padded = np.pad(elevation_m, ((0, 0), (1, 1)), mode="edge")
+        grad_x = (padded[:, 2:] - padded[:, :-2]) * inv_two_delta_x[:, np.newaxis]
+
+    if nlat > 1:
+        lat_diff = np.diff(lat_centers)
+        if not np.allclose(lat_diff, lat_diff[0]):
+            raise ValueError("Latitude grid must have constant spacing for roughness calculation")
+        dlat_rad = np.deg2rad(lat_diff[0])
+        delta_y = earth_radius_m * dlat_rad
+        inv_two_delta_y = 0.0
+        if delta_y != 0.0:
+            inv_two_delta_y = 1.0 / (2.0 * delta_y)
+        padded = np.pad(elevation_m, ((1, 1), (0, 0)), mode="edge")
+        grad_y = (padded[2:, :] - padded[:-2, :]) * inv_two_delta_y
+
+    slope = np.hypot(grad_x, grad_y)
+
+    gamma = 0.3
+    length_scale_m = 1000.0
+    z0_base_land = 0.02
+
+    z0_orographic = gamma * (slope ** 2) * length_scale_m
+    z0_orographic = np.minimum(z0_orographic, 0.8)
+
+    z0_total = np.full_like(elevation_m, z0_base_land, dtype=float)
+    terrain_land_mask = elevation_m >= 0.0
+    if np.any(terrain_land_mask):
+        combined = z0_base_land + z0_orographic
+        combined = np.clip(combined, 0.02, 2.0)
+        z0_total[terrain_land_mask] = combined[terrain_land_mask]
+
+    kappa = 0.4
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_argument = 10.0 / np.maximum(z0_total, 1.0e-6)
+        drag_coefficient = (kappa / np.log(log_argument)) ** 2
+
+    water_mask: np.ndarray
+    if land_mask is not None:
+        water_mask = ~np.asarray(land_mask, dtype=bool)
+    else:
+        water_mask = ~terrain_land_mask
+
+    drag_result = np.array(drag_coefficient, copy=True)
+    if np.any(water_mask):
+        drag_result[water_mask] = 2.0e-4
+
+    if use_cache:
+        data_dir = os.getenv("DATA_DIR")
+        assert (
+            data_dir is not None
+        ), "Please set the DATA_DIR environment variable to enable drag coefficient caching."
+        data_dir = Path(data_dir)
+        cache_path = data_dir / "drag_coefficient_cache.npz"
+        np.savez_compressed(cache_path, drag_coefficient=drag_result)
+
+    return drag_result
+
+
+def roughness_length_from_neutral_drag(drag_coefficient: np.ndarray) -> np.ndarray:
+    """Invert the neutral drag formulation to recover an equivalent roughness length."""
+
+    kappa = 0.4
+    drag = np.maximum(np.asarray(drag_coefficient, dtype=float), 1.0e-12)
+    sqrt_drag = np.sqrt(drag)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        exponent = kappa / sqrt_drag
+    z0 = 10.0 / np.exp(exponent)
+    return z0
+
+
 def pressure_from_temperature_elevation(
     temperature_K: np.ndarray,
     elevation_m: np.ndarray | None = None,
@@ -144,13 +284,6 @@ def pressure_from_temperature_elevation(
 
     if elevation_m is not None and temperature_K.shape != elevation_m.shape:
         raise ValueError("Temperature and elevation fields must share the same shape")
-
-    # temp_safe = np.maximum(np.asarray(temperature_K, dtype=float), 1.0)
-    # elev = elevation_m if elevation_m is not None else 0
-    # exponent = -gravity_m_s2 * elev / (GAS_CONSTANT_J_KG_K * temp_safe)
-    # sea_level_pressure_pa = 10 * np.exp(gravity_m_s2 * 12500 / (GAS_CONSTANT_J_KG_K * temp_safe))
-    # sea_level_pressure_pa *= ATMOSPHERE_MASS / EARTH_SURFACE_AREA_M2 * gravity_m_s2 / np.mean(sea_level_pressure_pa)
-    # pressure = sea_level_pressure_pa * np.exp(exponent)
 
     temp_safe = np.maximum(temperature_K, 1.0)
     elev = 0.0 if elevation_m is None else elevation_m
@@ -169,21 +302,21 @@ def pressure_from_temperature_elevation(
 
     return p_surface
 
-def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolution: float = 0.1, contrast_water: bool = True) -> Path:
-    if out_dir is None:
-        out_dir = tif_path.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
+def _resample_elevation_grid(
+    dataset: xr.DataArray,
+    *,
+    resolution: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Resample the provided dataset onto a regular lon/lat grid."""
 
-    # Load and ensure geographic CRS
-    da = rioxarray.open_rasterio(tif_path).squeeze()
+    da = dataset
     if da.rio.crs is None:
-        # Assume geographic WGS84 if not encoded
         da = da.rio.write_crs("EPSG:4326", inplace=False)
 
-    # Target 1° grid bounds: use the data bounds from the raster itself
-    # Build a 1-degree regular grid in x (lon) and y (lat)
+    if da.dims[-1] != "x" or da.dims[-2] != "y":
+        da = da.rename({da.dims[-1]: "x", da.dims[-2]: "y"})
+
     xmin, ymin, xmax, ymax = da.rio.bounds()
-    # Clamp to plausible geographic bounds
     xmin = max(-180.0, xmin)
     xmax = min(180.0, xmax)
     ymin = max(-90.0, ymin)
@@ -191,21 +324,41 @@ def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolu
 
     lons = np.arange(np.floor(xmin), np.ceil(xmax) + 1e-9, resolution)
     lats = np.arange(np.floor(ymin), np.ceil(ymax) + 1e-9, resolution)
-    # Use cell centers for resampling (shift by 0.5 degree)
-    lons_centers = lons[:-1] + resolution / 2
-    lats_centers = lats[:-1] + resolution / 2
+    lon_centers = lons[:-1] + resolution / 2.0
+    lat_centers = lats[:-1] + resolution / 2.0
 
-    # xarray wants coordinate arrays assigned to the DataArray dims
-    # Ensure dimensions are named x/y
-    da = da.rename({da.dims[-1]: "x", da.dims[-2]: "y"})
-
-    # Reproject to itself (to be safe) and resample by nearest or average.
-    # Use rio.reproject to a coarser resolution grid by specifying transform/coords.
-    da_coarse = da.interp(
-        x=("x", lons_centers), y=("y", lats_centers), method="linear"
-    )
+    da_coarse = da.interp(x=("x", lon_centers), y=("y", lat_centers), method="linear")
 
     data = da_coarse.values.astype(np.float64)
+    lon2d, lat2d = np.meshgrid(lon_centers, lat_centers)
+    return data, lon2d, lat2d
+
+
+def _resolve_output_dir(tif_path: Path, out_dir: Path | None) -> Path:
+    if out_dir is None:
+        out_dir = tif_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _roughness_to_image(roughness: np.ndarray) -> np.ndarray:
+    rough_norm = np.clip(roughness / 1.0, 0.0, 1.0)
+    gray = (1.0 - rough_norm) * 255.0
+    red = np.clip(gray + rough_norm * 255.0, 0.0, 255.0)
+
+    img = np.zeros(roughness.shape + (3,), dtype=np.uint8)
+    gray_uint = np.clip(np.round(gray), 0.0, 255.0).astype(np.uint8)
+    img[..., 0] = np.clip(np.round(red), 0.0, 255.0).astype(np.uint8)
+    img[..., 1] = gray_uint
+    img[..., 2] = gray_uint
+    return np.flipud(img)
+
+
+def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolution: float = 0.1, contrast_water: bool = True) -> Path:
+    out_dir = _resolve_output_dir(tif_path, out_dir)
+
+    da = rioxarray.open_rasterio(tif_path).squeeze()
+    data, _, _ = _resample_elevation_grid(da, resolution=resolution)
     # Compute min/max excluding NaNs
     finite = np.isfinite(data)
     if not finite.any():
@@ -244,6 +397,24 @@ def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolu
     img.save(out_path)
     return out_path
 
+
+def write_roughness_png(
+    tif_path: Path,
+    out_dir: Path | None = None,
+    *,
+    resolution: float = 0.1,
+) -> Path:
+    out_dir = _resolve_output_dir(tif_path, out_dir)
+
+    da = rioxarray.open_rasterio(tif_path).squeeze()
+    _, lon2d, lat2d = _resample_elevation_grid(da, resolution=resolution)
+    drag_coeff = compute_cell_neutral_drag_coefficient(lon2d, lat2d, data=da)
+    roughness = roughness_length_from_neutral_drag(drag_coeff)
+
+    out_path = out_dir / f"roughness_{resolution}deg.png"
+    Image.fromarray(_roughness_to_image(roughness)).save(out_path)
+    return out_path
+
 if __name__ == "__main__":
     load_dotenv()
     data_dir = os.getenv("DATA_DIR")
@@ -264,5 +435,37 @@ if __name__ == "__main__":
     print(f"Elevation at (29 N, 86 E): {elevation_data.sel(y=29, x=86, method='nearest').values} meters")
     print(f"Elevation at (5 N, 86 E): {elevation_data.sel(y=5, x=86, method='nearest').values} meters")
 
-    out = write_elevation_png_1deg(etopo_path)
+    resolution = 0.1
+    out = write_elevation_png_1deg(etopo_path, resolution=resolution)
     print(f"Wrote: {out}")
+
+    surface_da = etopo_ds.squeeze()
+    _, lon2d, lat2d = _resample_elevation_grid(surface_da, resolution=resolution)
+    elevation_grid = compute_cell_elevation(lon2d, lat2d, data=surface_da)
+    drag_coeff = compute_cell_neutral_drag_coefficient(lon2d, lat2d, data=surface_da)
+    roughness = roughness_length_from_neutral_drag(drag_coeff)
+
+    global_min = float(np.min(roughness))
+    global_mean = float(np.mean(roughness))
+    global_max = float(np.max(roughness))
+    print(
+        f"Roughness stats (global): min={global_min:.4f} m, "
+        f"mean={global_mean:.4f} m, max={global_max:.4f} m"
+    )
+
+    land_mask = elevation_grid >= 0.0
+    if np.any(land_mask):
+        land_min = float(np.min(roughness[land_mask]))
+        land_mean = float(np.mean(roughness[land_mask]))
+        land_max = float(np.max(roughness[land_mask]))
+        print(
+            f"Roughness stats (land): min={land_min:.4f} m, "
+            f"mean={land_mean:.4f} m, max={land_max:.4f} m"
+        )
+    else:
+        print("No cells with elevation >= 0 m found for land roughness statistics.")
+
+    out_dir = _resolve_output_dir(etopo_path, None)
+    rough_path = out_dir / f"roughness_{resolution}deg.png"
+    Image.fromarray(_roughness_to_image(roughness)).save(rough_path)
+    print(f"Wrote roughness map: {rough_path}")
