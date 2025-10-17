@@ -199,6 +199,9 @@ pressure_plot = ax.imshow(
 cbar = fig.colorbar(stream.lines, ax=ax, orientation="vertical", pad=0.04, fraction=0.046)
 cbar.set_label("Wind speed (m/s)")
 
+cbar2 = fig.colorbar(pressure_plot, ax=ax, orientation="vertical", pad=0.10, fraction=0.046, location='left')
+cbar2.set_label("Pressure (hPa)")
+
 stream_container = {"obj": stream}
 pressure_container = {"obj": pressure_plot}
 
@@ -248,14 +251,7 @@ def update(month_idx: float) -> None:
     )
 
     pressure_i = pressure[index]
-    ax.imshow(
-        pressure_i,
-        origin="lower",
-        transform=projection,
-        extent=(lon_sorted[0], lon_sorted[-1], lat2d[0,0], lat2d[-1,0]),
-        cmap="plasma",
-        alpha=0.3,
-    )
+    pressure_plot.set_data(pressure_i)
 
     stream_container["obj"] = new_stream
     cbar.update_normal(new_stream.lines)
