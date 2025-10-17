@@ -31,26 +31,6 @@ def _wrap_longitudes(lon_deg: np.ndarray) -> np.ndarray:
 
     return ((lon_deg + 180.0) % 360.0) - 180.0
 
-
-def _centers_to_edges(centers: np.ndarray) -> np.ndarray:
-    """Convert cell centre coordinates to bounding edges."""
-
-    centres = np.asarray(centers, dtype=float)
-    if centres.size == 0:
-        raise ValueError("At least one centre coordinate is required")
-
-    if centres.size == 1:
-        half_width = 0.5
-        return np.array([centres[0] - half_width, centres[0] + half_width], dtype=float)
-
-    deltas = np.diff(centres)
-    edges = np.empty(centres.size + 1, dtype=float)
-    edges[1:-1] = centres[:-1] + deltas / 2.0
-    edges[0] = centres[0] - deltas[0] / 2.0
-    edges[-1] = centres[-1] + deltas[-1] / 2.0
-    return edges
-
-
 @lru_cache(maxsize=1)
 def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
     """Return an elevation dataset registered to WGS84 coordinates."""
@@ -186,72 +166,62 @@ def compute_cell_roughness_length(
     if dataset is None:
         return np.full_like(lon_array, 0.02, dtype=float)
 
-    if dataset.rio.crs is None:
-        dataset = dataset.rio.write_crs("EPSG:4326", inplace=False)
+    elevation_m = compute_cell_elevation(
+        lon_array,
+        lat_array,
+        data=dataset,
+        sample_method="center",
+        cache=cache,
+    )
 
-    da = dataset
-    if da.dims[-1] != "x" or da.dims[-2] != "y":
-        da = da.rename({da.dims[-1]: "x", da.dims[-2]: "y"})
-
-    lon_centers = lon_array[0, :]
+    earth_radius_m = 6.371e6
     lat_centers = lat_array[:, 0]
+    lon_centers = lon_array[0, :]
 
-    lon_edges = _centers_to_edges(lon_centers)
+    nlat, nlon = elevation_m.shape
 
-    lat_centers_for_edges = lat_centers
-    reverse_lat_order = False
-    if lat_centers.size > 1 and lat_centers[0] > lat_centers[-1]:
-        lat_centers_for_edges = lat_centers[::-1]
-        reverse_lat_order = True
-    lat_edges = _centers_to_edges(lat_centers_for_edges)
+    grad_x = np.zeros_like(elevation_m)
+    grad_y = np.zeros_like(elevation_m)
 
-    lon_hi = np.asarray(da["x"].values, dtype=float)
-    lat_hi = np.asarray(da["y"].values, dtype=float)
-    elevation_hi = np.asarray(da.values, dtype=float)
+    if nlon > 1:
+        lon_diff = np.diff(lon_centers)
+        if not np.allclose(lon_diff, lon_diff[0]):
+            raise ValueError("Longitude grid must have constant spacing for roughness calculation")
+        dlon_rad = np.deg2rad(lon_diff[0])
+        delta_x = earth_radius_m * np.cos(np.deg2rad(lat_centers)) * dlon_rad
+        inv_two_delta_x = np.zeros_like(delta_x)
+        valid_dx = np.abs(delta_x) > 0.0
+        inv_two_delta_x[valid_dx] = 1.0 / (2.0 * delta_x[valid_dx])
+        padded = np.pad(elevation_m, ((0, 0), (1, 1)), mode="edge")
+        grad_x = (padded[:, 2:] - padded[:, :-2]) * inv_two_delta_x[:, np.newaxis]
 
-    lon_idx = np.digitize(lon_hi, lon_edges, right=False) - 1
-    lon_idx = np.clip(lon_idx, 0, lon_centers.size - 1)
+    if nlat > 1:
+        lat_diff = np.diff(lat_centers)
+        if not np.allclose(lat_diff, lat_diff[0]):
+            raise ValueError("Latitude grid must have constant spacing for roughness calculation")
+        dlat_rad = np.deg2rad(lat_diff[0])
+        delta_y = earth_radius_m * dlat_rad
+        inv_two_delta_y = 0.0
+        if delta_y != 0.0:
+            inv_two_delta_y = 1.0 / (2.0 * delta_y)
+        padded = np.pad(elevation_m, ((1, 1), (0, 0)), mode="edge")
+        grad_y = (padded[2:, :] - padded[:-2, :]) * inv_two_delta_y
 
-    lat_idx_sorted = np.digitize(lat_hi, lat_edges, right=False) - 1
-    lat_idx_sorted = np.clip(lat_idx_sorted, 0, lat_centers.size - 1)
-    if reverse_lat_order:
-        lat_idx = (lat_centers.size - 1) - lat_idx_sorted
-    else:
-        lat_idx = lat_idx_sorted
+    slope = np.hypot(grad_x, grad_y)
 
-    ny, nx = elevation_hi.shape
-    lon_idx2d = np.broadcast_to(lon_idx, (ny, nx))
-    lat_idx2d = np.broadcast_to(lat_idx[:, np.newaxis], (ny, nx))
+    gamma = 0.3
+    length_scale_m = 1000.0
+    z0_base_land = 0.02
 
-    cell_index = (lat_idx2d * lon_centers.size + lon_idx2d).ravel()
-    flat_values = elevation_hi.ravel()
-    valid_mask = np.isfinite(flat_values)
+    z0_orographic = gamma * (slope ** 2) * length_scale_m
+    z0_orographic = np.minimum(z0_orographic, 1.0)
 
-    cell_index = cell_index[valid_mask]
-    flat_values = flat_values[valid_mask]
-
-    n_cells = lon_centers.size * lat_centers.size
-    counts = np.bincount(cell_index, minlength=n_cells)
-    sums = np.bincount(cell_index, weights=flat_values, minlength=n_cells)
-    sums_sq = np.bincount(cell_index, weights=flat_values * flat_values, minlength=n_cells)
-
-    counts_safe = np.maximum(counts, 1)
-    mean_vals = sums / counts_safe
-    variance = sums_sq / counts_safe - mean_vals ** 2
-    variance = np.maximum(variance, 0.0)
-    sigma = np.sqrt(variance)
-
-    mean_vals[counts == 0] = 0.0
-    sigma[counts == 0] = 0.0
-
-    mean_vals = mean_vals.reshape(lat_centers.size, lon_centers.size)
-    sigma = sigma.reshape(lat_centers.size, lon_centers.size)
-
-    roughness = np.full_like(mean_vals, 0.02, dtype=float)
-    land_mask = mean_vals >= 0.0
+    roughness = np.full_like(elevation_m, z0_base_land, dtype=float)
+    land_mask = elevation_m >= 0.0
     if np.any(land_mask):
-        rough_land = 0.02 * (1.0 + 10.0 * sigma[land_mask] / 100.0)
-        roughness[land_mask] = np.minimum(rough_land, 1.0)
+        combined = z0_base_land + z0_orographic
+        combined = np.clip(combined, 0.02, 2.0)
+        roughness[land_mask] = combined[land_mask]
 
     if cache:
         data_dir = os.getenv("DATA_DIR")
@@ -329,10 +299,28 @@ def _resample_elevation_grid(
     return data, lon2d, lat2d
 
 
-def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolution: float = 0.1, contrast_water: bool = True) -> Path:
+def _resolve_output_dir(tif_path: Path, out_dir: Path | None) -> Path:
     if out_dir is None:
         out_dir = tif_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _roughness_to_image(roughness: np.ndarray) -> np.ndarray:
+    rough_norm = np.clip(roughness / 1.0, 0.0, 1.0)
+    gray = (1.0 - rough_norm) * 255.0
+    red = np.clip(gray + rough_norm * 255.0, 0.0, 255.0)
+
+    img = np.zeros(roughness.shape + (3,), dtype=np.uint8)
+    gray_uint = np.clip(np.round(gray), 0.0, 255.0).astype(np.uint8)
+    img[..., 0] = np.clip(np.round(red), 0.0, 255.0).astype(np.uint8)
+    img[..., 1] = gray_uint
+    img[..., 2] = gray_uint
+    return np.flipud(img)
+
+
+def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolution: float = 0.1, contrast_water: bool = True) -> Path:
+    out_dir = _resolve_output_dir(tif_path, out_dir)
 
     da = rioxarray.open_rasterio(tif_path).squeeze()
     data, _, _ = _resample_elevation_grid(da, resolution=resolution)
@@ -374,6 +362,23 @@ def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolu
     img.save(out_path)
     return out_path
 
+
+def write_roughness_png(
+    tif_path: Path,
+    out_dir: Path | None = None,
+    *,
+    resolution: float = 0.1,
+) -> Path:
+    out_dir = _resolve_output_dir(tif_path, out_dir)
+
+    da = rioxarray.open_rasterio(tif_path).squeeze()
+    _, lon2d, lat2d = _resample_elevation_grid(da, resolution=resolution)
+    roughness = compute_cell_roughness_length(lon2d, lat2d, data=da)
+
+    out_path = out_dir / f"roughness_{resolution}deg.png"
+    Image.fromarray(_roughness_to_image(roughness)).save(out_path)
+    return out_path
+
 if __name__ == "__main__":
     load_dotenv()
     data_dir = os.getenv("DATA_DIR")
@@ -400,19 +405,30 @@ if __name__ == "__main__":
 
     surface_da = etopo_ds.squeeze()
     _, lon2d, lat2d = _resample_elevation_grid(surface_da, resolution=resolution)
+    elevation_grid = compute_cell_elevation(lon2d, lat2d, data=surface_da)
     roughness = compute_cell_roughness_length(lon2d, lat2d, data=surface_da)
 
-    rough_norm = np.clip(roughness / 1.0, 0.0, 1.0)
-    gray = (1.0 - rough_norm) * 255.0
-    red = np.clip(gray + rough_norm * 255.0, 0.0, 255.0)
+    global_min = float(np.min(roughness))
+    global_mean = float(np.mean(roughness))
+    global_max = float(np.max(roughness))
+    print(
+        f"Roughness stats (global): min={global_min:.4f} m, "
+        f"mean={global_mean:.4f} m, max={global_max:.4f} m"
+    )
 
-    img = np.zeros((roughness.shape[0], roughness.shape[1], 3), dtype=np.uint8)
-    gray_uint = np.clip(np.round(gray), 0.0, 255.0).astype(np.uint8)
-    img[..., 0] = np.clip(np.round(red), 0.0, 255.0).astype(np.uint8)
-    img[..., 1] = gray_uint
-    img[..., 2] = gray_uint
-    img = np.flipud(img)
+    land_mask = elevation_grid >= 0.0
+    if np.any(land_mask):
+        land_min = float(np.min(roughness[land_mask]))
+        land_mean = float(np.mean(roughness[land_mask]))
+        land_max = float(np.max(roughness[land_mask]))
+        print(
+            f"Roughness stats (land): min={land_min:.4f} m, "
+            f"mean={land_mean:.4f} m, max={land_max:.4f} m"
+        )
+    else:
+        print("No cells with elevation >= 0 m found for land roughness statistics.")
 
-    rough_path = etopo_path.parent / f"roughness_{resolution}deg.png"
-    Image.fromarray(img).save(rough_path)
+    out_dir = _resolve_output_dir(etopo_path, None)
+    rough_path = out_dir / f"roughness_{resolution}deg.png"
+    Image.fromarray(_roughness_to_image(roughness)).save(rough_path)
     print(f"Wrote roughness map: {rough_path}")
