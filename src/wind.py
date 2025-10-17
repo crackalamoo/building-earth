@@ -4,6 +4,7 @@ import numpy as np
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
+import matplotlib.patches
 from matplotlib.colors import Normalize
 from matplotlib.widgets import Slider
 from matplotlib.streamplot import StreamplotSet
@@ -16,6 +17,7 @@ from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
+from climate_sim.utils.constants import R_EARTH_METERS
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -106,7 +108,7 @@ stride = max(1, int(round(1.0 / args.resolution)))
 lat_coords = lat2d[::stride, 0]
 lon_coords = lon_sorted[::stride]
 
-R_EARTH_METERS = 6.371e6
+
 meters_per_deg_lat = np.pi / 180.0 * R_EARTH_METERS
 
 cosphi = np.cos(np.deg2rad(lat_coords))
@@ -179,10 +181,10 @@ def _clear_streamplot_artists(stream_set: StreamplotSet) -> None:
     stream_set.lines.set_visible(False)
 
     # Clear arrow patches
-    if stream_set.arrows is not None:
-        stream_set.arrows.set_paths([])
-        stream_set.arrows.set_array(np.array([]))
-        stream_set.arrows.set_visible(False)
+    for art in ax.get_children():
+        if not isinstance(art, matplotlib.patches.FancyArrowPatch):
+            continue
+        art.remove()        # Method 1
 
 initial_label = month_names[0 % len(month_names)]
 ax.set_title(f"Geostrophic Wind ({layer_label}) – {initial_label}")

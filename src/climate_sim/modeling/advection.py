@@ -125,9 +125,7 @@ class GeostrophicAdvectionOperator:
 
         pressure = None
         if self._config.use_pressure_gradients:
-            pressure = pressure_from_temperature_elevation(
-                temperature + 273.15, self.elevation_m
-            )
+            pressure = pressure_from_temperature_elevation(temperature)
             grad_x, grad_y = self._horizontal_gradient(pressure)
         else:
             grad_x, grad_y = self._horizontal_gradient(temperature)
@@ -168,9 +166,7 @@ class GeostrophicAdvectionOperator:
 
         pressure = None
         if self._config.use_pressure_gradients:
-            pressure = pressure_from_temperature_elevation(
-                temperature, self.elevation_m
-            )
+            pressure = pressure_from_temperature_elevation(temperature)
             grad_x, grad_y = self._horizontal_gradient(pressure)
         else:
             grad_x, grad_y = self._horizontal_gradient(temperature)
