@@ -5,13 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 
-try:
-    from dotenv import load_dotenv
-except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
-    def load_dotenv() -> None:
-        return None
-
-
+from dotenv import load_dotenv
 load_dotenv()
 
 
