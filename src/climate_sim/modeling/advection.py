@@ -126,7 +126,7 @@ class GeostrophicAdvectionOperator:
         pressure = None
         if self._config.use_pressure_gradients:
             pressure = pressure_from_temperature_elevation(
-                temperature + 273.15, self.elevation_m
+                temperature, self.elevation_m
             )
             grad_x, grad_y = self._horizontal_gradient(pressure)
         else:
@@ -160,28 +160,6 @@ class GeostrophicAdvectionOperator:
 
         return grad_x, grad_y
 
-    def tendency(self, temperature: np.ndarray) -> np.ndarray:
-        """Return the geostrophic advection tendency (K/s) for the given field."""
-
-        if not self.enabled:
-            return np.zeros_like(temperature)
-
-        pressure = None
-        if self._config.use_pressure_gradients:
-            pressure = pressure_from_temperature_elevation(
-                temperature, self.elevation_m
-            )
-            grad_x, grad_y = self._horizontal_gradient(pressure)
-        else:
-            grad_x, grad_y = self._horizontal_gradient(temperature)
-        velocity_x, velocity_y, _speed = _compute_geostrophic_wind_components(
-            grad_x,
-            grad_y,
-            temperature,
-            abs_coriolis=self._abs_coriolis,
-            config=self._config,
-            pressure=pressure,
-        )
-
-        tendency = -(velocity_x * grad_x + velocity_y * grad_y)
-        return tendency
+    # The advection module now exposes only the wind diagnostic. The temperature
+    # tendency will be reintroduced once the pressure and wind fields are
+    # coupled into the solver through a new pathway.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict
 
 import numpy as np
 from scipy import sparse
@@ -38,6 +38,7 @@ ARCTIC_CIRCLE_LATITUDE_DEG = 66.5
 
 
 RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
+WindComponents = tuple[np.ndarray, np.ndarray, np.ndarray]
 @dataclass
 class Linearisation:
     diag: np.ndarray
@@ -56,8 +57,9 @@ RhsFactory = Callable[
         RadiationConfig,
         np.ndarray,
         GeostrophicAdvectionOperator | None,
+        WindComponents | None,
     ],
-    Tuple[RhsFunc, RhsDerivativeFunc],
+    tuple[RhsFunc, RhsDerivativeFunc],
 ]
 InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig], np.ndarray]
 MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
@@ -201,29 +203,6 @@ def implicit_monthly_step(
     return temp_next
 
 
-def apply_annual_map(
-    temperature_K: np.ndarray,
-    monthly_insolation: np.ndarray,
-    month_durations: np.ndarray,
-    *,
-    rhs_fn: RhsFunc,
-    rhs_temperature_derivative_fn: RhsDerivativeFunc,
-    temperature_floor: float,
-) -> np.ndarray:
-    """Propagate the state through 12 implicit steps and return the end-of-December temperature."""
-    state = temperature_K
-    for month in range(12):
-        state = implicit_monthly_step(
-            state,
-            monthly_insolation[month],
-            month_durations[month],
-            rhs_fn=rhs_fn,
-            rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-            temperature_floor=temperature_floor,
-        )
-    return state
-
-
 def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | None:
     """Return coefficients that minimize the combined residual subject to sum(alpha)=1."""
 
@@ -262,11 +241,8 @@ def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | No
 
 def find_periodic_temperature(
     initial_temperature: np.ndarray,
-    monthly_insolation: np.ndarray,
-    month_durations: np.ndarray,
     *,
-    rhs_fn: RhsFunc,
-    rhs_temperature_derivative_fn: RhsDerivativeFunc,
+    annual_map_fn: Callable[[np.ndarray], np.ndarray],
     temperature_floor: float,
 ) -> np.ndarray:
     """Solve P(T) = T for the annual map using Anderson acceleration."""
@@ -277,14 +253,7 @@ def find_periodic_temperature(
     history_limit = 5
 
     for _ in range(FIXED_POINT_MAX_ITERS):
-        advanced = apply_annual_map(
-            state,
-            monthly_insolation,
-            month_durations,
-            rhs_fn=rhs_fn,
-            rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-            temperature_floor=temperature_floor,
-        )
+        advanced = annual_map_fn(state)
 
         residual = advanced - state
         max_residual = float(np.max(np.abs(residual)))
@@ -313,19 +282,21 @@ def find_periodic_temperature(
                     coefficients = coefficients / coeff_sum
 
         if coefficients is None:
-            state_next = advanced
+            state = np.maximum(advanced, temperature_floor)
             residual_history = residual_history[-1:]
             advanced_history = advanced_history[-1:]
-        else:
-            combined = np.zeros_like(advanced_flat)
-            for weight, advanced_state in zip(coefficients, advanced_history, strict=True):
-                combined += weight * advanced_state
-            state_next = combined.reshape(state.shape)
+            continue
 
-            if not np.all(np.isfinite(state_next)):
-                state_next = advanced
-                residual_history = residual_history[-1:]
-                advanced_history = advanced_history[-1:]
+        combined = np.zeros_like(advanced_flat)
+        for weight, advanced_state in zip(coefficients, advanced_history, strict=True):
+            combined += weight * advanced_state
+        state_next = combined.reshape(state.shape)
+
+        if not np.all(np.isfinite(state_next)):
+            state = np.maximum(advanced, temperature_floor)
+            residual_history = residual_history[-1:]
+            advanced_history = advanced_history[-1:]
+            continue
 
         state = np.maximum(state_next, temperature_floor)
 
@@ -333,32 +304,6 @@ def find_periodic_temperature(
         "Failed to converge to a periodic solution after "
         f"{FIXED_POINT_MAX_ITERS} iterations (last residual {max_residual:.3e} K)"
     )
-
-
-def integrate_periodic_cycle(
-    initial_temperature: np.ndarray,
-    monthly_insolation: np.ndarray,
-    month_durations: np.ndarray,
-    *,
-    rhs_fn: RhsFunc,
-    rhs_temperature_derivative_fn: RhsDerivativeFunc,
-    temperature_floor: float,
-) -> np.ndarray:
-    """Return the 12-month sequence of month-midpoint temperatures for the periodic solution."""
-    temps = np.empty((12,) + initial_temperature.shape, dtype=float)
-    state = initial_temperature
-    for month in range(12):
-        next_state = implicit_monthly_step(
-            state,
-            monthly_insolation[month],
-            month_durations[month],
-            rhs_fn=rhs_fn,
-            rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-            temperature_floor=temperature_floor,
-        )
-        temps[month] = 0.5 * (state + next_state)
-        state = next_state
-    return temps
 
 
 def compute_periodic_cycle_kelvin(
@@ -412,81 +357,116 @@ def compute_periodic_cycle_kelvin(
             lon2d,
             lat2d,
             config=advection_config,
-        )
+    )
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
 
-    def solve_with_albedo(
-        albedo_field: np.ndarray,
-        initial_temperature: np.ndarray | None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
+    def build_rhs(
+        albedo_field: np.ndarray, wind_components: WindComponents | None
+    ) -> tuple[RhsFunc, RhsDerivativeFunc]:
+        return rhs_factory(
             heat_capacity_field,
             albedo_field,
             diffusion_operator,
             radiation_config,
             ocean_mask,
             advection_operator,
+            wind_components,
         )
 
-        if initial_temperature is None:
-            guess = initial_guess_fn(
-                monthly_insolation, albedo_field, radiation_config
+    def diagnose_wind_field(temperatures: np.ndarray) -> WindComponents | None:
+        if advection_operator is None or not advection_operator.enabled:
+            return None
+
+        if temperatures.ndim == 2:
+            target = temperatures
+        elif temperatures.ndim == 3 and temperatures.shape[0] == 2:
+            target = temperatures[1]
+        else:
+            raise ValueError(
+                "Expected 2-D or two-layer temperature fields for wind diagnosis"
+            )
+
+        wind_components, _grad_x, _grad_y = advection_operator.wind_field(target)
+        return wind_components
+
+    def run_annual_cycle(
+        initial_temperature: np.ndarray,
+        *,
+        capture_monthly: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
+        state = np.maximum(initial_temperature, radiation_config.temperature_floor)
+        if snow_cfg.enabled:
+            current_albedo = apply_snow_albedo(
+                base_albedo_field,
+                land_mask,
+                state,
+                config=snow_cfg,
             )
         else:
-            guess = initial_temperature
+            current_albedo = base_albedo_field
 
-        periodic_temperature = find_periodic_temperature(
-            guess,
-            monthly_insolation,
-            month_durations,
-            rhs_fn=rhs_fn,
-            rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-            temperature_floor=radiation_config.temperature_floor,
-        )
+        current_wind = diagnose_wind_field(state)
 
-        monthly_temperatures = integrate_periodic_cycle(
-            periodic_temperature,
-            monthly_insolation,
-            month_durations,
-            rhs_fn=rhs_fn,
-            rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-            temperature_floor=radiation_config.temperature_floor,
-        )
+        monthly_midpoints: list[np.ndarray] | None = [] if capture_monthly else None
 
-        return periodic_temperature, monthly_temperatures
+        for month in range(12):
+            rhs_fn, rhs_temperature_derivative_fn = build_rhs(
+                current_albedo, current_wind
+            )
+            next_state = implicit_monthly_step(
+                state,
+                monthly_insolation[month],
+                month_durations[month],
+                rhs_fn=rhs_fn,
+                rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
+                temperature_floor=radiation_config.temperature_floor,
+            )
 
-    albedo_field = base_albedo_field
-    previous_periodic: np.ndarray | None = None
-    final_monthly: np.ndarray | None = None
+            if monthly_midpoints is not None:
+                monthly_midpoints.append(0.5 * (state + next_state))
 
-    iterations = snow_cfg.picard_iterations if snow_cfg.enabled else 1
+            state = next_state
 
-    for iteration in range(iterations):
-        previous_periodic, final_monthly = solve_with_albedo(
-            albedo_field, previous_periodic
-        )
+            if snow_cfg.enabled:
+                current_albedo = apply_snow_albedo(
+                    base_albedo_field,
+                    land_mask,
+                    state,
+                    config=snow_cfg,
+                )
 
-        if not snow_cfg.enabled:
-            break
+            current_wind = diagnose_wind_field(state)
 
-        if iteration == iterations - 1:
-            break
+        monthly_array: np.ndarray | None
+        if monthly_midpoints is not None:
+            monthly_array = np.stack(monthly_midpoints)
+        else:
+            monthly_array = None
 
-        updated_albedo = apply_snow_albedo(
-            base_albedo_field,
-            land_mask,
-            final_monthly,
-            config=snow_cfg,
-        )
+        return state, monthly_array, current_albedo
 
-        if np.array_equal(updated_albedo, albedo_field):
-            break
+    initial_guess = initial_guess_fn(
+        monthly_insolation, base_albedo_field, radiation_config
+    )
 
-        albedo_field = updated_albedo
+    def annual_map_fn(state: np.ndarray) -> np.ndarray:
+        advanced, _, _ = run_annual_cycle(state, capture_monthly=False)
+        return advanced
 
-    assert final_monthly is not None
+    periodic_temperature = find_periodic_temperature(
+        initial_guess,
+        annual_map_fn=annual_map_fn,
+        temperature_floor=radiation_config.temperature_floor,
+    )
 
-    return lon2d, lat2d, final_monthly, albedo_field
+    _, monthly_temperatures, final_albedo = run_annual_cycle(
+        periodic_temperature,
+        capture_monthly=True,
+    )
+
+    assert monthly_temperatures is not None
+
+    return lon2d, lat2d, monthly_temperatures, final_albedo
 
 
 def compute_periodic_cycle_celsius(
@@ -526,6 +506,7 @@ def compute_periodic_cycle_celsius(
         config: RadiationConfig,
         ocean_mask: np.ndarray,
         advection_operator: GeostrophicAdvectionOperator | None,
+        diagnostic_wind: WindComponents | None,
     ):
         surface_matrix = None
         if diffusion_operator.surface.enabled:
@@ -554,14 +535,12 @@ def compute_periodic_cycle_celsius(
                 if diffusion_operator.surface.enabled:
                     radiative[0] += diffusion_operator.surface.tendency(temperature[0])
                 if diffusion_operator.atmosphere.enabled:
-                    radiative[1] += diffusion_operator.atmosphere.tendency(temperature[1])
-                if advection_operator is not None and advection_operator.enabled:
-                    radiative[1] += advection_operator.tendency(temperature[1])
+                    radiative[1] += diffusion_operator.atmosphere.tendency(
+                        temperature[1]
+                    )
                 return radiative
             if diffusion_operator.surface.enabled:
                 radiative = radiative + diffusion_operator.surface.tendency(temperature)
-            if advection_operator is not None and advection_operator.enabled:
-                radiative = radiative + advection_operator.tendency(temperature)
             return radiative
 
         def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> RhsDerivative:
