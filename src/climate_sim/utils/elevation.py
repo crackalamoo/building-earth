@@ -54,14 +54,27 @@ def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
 def compute_cell_elevation(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
-    *,
     data: xr.DataArray | None = None,
     sample_method: str = "center",
+    cache: bool = True,
 ) -> np.ndarray:
     """Return the elevation (m) for the provided grid cells."""
-
     if lon2d.shape != lat2d.shape:
         raise ValueError("Longitude and latitude grids must share the same shape")
+
+    if cache:
+        # try to load from disk
+        data_dir = os.getenv("DATA_DIR")
+        if data_dir is not None:
+            data_dir = Path(data_dir)
+            cache_path = data_dir / "elevation_cache.npz"
+            if cache_path.exists():
+                try:
+                    with np.load(cache_path) as cached:
+                        if cached['elevation'].shape == lon2d.shape:
+                            return cached['elevation']
+                except Exception as e:
+                    print(f"Failed to load cached elevation data: {e}, recomputing...")
 
     lon_array = np.asarray(lon2d, dtype=float)
     lat_array = np.asarray(lat2d, dtype=float)
@@ -107,7 +120,17 @@ def compute_cell_elevation(
         mask = ~np.isfinite(values)
         values[mask] = nearest_values[mask]
 
-    return np.nan_to_num(values, nan=0.0)
+    res = np.nan_to_num(values, nan=0.0)
+
+    if cache:
+        # save to disk
+        data_dir = os.getenv("DATA_DIR")
+        assert data_dir is not None, "Please set the DATA_DIR environment variable to enable elevation caching."
+        data_dir = Path(data_dir)
+        cache_path = data_dir / "elevation_cache.npz"
+        np.savez_compressed(cache_path, elevation=res)
+
+    return res
 
 
 def pressure_from_temperature_elevation(
