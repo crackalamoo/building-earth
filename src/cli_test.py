@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-import numpy as np
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - optional dependency fallback
+    def load_dotenv() -> None:
+        return None
+
+
 load_dotenv()
 
 
@@ -99,7 +104,32 @@ def _parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable snow-albedo adjustments",
     )
+    parser.add_argument(
+        "--fahrenheit",
+        dest="fahrenheit",
+        action="store_true",
+        help="Display temperatures in degrees Fahrenheit instead of Celsius",
+    )
     return parser.parse_args()
+
+
+def _convert_temperature(
+    values: "np.ndarray" | float, use_fahrenheit: bool
+) -> "np.ndarray" | float:
+    import numpy as np
+
+    if not use_fahrenheit:
+        return values
+    converted = (np.asarray(values) * (9.0 / 5.0)) + 32.0
+    if isinstance(values, np.ndarray):
+        return converted
+    if np.isscalar(values):
+        return float(converted)
+    return converted
+
+
+def _temperature_unit(use_fahrenheit: bool) -> str:
+    return "°F" if use_fahrenheit else "°C"
 
 
 def _nearest_cell_indices(
@@ -118,6 +148,7 @@ def _summarize_location(
     monthly_surface_cycle: "np.ndarray",
     lon2d: "np.ndarray",
     lat2d: "np.ndarray",
+    use_fahrenheit: bool,
 ) -> None:
     lat_idx, lon_idx = _nearest_cell_indices(
         lon2d, lat2d, location.latitude, location.longitude
@@ -126,26 +157,31 @@ def _summarize_location(
     annual_mean = float(monthly.mean())
     annual_min = float(monthly.min())
     annual_max = float(monthly.max())
-    monthly_str = ", ".join(f"{value:5.1f}" for value in monthly)
+    monthly_display = _convert_temperature(monthly, use_fahrenheit)
+    monthly_str = ", ".join(f"{value:5.1f}" for value in monthly_display)
+    unit = _temperature_unit(use_fahrenheit)
 
     print(f"{location.name} ({location.latitude:.2f}°, {location.longitude:.2f}°)")
-    print(f"  Monthly temps (°C): {monthly_str}")
+    print(f"  Monthly temps ({unit}): {monthly_str}")
     print(
         "  Summary: "
-        f"mean={annual_mean:4.1f} °C, "
-        f"min={annual_min:4.1f} °C, "
-        f"max={annual_max:4.1f} °C"
+        f"mean={_convert_temperature(annual_mean, use_fahrenheit):4.1f} {unit}, "
+        f"min={_convert_temperature(annual_min, use_fahrenheit):4.1f} {unit}, "
+        f"max={_convert_temperature(annual_max, use_fahrenheit):4.1f} {unit}"
     )
 
 
 def main() -> None:
     args = _parse_args()
 
+    import numpy as np
+
     from climate_sim.modeling.advection import GeostrophicAdvectionConfig
     from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
     from climate_sim.utils.solver import compute_periodic_cycle_celsius
+    from climate_sim.utils.math_core import spherical_cell_area
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(
@@ -164,6 +200,21 @@ def main() -> None:
     )
     surface_cycle = layers["surface"]
 
+    cell_areas = spherical_cell_area(
+        lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
+    )
+    surface_area_mean = float(
+        np.average(surface_cycle.mean(axis=0), weights=cell_areas)
+    )
+    unit = _temperature_unit(args.fahrenheit)
+    print(
+        "Global surface layer: "
+        f"Tmin={_convert_temperature(surface_cycle.min(), args.fahrenheit):.1f} {unit}, "
+        f"Tmax={_convert_temperature(surface_cycle.max(), args.fahrenheit):.1f} {unit}, "
+        f"simple mean={_convert_temperature(surface_cycle.mean(), args.fahrenheit):.1f} {unit}, "
+        f"area-weighted mean={_convert_temperature(surface_area_mean, args.fahrenheit):.1f} {unit}"
+    )
+
     locations = [
         Location("Chicago (IL)", 41.5, -87.6),
         Location("San Francisco (CA)", 37.8, -122.2),
@@ -172,7 +223,9 @@ def main() -> None:
     ]
 
     for location in locations:
-        _summarize_location(location, surface_cycle, lon2d, lat2d)
+        _summarize_location(
+            location, surface_cycle, lon2d, lat2d, args.fahrenheit
+        )
 
 
 if __name__ == "__main__":
