@@ -280,7 +280,7 @@ class GeostrophicAdvectionOperator:
         coriolis = self._coriolis
         coriolis_abs = np.maximum(np.abs(coriolis), self._config.coriolis_floor_s)
 
-        h_m = 1000.0
+        h_m = np.where(self._land_mask, 1000.0, 500.0)
         k = drag_coeff / h_m
 
         geo_speed_safe = np.maximum(speed_geo, 1.0e-6)

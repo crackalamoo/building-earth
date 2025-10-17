@@ -285,13 +285,6 @@ def pressure_from_temperature_elevation(
     if elevation_m is not None and temperature_K.shape != elevation_m.shape:
         raise ValueError("Temperature and elevation fields must share the same shape")
 
-    # temp_safe = np.maximum(np.asarray(temperature_K, dtype=float), 1.0)
-    # elev = elevation_m if elevation_m is not None else 0
-    # exponent = -gravity_m_s2 * elev / (GAS_CONSTANT_J_KG_K * temp_safe)
-    # sea_level_pressure_pa = 10 * np.exp(gravity_m_s2 * 12500 / (GAS_CONSTANT_J_KG_K * temp_safe))
-    # sea_level_pressure_pa *= ATMOSPHERE_MASS / EARTH_SURFACE_AREA_M2 * gravity_m_s2 / np.mean(sea_level_pressure_pa)
-    # pressure = sea_level_pressure_pa * np.exp(exponent)
-
     temp_safe = np.maximum(temperature_K, 1.0)
     elev = 0.0 if elevation_m is None else elevation_m
 
