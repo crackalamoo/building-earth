@@ -9,7 +9,9 @@ import numpy as np
 from climate_sim.utils.elevation import (
     load_elevation_data,
     compute_cell_elevation,
-    compute_cell_neutral_drag_coefficient,
+    compute_cell_roughness_length,
+    neutral_drag_from_roughness_length,
+    WATER_ROUGHNESS_LENGTH_M,
     pressure_from_temperature_elevation,
 )
 from climate_sim.utils.constants import GAS_CONSTANT_J_KG_K, R_EARTH_METERS
@@ -62,7 +64,9 @@ def compute_surface_roughness(
 
     lon_hr2d, lat_hr2d = np.meshgrid(lon_centers_hr, lat_centers_hr)
 
-    drag_hr = compute_cell_neutral_drag_coefficient(lon_hr2d, lat_hr2d, data=elevation_data)
+    roughness_hr = compute_cell_roughness_length(
+        lon_hr2d, lat_hr2d, data=elevation_data
+    )
     area_hr = spherical_cell_area(lon_hr2d, lat_hr2d, earth_radius_m=R_EARTH_METERS)
 
     lat_idx_hr = np.searchsorted(lat_edges, lat_centers_hr, side="right") - 1
@@ -71,9 +75,9 @@ def compute_surface_roughness(
     lat_idx_matrix = lat_idx_hr[:, np.newaxis]
     lon_idx_matrix = lon_idx_hr[np.newaxis, :]
 
-    lat_idx_flat = np.broadcast_to(lat_idx_matrix, drag_hr.shape).ravel()
-    lon_idx_flat = np.broadcast_to(lon_idx_matrix, drag_hr.shape).ravel()
-    values_flat = drag_hr.ravel()
+    lat_idx_flat = np.broadcast_to(lat_idx_matrix, roughness_hr.shape).ravel()
+    lon_idx_flat = np.broadcast_to(lon_idx_matrix, roughness_hr.shape).ravel()
+    values_flat = roughness_hr.ravel()
     weights_flat = area_hr.ravel()
 
     valid = (
@@ -101,9 +105,12 @@ def compute_surface_roughness(
         raise ValueError("Encountered zero total area during roughness aggregation")
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        aggregated_drag = weighted_sum / weight_sum
+        aggregated_roughness = weighted_sum / weight_sum
 
-    return np.where(land_mask_bool, aggregated_drag, 2.0e-4)
+    roughness_map = np.where(
+        land_mask_bool, aggregated_roughness, WATER_ROUGHNESS_LENGTH_M
+    )
+    return neutral_drag_from_roughness_length(roughness_map)
 
 
 def _compute_geostrophic_wind_components(
