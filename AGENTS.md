@@ -3,19 +3,17 @@
 I’m developing a real-time, visually beautiful, educational climate simulator that explains the “why” behind local climate patterns and future warming.
 
 The concept:
-•	A 2-D monthly energy-balance model (1.0° global grid).
-•	Light physics: radiative balance, meridional diffusion, water-vapor and ice feedbacks, simple orographic/lapse effects. Everything based on first principles.
-•	Eventually, wind and precipitation diagnostics (thermal-wind scaling, Clausius-Clapeyron moisture).
-•	Backend-authoritative (Python + SciPy/NumPy) for precomputed 1° tiles.
-•	Frontend: Three.js for animation; LLM layer for “natural-language explanation” of local results.
+- A 2-D monthly energy-balance model (1.0° global grid).
+- Light physics: radiative balance, meridional diffusion, water-vapor and ice feedbacks, simple orographic/lapse effects. Everything based on first principles.
+- Eventually, wind and precipitation diagnostics (thermal-wind scaling, Clausius-Clapeyron moisture).
+- Backend-authoritative (Python + SciPy/NumPy) for 1° tiles.
+- Frontend: Three.js for animation; LLM layer for “natural-language explanation” of local results.
 
 The goal is an app that’s physically honest, first-principles, and emotionally engaging — a small masterpiece of climate storytelling.
 
-Assume I’m comfortable with Python, Rust, and frontend development.
-
 ## Repository tour
 - `src/climate_sim/modeling/`: physical parameterizations (radiation balance, diffusion, snow albedo, etc.). These modules are pure numerics with extensive `numpy` usage and rely on dataclasses for configuration objects.
-- `src/climate_sim/utils/`: numerical helpers such as grid generation, heat-capacity bookkeeping, and the solver (`compute_periodic_cycle_celsius`). Expect well-factored, unit-testable functions.
+- `src/climate_sim/utils/`: numerical helpers such as grid generation, heat-capacity bookkeeping, and the solver (`compute_periodic_cycle_results`). Expect well-factored, unit-testable functions.
 - `src/climate_sim/plotting.py`: convenience wrappers around Matplotlib/Cartopy to render global temperature fields.
 - `src/main.py`: single-run driver that prints summary statistics and produces plots for the surface (and optionally atmosphere) temperature cycles.
 - `src/scenario_compare.py`: CLI that toggles specific physics options and shows anomaly maps between two model configurations.

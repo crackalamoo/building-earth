@@ -102,7 +102,6 @@ class DiffusionConfig:
     atmosphere_kappa_ref_m2_s: float = 5.0e3
     atmosphere_resolution_ref_deg: float = 1.0
     enabled: bool = True
-    use_spherical_geometry: bool = True
 
     @staticmethod
     def _scaled_diffusivity(
@@ -213,7 +212,6 @@ def _build_single_layer_operator(
         raise ValueError("Active mask must match the grid shape")
 
     earth_radius = config.earth_radius_m
-    use_geometry = config.use_spherical_geometry
 
     total_capacity = np.zeros_like(heat_capacity_field)
     total_capacity[active_mask] = (
@@ -253,20 +251,11 @@ def _build_single_layer_operator(
         delta_y = earth_radius * delta_lat_centers_rad
 
         interface_lat_rad = np.deg2rad(0.5 * (lat_centers[:-1] + lat_centers[1:]))
-        if use_geometry:
-            boundary_length_north = (
-                earth_radius
-                * np.cos(interface_lat_rad)[:, np.newaxis]
-                * delta_lon_rad[np.newaxis, :]
-            )
-        else:
-            if lon_centers.size > 1:
-                delta_lon_uniform = float(np.deg2rad(lon_centers[1] - lon_centers[0]))
-            else:
-                delta_lon_uniform = 2.0 * np.pi
-            boundary_length_north = np.full(
-                (nlat - 1, nlon), earth_radius * delta_lon_uniform, dtype=float
-            )
+        boundary_length_north = (
+            earth_radius
+            * np.cos(interface_lat_rad)[:, np.newaxis]
+            * delta_lon_rad[np.newaxis, :]
+        )
 
         north_mask = active_mask[:-1] & active_mask[1:]
         north_diffusivity = harmonic_mean(
@@ -283,32 +272,17 @@ def _build_single_layer_operator(
 
     # Zonal diffusion (periodic in longitude)
     if nlon > 1:
-        if use_geometry:
-            # Horizontal distance between centres: R cos(phi) * d(lambda)
-            delta_x = (
-                earth_radius
-                * np.cos(np.deg2rad(lat_centers))[:, np.newaxis]
-                * (lon_edges_rad[1:] - lon_edges_rad[:-1])[np.newaxis, :]
-            )
-            # Length of north-south faces: R * d(phi)
-            boundary_length_east = (
-                earth_radius
-                * (lat_edges_rad[1:] - lat_edges_rad[:-1])[:, np.newaxis]
-            )
-        else:
-            # Uniform planar geometry
-            if lon_centers.size > 1:
-                delta_lon_uniform = float(np.deg2rad(lon_centers[1] - lon_centers[0]))
-            else:
-                delta_lon_uniform = 2.0 * np.pi
-            if lat_centers.size > 1:
-                delta_lat_uniform = float(np.deg2rad(lat_centers[1] - lat_centers[0]))
-            else:
-                delta_lat_uniform = np.pi
-            delta_x = earth_radius * delta_lon_uniform * np.ones_like(heat_capacity_field)
-            boundary_length_east = earth_radius * delta_lat_uniform * np.ones_like(
-                heat_capacity_field
-            )
+        # Horizontal distance between centres: R cos(phi) * d(lambda)
+        delta_x = (
+            earth_radius
+            * np.cos(np.deg2rad(lat_centers))[:, np.newaxis]
+            * (lon_edges_rad[1:] - lon_edges_rad[:-1])[np.newaxis, :]
+        )
+        # Length of north-south faces: R * d(phi)
+        boundary_length_east = (
+            earth_radius
+            * (lat_edges_rad[1:] - lat_edges_rad[:-1])[:, np.newaxis]
+        )
 
         east_mask = active_mask & np.roll(active_mask, -1, axis=1)
         east_diffusivity = harmonic_mean(
@@ -377,27 +351,11 @@ def create_diffusion_operator(
         heat_capacity_field, atmosphere_heat_capacity, dtype=float
     )
 
-    if config.use_spherical_geometry:
-        cell_area_field = spherical_cell_area(
-            lon2d,
-            lat2d,
-            earth_radius_m=config.earth_radius_m,
-        )
-    else:
-        lat_centers = lat2d[:, 0]
-        lon_centers = lon2d[0, :]
-        if lat_centers.size > 1:
-            delta_lat_deg = float(lat_centers[1] - lat_centers[0])
-        else:
-            delta_lat_deg = 180.0
-        if lon_centers.size > 1:
-            delta_lon_deg = float(lon_centers[1] - lon_centers[0])
-        else:
-            delta_lon_deg = 360.0
-        delta_lat_rad = np.deg2rad(delta_lat_deg)
-        delta_lon_rad = np.deg2rad(delta_lon_deg)
-        area = (config.earth_radius_m**2) * delta_lat_rad * delta_lon_rad
-        cell_area_field = np.full_like(heat_capacity_field, area, dtype=float)
+    cell_area_field = spherical_cell_area(
+        lon2d,
+        lat2d,
+        earth_radius_m=config.earth_radius_m,
+    )
 
     surface_operator = _build_single_layer_operator(
         lon2d,

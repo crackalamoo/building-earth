@@ -9,7 +9,7 @@ from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.utils.atmosphere import adjust_temperature_by_elevation
 from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
-from climate_sim.utils.solver import compute_periodic_cycle_celsius
+from climate_sim.utils.solver import compute_periodic_cycle_results
 from climate_sim.utils.temperature import convert_temperature, temperature_unit
 
 from dotenv import load_dotenv
@@ -19,7 +19,7 @@ load_dotenv()
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the climate model and plot the cycle.")
     parser.add_argument(
-        "--resolution",
+        "--resolution", "-r",
         type=float,
         default=1.0,
         help="Grid resolution in degrees",
@@ -42,19 +42,6 @@ def _parse_args() -> argparse.Namespace:
         dest="diffusion",
         action="store_false",
         help="Disable lateral diffusion",
-    )
-    parser.add_argument(
-        "--diffusion-geometry",
-        dest="diffusion_geometry",
-        action="store_true",
-        default=True,
-        help="Use spherical geometry scalings in the diffusion operator (default)",
-    )
-    parser.add_argument(
-        "--no-diffusion-geometry",
-        dest="diffusion_geometry",
-        action="store_false",
-        help="Treat diffusion with uniform planar geometry",
     )
 
     parser.add_argument(
@@ -100,7 +87,7 @@ def _parse_args() -> argparse.Namespace:
         help="Disable snow-albedo adjustments",
     )
     parser.add_argument(
-        "--fahrenheit",
+        "--fahrenheit", "-f",
         dest="fahrenheit",
         action="store_true",
         help="Display temperatures in degrees Fahrenheit instead of Celsius",
@@ -113,12 +100,10 @@ def main() -> None:
     args = _parse_args()
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
-    diffusion_config = DiffusionConfig(
-        enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
-    )
+    diffusion_config = DiffusionConfig(enabled=args.diffusion)
     advection_config = GeostrophicAdvectionConfig(enabled=args.advection)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
-    lon2d, lat2d, layers = compute_periodic_cycle_celsius(
+    lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         radiation_config=radiation_config,

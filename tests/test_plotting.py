@@ -13,13 +13,13 @@ from climate_sim.utils import solver
 
 
 def test_plot_monthly_temperature_cycle_runs():
-    lon2d, lat2d, monthly_temps = solver.compute_periodic_cycle_celsius(resolution_deg=90.0)
+    lon2d, lat2d, monthly_temps = solver.compute_periodic_cycle_results(resolution_deg=90.0)
     plot_monthly_temperature_cycle(lon2d, lat2d, monthly_temps)
     plt.close("all")
 
 
 def test_plot_layered_monthly_temperature_cycle_runs():
-    lon2d, lat2d, layers = solver.compute_periodic_cycle_celsius(
+    lon2d, lat2d, layers = solver.compute_periodic_cycle_results(
         resolution_deg=90.0, return_layer_map=True
     )
     layer_fields = {"Surface": layers["surface"]}

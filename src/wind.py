@@ -16,7 +16,7 @@ from climate_sim.modeling.advection import (
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
-from climate_sim.utils.solver import compute_periodic_cycle_celsius
+from climate_sim.utils.solver import compute_periodic_cycle_results
 from climate_sim.utils.constants import R_EARTH_METERS
 from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.utils.elevation import pressure_from_temperature_elevation
@@ -28,7 +28,7 @@ parser = argparse.ArgumentParser(
     description="Visualise the monthly geostrophic wind diagnosed from the model."
 )
 parser.add_argument(
-    "--resolution",
+    "--resolution", "-r",
     type=float,
     default=1.0,
     help="Grid resolution in degrees (must be positive).",
@@ -43,7 +43,7 @@ diffusion_config = DiffusionConfig()
 advection_config = GeostrophicAdvectionConfig()
 snow_config = SnowAlbedoConfig()
 
-lon2d, lat2d, layers = compute_periodic_cycle_celsius(
+lon2d, lat2d, layers = compute_periodic_cycle_results(
     resolution_deg=args.resolution,
     radiation_config=radiation_config,
     diffusion_config=diffusion_config,

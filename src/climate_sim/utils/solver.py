@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Tuple
 
 import numpy as np
@@ -29,7 +30,8 @@ from climate_sim.utils.landmask import (
     compute_land_mask,
 )
 
-NEWTON_TOLERANCE = 1  # K
+NEWTON_STEP_TOLERANCE_K = 1.0
+PERIODIC_FIXED_POINT_TOLERANCE_K = 1.0
 NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
@@ -44,6 +46,47 @@ class Linearisation:
     cross: np.ndarray | None = None
     surface_diffusion_matrix: sparse.csr_matrix | None = None
     atmosphere_diffusion_matrix: sparse.csr_matrix | None = None
+    solver_fingerprint: str | None = None
+
+
+@dataclass
+class LinearSolveCache:
+    identity_matrices: Dict[int, sparse.csc_matrix] = field(default_factory=dict)
+    factorized_solvers: Dict[str, Callable[[np.ndarray], np.ndarray]] = field(default_factory=dict)
+
+
+DEFAULT_LINEAR_SOLVE_CACHE = LinearSolveCache()
+
+
+def _get_identity_matrix(size: int, *, cache: LinearSolveCache) -> sparse.csc_matrix:
+    identity = cache.identity_matrices.get(size)
+    if identity is None:
+        identity = sparse.eye(size, format="csc")
+        cache.identity_matrices[size] = identity
+    return identity
+
+
+def _fingerprint_csc_matrix(matrix: sparse.csc_matrix) -> str:
+    if not sparse.isspmatrix_csc(matrix):
+        matrix = matrix.tocsc()
+    hasher = hashlib.sha1()
+    hasher.update(matrix.shape[0].to_bytes(4, byteorder="little", signed=False))
+    hasher.update(matrix.shape[1].to_bytes(4, byteorder="little", signed=False))
+    hasher.update(matrix.indptr.tobytes())
+    hasher.update(matrix.indices.tobytes())
+    hasher.update(matrix.data.tobytes())
+    return hasher.hexdigest()
+
+
+def _get_factorized_solver(
+    matrix: sparse.csc_matrix, *, cache: LinearSolveCache, fingerprint: str | None = None
+) -> Callable[[np.ndarray], np.ndarray]:
+    key = fingerprint or _fingerprint_csc_matrix(matrix)
+    solver = cache.factorized_solvers.get(key)
+    if solver is None:
+        solver = splinalg.factorized(matrix)
+        cache.factorized_solvers[key] = solver
+    return solver
 
 
 RhsDerivative = Linearisation
@@ -72,15 +115,17 @@ def implicit_monthly_step(
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
+    solver_cache: LinearSolveCache | None = None,
 ) -> np.ndarray:
     """Advance the column temperature one implicit backward-Euler step."""
     temp_next = np.maximum(temperature_K, temperature_floor)
+    cache = solver_cache or DEFAULT_LINEAR_SOLVE_CACHE
 
     if temperature_K.ndim == 2:
-        identity_single_layer = sparse.eye(temperature_K.size, format="csc")
+        identity_single_layer = _get_identity_matrix(temperature_K.size, cache=cache)
     elif temperature_K.ndim == 3 and temperature_K.shape[0] == 2:
-        identity_single_layer = sparse.eye(
-            temperature_K.shape[1] * temperature_K.shape[2], format="csc"
+        identity_single_layer = _get_identity_matrix(
+            temperature_K.shape[1] * temperature_K.shape[2], cache=cache
         )
     else:
         identity_single_layer = None
@@ -98,20 +143,18 @@ def implicit_monthly_step(
             size = temp_capped.size
             residual_flat = residual.ravel()
 
-            if (
-                identity_single_layer is None
-                or identity_single_layer.shape[0] != size
-                or identity_single_layer.shape[1] != size
-            ):
-                jacobian = sparse.eye(size, format="csc")
-            else:
+            if identity_single_layer is not None and identity_single_layer.shape[0] == size:
                 jacobian = identity_single_layer.copy()
+            else:
+                jacobian = _get_identity_matrix(size, cache=cache).copy()
             jacobian -= dt_seconds * sparse.diags(diag.ravel(), format="csc")
 
             if diffusion_matrix is not None:
                 jacobian = jacobian - dt_seconds * diffusion_matrix
 
-            solve_linear = splinalg.factorized(jacobian)
+            fingerprint = linearisation.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
+            linearisation.solver_fingerprint = fingerprint
+            solve_linear = _get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
             correction_flat = solve_linear(residual_flat)
             correction = correction_flat.reshape(temp_capped.shape)
         else:
@@ -132,12 +175,8 @@ def implicit_monthly_step(
             size = nlat * nlon
 
             identity = identity_single_layer
-            if (
-                identity is None
-                or identity.shape[0] != size
-                or identity.shape[1] != size
-            ):
-                identity = sparse.eye(size, format="csc")
+            if identity is None or identity.shape[0] != size or identity.shape[1] != size:
+                identity = _get_identity_matrix(size, cache=cache)
             surface_block = identity.copy()
             surface_block -= dt_seconds * sparse.diags(surface_diag.ravel(), format="csc")
             atmosphere_block = identity.copy()
@@ -165,7 +204,9 @@ def implicit_monthly_step(
                 axis=0,
             )
 
-            solve_linear = splinalg.factorized(jacobian)
+            fingerprint = linearisation.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
+            linearisation.solver_fingerprint = fingerprint
+            solve_linear = _get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
             correction_flat = solve_linear(residual_flat)
             correction_surface = correction_flat[:size].reshape(surface_diag.shape)
             correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
@@ -195,7 +236,7 @@ def implicit_monthly_step(
             residual = residual_candidate
 
         step = prev_temp - temp_next
-        if np.max(np.abs(step)) < NEWTON_TOLERANCE:
+        if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
             break
 
     return temp_next
@@ -209,6 +250,7 @@ def apply_annual_map(
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
+    solver_cache: LinearSolveCache | None = None,
 ) -> np.ndarray:
     """Propagate the state through 12 implicit steps and return the end-of-December temperature."""
     state = temperature_K
@@ -220,6 +262,7 @@ def apply_annual_map(
             rhs_fn=rhs_fn,
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
+            solver_cache=solver_cache,
         )
     return state
 
@@ -268,6 +311,7 @@ def find_periodic_temperature(
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
+    solver_cache: LinearSolveCache | None = None,
 ) -> np.ndarray:
     """Solve P(T) = T for the annual map using Anderson acceleration."""
 
@@ -275,6 +319,7 @@ def find_periodic_temperature(
     residual_history: list[np.ndarray] = []
     advanced_history: list[np.ndarray] = []
     history_limit = 5
+    max_residual = 0.0
 
     for _ in range(FIXED_POINT_MAX_ITERS):
         advanced = apply_annual_map(
@@ -284,12 +329,13 @@ def find_periodic_temperature(
             rhs_fn=rhs_fn,
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
+            solver_cache=solver_cache,
         )
 
         residual = advanced - state
         max_residual = float(np.max(np.abs(residual)))
 
-        if max_residual < NEWTON_TOLERANCE:
+        if max_residual < PERIODIC_FIXED_POINT_TOLERANCE_K:
             return advanced
 
         residual_flat = residual.ravel()
@@ -343,6 +389,7 @@ def integrate_periodic_cycle(
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
+    solver_cache: LinearSolveCache | None = None,
 ) -> np.ndarray:
     """Return the 12-month sequence of month-midpoint temperatures for the periodic solution."""
     temps = np.empty((12,) + initial_temperature.shape, dtype=float)
@@ -355,10 +402,69 @@ def integrate_periodic_cycle(
             rhs_fn=rhs_fn,
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
+            solver_cache=solver_cache,
         )
         temps[month] = 0.5 * (state + next_state)
         state = next_state
     return temps
+
+
+def solve_periodic_cycle_for_albedo(
+    albedo_field: np.ndarray,
+    *,
+    initial_temperature: np.ndarray | None,
+    heat_capacity_field: np.ndarray,
+    monthly_insolation: np.ndarray,
+    month_durations: np.ndarray,
+    diffusion_operator: LayeredDiffusionOperator,
+    radiation_config: RadiationConfig,
+    ocean_mask: np.ndarray,
+    advection_operator: GeostrophicAdvectionOperator | None,
+    rhs_factory: RhsFactory,
+    initial_guess_fn: InitialGuessFunc,
+    temperature_floor: float,
+    solver_cache: LinearSolveCache,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute the periodic solution and monthly mean temperatures for a given albedo field."""
+    rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
+        heat_capacity_field,
+        albedo_field,
+        diffusion_operator,
+        radiation_config,
+        ocean_mask,
+        advection_operator,
+    )
+
+    if initial_temperature is None:
+        guess = initial_guess_fn(
+            monthly_insolation,
+            albedo_field,
+            radiation_config,
+        )
+    else:
+        guess = initial_temperature
+
+    periodic_temperature = find_periodic_temperature(
+        guess,
+        monthly_insolation,
+        month_durations,
+        rhs_fn=rhs_fn,
+        rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
+        temperature_floor=temperature_floor,
+        solver_cache=solver_cache,
+    )
+
+    monthly_temperatures = integrate_periodic_cycle(
+        periodic_temperature,
+        monthly_insolation,
+        month_durations,
+        rhs_fn=rhs_fn,
+        rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
+        temperature_floor=temperature_floor,
+        solver_cache=solver_cache,
+    )
+
+    return periodic_temperature, monthly_temperatures
 
 
 def compute_periodic_cycle_kelvin(
@@ -414,46 +520,7 @@ def compute_periodic_cycle_kelvin(
             config=advection_config,
         )
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
-
-    def solve_with_albedo(
-        albedo_field: np.ndarray,
-        initial_temperature: np.ndarray | None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
-            heat_capacity_field,
-            albedo_field,
-            diffusion_operator,
-            radiation_config,
-            ocean_mask,
-            advection_operator,
-        )
-
-        if initial_temperature is None:
-            guess = initial_guess_fn(
-                monthly_insolation, albedo_field, radiation_config
-            )
-        else:
-            guess = initial_temperature
-
-        periodic_temperature = find_periodic_temperature(
-            guess,
-            monthly_insolation,
-            month_durations,
-            rhs_fn=rhs_fn,
-            rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-            temperature_floor=radiation_config.temperature_floor,
-        )
-
-        monthly_temperatures = integrate_periodic_cycle(
-            periodic_temperature,
-            monthly_insolation,
-            month_durations,
-            rhs_fn=rhs_fn,
-            rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-            temperature_floor=radiation_config.temperature_floor,
-        )
-
-        return periodic_temperature, monthly_temperatures
+    solver_cache = LinearSolveCache()
 
     albedo_field = base_albedo_field
     previous_periodic: np.ndarray | None = None
@@ -462,8 +529,20 @@ def compute_periodic_cycle_kelvin(
     iterations = snow_cfg.picard_iterations if snow_cfg.enabled else 1
 
     for iteration in range(iterations):
-        previous_periodic, final_monthly = solve_with_albedo(
-            albedo_field, previous_periodic
+        previous_periodic, final_monthly = solve_periodic_cycle_for_albedo(
+            albedo_field,
+            initial_temperature=previous_periodic,
+            heat_capacity_field=heat_capacity_field,
+            monthly_insolation=monthly_insolation,
+            month_durations=month_durations,
+            diffusion_operator=diffusion_operator,
+            radiation_config=radiation_config,
+            ocean_mask=ocean_mask,
+            advection_operator=advection_operator,
+            rhs_factory=rhs_factory,
+            initial_guess_fn=initial_guess_fn,
+            temperature_floor=radiation_config.temperature_floor,
+            solver_cache=solver_cache,
         )
 
         if not snow_cfg.enabled:
@@ -489,19 +568,23 @@ def compute_periodic_cycle_kelvin(
     return lon2d, lat2d, final_monthly, albedo_field
 
 
-def compute_periodic_cycle_celsius(
+def compute_periodic_cycle_results(
     resolution_deg: float = 1.0,
     *,
-    solar_constant: float = None,
-    ocean_heat_capacity: float = None,
-    land_heat_capacity: float = None,
+    solar_constant: float | None = None,
+    ocean_heat_capacity: float | None = None,
+    land_heat_capacity: float | None = None,
     radiation_config: RadiationConfig | None = None,
     diffusion_config: DiffusionConfig | None = None,
     advection_config: GeostrophicAdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     return_layer_map: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
-    """Convenience wrapper wiring the radiation component into the solver."""
+    """Produce the periodic cycle fields in Celsius along with the converged albedo layer.
+
+    Returns the lon/lat grids and either the surface temperature field (default) or a
+    dictionary of layer outputs when ``return_layer_map`` is True.
+    """
 
     def monthly_insolation_lat_fn(lat2d: np.ndarray) -> np.ndarray:
         return compute_monthly_insolation_field(lat2d, solar_constant=solar_constant)

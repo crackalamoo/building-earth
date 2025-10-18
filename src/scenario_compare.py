@@ -14,7 +14,7 @@ from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
-from climate_sim.utils.solver import compute_periodic_cycle_celsius
+from climate_sim.utils.solver import compute_periodic_cycle_results
 from climate_sim.utils.temperature import convert_temperature, temperature_unit
 
 from dotenv import load_dotenv
@@ -26,12 +26,9 @@ def _build_configs(
     enable_diffusion: bool,
     enable_advection: bool,
     include_atmosphere: bool,
-    use_geometry: bool,
 ) -> Tuple[RadiationConfig, DiffusionConfig, GeostrophicAdvectionConfig]:
     radiation_cfg = RadiationConfig(include_atmosphere=include_atmosphere)
-    diffusion_cfg = DiffusionConfig(
-        enabled=enable_diffusion, use_spherical_geometry=use_geometry
-    )
+    diffusion_cfg = DiffusionConfig(enabled=enable_diffusion)
     advection_cfg = GeostrophicAdvectionConfig(enabled=enable_advection)
     return radiation_cfg, diffusion_cfg, advection_cfg
 
@@ -45,7 +42,7 @@ def main() -> None:
         description="Plot anomalies between two climate model configurations.",
     )
     parser.add_argument(
-        "--resolution",
+        "--resolution", "-r",
         type=float,
         default=1.0,
         help="Grid resolution in degrees",
@@ -110,19 +107,6 @@ def main() -> None:
         action="store_false",
         help="Exclude the atmospheric layer in the baseline case",
     )
-    parser.add_argument(
-        "--base-diffusion-geometry",
-        dest="base_geometry",
-        action="store_true",
-        default=True,
-        help="Use spherical geometry in baseline diffusion (default)",
-    )
-    parser.add_argument(
-        "--no-base-diffusion-geometry",
-        dest="base_geometry",
-        action="store_false",
-        help="Use planar diffusion geometry in the baseline case",
-    )
 
     parser.add_argument(
         "--exp-diffusion",
@@ -164,19 +148,6 @@ def main() -> None:
         help="Exclude the atmospheric layer in the experiment case",
     )
     parser.add_argument(
-        "--exp-diffusion-geometry",
-        dest="experiment_geometry",
-        action="store_true",
-        default=True,
-        help="Use spherical geometry in experiment diffusion (default)",
-    )
-    parser.add_argument(
-        "--no-exp-diffusion-geometry",
-        dest="experiment_geometry",
-        action="store_false",
-        help="Use planar diffusion geometry in the experiment case",
-    )
-    parser.add_argument(
         "--exp-snow",
         dest="experiment_snow",
         action="store_true",
@@ -190,7 +161,7 @@ def main() -> None:
         help="Disable snow-albedo adjustments in the experiment case",
     )
     parser.add_argument(
-        "--fahrenheit",
+        "--fahrenheit", "-f",
         dest="fahrenheit",
         action="store_true",
         help="Display anomalies in degrees Fahrenheit instead of Celsius",
@@ -202,19 +173,17 @@ def main() -> None:
         enable_diffusion=args.base_diffusion,
         enable_advection=args.base_advection,
         include_atmosphere=args.base_atmosphere,
-        use_geometry=args.base_geometry,
     )
     exp_rad, exp_diff, exp_adv = _build_configs(
         enable_diffusion=args.experiment_diffusion,
         enable_advection=args.experiment_advection,
         include_atmosphere=args.experiment_atmosphere,
-        use_geometry=args.experiment_geometry,
     )
 
     base_snow = SnowAlbedoConfig(enabled=args.base_snow)
     exp_snow = SnowAlbedoConfig(enabled=args.experiment_snow)
 
-    lon2d, lat2d, base_layers = compute_periodic_cycle_celsius(
+    lon2d, lat2d, base_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         radiation_config=base_rad,
@@ -223,7 +192,7 @@ def main() -> None:
         snow_config=base_snow,
         return_layer_map=True,
     )
-    _, _, exp_layers = compute_periodic_cycle_celsius(
+    _, _, exp_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         radiation_config=exp_rad,
@@ -241,14 +210,12 @@ def main() -> None:
         "diffusion": args.base_diffusion,
         "advection": args.base_advection,
         "atmosphere": args.base_atmosphere,
-        "geometry": args.base_geometry,
         "snow": args.base_snow,
     }
     exp_summary = {
         "diffusion": args.experiment_diffusion,
         "advection": args.experiment_advection,
         "atmosphere": args.experiment_atmosphere,
-        "geometry": args.experiment_geometry,
         "snow": args.experiment_snow,
     }
 

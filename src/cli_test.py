@@ -47,19 +47,6 @@ def _parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable lateral diffusion",
     )
-    parser.add_argument(
-        "--diffusion-geometry",
-        dest="diffusion_geometry",
-        action="store_true",
-        default=True,
-        help="Use spherical geometry scalings in the diffusion operator (default)",
-    )
-    parser.add_argument(
-        "--no-diffusion-geometry",
-        dest="diffusion_geometry",
-        action="store_false",
-        help="Treat diffusion with uniform planar geometry",
-    )
 
     parser.add_argument(
         "--atmosphere",
@@ -170,16 +157,14 @@ def main() -> None:
     from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
-    from climate_sim.utils.solver import compute_periodic_cycle_celsius
+    from climate_sim.utils.solver import compute_periodic_cycle_results
     from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
-    diffusion_config = DiffusionConfig(
-        enabled=args.diffusion, use_spherical_geometry=args.diffusion_geometry
-    )
+    diffusion_config = DiffusionConfig(enabled=args.diffusion)
     advection_config = GeostrophicAdvectionConfig(enabled=args.advection)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
-    lon2d, lat2d, layers = compute_periodic_cycle_celsius(
+    lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         radiation_config=radiation_config,
