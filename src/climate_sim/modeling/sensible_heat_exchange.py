@@ -100,7 +100,7 @@ class SensibleHeatExchangeModel:
 
         return log_law_map_wind_speed(
             wind_speed,
-            height_ref_m=self._reference_height_atmosphere,
+            height_ref_m=100,
             height_target_m=self._config.reference_height_surface_m,
             roughness_length_m=self._roughness,
         )
@@ -141,7 +141,8 @@ class SensibleHeatExchangeModel:
         near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 1.0)
 
         gas_constant = self._config.gas_constant_dry_air_J_kg_K
-        rho = pressure / (gas_constant * near_surface_air_K)
+        # rho = pressure / (gas_constant * near_surface_air_K)
+        rho = 1.2
 
         log_height_surface = self._config.reference_height_surface_m
         roughness_momentum = self._roughness
@@ -153,26 +154,39 @@ class SensibleHeatExchangeModel:
         lh = np.log(
             np.maximum(log_height_surface / roughness_heat, 1.0 + 1.0e-9)
         )
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ch_raw = (self._config.von_karman**2) / (lm * lh)
+        ch_raw = (self._config.von_karman**2) / (lm * lh)
 
-        ch_land = np.clip(ch_raw, 5.0e-4, 2.0e-3)
-        ch_ocean = np.clip(ch_raw, 8.0e-4, 3.0e-3)
+        ch_land = np.clip(ch_raw, 1e-4, 2.0e-3)
+        ch_ocean = np.clip(ch_raw, 3e-4, 3.0e-3)
         ch = np.where(self._land_mask, ch_land, ch_ocean)
 
         wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
 
-        delta_temperature = surface_temperature - near_surface_air_K
+        # New: resistive throttling to the free-air node (Ta ~ your atmosphere_temperature)
+        cp = self._config.heat_capacity_air_J_kg_K
 
-        heat_flux = (
-            rho
+        # Surface conductance (W m-2 K-1)
+        g_surf = rho * cp * ch * wind_abs
+        r_surf = 1.0 / np.maximum(g_surf, 1e-9)
+
+        # Mixing resistance (choose once; split land/ocean if you want)
+        Cbl = 1.2e5  # J m-2 K-1
+        tau = np.where(self._land_mask, 2*86400.0, 4*86400.0)  # s
+        tau = (self._surface_heat_capacity * self._atmosphere_heat_capacity) / (    
+            self._surface_heat_capacity + self._atmosphere_heat_capacity
+        ) / (rho
             * self._config.heat_capacity_air_J_kg_K
             * ch
-            * wind_abs
-            * delta_temperature
-        )
+            * wind_abs)
+        r_mix = tau / Cbl
+
+        # Effective flux to the free-air node (your atmosphere_temperature)
+        delta_to_free = surface_temperature - near_surface_air_K
+        heat_flux = delta_to_free / (r_surf + r_mix)
+
+        # print(np.mean(ch_land), np.mean(ch_ocean), np.mean(ch), np.min(ch), np.max(ch))
 
         surface_tendency = -heat_flux / self._surface_heat_capacity
         atmosphere_tendency = heat_flux / self._atmosphere_heat_capacity
-
+        # return np.zeros_like(surface_tendency), np.zeros_like(atmosphere_tendency)
         return surface_tendency, atmosphere_tendency
