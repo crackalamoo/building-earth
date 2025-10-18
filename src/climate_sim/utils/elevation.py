@@ -11,11 +11,7 @@ import xarray as xr
 
 VON_KARMAN_CONSTANT = 0.4
 REFERENCE_HEIGHT_M = 10.0
-WATER_NEUTRAL_DRAG_COEFFICIENT = 2.0e-4
-WATER_ROUGHNESS_LENGTH_M = float(
-    REFERENCE_HEIGHT_M
-    / np.exp(VON_KARMAN_CONSTANT / np.sqrt(WATER_NEUTRAL_DRAG_COEFFICIENT))
-)
+WATER_ROUGHNESS_LENGTH_M = 2.0e-4
 
 from climate_sim.utils.constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2, GAS_CONSTANT_J_KG_K
 
@@ -253,7 +249,7 @@ def compute_cell_roughness_length(
     terrain_land_mask = elevation_m >= 0.0
     if np.any(terrain_land_mask):
         combined = z0_base_land + z0_orographic
-        combined = np.clip(combined, 0.02, 2.0)
+        combined = np.clip(combined, 5.0e-3, 5.0e-2)
         z0_total[terrain_land_mask] = combined[terrain_land_mask]
 
     roughness_result = np.array(z0_total, copy=True)
