@@ -8,8 +8,12 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.widgets import RadioButtons, Slider
 from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
+from climate_sim.utils.temperature import convert_temperature, temperature_unit
 
-def build_temperature_cmap() -> Tuple[LinearSegmentedColormap, np.ndarray]:
+
+def build_temperature_cmap(
+    unit: str = "C",
+) -> Tuple[LinearSegmentedColormap, np.ndarray]:
     """Custom temperature ramp with category-aware transitions."""
     bounds = np.array([-30.0, 0.0, 15.0, 20.0, 25.0, 30.0, 45.0])
     colors = [
@@ -22,9 +26,12 @@ def build_temperature_cmap() -> Tuple[LinearSegmentedColormap, np.ndarray]:
         "#D32F2F",  # red (30+ °C)
     ]
     normalized = (bounds - bounds[0]) / (bounds[-1] - bounds[0])
-    return LinearSegmentedColormap.from_list(
+    cmap = LinearSegmentedColormap.from_list(
         "custom_temperature_categories", list(zip(normalized, colors))
-    ), bounds
+    )
+    if unit.upper().startswith("F"):
+        bounds = (bounds * (9.0 / 5.0)) + 32.0
+    return cmap, bounds
 
 
 def plot_field(
@@ -39,6 +46,7 @@ def plot_field(
     colorbar_ticks: Optional[Iterable[float]] = None,
     colorbar_orientation: str = "vertical",
     stats_text: Optional[str] = None,
+    status_unit: Optional[str] = None,
 ) -> None:
     """Render a scalar field on an equirectangular map with land outlines."""
     projection = ccrs.PlateCarree()
@@ -103,35 +111,44 @@ def plot_field(
             transform=stats_ax.transAxes,
         )
 
-    add_status_readout(fig, ax, lon2d, lat2d, field)
+    add_status_readout(fig, ax, lon2d, lat2d, field, unit_label=status_unit)
 
     plt.show()
 
 
 def plot_temperature_field(
-    lon2d: np.ndarray, lat2d: np.ndarray, field: np.ndarray, *, title: str = "Temperature Field"
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    field: np.ndarray,
+    *,
+    title: str = "Temperature Field",
+    use_fahrenheit: bool = False,
+    value_is_delta: bool = False,
 ) -> None:
-    """Specialised helper for °C temperature fields."""
-    cmap, bounds = build_temperature_cmap()
+    """Specialised helper for temperature fields with unit conversions."""
+    unit = temperature_unit(use_fahrenheit)
+    cmap, bounds = build_temperature_cmap(unit=unit[-1])
+    display_field = convert_temperature(field, use_fahrenheit, is_delta=value_is_delta)
     vmin, vmax = bounds[0], bounds[-1]
     norm = Normalize(vmin=vmin, vmax=vmax)
     stats_text = (
-        f"min {field.min():.1f}°C\n"
-        f"mean {field.mean():.1f}°C\n"
-        f"max {field.max():.1f}°C"
+        f"min {display_field.min():.1f}{unit}\n"
+        f"mean {display_field.mean():.1f}{unit}\n"
+        f"max {display_field.max():.1f}{unit}"
     )
 
     plot_field(
         lon2d,
         lat2d,
-        field,
+        display_field,
         title=title,
         cmap=cmap,
         norm=norm,
-        colorbar_label="Temperature (°C)",
+        colorbar_label=f"Temperature ({unit})",
         colorbar_ticks=bounds,
         colorbar_orientation="vertical",
         stats_text=stats_text,
+        status_unit=unit,
     )
 
 
@@ -141,6 +158,8 @@ def add_status_readout(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     field: np.ndarray,
+    *,
+    unit_label: Optional[str] = None,
 ) -> None:
     """Push hover readout to the interactive toolbar/status bar."""
     manager = getattr(fig.canvas, "manager", None)
@@ -178,8 +197,9 @@ def add_status_readout(
         sample_lat = lat2d[lat_idx, lon_idx]
         temperature = field[lat_idx, lon_idx]
 
+        suffix = f" {unit_label}" if unit_label else ""
         toolbar.set_message(
-            f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {temperature:.1f} °C"
+            f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {temperature:.1f}{suffix}"
         )
 
     fig.canvas.mpl_connect("motion_notify_event", on_move)
@@ -196,6 +216,8 @@ def plot_monthly_temperature_cycle(
     norm: Optional[Normalize] = None,
     colorbar_label: str = "Temperature (°C)",
     colorbar_ticks: Optional[Iterable[float]] = None,
+    use_fahrenheit: bool = False,
+    value_is_delta: bool = False,
 ) -> None:
     """Interactive monthly cycle viewer driven by a slider."""
     plot_layered_monthly_temperature_cycle(
@@ -207,6 +229,8 @@ def plot_monthly_temperature_cycle(
         norm=norm,
         colorbar_label=colorbar_label,
         colorbar_ticks=colorbar_ticks,
+        use_fahrenheit=use_fahrenheit,
+        value_is_delta=value_is_delta,
     )
 
 
@@ -220,6 +244,8 @@ def plot_layered_monthly_temperature_cycle(
     norm: Optional[Normalize] = None,
     colorbar_label: str = "Temperature (°C)",
     colorbar_ticks: Optional[Iterable[float]] = None,
+    use_fahrenheit: bool = False,
+    value_is_delta: bool = False,
 ) -> None:
     """Interactive monthly cycle viewer with month slider and layer selector."""
 
@@ -260,12 +286,15 @@ def plot_layered_monthly_temperature_cycle(
         "December",
     ]
 
-    default_cmap, bounds = build_temperature_cmap()
+    unit = temperature_unit(use_fahrenheit)
+    default_cmap, bounds = build_temperature_cmap(unit=unit[-1])
     if cmap is None:
         cmap = default_cmap
     if norm is None:
         vmin, vmax = bounds[0], bounds[-1]
         norm = Normalize(vmin=vmin, vmax=vmax)
+    if use_fahrenheit and colorbar_label.endswith("°C)"):
+        colorbar_label = colorbar_label[:-3] + "°F)"
 
     projection = ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
@@ -280,10 +309,15 @@ def plot_layered_monthly_temperature_cycle(
 
     current_state = {"layer": 0, "month": 0}
 
+    data_stack_display = [
+        convert_temperature(field, use_fahrenheit, is_delta=value_is_delta)
+        for field in data_stack
+    ]
+
     mesh = ax.pcolormesh(
         lon2d,
         lat2d,
-        data_stack[current_state["layer"]][current_state["month"]],
+        data_stack_display[current_state["layer"]][current_state["month"]],
         cmap=cmap,
         norm=norm,
         shading="auto",
@@ -319,7 +353,7 @@ def plot_layered_monthly_temperature_cycle(
     )
 
     current_field = {
-        "data": data_stack[current_state["layer"]][current_state["month"]]
+        "data": data_stack_display[current_state["layer"]][current_state["month"]]
     }
 
     def update_status_handler() -> None:
@@ -358,7 +392,7 @@ def plot_layered_monthly_temperature_cycle(
             temperature = current_field["data"][lat_idx, lon_idx]
 
             toolbar.set_message(
-                f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {temperature:.1f} °C"
+                f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {temperature:.1f} {unit}"
             )
 
         fig.canvas.mpl_connect("motion_notify_event", on_move)
@@ -367,7 +401,7 @@ def plot_layered_monthly_temperature_cycle(
     update_status_handler()
 
     def update_plot() -> None:
-        data = data_stack[current_state["layer"]][current_state["month"]]
+        data = data_stack_display[current_state["layer"]][current_state["month"]]
         mesh.set_array(data.ravel())
         ax.set_title(format_title())
         current_field["data"] = data
