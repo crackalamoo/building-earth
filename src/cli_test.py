@@ -62,19 +62,6 @@ def _parse_args() -> argparse.Namespace:
         help="Exclude the atmospheric layer",
     )
     parser.add_argument(
-        "--advection",
-        dest="advection",
-        action="store_true",
-        default=True,
-        help="Enable geostrophic atmospheric advection (default)",
-    )
-    parser.add_argument(
-        "--no-advection",
-        dest="advection",
-        action="store_false",
-        help="Disable geostrophic atmospheric advection",
-    )
-    parser.add_argument(
         "--snow",
         dest="snow",
         action="store_true",
@@ -94,17 +81,17 @@ def _parse_args() -> argparse.Namespace:
         help="Display temperatures in degrees Fahrenheit instead of Celsius",
     )
     parser.add_argument(
-        "--sensible-heat",
-        dest="sensible_heat",
+        "--bulk-exchange",
+        dest="bulk_exchange",
         action="store_true",
         default=True,
-        help="Enable the neutral sensible heat exchange model (default)",
+        help="Enable the neutral bulk sensible heat exchange model (default)",
     )
     parser.add_argument(
-        "--no-sensible-heat",
-        dest="sensible_heat",
+        "--no-bulk-exchange",
+        dest="bulk_exchange",
         action="store_false",
-        help="Disable the neutral sensible heat exchange model",
+        help="Disable the neutral bulk sensible heat exchange model",
     )
     parser.add_argument(
         "--elliptical-orbit",
@@ -179,7 +166,6 @@ def _summarize_location(
 def main() -> None:
     args = _parse_args()
 
-    from climate_sim.modeling.advection import AdvectionConfig
     from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
@@ -189,16 +175,14 @@ def main() -> None:
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
-    advection_config = AdvectionConfig(enabled=args.advection)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
-    sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.sensible_heat)
+    sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.bulk_exchange)
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
         radiation_config=radiation_config,
         diffusion_config=diffusion_config,
-        advection_config=advection_config,
         snow_config=snow_config,
         sensible_heat_config=sensible_heat_config,
         return_layer_map=True,

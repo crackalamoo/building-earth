@@ -9,7 +9,6 @@ import cmocean
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
 
-from climate_sim.modeling.advection import AdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
@@ -26,13 +25,11 @@ load_dotenv()
 def _build_configs(
     *,
     enable_diffusion: bool,
-    enable_advection: bool,
     include_atmosphere: bool,
-) -> Tuple[RadiationConfig, DiffusionConfig, AdvectionConfig]:
+) -> Tuple[RadiationConfig, DiffusionConfig]:
     radiation_cfg = RadiationConfig(include_atmosphere=include_atmosphere)
     diffusion_cfg = DiffusionConfig(enabled=enable_diffusion)
-    advection_cfg = AdvectionConfig(enabled=enable_advection)
-    return radiation_cfg, diffusion_cfg, advection_cfg
+    return radiation_cfg, diffusion_cfg
 
 
 def _summarize(flags: Dict[str, bool]) -> str:
@@ -110,19 +107,6 @@ def main() -> None:
         help="Disable lateral diffusion in the baseline case",
     )
     parser.add_argument(
-        "--base-advection",
-        dest="base_advection",
-        action="store_true",
-        default=True,
-        help="Enable geostrophic atmospheric advection in the baseline case (default)",
-    )
-    parser.add_argument(
-        "--no-base-advection",
-        dest="base_advection",
-        action="store_false",
-        help="Disable geostrophic atmospheric advection in the baseline case",
-    )
-    parser.add_argument(
         "--base-atmosphere",
         dest="base_atmosphere",
         action="store_true",
@@ -148,19 +132,6 @@ def main() -> None:
         dest="experiment_diffusion",
         action="store_false",
         help="Disable lateral diffusion in the experiment case",
-    )
-    parser.add_argument(
-        "--exp-advection",
-        dest="experiment_advection",
-        action="store_true",
-        default=True,
-        help="Enable geostrophic atmospheric advection in the experiment case (default)",
-    )
-    parser.add_argument(
-        "--no-exp-advection",
-        dest="experiment_advection",
-        action="store_false",
-        help="Disable geostrophic atmospheric advection in the experiment case",
     )
     parser.add_argument(
         "--exp-atmosphere",
@@ -189,30 +160,30 @@ def main() -> None:
         help="Disable snow-albedo adjustments in the experiment case",
     )
     parser.add_argument(
-        "--base-sensible-heat",
-        dest="base_sensible_heat",
+        "--base-bulk-exchange",
+        dest="base_bulk_exchange",
         action="store_true",
         default=True,
-        help="Enable sensible heat exchange in the baseline case (default)",
+        help="Enable bulk sensible heat exchange in the baseline case (default)",
     )
     parser.add_argument(
-        "--no-base-sensible-heat",
-        dest="base_sensible_heat",
+        "--no-base-bulk-exchange",
+        dest="base_bulk_exchange",
         action="store_false",
-        help="Disable sensible heat exchange in the baseline case",
+        help="Disable bulk sensible heat exchange in the baseline case",
     )
     parser.add_argument(
-        "--exp-sensible-heat",
-        dest="experiment_sensible_heat",
+        "--exp-bulk-exchange",
+        dest="experiment_bulk_exchange",
         action="store_true",
         default=True,
-        help="Enable sensible heat exchange in the experiment case (default)",
+        help="Enable bulk sensible heat exchange in the experiment case (default)",
     )
     parser.add_argument(
-        "--no-exp-sensible-heat",
-        dest="experiment_sensible_heat",
+        "--no-exp-bulk-exchange",
+        dest="experiment_bulk_exchange",
         action="store_false",
-        help="Disable sensible heat exchange in the experiment case",
+        help="Disable bulk sensible heat exchange in the experiment case",
     )
     parser.add_argument(
         "--fahrenheit", "-f",
@@ -223,22 +194,20 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    base_rad, base_diff, base_adv = _build_configs(
+    base_rad, base_diff = _build_configs(
         enable_diffusion=args.base_diffusion,
-        enable_advection=args.base_advection,
         include_atmosphere=args.base_atmosphere,
     )
-    exp_rad, exp_diff, exp_adv = _build_configs(
+    exp_rad, exp_diff = _build_configs(
         enable_diffusion=args.experiment_diffusion,
-        enable_advection=args.experiment_advection,
         include_atmosphere=args.experiment_atmosphere,
     )
 
     base_snow = SnowAlbedoConfig(enabled=args.base_snow)
     exp_snow = SnowAlbedoConfig(enabled=args.experiment_snow)
 
-    base_sensible_heat = SensibleHeatExchangeConfig(enabled=args.base_sensible_heat)
-    exp_sensible_heat = SensibleHeatExchangeConfig(enabled=args.experiment_sensible_heat)
+    base_sensible_heat = SensibleHeatExchangeConfig(enabled=args.base_bulk_exchange)
+    exp_sensible_heat = SensibleHeatExchangeConfig(enabled=args.experiment_bulk_exchange)
 
     lon2d, lat2d, base_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
@@ -246,7 +215,6 @@ def main() -> None:
         use_elliptical_orbit=args.base_elliptical_orbit,
         radiation_config=base_rad,
         diffusion_config=base_diff,
-        advection_config=base_adv,
         snow_config=base_snow,
         sensible_heat_config=base_sensible_heat,
         return_layer_map=True,
@@ -257,7 +225,6 @@ def main() -> None:
         use_elliptical_orbit=args.experiment_elliptical_orbit,
         radiation_config=exp_rad,
         diffusion_config=exp_diff,
-        advection_config=exp_adv,
         snow_config=exp_snow,
         sensible_heat_config=exp_sensible_heat,
         return_layer_map=True,
@@ -285,18 +252,16 @@ def main() -> None:
     base_summary = {
         "elliptical_orbit": args.base_elliptical_orbit,
         "diffusion": args.base_diffusion,
-        "advection": args.base_advection,
         "atmosphere": args.base_atmosphere,
         "snow": args.base_snow,
-        "sensible_heat": args.base_sensible_heat,
+        "bulk_exchange": args.base_bulk_exchange,
     }
     exp_summary = {
         "elliptical_orbit": args.experiment_elliptical_orbit,
         "diffusion": args.experiment_diffusion,
-        "advection": args.experiment_advection,
         "atmosphere": args.experiment_atmosphere,
         "snow": args.experiment_snow,
-        "sensible_heat": args.experiment_sensible_heat,
+        "bulk_exchange": args.experiment_bulk_exchange,
     }
 
     print("Baseline configuration:", _summarize(base_summary))

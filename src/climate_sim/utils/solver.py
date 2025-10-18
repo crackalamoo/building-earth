@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, Sequence, Tuple
 
 import numpy as np
@@ -751,6 +751,9 @@ def compute_periodic_cycle_results(
     resolved_advection = advection_config or AdvectionConfig()
     resolved_snow = snow_config or SnowAlbedoConfig()
     sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
+
+    if not sensible_heat_cfg.enabled and resolved_advection.enabled:
+        resolved_advection = replace(resolved_advection, enabled=False)
 
     def rhs_factory(
         heat_capacity_field: np.ndarray,
