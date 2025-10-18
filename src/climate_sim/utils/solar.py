@@ -76,7 +76,7 @@ if __name__ == '__main__':
     insolation = expand_latitude_field(insolation, lon2d.shape[1])
     print(insolation.shape)
     insolation = insolation.mean(axis=0)
-    plt.imshow(insolation, origin='lower', extent=[-180, 180, -90, 90], aspect='auto')
+    plt.imshow(insolation, origin='lower', extent=(-180, 180, -90, 90), aspect='auto')
     plt.colorbar(label='W m$^{-2}$')
     plt.xlabel('Longitude')
     plt.ylabel('Latitude')

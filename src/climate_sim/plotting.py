@@ -6,14 +6,14 @@ from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.widgets import RadioButtons, Slider
-from typing import Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Iterable, Mapping, Sequence
 
 from climate_sim.utils.temperature import convert_temperature, temperature_unit
 
 
 def build_temperature_cmap(
     unit: str = "C",
-) -> Tuple[LinearSegmentedColormap, np.ndarray]:
+) -> tuple[LinearSegmentedColormap, np.ndarray]:
     """Custom temperature ramp with category-aware transitions."""
     bounds = np.array([-30.0, 0.0, 15.0, 20.0, 25.0, 30.0, 45.0])
     colors = [
@@ -40,13 +40,13 @@ def plot_field(
     field: np.ndarray,
     *,
     title: str = "Scalar Field",
-    cmap: Optional[LinearSegmentedColormap] = None,
-    norm: Optional[Normalize] = None,
+    cmap: LinearSegmentedColormap | None = None,
+    norm: Normalize | None = None,
     colorbar_label: str = "",
-    colorbar_ticks: Optional[Iterable[float]] = None,
+    colorbar_ticks: Iterable[float] | None = None,
     colorbar_orientation: str = "vertical",
-    stats_text: Optional[str] = None,
-    status_unit: Optional[str] = None,
+    stats_text: str | None = None,
+    status_unit: str | None = None,
 ) -> None:
     """Render a scalar field on an equirectangular map with land outlines."""
     projection = ccrs.PlateCarree()
@@ -159,7 +159,7 @@ def add_status_readout(
     lat2d: np.ndarray,
     field: np.ndarray,
     *,
-    unit_label: Optional[str] = None,
+    unit_label: str | None = None,
 ) -> None:
     """Push hover readout to the interactive toolbar/status bar."""
     manager = getattr(fig.canvas, "manager", None)
@@ -212,10 +212,10 @@ def plot_monthly_temperature_cycle(
     monthly_field: np.ndarray,
     *,
     title: str = "Monthly Temperature Cycle",
-    cmap: Optional[LinearSegmentedColormap] = None,
-    norm: Optional[Normalize] = None,
+    cmap: LinearSegmentedColormap | None = None,
+    norm: Normalize | None = None,
     colorbar_label: str = "Temperature (°C)",
-    colorbar_ticks: Optional[Iterable[float]] = None,
+    colorbar_ticks: Iterable[float] | None = None,
     use_fahrenheit: bool = False,
     value_is_delta: bool = False,
 ) -> None:
@@ -240,10 +240,10 @@ def plot_layered_monthly_temperature_cycle(
     layer_fields: Mapping[str, np.ndarray] | Sequence[tuple[str, np.ndarray]],
     *,
     title: str = "Monthly Temperature Cycle",
-    cmap: Optional[LinearSegmentedColormap] = None,
-    norm: Optional[Normalize] = None,
+    cmap: LinearSegmentedColormap | None = None,
+    norm: Normalize | None = None,
     colorbar_label: str = "Temperature (°C)",
-    colorbar_ticks: Optional[Iterable[float]] = None,
+    colorbar_ticks: Iterable[float] | None = None,
     use_fahrenheit: bool = False,
     value_is_delta: bool = False,
 ) -> None:
@@ -300,7 +300,7 @@ def plot_layered_monthly_temperature_cycle(
     fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
     ax.set_global()
     ax.coastlines(linewidth=0.4)
-    ax.add_feature(cfeature.BORDERS, linewidth=0.2, facecolor="#000000", edgecolor="#444444")
+    ax.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
     ax.add_feature(cfeature.NaturalEarthFeature(
         'physical', 'lakes', '110m',
         edgecolor='#000000', facecolor='none'),

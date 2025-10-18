@@ -222,7 +222,7 @@ def _clear_streamplot_artists(stream_set: StreamplotSet) -> None:
 initial_label = month_names[0 % len(month_names)]
 ax.set_title(f"Geostrophic Wind ({layer_label}) – {initial_label}")
 
-slider_ax = fig.add_axes([0.2, 0.08, 0.6, 0.03])
+slider_ax = fig.add_axes((0.2, 0.08, 0.6, 0.03))
 month_slider = Slider(
     slider_ax,
     label="Month",

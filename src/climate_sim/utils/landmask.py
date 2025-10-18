@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-from typing import Tuple
 
 import numpy as np
 from cartopy.io import shapereader
@@ -12,7 +11,6 @@ from matplotlib.colors import BoundaryNorm, ListedColormap
 from shapely.geometry import Point
 from shapely.ops import unary_union
 from shapely.prepared import prep
-from typing import Optional
 
 OCEAN_HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
 LAND_HEAT_CAPACITY_M2 = 6.0e6  # J m-2 K-1, ~3 m soil skin depth
@@ -20,7 +18,7 @@ OCEAN_ALBEDO = 0.3
 LAND_ALBEDO = 0.3
 
 _MASK_CACHE: dict[
-    Tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]
+    tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]
 ] = {}
 
 
@@ -42,7 +40,7 @@ def _prepared_lake_geometry():
     return prep(geometry)
 
 
-def _grid_signature(lon2d: np.ndarray, lat2d: np.ndarray) -> Tuple[int, int, float, float, float, float]:
+def _grid_signature(lon2d: np.ndarray, lat2d: np.ndarray) -> tuple[int, int, float, float, float, float]:
     """Return a tuple uniquely identifying a regular lon/lat grid."""
     nlat, nlon = lon2d.shape
     lon0 = float(lon2d[0, 0])
@@ -95,8 +93,8 @@ def compute_heat_capacity_field(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     *,
-    ocean_heat_capacity: Optional[float]=None,
-    land_heat_capacity: Optional[float]=None,
+    ocean_heat_capacity: float | None = None,
+    land_heat_capacity: float | None = None,
 ) -> np.ndarray:
     """Assign per-cell heat capacity based on land/sea classification."""
     land_mask = compute_land_mask(lon2d, lat2d)
@@ -109,8 +107,8 @@ def compute_albedo_field(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     *,
-    land_albedo: Optional[float] = None,
-    ocean_albedo: Optional[float] = None,
+    land_albedo: float | None = None,
+    ocean_albedo: float | None = None,
 ) -> np.ndarray:
     """Assign per-cell albedo based on the land/sea classification."""
     land_mask = compute_land_mask(lon2d, lat2d)
@@ -118,7 +116,7 @@ def compute_albedo_field(
     ocean_albedo = ocean_albedo if ocean_albedo is not None else OCEAN_ALBEDO
     return np.where(land_mask, land_albedo, ocean_albedo)
 
-def _default_grid(resolution_deg: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
+def _default_grid(resolution_deg: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
     """Generate a lon/lat grid matching the modeling module defaults."""
     lats = np.arange(-90.0 + resolution_deg / 2, 90.0, resolution_deg)
     lons = np.arange(resolution_deg / 2, 360.0, resolution_deg)

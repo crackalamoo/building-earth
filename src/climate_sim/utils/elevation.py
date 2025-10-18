@@ -51,7 +51,9 @@ def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
     if not dataset_path.exists():
         raise FileNotFoundError(f"Elevation data file not found at {dataset_path}")
 
-    data = rioxarray.open_rasterio(dataset_path).squeeze()
+    data = rioxarray.open_rasterio(dataset_path)
+    assert isinstance(data, xr.DataArray)
+    data = data.squeeze()
     if data.rio.crs is None:
         data = data.rio.write_crs("EPSG:4326", inplace=False)
     return data

@@ -256,6 +256,7 @@ def main() -> None:
     print("Experiment configuration:", _summarize(exp_summary))
     unit = temperature_unit(args.fahrenheit)
     display_anomaly = convert_temperature(anomaly, args.fahrenheit, is_delta=True)
+    assert isinstance(display_anomaly, np.ndarray)
     print(
         f"Annual mean anomaly = {display_anomaly.mean():.2f} {unit}, "
         f"min = {display_anomaly.min():.2f} {unit}, max = {display_anomaly.max():.2f} {unit}",
