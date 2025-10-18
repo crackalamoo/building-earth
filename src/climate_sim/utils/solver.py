@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Sequence, Tuple
 
 import numpy as np
 from scipy import sparse
@@ -88,21 +88,48 @@ def _get_factorized_solver(
 
 
 @dataclass
-class DiagnosticParameters:
-    """Diagnostic (non-solver) parameters for the model."""
-    albedo_field: np.ndarray
-    wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-
-@dataclass
-class DiagnosticModels:
-    snow_albedo_model: AlbedoModel
-    advection_model: AdvectionModel | None = None
-
-@dataclass
 class ModelState:
     """State variables for the climate model."""
     temperature: np.ndarray
-    diagnostics: DiagnosticParameters
+    albedo_field: np.ndarray
+    wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+
+
+def _select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
+    """Return the temperature field to use when computing wind diagnostics."""
+    if temperature.ndim == 2:
+        return temperature
+    if temperature.ndim == 3:
+        if temperature.shape[0] == 1:
+            return temperature[0]
+        if temperature.shape[0] >= 2:
+            return temperature[1]
+    raise ValueError("Unsupported temperature field shape for wind calculation")
+
+
+def _winds_equal(
+    winds_a: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
+    winds_b: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
+) -> bool:
+    if winds_a is winds_b:
+        return True
+    if winds_a is None or winds_b is None:
+        return winds_a is winds_b
+    if len(winds_a) != len(winds_b):
+        return False
+    for wa, wb in zip(winds_a, winds_b, strict=True):
+        if wa is None and wb is None:
+            continue
+        if (wa is None) != (wb is None):
+            return False
+        assert wa is not None and wb is not None
+        if not (
+            np.array_equal(wa[0], wb[0])
+            and np.array_equal(wa[1], wb[1])
+            and np.array_equal(wa[2], wb[2])
+        ):
+            return False
+    return True
 
 RhsFunc = Callable[[ModelState, np.ndarray], np.ndarray]
 RhsDerivative = Linearisation
@@ -122,7 +149,7 @@ HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
 def monthly_step(
     state: ModelState,
-    diagnostic_models: DiagnosticModels,
+    wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
     insolation_W_m2: np.ndarray,
     dt_seconds: float,
     *,
@@ -150,7 +177,8 @@ def monthly_step(
         temp_capped = np.maximum(temp_next, temperature_floor)
         state_capped = ModelState(
             temperature=temp_capped,
-            diagnostics=state.diagnostics,
+            albedo_field=state.albedo_field,
+            wind_field=wind_field,
         )
         rhs_value = rhs_fn(state_capped, insolation_W_m2)
         residual = temp_capped - start_temp - dt_seconds * rhs_value
@@ -244,7 +272,8 @@ def monthly_step(
             temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
             state_candidate = ModelState(
                 temperature=temp_candidate,
-                diagnostics=state.diagnostics,
+                albedo_field=state.albedo_field,
+                wind_field=wind_field,
             )
             rhs_candidate = rhs_fn(state_candidate, insolation_W_m2)
             residual_candidate = temp_candidate - start_temp - dt_seconds * rhs_candidate
@@ -268,15 +297,16 @@ def monthly_step(
 
     return ModelState(
         temperature=temp_next,
-        diagnostics=state.diagnostics,
+        albedo_field=state.albedo_field,
+        wind_field=wind_field,
     )
 
 
 def apply_annual_map(
     state: ModelState,
-    diagnostic_models: DiagnosticModels,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
+    wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
     *,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
@@ -287,7 +317,7 @@ def apply_annual_map(
     for month in range(12):
         state = monthly_step(
             state,
-            diagnostic_models,
+            wind_fields[month] if wind_fields is not None else None,
             monthly_insolation[month],
             month_durations[month],
             rhs_fn=rhs_fn,
@@ -336,9 +366,9 @@ def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | No
 
 def find_periodic_temperature(
     initial_state: ModelState,
-    diagnostic_models: DiagnosticModels,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
+    wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
@@ -356,9 +386,9 @@ def find_periodic_temperature(
     for _ in range(FIXED_POINT_MAX_ITERS):
         advanced = apply_annual_map(
             state,
-            diagnostic_models,
             monthly_insolation,
             month_durations,
+            wind_fields,
             rhs_fn=rhs_fn,
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
@@ -415,9 +445,9 @@ def find_periodic_temperature(
 
 def integrate_periodic_cycle(
     state: ModelState,
-    diagnostic_models: DiagnosticModels,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
+    wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
     *,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
@@ -429,7 +459,7 @@ def integrate_periodic_cycle(
     for month in range(12):
         next_state = monthly_step(
             state,
-            diagnostic_models,
+            wind_fields[month] if wind_fields is not None else None,
             monthly_insolation[month],
             month_durations[month],
             rhs_fn=rhs_fn,
@@ -446,10 +476,10 @@ def solve_periodic_cycle_for_albedo(
     *,
     initial_state: ModelState | None,
     current_albedo_field: np.ndarray,
-    diagnostic_models: DiagnosticModels,
     heat_capacity_field: np.ndarray,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
+    wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
     diffusion_operator: LayeredDiffusionOperator,
     radiation_config: RadiationConfig,
     advection_model: AdvectionModel | None,
@@ -467,26 +497,16 @@ def solve_periodic_cycle_for_albedo(
             radiation_config,
         )
 
-        initial_wind = None
-        if advection_model is not None:
-            initial_wind, _, _ = advection_model.wind_field(guess[0])
-
-        diagnostics = DiagnosticParameters(
-            albedo_field=current_albedo_field,
-            wind_field=initial_wind,
-        )
-
-        initial_state = ModelState(
+        state_init = ModelState(
             temperature=guess,
-            diagnostics=diagnostics,
+            albedo_field=current_albedo_field,
+            wind_field=wind_fields[0] if wind_fields is not None else None,
         )
     else:
-        initial_state = ModelState(
+        state_init = ModelState(
             temperature=initial_state.temperature,
-            diagnostics=DiagnosticParameters(
-                albedo_field=current_albedo_field,
-                wind_field=initial_state.diagnostics.wind_field,
-            ),
+            albedo_field=current_albedo_field,
+            wind_field=wind_fields[0] if wind_fields is not None else initial_state.wind_field,
         )
 
     rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
@@ -496,10 +516,10 @@ def solve_periodic_cycle_for_albedo(
     )
 
     periodic_state = find_periodic_temperature(
-        initial_state,
-        diagnostic_models,
+        state_init,
         monthly_insolation,
         month_durations,
+        wind_fields,
         rhs_fn=rhs_fn,
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
         temperature_floor=temperature_floor,
@@ -508,9 +528,9 @@ def solve_periodic_cycle_for_albedo(
 
     monthly_states = integrate_periodic_cycle(
         periodic_state,
-        diagnostic_models,
         monthly_insolation,
         month_durations,
+        wind_fields,
         rhs_fn=rhs_fn,
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
         temperature_floor=temperature_floor,
@@ -577,24 +597,27 @@ def compute_periodic_cycle_kelvin(
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
     solver_cache = LinearSolveCache()
 
-    diagnostic_models = DiagnosticModels(
-        snow_albedo_model=albedo_model,
-        advection_model=advection_model,
-    )
-
     previous_periodic: ModelState | None = None
     monthly: list[ModelState] | None = None
 
-    iterations = snow_cfg.picard_iterations if snow_cfg.enabled else 1
+    if advection_model is not None and advection_model.enabled:
+        current_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray] | None] = [None] * 12
+        wind_iterations = 2
+    else:
+        current_wind_fields = [None] * 12
+        wind_iterations = 1
+
+    snow_iterations = snow_cfg.picard_iterations if snow_cfg.enabled else 1
+    iterations = max(snow_iterations, wind_iterations)
 
     for iteration in range(iterations):
         periodic_state, monthly = solve_periodic_cycle_for_albedo(
             initial_state=previous_periodic,
             current_albedo_field=current_albedo_field,
-            diagnostic_models=diagnostic_models,
             heat_capacity_field=heat_capacity_field,
             monthly_insolation=monthly_insolation,
             month_durations=month_durations,
+            wind_fields=current_wind_fields,
             diffusion_operator=diffusion_operator,
             radiation_config=radiation_config,
             advection_model=advection_model,
@@ -604,38 +627,59 @@ def compute_periodic_cycle_kelvin(
             solver_cache=solver_cache,
         )
 
-        if not snow_cfg.enabled:
-            previous_periodic = periodic_state
-            break
-
-        if iteration == iterations - 1:
-            previous_periodic = periodic_state
-            break
-
         monthly_temperatures = np.array([state.temperature for state in monthly])
         if monthly_temperatures.ndim == 4:
             surface_temperatures = monthly_temperatures[:, 0]
         else:
             surface_temperatures = monthly_temperatures
 
-        updated_albedo = albedo_model.apply_snow_albedo(
-            base_albedo_field,
-            surface_temperatures,
-        )
+        updated_albedo = current_albedo_field
+        snow_converged = True
+        if snow_cfg.enabled:
+            updated_albedo = albedo_model.apply_snow_albedo(
+                base_albedo_field,
+                surface_temperatures,
+            )
+            snow_converged = np.array_equal(updated_albedo, current_albedo_field)
+            current_albedo_field = updated_albedo
 
-        if np.array_equal(updated_albedo, current_albedo_field):
-            previous_periodic = periodic_state
-            break
-
-        current_albedo_field = updated_albedo
-        periodic_state = ModelState(
-            temperature=periodic_state.temperature,
-            diagnostics=DiagnosticParameters(
+        if advection_model is not None and advection_model.enabled:
+            new_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+            for idx, month_state in enumerate(monthly):
+                wind_temperature = _select_wind_temperature(month_state.temperature)
+                wind_components, _, _ = advection_model.wind_field(wind_temperature)
+                new_wind_fields.append(wind_components)
+                monthly[idx] = ModelState(
+                    temperature=month_state.temperature,
+                    albedo_field=current_albedo_field,
+                    wind_field=wind_components,
+                )
+            wind_converged = _winds_equal(new_wind_fields, current_wind_fields)
+            current_wind_fields = new_wind_fields
+            periodic_state = ModelState(
+                temperature=periodic_state.temperature,
                 albedo_field=current_albedo_field,
-                wind_field=periodic_state.diagnostics.wind_field,
-            ),
-        )
+                wind_field=new_wind_fields[-1],
+            )
+        else:
+            wind_converged = True
+            current_wind_fields = [None] * 12
+            for idx, month_state in enumerate(monthly):
+                monthly[idx] = ModelState(
+                    temperature=month_state.temperature,
+                    albedo_field=current_albedo_field,
+                    wind_field=None,
+                )
+            periodic_state = ModelState(
+                temperature=periodic_state.temperature,
+                albedo_field=current_albedo_field,
+                wind_field=None,
+            )
+
         previous_periodic = periodic_state
+
+        if snow_converged and wind_converged:
+            break
 
     assert monthly is not None
 
@@ -700,7 +744,7 @@ def compute_periodic_cycle_results(
                 state.temperature,
                 insolation,
                 heat_capacity_field=heat_capacity_field,
-                albedo_field=state.diagnostics.albedo_field,
+                albedo_field=state.albedo_field,
                 config=config,
             )
             if config.include_atmosphere:
@@ -771,7 +815,16 @@ def compute_periodic_cycle_results(
             "atmosphere": monthly_atmosphere_K - 273.15,
         }
 
-    layers_map["albedo"] = np.array([state.diagnostics.albedo_field for state in monthly_states])
+    layers_map["albedo"] = np.array([state.albedo_field for state in monthly_states])
+
+    wind_fields = [state.wind_field for state in monthly_states]
+    if all(wind is not None for wind in wind_fields):
+        wind_u = np.stack([wind[0] for wind in wind_fields if wind is not None], axis=0)
+        wind_v = np.stack([wind[1] for wind in wind_fields if wind is not None], axis=0)
+        wind_speed = np.stack([wind[2] for wind in wind_fields if wind is not None], axis=0)
+        layers_map["wind_u"] = wind_u
+        layers_map["wind_v"] = wind_v
+        layers_map["wind_speed"] = wind_speed
 
     if return_layer_map:
         return lon2d, lat2d, layers_map
