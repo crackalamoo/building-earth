@@ -7,6 +7,7 @@ from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
+from climate_sim.utils.atmosphere import adjust_temperature_by_elevation
 from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
 
@@ -184,6 +185,17 @@ def main() -> None:
     layer_cycles: dict[str, np.ndarray] = {"Surface": surface_cycle}
     if atmosphere_cycle is not None:
         layer_cycles["Atmosphere"] = atmosphere_cycle
+
+        # The single-layer atmosphere represents the tropospheric slab whose depth is
+        # characterised by the geostrophic advection scale height. Treat the layer's
+        # temperature as representative of the slab midpoint and lapse-rate adjust to
+        # obtain a 2 m diagnostic (ignoring local topography).
+        troposphere_midpoint_m = 0.5 * advection_config.troposphere_scale_height_m
+        delta_to_two_m = 2.0 - troposphere_midpoint_m
+        atmosphere_2m_cycle = adjust_temperature_by_elevation(
+            atmosphere_cycle, delta_to_two_m
+        )
+        layer_cycles["Atmosphere (2 m)"] = atmosphere_2m_cycle
 
     plot_layered_monthly_temperature_cycle(
         lon2d,
