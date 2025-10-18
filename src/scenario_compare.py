@@ -56,17 +56,30 @@ def main() -> None:
         help="Override the solar constant (W m^-2)",
     )
     parser.add_argument(
-        "--elliptical-orbit",
-        dest="elliptical_orbit",
+        "--base-elliptical-orbit",
+        dest="base_elliptical_orbit",
         action="store_true",
         default=True,
-        help="Apply Earth's orbital eccentricity correction to insolation (default)",
+        help="Apply Earth's orbital eccentricity correction in the baseline case (default)",
     )
     parser.add_argument(
-        "--circular-orbit",
-        dest="elliptical_orbit",
+        "--base-circular-orbit",
+        dest="base_elliptical_orbit",
         action="store_false",
-        help="Disable the orbital eccentricity correction and assume a circular orbit",
+        help="Disable the orbital eccentricity correction in the baseline case",
+    )
+    parser.add_argument(
+        "--exp-elliptical-orbit",
+        dest="experiment_elliptical_orbit",
+        action="store_true",
+        default=True,
+        help="Apply Earth's orbital eccentricity correction in the experiment case (default)",
+    )
+    parser.add_argument(
+        "--exp-circular-orbit",
+        dest="experiment_elliptical_orbit",
+        action="store_false",
+        help="Disable the orbital eccentricity correction in the experiment case",
     )
 
     parser.add_argument(
@@ -230,7 +243,7 @@ def main() -> None:
     lon2d, lat2d, base_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
-        use_elliptical_orbit=args.elliptical_orbit,
+        use_elliptical_orbit=args.base_elliptical_orbit,
         radiation_config=base_rad,
         diffusion_config=base_diff,
         advection_config=base_adv,
@@ -241,7 +254,7 @@ def main() -> None:
     _, _, exp_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
-        use_elliptical_orbit=args.elliptical_orbit,
+        use_elliptical_orbit=args.experiment_elliptical_orbit,
         radiation_config=exp_rad,
         diffusion_config=exp_diff,
         advection_config=exp_adv,
@@ -270,6 +283,7 @@ def main() -> None:
         anomalies["Two-meter"] = exp_two_meter - base_two_meter
 
     base_summary = {
+        "elliptical_orbit": args.base_elliptical_orbit,
         "diffusion": args.base_diffusion,
         "advection": args.base_advection,
         "atmosphere": args.base_atmosphere,
@@ -277,6 +291,7 @@ def main() -> None:
         "sensible_heat": args.base_sensible_heat,
     }
     exp_summary = {
+        "elliptical_orbit": args.experiment_elliptical_orbit,
         "diffusion": args.experiment_diffusion,
         "advection": args.experiment_advection,
         "atmosphere": args.experiment_atmosphere,
