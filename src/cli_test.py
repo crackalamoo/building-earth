@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 load_dotenv()
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class Location:
@@ -108,17 +110,13 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _convert_temperature(
-    values: "np.ndarray" | float, use_fahrenheit: bool
-) -> "np.ndarray" | float:
+    values: np.ndarray, use_fahrenheit: bool
+) -> np.ndarray:
     import numpy as np
 
     if not use_fahrenheit:
         return values
     converted = (np.asarray(values) * (9.0 / 5.0)) + 32.0
-    if isinstance(values, np.ndarray):
-        return converted
-    if np.isscalar(values):
-        return float(converted)
     return converted
 
 
@@ -139,18 +137,18 @@ def _nearest_cell_indices(
 
 def _summarize_location(
     location: Location,
-    monthly_surface_cycle: "np.ndarray",
-    lon2d: "np.ndarray",
-    lat2d: "np.ndarray",
+    monthly_surface_cycle: np.ndarray,
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
     use_fahrenheit: bool,
 ) -> None:
     lat_idx, lon_idx = _nearest_cell_indices(
         lon2d, lat2d, location.latitude, location.longitude
     )
     monthly = monthly_surface_cycle[:, lat_idx, lon_idx]
-    annual_mean = float(monthly.mean())
-    annual_min = float(monthly.min())
-    annual_max = float(monthly.max())
+    annual_mean = monthly.mean()
+    annual_min = monthly.min()
+    annual_max = monthly.max()
     monthly_display = _convert_temperature(monthly, use_fahrenheit)
     monthly_str = ", ".join(f"{value:5.1f}" for value in monthly_display)
     unit = _temperature_unit(use_fahrenheit)
@@ -167,8 +165,6 @@ def _summarize_location(
 
 def main() -> None:
     args = _parse_args()
-
-    import numpy as np
 
     from climate_sim.modeling.advection import GeostrophicAdvectionConfig
     from climate_sim.modeling.diffusion import DiffusionConfig
@@ -197,15 +193,12 @@ def main() -> None:
     cell_areas = spherical_cell_area(
         lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
     )
-    surface_area_mean = float(
-        area_weighted_mean(surface_cycle.mean(axis=0), cell_areas)
-    )
+    surface_area_mean = area_weighted_mean(surface_cycle.mean(axis=0), cell_areas)
     unit = _temperature_unit(args.fahrenheit)
     print(
-        "Global surface layer: "
-        f"Tmin={_convert_temperature(surface_cycle.min(), args.fahrenheit):.1f} {unit}, "
-        f"Tmax={_convert_temperature(surface_cycle.max(), args.fahrenheit):.1f} {unit}, "
-        f"simple mean={_convert_temperature(surface_cycle.mean(), args.fahrenheit):.1f} {unit}, "
+        "Global surface layer: ",
+        f"Tmin={_convert_temperature(surface_cycle.min(), args.fahrenheit):.1f} {unit}, ",
+        f"Tmax={_convert_temperature(surface_cycle.max(), args.fahrenheit):.1f} {unit}, ",
         f"area-weighted mean={_convert_temperature(surface_area_mean, args.fahrenheit):.1f} {unit}"
     )
 

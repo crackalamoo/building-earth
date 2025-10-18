@@ -127,6 +127,7 @@ def main() -> None:
         snow_config=snow_config,
         return_layer_map=True,
     )
+    assert type(layers) is dict
     surface_cycle = layers["surface"]
     albedo_field = layers.get("albedo")
 
@@ -145,7 +146,6 @@ def main() -> None:
         "Surface layer:",
         f"Tmin={convert_temperature(surface_cycle.min(), args.fahrenheit):.1f}{unit}",
         f"Tmax={convert_temperature(surface_cycle.max(), args.fahrenheit):.1f}{unit}",
-        f"simple mean={convert_temperature(surface_cycle.mean(), args.fahrenheit):.1f}{unit}",
         f"area-weighted mean={convert_temperature(surface_area_mean, args.fahrenheit):.1f}{unit}",
     ]
     if albedo_area_mean is not None:
@@ -162,7 +162,6 @@ def main() -> None:
             "Atmosphere layer: "
             f"Tmin={convert_temperature(atmosphere_cycle.min(), args.fahrenheit):.1f}{unit}, "
             f"Tmax={convert_temperature(atmosphere_cycle.max(), args.fahrenheit):.1f}{unit}, "
-            f"simple mean={convert_temperature(atmosphere_cycle.mean(), args.fahrenheit):.1f}{unit}, "
             f"area-weighted mean={convert_temperature(atmosphere_area_mean, args.fahrenheit):.1f}{unit}"
         )
 
