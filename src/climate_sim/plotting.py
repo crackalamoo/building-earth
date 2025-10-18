@@ -1,3 +1,6 @@
+import io
+from pathlib import Path
+
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
@@ -6,6 +9,7 @@ from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.widgets import RadioButtons, Slider
+from PIL import Image
 from typing import Iterable, Mapping, Sequence
 
 from climate_sim.utils.temperature import convert_temperature, temperature_unit
@@ -425,3 +429,138 @@ def plot_layered_monthly_temperature_cycle(
         _layer_selector.on_clicked(on_layer)
 
     plt.show()
+
+
+def save_monthly_temperature_gif(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    monthly_field: np.ndarray,
+    *,
+    output_path: str | Path,
+    title: str = "Monthly Temperature Cycle",
+    cmap: LinearSegmentedColormap | None = None,
+    norm: Normalize | None = None,
+    colorbar_label: str = "Temperature (°C)",
+    colorbar_ticks: Iterable[float] | None = None,
+    use_fahrenheit: bool = False,
+    value_is_delta: bool = False,
+    fps: float = 2.0,
+) -> Path:
+    """Render a monthly temperature cycle to an animated GIF."""
+    monthly_array = np.asarray(monthly_field)
+    if monthly_array.ndim != 3 or monthly_array.shape[0] != 12:
+        raise ValueError("monthly_field must have shape (12, n_lat, n_lon)")
+
+    unit = temperature_unit(use_fahrenheit)
+    default_cmap, bounds = build_temperature_cmap(unit=unit[-1])
+    if cmap is None:
+        cmap = default_cmap
+    if norm is None:
+        vmin, vmax = bounds[0], bounds[-1]
+        norm = Normalize(vmin=vmin, vmax=vmax)
+    if use_fahrenheit and colorbar_label.endswith("°C)"):
+        colorbar_label = colorbar_label[:-3] + "°F)"
+
+    display_monthly = convert_temperature(
+        monthly_array,
+        use_fahrenheit,
+        is_delta=value_is_delta,
+    )
+
+    month_names = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ]
+
+    projection = ccrs.PlateCarree()
+    frames: list[Image.Image] = []
+
+    for month_idx, month_name in enumerate(month_names):
+        fig, ax = plt.subplots(
+            figsize=(12, 6),
+            subplot_kw=dict(projection=projection),
+        )
+        ax.set_global()
+        ax.coastlines(linewidth=0.4)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+        ax.add_feature(
+            cfeature.NaturalEarthFeature(
+                "physical",
+                "lakes",
+                "110m",
+                edgecolor="#000000",
+                facecolor="none",
+            ),
+            linewidth=0.2,
+        )
+        ax.add_feature(
+            cfeature.LAND,
+            facecolor="#f5f5f5",
+            edgecolor="none",
+            zorder=0,
+        )
+
+        mesh = ax.pcolormesh(
+            lon2d,
+            lat2d,
+            display_monthly[month_idx],
+            cmap=cmap,
+            norm=norm,
+            shading="auto",
+            transform=projection,
+        )
+        ax.set_title(f"{title} – {month_name}")
+
+        cbar = fig.colorbar(mesh, ax=ax, orientation="vertical", pad=0.04, fraction=0.046)
+        if colorbar_label:
+            cbar.set_label(colorbar_label)
+        if colorbar_ticks is not None:
+            cbar.set_ticks(colorbar_ticks)
+        elif cmap is default_cmap:
+            cbar.set_ticks(bounds)
+
+        fig.tight_layout()
+        fig.canvas.draw()
+
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+        buffer.seek(0)
+        with Image.open(buffer) as image:
+            frames.append(image.convert("P", palette=Image.ADAPTIVE))
+        buffer.close()
+
+    if not frames:
+        raise RuntimeError("No frames were generated for the GIF.")
+
+    duration_ms = 500
+    if fps > 0:
+        duration_ms = max(20, int(round(1000.0 / fps)))
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=frames[1:],
+        loop=0,
+        duration=duration_ms,
+        optimize=True,
+        disposal=2,
+    )
+
+    for frame in frames:
+        frame.close()
+
+    return output_path

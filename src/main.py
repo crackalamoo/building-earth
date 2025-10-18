@@ -1,4 +1,5 @@
 import argparse
+import os
 import time
 
 import numpy as np
@@ -8,13 +9,17 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import Normalize
 from matplotlib.widgets import RadioButtons, Slider
+from pathlib import Path
 
 from climate_sim.modeling.advection import AdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
-from climate_sim.plotting import plot_layered_monthly_temperature_cycle
+from climate_sim.plotting import (
+    plot_layered_monthly_temperature_cycle,
+    save_monthly_temperature_gif,
+)
 from climate_sim.utils.atmosphere import (
     adjust_temperature_by_elevation,
     log_law_map_wind_speed,
@@ -395,6 +400,31 @@ def main() -> None:
         _draw_streamplot()
 
     atmosphere_2m_cycle = layer_cycles.get("Atmosphere (2 m)")
+
+    data_dir_value = os.getenv("DATA_DIR")
+    if not data_dir_value:
+        raise ValueError("DATA_DIR environment variable must be set to save GIFs.")
+    data_dir = Path(data_dir_value).expanduser()
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    def _save_cycle(name: str, field: np.ndarray, filename: str) -> None:
+        output_path = data_dir / filename
+        save_monthly_temperature_gif(
+            lon2d,
+            lat2d,
+            field,
+            output_path=output_path,
+            title=f"{name} Temperature ({unit})",
+            colorbar_label=f"Temperature ({unit})",
+            use_fahrenheit=args.fahrenheit,
+        )
+        print(f"Saved {name.lower()} temperature animation to {output_path}")
+
+    _save_cycle("Surface", surface_cycle, "surface_temperature_cycle.gif")
+    if atmosphere_2m_cycle is not None:
+        _save_cycle("Two-meter", atmosphere_2m_cycle, "two_meter_temperature_cycle.gif")
+    if atmosphere_cycle is not None:
+        _save_cycle("Atmosphere", atmosphere_cycle, "atmosphere_temperature_cycle.gif")
 
     def _print_mean(
         label: str,
