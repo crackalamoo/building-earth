@@ -9,6 +9,14 @@ from PIL import Image
 from functools import lru_cache
 import xarray as xr
 
+VON_KARMAN_CONSTANT = 0.4
+REFERENCE_HEIGHT_M = 10.0
+WATER_NEUTRAL_DRAG_COEFFICIENT = 2.0e-4
+WATER_ROUGHNESS_LENGTH_M = float(
+    REFERENCE_HEIGHT_M
+    / np.exp(VON_KARMAN_CONSTANT / np.sqrt(WATER_NEUTRAL_DRAG_COEFFICIENT))
+)
+
 from climate_sim.utils.constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2, GAS_CONSTANT_J_KG_K
 
 def download_etopo(dest_dir: Path) -> Path:
@@ -134,7 +142,7 @@ def compute_cell_elevation(
     return res
 
 
-def compute_cell_neutral_drag_coefficient(
+def compute_cell_roughness_length(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     data: xr.DataArray | None = None,
@@ -142,7 +150,7 @@ def compute_cell_neutral_drag_coefficient(
     land_mask: np.ndarray | None = None,
     cache: bool = True,
 ) -> np.ndarray:
-    """Return the neutral 10 m drag coefficient for the provided grid cells."""
+    """Return the surface roughness length (m) for the provided grid cells."""
 
     if lon2d.shape != lat2d.shape:
         raise ValueError("Longitude and latitude grids must share the same shape")
@@ -156,20 +164,32 @@ def compute_cell_neutral_drag_coefficient(
         data_dir = os.getenv("DATA_DIR")
         if data_dir is not None:
             data_dir = Path(data_dir)
-            cache_path = data_dir / "drag_coefficient_cache.npz"
-            if cache_path.exists():
+            cache_path = data_dir / "roughness_length_cache.npz"
+            legacy_cache_path = data_dir / "drag_coefficient_cache.npz"
+            for candidate in (cache_path, legacy_cache_path):
+                if not candidate.exists():
+                    continue
                 try:
-                    with np.load(cache_path) as cached:
-                        drag_coeff = cached.get("drag_coefficient")
-                        if drag_coeff is None:
-                            drag_coeff = cached.get("drag_coefficient_base")
-                        if drag_coeff is None:
-                            raise KeyError("drag coefficient cache missing expected arrays")
-                        if drag_coeff.shape == lon2d.shape:
-                            return drag_coeff
+                    with np.load(candidate) as cached:
+                        roughness = cached.get("roughness_length")
+                        if roughness is None:
+                            drag_coeff = cached.get("drag_coefficient")
+                            if drag_coeff is not None:
+                                drag_array = np.asarray(drag_coeff, dtype=float)
+                                drag_array = np.maximum(drag_array, 1.0e-12)
+                                sqrt_drag = np.sqrt(drag_array)
+                                with np.errstate(divide="ignore", invalid="ignore"):
+                                    exponent = VON_KARMAN_CONSTANT / sqrt_drag
+                                roughness = REFERENCE_HEIGHT_M / np.exp(exponent)
+                                if candidate is legacy_cache_path:
+                                    np.savez_compressed(
+                                        cache_path, roughness_length=roughness
+                                    )
+                        if roughness is not None and roughness.shape == lon2d.shape:
+                            return np.asarray(roughness, dtype=float)
                 except Exception as exc:  # pragma: no cover - logging path
                     print(
-                        f"Failed to load cached drag coefficient data: {exc}, recomputing..."
+                        f"Failed to load cached roughness length data: {exc}, recomputing..."
                     )
 
     lon_array = np.asarray(lon2d, dtype=float)
@@ -177,7 +197,7 @@ def compute_cell_neutral_drag_coefficient(
 
     dataset = data if data is not None else load_elevation_data()
     if dataset is None:
-        return np.full_like(lon_array, 2.0e-4, dtype=float)
+        return np.full_like(lon_array, WATER_ROUGHNESS_LENGTH_M, dtype=float)
 
     elevation_m = compute_cell_elevation(
         lon_array,
@@ -236,10 +256,7 @@ def compute_cell_neutral_drag_coefficient(
         combined = np.clip(combined, 0.02, 2.0)
         z0_total[terrain_land_mask] = combined[terrain_land_mask]
 
-    kappa = 0.4
-    with np.errstate(divide="ignore", invalid="ignore"):
-        log_argument = 10.0 / np.maximum(z0_total, 1.0e-6)
-        drag_coefficient = (kappa / np.log(log_argument)) ** 2
+    roughness_result = np.array(z0_total, copy=True)
 
     water_mask: np.ndarray
     if land_mask is not None:
@@ -247,32 +264,51 @@ def compute_cell_neutral_drag_coefficient(
     else:
         water_mask = ~terrain_land_mask
 
-    drag_result = np.array(drag_coefficient, copy=True)
     if np.any(water_mask):
-        drag_result[water_mask] = 2.0e-4
+        roughness_result[water_mask] = WATER_ROUGHNESS_LENGTH_M
 
     if use_cache:
         data_dir = os.getenv("DATA_DIR")
         assert (
             data_dir is not None
-        ), "Please set the DATA_DIR environment variable to enable drag coefficient caching."
+        ), "Please set the DATA_DIR environment variable to enable roughness caching."
         data_dir = Path(data_dir)
-        cache_path = data_dir / "drag_coefficient_cache.npz"
-        np.savez_compressed(cache_path, drag_coefficient=drag_result)
+        cache_path = data_dir / "roughness_length_cache.npz"
+        np.savez_compressed(cache_path, roughness_length=roughness_result)
 
-    return drag_result
+    return roughness_result
 
 
-def roughness_length_from_neutral_drag(drag_coefficient: np.ndarray) -> np.ndarray:
-    """Invert the neutral drag formulation to recover an equivalent roughness length."""
+def neutral_drag_from_roughness_length(
+    roughness_length_m: np.ndarray | float,
+) -> np.ndarray:
+    """Convert roughness length (m) to a neutral 10 m drag coefficient."""
 
-    kappa = 0.4
-    drag = np.maximum(np.asarray(drag_coefficient, dtype=float), 1.0e-12)
-    sqrt_drag = np.sqrt(drag)
+    z0 = np.maximum(np.asarray(roughness_length_m, dtype=float), 1.0e-12)
     with np.errstate(divide="ignore", invalid="ignore"):
-        exponent = kappa / sqrt_drag
-    z0 = 10.0 / np.exp(exponent)
-    return z0
+        log_argument = REFERENCE_HEIGHT_M / z0
+        drag = (VON_KARMAN_CONSTANT / np.log(log_argument)) ** 2
+    return drag
+
+
+def compute_cell_neutral_drag_coefficient(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    data: xr.DataArray | None = None,
+    *,
+    land_mask: np.ndarray | None = None,
+    cache: bool = True,
+) -> np.ndarray:
+    """Return the neutral 10 m drag coefficient for the provided grid cells."""
+
+    roughness = compute_cell_roughness_length(
+        lon2d,
+        lat2d,
+        data=data,
+        land_mask=land_mask,
+        cache=cache,
+    )
+    return neutral_drag_from_roughness_length(roughness)
 
 
 def pressure_from_temperature_elevation(
@@ -408,8 +444,7 @@ def write_roughness_png(
 
     da = rioxarray.open_rasterio(tif_path).squeeze()
     _, lon2d, lat2d = _resample_elevation_grid(da, resolution=resolution)
-    drag_coeff = compute_cell_neutral_drag_coefficient(lon2d, lat2d, data=da)
-    roughness = roughness_length_from_neutral_drag(drag_coeff)
+    roughness = compute_cell_roughness_length(lon2d, lat2d, data=da)
 
     out_path = out_dir / f"roughness_{resolution}deg.png"
     Image.fromarray(_roughness_to_image(roughness)).save(out_path)
@@ -442,8 +477,7 @@ if __name__ == "__main__":
     surface_da = etopo_ds.squeeze()
     _, lon2d, lat2d = _resample_elevation_grid(surface_da, resolution=resolution)
     elevation_grid = compute_cell_elevation(lon2d, lat2d, data=surface_da)
-    drag_coeff = compute_cell_neutral_drag_coefficient(lon2d, lat2d, data=surface_da)
-    roughness = roughness_length_from_neutral_drag(drag_coeff)
+    roughness = compute_cell_roughness_length(lon2d, lat2d, data=surface_da)
 
     global_min = float(np.min(roughness))
     global_mean = float(np.mean(roughness))
