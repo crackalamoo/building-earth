@@ -22,6 +22,10 @@ from climate_sim.modeling.diffusion import (
 )
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig, AlbedoModel
+from climate_sim.modeling.sensible_heat_exchange import (
+    SensibleHeatExchangeConfig,
+    SensibleHeatExchangeModel,
+)
 from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
 from climate_sim.utils.landmask import (
@@ -29,6 +33,7 @@ from climate_sim.utils.landmask import (
     compute_heat_capacity_field,
     compute_land_mask,
 )
+from climate_sim.utils.elevation import compute_cell_roughness_length
 
 NEWTON_STEP_TOLERANCE_K = 1.0
 PERIODIC_FIXED_POINT_TOLERANCE_K = 1.0
@@ -139,6 +144,9 @@ RhsFactory = Callable[
         np.ndarray,
         LayeredDiffusionOperator,
         RadiationConfig,
+        np.ndarray,
+        np.ndarray,
+        SensibleHeatExchangeConfig,
     ],
     Tuple[RhsFunc, RhsDerivativeFunc],
 ]
@@ -487,6 +495,9 @@ def solve_periodic_cycle_for_albedo(
     initial_guess_fn: InitialGuessFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache,
+    land_mask: np.ndarray,
+    roughness_length: np.ndarray,
+    sensible_heat_cfg: SensibleHeatExchangeConfig,
 ) -> tuple[ModelState, list[ModelState]]:
     """Compute the periodic solution and monthly mean temperatures for a given albedo field."""
 
@@ -513,6 +524,9 @@ def solve_periodic_cycle_for_albedo(
         heat_capacity_field,
         diffusion_operator,
         radiation_config,
+        land_mask,
+        roughness_length,
+        sensible_heat_cfg,
     )
 
     periodic_state = find_periodic_temperature(
@@ -551,6 +565,7 @@ def compute_periodic_cycle_kelvin(
     diffusion_config: DiffusionConfig,
     advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
+    sensible_heat_config: SensibleHeatExchangeConfig | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[ModelState]]:
     """Solve for the periodic temperature cycle and return results in Kelvin with the converged albedo field."""
     lon2d, lat2d = create_lat_lon_grid(resolution_deg)
@@ -560,6 +575,7 @@ def compute_periodic_cycle_kelvin(
 
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
     snow_cfg = snow_config or SnowAlbedoConfig()
+    sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
     albedo_kwargs: dict[str, float] = {}
     land_mask = compute_land_mask(lon2d, lat2d)
 
@@ -574,6 +590,12 @@ def compute_periodic_cycle_kelvin(
 
     base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
     current_albedo_field = base_albedo_field
+
+    roughness_length = compute_cell_roughness_length(
+        lon2d,
+        lat2d,
+        land_mask=land_mask,
+    )
 
     diffusion_operator = create_diffusion_operator(
         lon2d,
@@ -625,6 +647,9 @@ def compute_periodic_cycle_kelvin(
             initial_guess_fn=initial_guess_fn,
             temperature_floor=radiation_config.temperature_floor,
             solver_cache=solver_cache,
+            land_mask=land_mask,
+            roughness_length=roughness_length,
+            sensible_heat_cfg=sensible_heat_cfg,
         )
 
         monthly_temperatures = np.array([state.temperature for state in monthly])
@@ -696,6 +721,7 @@ def compute_periodic_cycle_results(
     diffusion_config: DiffusionConfig | None = None,
     advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
+    sensible_heat_config: SensibleHeatExchangeConfig | None = None,
     return_layer_map: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Produce the periodic cycle fields in Celsius along with the converged albedo layer.
@@ -719,11 +745,15 @@ def compute_periodic_cycle_results(
     resolved_diffusion = diffusion_config or DiffusionConfig()
     resolved_advection = advection_config or AdvectionConfig()
     resolved_snow = snow_config or SnowAlbedoConfig()
+    sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
 
     def rhs_factory(
         heat_capacity_field: np.ndarray,
         diffusion_operator: LayeredDiffusionOperator,
         config: RadiationConfig,
+        land_mask: np.ndarray,
+        roughness_length: np.ndarray,
+        sensible_heat_cfg_local: SensibleHeatExchangeConfig,
     ):
         surface_matrix = None
         if diffusion_operator.surface.enabled:
@@ -739,6 +769,16 @@ def compute_periodic_cycle_results(
         # The diffusion matrices are already expressed as d(rhs)/dT in 1/s because the
         # discrete operator divides by the local heat capacity when it is assembled.
 
+        sensible_heat_model: SensibleHeatExchangeModel | None = None
+        if config.include_atmosphere and sensible_heat_cfg_local.enabled:
+            sensible_heat_model = SensibleHeatExchangeModel(
+                land_mask=land_mask,
+                roughness_length_m=roughness_length,
+                surface_heat_capacity_J_m2_K=heat_capacity_field,
+                atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
+                config=sensible_heat_cfg_local,
+            )
+
         def rhs(state: ModelState, insolation: np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
                 state.temperature,
@@ -753,6 +793,23 @@ def compute_periodic_cycle_results(
                     radiative[0] += diffusion_operator.surface.tendency(state.temperature[0])
                 if diffusion_operator.atmosphere.enabled:
                     radiative[1] += diffusion_operator.atmosphere.tendency(state.temperature[1])
+
+                if sensible_heat_model is not None:
+                    surface_temperature = state.temperature[0]
+                    atmosphere_temperature = state.temperature[1]
+                    wind_speed_ref = state.wind_field[2] if state.wind_field is not None else None
+                    (
+                        surface_tendency,
+                        atmosphere_tendency,
+                    ) = sensible_heat_model.compute_tendencies(
+                        surface_temperature_K=surface_temperature,
+                        atmosphere_temperature_K=atmosphere_temperature,
+                        wind_speed_reference_m_s=wind_speed_ref,
+                    )
+
+                    radiative[0] += surface_tendency
+                    radiative[1] += atmosphere_tendency
+
                 return radiative
             if diffusion_operator.surface.enabled:
                 radiative = radiative + diffusion_operator.surface.tendency(state.temperature)
@@ -801,6 +858,7 @@ def compute_periodic_cycle_results(
         diffusion_config=resolved_diffusion,
         advection_config=resolved_advection,
         snow_config=resolved_snow,
+        sensible_heat_config=sensible_heat_cfg,
     )
 
     monthly_T = np.array([state.temperature for state in monthly_states])

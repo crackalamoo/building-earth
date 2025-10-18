@@ -50,17 +50,22 @@ def radiative_balance_rhs(
 
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
     emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
-    absorbed_shortwave = insolation_W_m2 * (1.0 - albedo_field)
+
+    alpha_sw_atm = getattr(config, "shortwave_absorptance_atmosphere", 0.20)
+    absorbed_shortwave_atm = alpha_sw_atm * insolation_W_m2
+    absorbed_shortwave_sfc = (1.0 - alpha_sw_atm) * insolation_W_m2 * (1.0 - albedo_field)
+    # absorbed_shortwave_sfc = absorbed_shortwave
+    # absorbed_shortwave_atm = 0.0
 
     downward_longwave = emitted_atmosphere
     absorbed_from_surface = eps_atm * emitted_surface
 
     surface_tendency = (
-        absorbed_shortwave + downward_longwave - emitted_surface
+        absorbed_shortwave_sfc + downward_longwave - emitted_surface
     ) / heat_capacity_field
 
     atmosphere_tendency = (
-        absorbed_from_surface - 2.0 * emitted_atmosphere
+        absorbed_shortwave_atm + absorbed_from_surface - 2.0 * emitted_atmosphere
     ) / config.atmosphere_heat_capacity
 
     return np.stack([surface_tendency, atmosphere_tendency])

@@ -12,6 +12,7 @@ from matplotlib.widgets import RadioButtons, Slider
 from climate_sim.modeling.advection import AdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
+from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.utils.atmosphere import (
@@ -101,6 +102,19 @@ def _parse_args() -> argparse.Namespace:
         help="Disable snow-albedo adjustments",
     )
     parser.add_argument(
+        "--sensible-heat",
+        dest="sensible_heat",
+        action="store_true",
+        default=True,
+        help="Enable the neutral sensible heat exchange model (default)",
+    )
+    parser.add_argument(
+        "--no-sensible-heat",
+        dest="sensible_heat",
+        action="store_false",
+        help="Disable the neutral sensible heat exchange model",
+    )
+    parser.add_argument(
         "--fahrenheit", "-f",
         dest="fahrenheit",
         action="store_true",
@@ -118,6 +132,7 @@ def main() -> None:
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
     advection_config = AdvectionConfig(enabled=args.advection)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
+    sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.sensible_heat)
     print(f"Configuration setup took {time.time() - start:.2f} seconds")
 
     start = time.time()
@@ -128,6 +143,7 @@ def main() -> None:
         diffusion_config=diffusion_config,
         advection_config=advection_config,
         snow_config=snow_config,
+        sensible_heat_config=sensible_heat_config,
         return_layer_map=True,
     )
     print(f"Model run took {time.time() - start:.2f} seconds")
@@ -212,9 +228,9 @@ def main() -> None:
             lat2d,
             land_mask=land_mask_bool,
         )
-        height_ref_land_m = 1000.0
-        height_ref_ocean_m = 500.0
-        height_target_m = 10.0
+        height_ref_land_m = sensible_heat_config.land_reference_height_m
+        height_ref_ocean_m = sensible_heat_config.ocean_reference_height_m
+        height_target_m = sensible_heat_config.reference_height_surface_m
         height_ref_field = np.where(
             land_mask_bool,
             height_ref_land_m,
