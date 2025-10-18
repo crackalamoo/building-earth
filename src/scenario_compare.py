@@ -15,6 +15,7 @@ from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.utils.solver import compute_periodic_cycle_celsius
+from climate_sim.utils.temperature import convert_temperature, temperature_unit
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -188,6 +189,12 @@ def main() -> None:
         action="store_false",
         help="Disable snow-albedo adjustments in the experiment case",
     )
+    parser.add_argument(
+        "--fahrenheit",
+        dest="fahrenheit",
+        action="store_true",
+        help="Display anomalies in degrees Fahrenheit instead of Celsius",
+    )
 
     args = parser.parse_args()
 
@@ -247,12 +254,14 @@ def main() -> None:
 
     print("Baseline configuration:", _summarize(base_summary))
     print("Experiment configuration:", _summarize(exp_summary))
+    unit = temperature_unit(args.fahrenheit)
+    display_anomaly = convert_temperature(anomaly, args.fahrenheit, is_delta=True)
     print(
-        f"Annual mean anomaly = {anomaly.mean():.2f} °C, "
-        f"min = {anomaly.min():.2f} °C, max = {anomaly.max():.2f} °C",
+        f"Annual mean anomaly = {display_anomaly.mean():.2f} {unit}, "
+        f"min = {display_anomaly.min():.2f} {unit}, max = {display_anomaly.max():.2f} {unit}",
     )
 
-    anomaly_abs = float(np.max(np.abs(anomaly)))
+    anomaly_abs = float(np.max(np.abs(display_anomaly)))
     vmax = anomaly_abs if anomaly_abs > 0 else 1.0
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
@@ -260,10 +269,12 @@ def main() -> None:
         lon2d,
         lat2d,
         anomaly,
-        title="Experiment − Baseline Surface Temperature (°C)",
+        title=f"Experiment − Baseline Surface Temperature ({unit})",
         cmap=cmocean.cm.balance,
         norm=norm,
-        colorbar_label="Temperature anomaly (°C)",
+        colorbar_label=f"Temperature anomaly ({unit})",
+        use_fahrenheit=args.fahrenheit,
+        value_is_delta=True,
     )
 
 
