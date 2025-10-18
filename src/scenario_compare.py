@@ -14,7 +14,8 @@ from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
-from climate_sim.plotting import plot_monthly_temperature_cycle
+from climate_sim.plotting import plot_layered_monthly_temperature_cycle
+from climate_sim.utils.atmosphere import adjust_temperature_by_elevation
 from climate_sim.utils.solver import compute_periodic_cycle_results
 from climate_sim.utils.temperature import convert_temperature, temperature_unit
 
@@ -53,6 +54,19 @@ def main() -> None:
         type=float,
         default=None,
         help="Override the solar constant (W m^-2)",
+    )
+    parser.add_argument(
+        "--elliptical-orbit",
+        dest="elliptical_orbit",
+        action="store_true",
+        default=True,
+        help="Apply Earth's orbital eccentricity correction to insolation (default)",
+    )
+    parser.add_argument(
+        "--circular-orbit",
+        dest="elliptical_orbit",
+        action="store_false",
+        help="Disable the orbital eccentricity correction and assume a circular orbit",
     )
 
     parser.add_argument(
@@ -216,6 +230,7 @@ def main() -> None:
     lon2d, lat2d, base_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
+        use_elliptical_orbit=args.elliptical_orbit,
         radiation_config=base_rad,
         diffusion_config=base_diff,
         advection_config=base_adv,
@@ -226,6 +241,7 @@ def main() -> None:
     _, _, exp_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
+        use_elliptical_orbit=args.elliptical_orbit,
         radiation_config=exp_rad,
         diffusion_config=exp_diff,
         advection_config=exp_adv,
@@ -236,7 +252,22 @@ def main() -> None:
 
     base_surface = base_layers["surface"]
     exp_surface = exp_layers["surface"]
-    anomaly = exp_surface - base_surface
+    anomalies: Dict[str, np.ndarray] = {"Surface": exp_surface - base_surface}
+
+    base_atmosphere = base_layers.get("atmosphere")
+    exp_atmosphere = exp_layers.get("atmosphere")
+    if base_atmosphere is not None and exp_atmosphere is not None:
+        anomalies["Atmosphere"] = exp_atmosphere - base_atmosphere
+
+        atmosphere_height = 5000  # effective emission layer height (m)
+        delta_to_two_m = 2.0 - atmosphere_height
+        base_two_meter = adjust_temperature_by_elevation(
+            base_atmosphere, delta_to_two_m
+        )
+        exp_two_meter = adjust_temperature_by_elevation(
+            exp_atmosphere, delta_to_two_m
+        )
+        anomalies["Two-meter"] = exp_two_meter - base_two_meter
 
     base_summary = {
         "diffusion": args.base_diffusion,
@@ -256,22 +287,29 @@ def main() -> None:
     print("Baseline configuration:", _summarize(base_summary))
     print("Experiment configuration:", _summarize(exp_summary))
     unit = temperature_unit(args.fahrenheit)
-    display_anomaly = convert_temperature(anomaly, args.fahrenheit, is_delta=True)
-    assert isinstance(display_anomaly, np.ndarray)
-    print(
-        f"Annual mean anomaly = {display_anomaly.mean():.2f} {unit}, "
-        f"min = {display_anomaly.min():.2f} {unit}, max = {display_anomaly.max():.2f} {unit}",
-    )
 
-    anomaly_abs = float(np.max(np.abs(display_anomaly)))
-    vmax = anomaly_abs if anomaly_abs > 0 else 1.0
+    for mode, field in anomalies.items():
+        display_field = convert_temperature(field, args.fahrenheit, is_delta=True)
+        assert isinstance(display_field, np.ndarray)
+        print(
+            f"{mode} anomaly – mean = {display_field.mean():.2f} {unit}, "
+            f"min = {display_field.min():.2f} {unit}, max = {display_field.max():.2f} {unit}"
+        )
+
+    max_abs_c = max(float(np.max(np.abs(field))) for field in anomalies.values())
+    if max_abs_c <= 0.0 or not np.isfinite(max_abs_c):
+        max_abs_c = 1.0
+    max_abs_display = float(
+        convert_temperature(np.array([max_abs_c]), args.fahrenheit, is_delta=True)[0]
+    )
+    vmax = max_abs_display if max_abs_display > 0 else 1.0
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
-    plot_monthly_temperature_cycle(
+    plot_layered_monthly_temperature_cycle(
         lon2d,
         lat2d,
-        anomaly,
-        title=f"Experiment − Baseline Surface Temperature ({unit})",
+        anomalies,
+        title=f"Experiment − Baseline Temperature Anomalies ({unit})",
         cmap=cmocean.cm.balance,
         norm=norm,
         colorbar_label=f"Temperature anomaly ({unit})",

@@ -106,6 +106,19 @@ def _parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable the neutral sensible heat exchange model",
     )
+    parser.add_argument(
+        "--elliptical-orbit",
+        dest="elliptical_orbit",
+        action="store_true",
+        default=True,
+        help="Apply Earth's orbital eccentricity correction to insolation (default)",
+    )
+    parser.add_argument(
+        "--circular-orbit",
+        dest="elliptical_orbit",
+        action="store_false",
+        help="Disable the orbital eccentricity correction and assume a circular orbit",
+    )
     return parser.parse_args()
 
 
@@ -182,6 +195,7 @@ def main() -> None:
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
+        use_elliptical_orbit=args.elliptical_orbit,
         radiation_config=radiation_config,
         diffusion_config=diffusion_config,
         advection_config=advection_config,

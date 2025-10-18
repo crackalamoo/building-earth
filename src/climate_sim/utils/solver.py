@@ -715,6 +715,7 @@ def compute_periodic_cycle_results(
     resolution_deg: float = 1.0,
     *,
     solar_constant: float | None = None,
+    use_elliptical_orbit: bool = True,
     ocean_heat_capacity: float | None = None,
     land_heat_capacity: float | None = None,
     radiation_config: RadiationConfig | None = None,
@@ -731,7 +732,11 @@ def compute_periodic_cycle_results(
     """
 
     def monthly_insolation_lat_fn(lat2d: np.ndarray) -> np.ndarray:
-        return compute_monthly_insolation_field(lat2d, solar_constant=solar_constant)
+        return compute_monthly_insolation_field(
+            lat2d,
+            solar_constant=solar_constant,
+            use_elliptical_orbit=use_elliptical_orbit,
+        )
 
     def heat_capacity_field_fn(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
         return compute_heat_capacity_field(
