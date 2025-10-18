@@ -67,6 +67,7 @@ class SensibleHeatExchangeModel:
             )
 
         self._roughness = np.maximum(roughness, 1.0e-9)
+        self._land_mask = land_mask_bool
         self._surface_heat_capacity = np.maximum(heat_capacity_surface, 1.0e-9)
         self._atmosphere_heat_capacity = np.maximum(heat_capacity_atmosphere, 1.0e-9)
 
@@ -142,13 +143,22 @@ class SensibleHeatExchangeModel:
         gas_constant = self._config.gas_constant_dry_air_J_kg_K
         rho = pressure / (gas_constant * near_surface_air_K)
 
-        log_argument = np.maximum(
-            self._config.reference_height_surface_m / self._roughness,
-            1.0 + 1.0e-9,
+        log_height_surface = self._config.reference_height_surface_m
+        roughness_momentum = self._roughness
+        roughness_heat = np.maximum(roughness_momentum / 100.0, 1.0e-9)
+
+        lm = np.log(
+            np.maximum(log_height_surface / roughness_momentum, 1.0 + 1.0e-9)
         )
-        lm = np.log(log_argument)
+        lh = np.log(
+            np.maximum(log_height_surface / roughness_heat, 1.0 + 1.0e-9)
+        )
         with np.errstate(divide="ignore", invalid="ignore"):
-            ch = (self._config.von_karman**2) / (lm**2)
+            ch_raw = (self._config.von_karman**2) / (lm * lh)
+
+        ch_land = np.clip(ch_raw, 5.0e-4, 2.0e-3)
+        ch_ocean = np.clip(ch_raw, 8.0e-4, 3.0e-3)
+        ch = np.where(self._land_mask, ch_land, ch_ocean)
 
         wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
 
