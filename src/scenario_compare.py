@@ -12,6 +12,7 @@ from matplotlib.colors import TwoSlopeNorm
 from climate_sim.modeling.advection import AdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
+from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.utils.solver import compute_periodic_cycle_results
@@ -161,6 +162,32 @@ def main() -> None:
         help="Disable snow-albedo adjustments in the experiment case",
     )
     parser.add_argument(
+        "--base-sensible-heat",
+        dest="base_sensible_heat",
+        action="store_true",
+        default=True,
+        help="Enable sensible heat exchange in the baseline case (default)",
+    )
+    parser.add_argument(
+        "--no-base-sensible-heat",
+        dest="base_sensible_heat",
+        action="store_false",
+        help="Disable sensible heat exchange in the baseline case",
+    )
+    parser.add_argument(
+        "--exp-sensible-heat",
+        dest="experiment_sensible_heat",
+        action="store_true",
+        default=True,
+        help="Enable sensible heat exchange in the experiment case (default)",
+    )
+    parser.add_argument(
+        "--no-exp-sensible-heat",
+        dest="experiment_sensible_heat",
+        action="store_false",
+        help="Disable sensible heat exchange in the experiment case",
+    )
+    parser.add_argument(
         "--fahrenheit", "-f",
         dest="fahrenheit",
         action="store_true",
@@ -183,6 +210,9 @@ def main() -> None:
     base_snow = SnowAlbedoConfig(enabled=args.base_snow)
     exp_snow = SnowAlbedoConfig(enabled=args.experiment_snow)
 
+    base_sensible_heat = SensibleHeatExchangeConfig(enabled=args.base_sensible_heat)
+    exp_sensible_heat = SensibleHeatExchangeConfig(enabled=args.experiment_sensible_heat)
+
     lon2d, lat2d, base_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
@@ -190,6 +220,7 @@ def main() -> None:
         diffusion_config=base_diff,
         advection_config=base_adv,
         snow_config=base_snow,
+        sensible_heat_config=base_sensible_heat,
         return_layer_map=True,
     )
     _, _, exp_layers = compute_periodic_cycle_results(
@@ -199,6 +230,7 @@ def main() -> None:
         diffusion_config=exp_diff,
         advection_config=exp_adv,
         snow_config=exp_snow,
+        sensible_heat_config=exp_sensible_heat,
         return_layer_map=True,
     )
 
@@ -211,12 +243,14 @@ def main() -> None:
         "advection": args.base_advection,
         "atmosphere": args.base_atmosphere,
         "snow": args.base_snow,
+        "sensible_heat": args.base_sensible_heat,
     }
     exp_summary = {
         "diffusion": args.experiment_diffusion,
         "advection": args.experiment_advection,
         "atmosphere": args.experiment_atmosphere,
         "snow": args.experiment_snow,
+        "sensible_heat": args.experiment_sensible_heat,
     }
 
     print("Baseline configuration:", _summarize(base_summary))

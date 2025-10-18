@@ -24,7 +24,7 @@ from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig, AlbedoModel
 from climate_sim.modeling.sensible_heat_exchange import (
     SensibleHeatExchangeConfig,
-    sensible_heat_exchange_tendencies,
+    SensibleHeatExchangeModel,
 )
 from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
@@ -33,11 +33,7 @@ from climate_sim.utils.landmask import (
     compute_heat_capacity_field,
     compute_land_mask,
 )
-from climate_sim.utils.atmosphere import log_law_map_wind_speed
-from climate_sim.utils.elevation import (
-    compute_cell_roughness_length,
-    pressure_from_temperature_elevation,
-)
+from climate_sim.utils.elevation import compute_cell_roughness_length
 
 NEWTON_STEP_TOLERANCE_K = 1.0
 PERIODIC_FIXED_POINT_TOLERANCE_K = 1.0
@@ -148,8 +144,6 @@ RhsFactory = Callable[
         np.ndarray,
         LayeredDiffusionOperator,
         RadiationConfig,
-        np.ndarray,
-        np.ndarray,
         np.ndarray,
         np.ndarray,
         SensibleHeatExchangeConfig,
@@ -503,8 +497,6 @@ def solve_periodic_cycle_for_albedo(
     solver_cache: LinearSolveCache,
     land_mask: np.ndarray,
     roughness_length: np.ndarray,
-    reference_height_field: np.ndarray,
-    atmosphere_heat_capacity_field: np.ndarray,
     sensible_heat_cfg: SensibleHeatExchangeConfig,
 ) -> tuple[ModelState, list[ModelState]]:
     """Compute the periodic solution and monthly mean temperatures for a given albedo field."""
@@ -534,8 +526,6 @@ def solve_periodic_cycle_for_albedo(
         radiation_config,
         land_mask,
         roughness_length,
-        reference_height_field,
-        atmosphere_heat_capacity_field,
         sensible_heat_cfg,
     )
 
@@ -607,17 +597,6 @@ def compute_periodic_cycle_kelvin(
         land_mask=land_mask,
     )
 
-    reference_height_field = np.where(
-        land_mask,
-        sensible_heat_cfg.land_reference_height_m,
-        sensible_heat_cfg.ocean_reference_height_m,
-    )
-
-    atmosphere_heat_capacity_field = np.full_like(
-        heat_capacity_field,
-        radiation_config.atmosphere_heat_capacity,
-    )
-
     diffusion_operator = create_diffusion_operator(
         lon2d,
         lat2d,
@@ -670,8 +649,6 @@ def compute_periodic_cycle_kelvin(
             solver_cache=solver_cache,
             land_mask=land_mask,
             roughness_length=roughness_length,
-            reference_height_field=reference_height_field,
-            atmosphere_heat_capacity_field=atmosphere_heat_capacity_field,
             sensible_heat_cfg=sensible_heat_cfg,
         )
 
@@ -776,8 +753,6 @@ def compute_periodic_cycle_results(
         config: RadiationConfig,
         land_mask: np.ndarray,
         roughness_length: np.ndarray,
-        reference_height_field: np.ndarray,
-        atmosphere_heat_capacity_field: np.ndarray,
         sensible_heat_cfg_local: SensibleHeatExchangeConfig,
     ):
         surface_matrix = None
@@ -794,6 +769,16 @@ def compute_periodic_cycle_results(
         # The diffusion matrices are already expressed as d(rhs)/dT in 1/s because the
         # discrete operator divides by the local heat capacity when it is assembled.
 
+        sensible_heat_model: SensibleHeatExchangeModel | None = None
+        if config.include_atmosphere and sensible_heat_cfg_local.enabled:
+            sensible_heat_model = SensibleHeatExchangeModel(
+                land_mask=land_mask,
+                roughness_length_m=roughness_length,
+                surface_heat_capacity_J_m2_K=heat_capacity_field,
+                atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
+                config=sensible_heat_cfg_local,
+            )
+
         def rhs(state: ModelState, insolation: np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
                 state.temperature,
@@ -809,32 +794,17 @@ def compute_periodic_cycle_results(
                 if diffusion_operator.atmosphere.enabled:
                     radiative[1] += diffusion_operator.atmosphere.tendency(state.temperature[1])
 
-                if sensible_heat_cfg_local.enabled:
+                if sensible_heat_model is not None:
                     surface_temperature = state.temperature[0]
                     atmosphere_temperature = state.temperature[1]
-                    surface_pressure = pressure_from_temperature_elevation(surface_temperature)
-
-                    if state.wind_field is not None:
-                        wind_speed_ref = state.wind_field[2]
-                        wind_speed_10m = log_law_map_wind_speed(
-                            wind_speed_ref,
-                            height_ref_m=reference_height_field,
-                            height_target_m=sensible_heat_cfg_local.reference_height_surface_m,
-                            roughness_length_m=roughness_length,
-                        )
-                    else:
-                        wind_speed_10m = np.zeros_like(surface_temperature)
-
-                    surface_tendency, atmosphere_tendency = sensible_heat_exchange_tendencies(
+                    wind_speed_ref = state.wind_field[2] if state.wind_field is not None else None
+                    (
+                        surface_tendency,
+                        atmosphere_tendency,
+                    ) = sensible_heat_model.compute_tendencies(
                         surface_temperature_K=surface_temperature,
                         atmosphere_temperature_K=atmosphere_temperature,
-                        surface_pressure_Pa=surface_pressure,
-                        wind_speed_10m_m_s=wind_speed_10m,
-                        roughness_length_m=roughness_length,
-                        surface_heat_capacity_J_m2_K=heat_capacity_field,
-                        atmosphere_heat_capacity_J_m2_K=atmosphere_heat_capacity_field,
-                        land_mask=land_mask,
-                        config=sensible_heat_cfg_local,
+                        wind_speed_reference_m_s=wind_speed_ref,
                     )
 
                     radiative[0] += surface_tendency

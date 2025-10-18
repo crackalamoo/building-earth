@@ -93,6 +93,19 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Display temperatures in degrees Fahrenheit instead of Celsius",
     )
+    parser.add_argument(
+        "--sensible-heat",
+        dest="sensible_heat",
+        action="store_true",
+        default=True,
+        help="Enable the neutral sensible heat exchange model (default)",
+    )
+    parser.add_argument(
+        "--no-sensible-heat",
+        dest="sensible_heat",
+        action="store_false",
+        help="Disable the neutral sensible heat exchange model",
+    )
     return parser.parse_args()
 
 
@@ -156,6 +169,7 @@ def main() -> None:
     from climate_sim.modeling.advection import AdvectionConfig
     from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
+    from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
     from climate_sim.utils.solver import compute_periodic_cycle_results
     from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
@@ -164,6 +178,7 @@ def main() -> None:
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
     advection_config = AdvectionConfig(enabled=args.advection)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
+    sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.sensible_heat)
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
@@ -171,6 +186,7 @@ def main() -> None:
         diffusion_config=diffusion_config,
         advection_config=advection_config,
         snow_config=snow_config,
+        sensible_heat_config=sensible_heat_config,
         return_layer_map=True,
     )
     surface_cycle = layers["surface"]

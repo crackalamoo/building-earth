@@ -9,9 +9,13 @@ import numpy as np
 from climate_sim.utils.atmosphere import (
     STANDARD_LAPSE_RATE_K_PER_M,
     adjust_temperature_by_elevation,
+    log_law_map_wind_speed,
 )
-from climate_sim.utils.elevation import VON_KARMAN_CONSTANT
 from climate_sim.utils.constants import GAS_CONSTANT_J_KG_K
+from climate_sim.utils.elevation import (
+    VON_KARMAN_CONSTANT,
+    pressure_from_temperature_elevation,
+)
 
 
 @dataclass(frozen=True)
@@ -29,86 +33,136 @@ class SensibleHeatExchangeConfig:
     ocean_reference_height_m: float = 500.0
 
 
-def sensible_heat_exchange_tendencies(
-    surface_temperature_K: np.ndarray,
-    atmosphere_temperature_K: np.ndarray,
-    *,
-    surface_pressure_Pa: np.ndarray,
-    wind_speed_10m_m_s: np.ndarray,
-    roughness_length_m: np.ndarray,
-    surface_heat_capacity_J_m2_K: np.ndarray,
-    atmosphere_heat_capacity_J_m2_K: np.ndarray,
-    land_mask: np.ndarray,
-    config: SensibleHeatExchangeConfig,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return the surface and atmospheric tendencies from sensible heat exchange."""
+class SensibleHeatExchangeModel:
+    """Compute tendencies from neutral sensible heat exchange."""
 
-    if not config.enabled:
-        zeros = np.zeros_like(surface_temperature_K)
-        return zeros, zeros
+    def __init__(
+        self,
+        *,
+        land_mask: np.ndarray,
+        roughness_length_m: np.ndarray,
+        surface_heat_capacity_J_m2_K: np.ndarray,
+        atmosphere_heat_capacity_J_m2_K: np.ndarray | float,
+        config: SensibleHeatExchangeConfig | None = None,
+    ) -> None:
+        self._config = config or SensibleHeatExchangeConfig()
 
-    surface_temperature = np.asarray(surface_temperature_K, dtype=float)
-    atmosphere_temperature = np.asarray(atmosphere_temperature_K, dtype=float)
-    pressure = np.asarray(surface_pressure_Pa, dtype=float)
-    wind_speed = np.asarray(wind_speed_10m_m_s, dtype=float)
-    roughness = np.asarray(roughness_length_m, dtype=float)
-    heat_capacity_surface = np.asarray(surface_heat_capacity_J_m2_K, dtype=float)
-    heat_capacity_atmosphere = np.asarray(atmosphere_heat_capacity_J_m2_K, dtype=float)
-    land_mask_bool = np.asarray(land_mask, dtype=bool)
+        land_mask_bool = np.asarray(land_mask, dtype=bool)
+        roughness = np.asarray(roughness_length_m, dtype=float)
+        heat_capacity_surface = np.asarray(surface_heat_capacity_J_m2_K, dtype=float)
+        heat_capacity_atmosphere = np.asarray(atmosphere_heat_capacity_J_m2_K, dtype=float)
 
-    if surface_temperature.shape != atmosphere_temperature.shape:
-        raise ValueError("Surface and atmosphere temperatures must share the same shape")
-    if surface_temperature.shape != pressure.shape:
-        raise ValueError("Surface pressure must match the temperature field shape")
-    if surface_temperature.shape != wind_speed.shape:
-        raise ValueError("Wind speed must match the temperature field shape")
-    if surface_temperature.shape != roughness.shape:
-        raise ValueError("Roughness length must match the temperature field shape")
-    if surface_temperature.shape != heat_capacity_surface.shape:
-        raise ValueError("Surface heat capacity must match the temperature field shape")
-    if surface_temperature.shape != heat_capacity_atmosphere.shape:
-        raise ValueError("Atmosphere heat capacity must match the temperature field shape")
-    if surface_temperature.shape != land_mask_bool.shape:
-        raise ValueError("Land mask must match the temperature field shape")
+        if land_mask_bool.shape != roughness.shape:
+            raise ValueError("Land mask and roughness fields must share the same shape")
+        if land_mask_bool.shape != heat_capacity_surface.shape:
+            raise ValueError("Surface heat capacity must match the land mask shape")
+        if heat_capacity_atmosphere.shape not in ((), land_mask_bool.shape):
+            raise ValueError(
+                "Atmospheric heat capacity must be scalar or match the land mask shape"
+            )
 
-    reference_height_surface = config.reference_height_surface_m
-    land_height = config.land_reference_height_m
-    ocean_height = config.ocean_reference_height_m
+        if heat_capacity_atmosphere.shape == ():
+            heat_capacity_atmosphere = np.full(
+                land_mask_bool.shape, float(heat_capacity_atmosphere)
+            )
 
-    z_ref_atm = np.where(land_mask_bool, land_height, ocean_height)
-    delta_z = z_ref_atm - reference_height_surface
+        self._roughness = np.maximum(roughness, 1.0e-9)
+        self._surface_heat_capacity = np.maximum(heat_capacity_surface, 1.0e-9)
+        self._atmosphere_heat_capacity = np.maximum(heat_capacity_atmosphere, 1.0e-9)
 
-    atmosphere_temperature_c = atmosphere_temperature - 273.15
-    near_surface_air_c = adjust_temperature_by_elevation(
-        atmosphere_temperature_c,
-        delta_z,
-    )
-    near_surface_air_K = near_surface_air_c + 273.15
-    near_surface_air_K = np.maximum(near_surface_air_K, 1.0)
+        self._reference_height_atmosphere = np.where(
+            land_mask_bool,
+            self._config.land_reference_height_m,
+            self._config.ocean_reference_height_m,
+        )
+        self._elevation_delta_to_surface = (
+            self._config.reference_height_surface_m - self._reference_height_atmosphere
+        )
 
-    ta10_safe = near_surface_air_K
+    @property
+    def enabled(self) -> bool:
+        return self._config.enabled
 
-    gas_constant = config.gas_constant_dry_air_J_kg_K
-    rho = pressure / (gas_constant * ta10_safe)
+    @property
+    def reference_height_field(self) -> np.ndarray:
+        """Height of the atmospheric reference level used for the bulk exchange."""
 
-    z0_safe = np.maximum(roughness, 1.0e-6)
-    log_argument = reference_height_surface / z0_safe
-    log_argument = np.maximum(log_argument, 1.0 + 1.0e-9)
-    lm = np.log(log_argument)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ch = (config.von_karman**2) / (lm**2)
+        return self._reference_height_atmosphere
 
-    wind_abs = np.maximum(np.abs(wind_speed), config.minimum_wind_speed_m_s)
+    def _wind_speed_10m(self, wind_speed_reference_m_s: np.ndarray | None) -> np.ndarray:
+        if wind_speed_reference_m_s is None:
+            return np.zeros_like(self._surface_heat_capacity)
 
-    lapse_rate = config.lapse_rate_K_per_m
-    delta_temperature = surface_temperature - atmosphere_temperature + lapse_rate * delta_z
+        wind_speed = np.asarray(wind_speed_reference_m_s, dtype=float)
+        if wind_speed.shape != self._surface_heat_capacity.shape:
+            raise ValueError("Wind speed field must match the surface heat capacity shape")
 
-    heat_flux = rho * config.heat_capacity_air_J_kg_K * ch * wind_abs * delta_temperature
+        return log_law_map_wind_speed(
+            wind_speed,
+            height_ref_m=self._reference_height_atmosphere,
+            height_target_m=self._config.reference_height_surface_m,
+            roughness_length_m=self._roughness,
+        )
 
-    heat_capacity_surface_safe = np.maximum(heat_capacity_surface, 1.0e-9)
-    heat_capacity_atmosphere_safe = np.maximum(heat_capacity_atmosphere, 1.0e-9)
+    def compute_tendencies(
+        self,
+        surface_temperature_K: np.ndarray,
+        atmosphere_temperature_K: np.ndarray,
+        *,
+        wind_speed_reference_m_s: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return surface and atmospheric tendencies from sensible heat exchange."""
 
-    surface_tendency = -heat_flux / heat_capacity_surface_safe
-    atmosphere_tendency = heat_flux / heat_capacity_atmosphere_safe
+        if not self.enabled:
+            zeros = np.zeros_like(surface_temperature_K, dtype=float)
+            return zeros, zeros
 
-    return surface_tendency, atmosphere_tendency
+        surface_temperature = np.asarray(surface_temperature_K, dtype=float)
+        atmosphere_temperature = np.asarray(atmosphere_temperature_K, dtype=float)
+
+        if surface_temperature.shape != self._surface_heat_capacity.shape:
+            raise ValueError(
+                "Surface temperature must match the surface heat capacity field shape"
+            )
+        if atmosphere_temperature.shape != self._surface_heat_capacity.shape:
+            raise ValueError(
+                "Atmosphere temperature must match the surface heat capacity field shape"
+            )
+
+        pressure = pressure_from_temperature_elevation(atmosphere_temperature)
+        wind_speed_10m = self._wind_speed_10m(wind_speed_reference_m_s)
+
+        atmosphere_temperature_c = atmosphere_temperature - 273.15
+        near_surface_air_c = adjust_temperature_by_elevation(
+            atmosphere_temperature_c,
+            self._elevation_delta_to_surface,
+        )
+        near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 1.0)
+
+        gas_constant = self._config.gas_constant_dry_air_J_kg_K
+        rho = pressure / (gas_constant * near_surface_air_K)
+
+        log_argument = np.maximum(
+            self._config.reference_height_surface_m / self._roughness,
+            1.0 + 1.0e-9,
+        )
+        lm = np.log(log_argument)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ch = (self._config.von_karman**2) / (lm**2)
+
+        wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
+
+        delta_temperature = surface_temperature - near_surface_air_K
+
+        heat_flux = (
+            rho
+            * self._config.heat_capacity_air_J_kg_K
+            * ch
+            * wind_abs
+            * delta_temperature
+        )
+
+        surface_tendency = -heat_flux / self._surface_heat_capacity
+        atmosphere_tendency = heat_flux / self._atmosphere_heat_capacity
+
+        return surface_tendency, atmosphere_tendency
