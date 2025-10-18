@@ -12,8 +12,8 @@ from scipy.sparse import linalg as splinalg
 
 import climate_sim.modeling.radiation as radiation
 from climate_sim.modeling.advection import (
-    GeostrophicAdvectionConfig,
-    GeostrophicAdvectionOperator,
+    AdvectionConfig,
+    AdvectionModel,
 )
 from climate_sim.modeling.diffusion import (
     DiffusionConfig,
@@ -21,7 +21,7 @@ from climate_sim.modeling.diffusion import (
     create_diffusion_operator,
 )
 from climate_sim.modeling.radiation import RadiationConfig
-from climate_sim.modeling.snow_albedo import SnowAlbedoConfig, apply_snow_albedo
+from climate_sim.modeling.snow_albedo import SnowAlbedoConfig, AlbedoModel
 from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
 from climate_sim.utils.landmask import (
@@ -36,10 +36,8 @@ NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
-ARCTIC_CIRCLE_LATITUDE_DEG = 66.5
 
 
-RhsFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 @dataclass
 class Linearisation:
     diag: np.ndarray
@@ -89,16 +87,31 @@ def _get_factorized_solver(
     return solver
 
 
+@dataclass
+class DiagnosticParameters:
+    """Diagnostic (non-solver) parameters for the model."""
+    albedo_field: np.ndarray
+    wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+
+@dataclass
+class DiagnosticModels:
+    snow_albedo_model: AlbedoModel
+    advection_model: AdvectionModel | None = None
+
+@dataclass
+class ModelState:
+    """State variables for the climate model."""
+    temperature: np.ndarray
+    diagnostics: DiagnosticParameters
+
+RhsFunc = Callable[[ModelState, np.ndarray], np.ndarray]
 RhsDerivative = Linearisation
-RhsDerivativeFunc = Callable[[np.ndarray, np.ndarray], RhsDerivative]
+RhsDerivativeFunc = Callable[[ModelState, np.ndarray], RhsDerivative]
 RhsFactory = Callable[
     [
         np.ndarray,
-        np.ndarray,
         LayeredDiffusionOperator,
         RadiationConfig,
-        np.ndarray,
-        GeostrophicAdvectionOperator | None,
     ],
     Tuple[RhsFunc, RhsDerivativeFunc],
 ]
@@ -107,8 +120,9 @@ MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
 HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
 
-def implicit_monthly_step(
-    temperature_K: np.ndarray,
+def monthly_step(
+    state: ModelState,
+    diagnostic_models: DiagnosticModels,
     insolation_W_m2: np.ndarray,
     dt_seconds: float,
     *,
@@ -116,25 +130,31 @@ def implicit_monthly_step(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
-) -> np.ndarray:
+) -> ModelState:
     """Advance the column temperature one implicit backward-Euler step."""
-    temp_next = np.maximum(temperature_K, temperature_floor)
+    start_temp = state.temperature
+    temp_next = np.maximum(start_temp, temperature_floor)
     cache = solver_cache or DEFAULT_LINEAR_SOLVE_CACHE
 
-    if temperature_K.ndim == 2:
-        identity_single_layer = _get_identity_matrix(temperature_K.size, cache=cache)
-    elif temperature_K.ndim == 3 and temperature_K.shape[0] == 2:
+    if start_temp.ndim == 2:
+        identity_single_layer = _get_identity_matrix(start_temp.size, cache=cache)
+    elif start_temp.ndim == 3 and start_temp.shape[0] == 2:
         identity_single_layer = _get_identity_matrix(
-            temperature_K.shape[1] * temperature_K.shape[2], cache=cache
+            start_temp.shape[1] * start_temp.shape[2], cache=cache
         )
     else:
         identity_single_layer = None
 
+    # implicit solver loop
     for _ in range(NEWTON_MAX_ITERS):
         temp_capped = np.maximum(temp_next, temperature_floor)
-        rhs_value = rhs_fn(temp_capped, insolation_W_m2)
-        residual = temp_capped - temperature_K - dt_seconds * rhs_value
-        linearisation = rhs_temperature_derivative_fn(temp_capped, insolation_W_m2)
+        state_capped = ModelState(
+            temperature=temp_capped,
+            diagnostics=state.diagnostics,
+        )
+        rhs_value = rhs_fn(state_capped, insolation_W_m2)
+        residual = temp_capped - start_temp - dt_seconds * rhs_value
+        linearisation = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
 
         if temp_capped.ndim == 2:
             diag = linearisation.diag
@@ -204,6 +224,7 @@ def implicit_monthly_step(
                 axis=0,
             )
 
+            assert isinstance(jacobian, sparse.csc_matrix)
             fingerprint = linearisation.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
             linearisation.solver_fingerprint = fingerprint
             solve_linear = _get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
@@ -216,11 +237,17 @@ def implicit_monthly_step(
         max_residual = float(np.max(np.abs(residual)))
         accepted = False
         prev_temp = temp_next
+        temp_candidate = temp_next
+        residual_candidate = residual
 
         while damping >= NEWTON_BACKTRACK_CUTOFF:
             temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
-            rhs_candidate = rhs_fn(temp_candidate, insolation_W_m2)
-            residual_candidate = temp_candidate - temperature_K - dt_seconds * rhs_candidate
+            state_candidate = ModelState(
+                temperature=temp_candidate,
+                diagnostics=state.diagnostics,
+            )
+            rhs_candidate = rhs_fn(state_candidate, insolation_W_m2)
+            residual_candidate = temp_candidate - start_temp - dt_seconds * rhs_candidate
             candidate_norm = float(np.max(np.abs(residual_candidate)))
 
             if candidate_norm <= (1.0 - 1e-4 * damping) * max_residual:
@@ -239,11 +266,15 @@ def implicit_monthly_step(
         if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
             break
 
-    return temp_next
+    return ModelState(
+        temperature=temp_next,
+        diagnostics=state.diagnostics,
+    )
 
 
 def apply_annual_map(
-    temperature_K: np.ndarray,
+    state: ModelState,
+    diagnostic_models: DiagnosticModels,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     *,
@@ -251,12 +282,12 @@ def apply_annual_map(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
-) -> np.ndarray:
+) -> ModelState:
     """Propagate the state through 12 implicit steps and return the end-of-December temperature."""
-    state = temperature_K
     for month in range(12):
-        state = implicit_monthly_step(
+        state = monthly_step(
             state,
+            diagnostic_models,
             monthly_insolation[month],
             month_durations[month],
             rhs_fn=rhs_fn,
@@ -304,18 +335,19 @@ def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | No
 
 
 def find_periodic_temperature(
-    initial_temperature: np.ndarray,
+    initial_state: ModelState,
+    diagnostic_models: DiagnosticModels,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
-    *,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
-) -> np.ndarray:
+) -> ModelState:
     """Solve P(T) = T for the annual map using Anderson acceleration."""
 
-    state = np.maximum(initial_temperature, temperature_floor)
+    state = initial_state
+    state.temperature = np.maximum(initial_state.temperature, temperature_floor)
     residual_history: list[np.ndarray] = []
     advanced_history: list[np.ndarray] = []
     history_limit = 5
@@ -324,6 +356,7 @@ def find_periodic_temperature(
     for _ in range(FIXED_POINT_MAX_ITERS):
         advanced = apply_annual_map(
             state,
+            diagnostic_models,
             monthly_insolation,
             month_durations,
             rhs_fn=rhs_fn,
@@ -332,14 +365,14 @@ def find_periodic_temperature(
             solver_cache=solver_cache,
         )
 
-        residual = advanced - state
+        residual = advanced.temperature - state.temperature
         max_residual = float(np.max(np.abs(residual)))
 
         if max_residual < PERIODIC_FIXED_POINT_TOLERANCE_K:
             return advanced
 
         residual_flat = residual.ravel()
-        advanced_flat = advanced.ravel()
+        advanced_flat = advanced.temperature.ravel()
 
         if len(residual_history) == history_limit:
             residual_history.pop(0)
@@ -359,21 +392,20 @@ def find_periodic_temperature(
                     coefficients = coefficients / coeff_sum
 
         if coefficients is None:
-            state_next = advanced
+            T_next = advanced.temperature
             residual_history = residual_history[-1:]
             advanced_history = advanced_history[-1:]
         else:
             combined = np.zeros_like(advanced_flat)
             for weight, advanced_state in zip(coefficients, advanced_history, strict=True):
                 combined += weight * advanced_state
-            state_next = combined.reshape(state.shape)
+            T_next = combined.reshape(state.temperature.shape)
 
-            if not np.all(np.isfinite(state_next)):
-                state_next = advanced
+            if not np.all(np.isfinite(T_next)):
                 residual_history = residual_history[-1:]
                 advanced_history = advanced_history[-1:]
 
-        state = np.maximum(state_next, temperature_floor)
+        state.temperature = np.maximum(T_next, temperature_floor)
 
     raise RuntimeError(
         "Failed to converge to a periodic solution after "
@@ -382,7 +414,8 @@ def find_periodic_temperature(
 
 
 def integrate_periodic_cycle(
-    initial_temperature: np.ndarray,
+    state: ModelState,
+    diagnostic_models: DiagnosticModels,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     *,
@@ -390,13 +423,13 @@ def integrate_periodic_cycle(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
-) -> np.ndarray:
+) -> list[ModelState]:
     """Return the 12-month sequence of month-midpoint temperatures for the periodic solution."""
-    temps = np.empty((12,) + initial_temperature.shape, dtype=float)
-    state = initial_temperature
+    states = []
     for month in range(12):
-        next_state = implicit_monthly_step(
+        next_state = monthly_step(
             state,
+            diagnostic_models,
             monthly_insolation[month],
             month_durations[month],
             rhs_fn=rhs_fn,
@@ -404,48 +437,67 @@ def integrate_periodic_cycle(
             temperature_floor=temperature_floor,
             solver_cache=solver_cache,
         )
-        temps[month] = 0.5 * (state + next_state)
         state = next_state
-    return temps
+        states.append(next_state)
+    return states
 
 
 def solve_periodic_cycle_for_albedo(
-    albedo_field: np.ndarray,
     *,
-    initial_temperature: np.ndarray | None,
+    initial_state: ModelState | None,
+    current_albedo_field: np.ndarray,
+    diagnostic_models: DiagnosticModels,
     heat_capacity_field: np.ndarray,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     diffusion_operator: LayeredDiffusionOperator,
     radiation_config: RadiationConfig,
-    ocean_mask: np.ndarray,
-    advection_operator: GeostrophicAdvectionOperator | None,
+    advection_model: AdvectionModel | None,
     rhs_factory: RhsFactory,
     initial_guess_fn: InitialGuessFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[ModelState, list[ModelState]]:
     """Compute the periodic solution and monthly mean temperatures for a given albedo field."""
-    rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
-        heat_capacity_field,
-        albedo_field,
-        diffusion_operator,
-        radiation_config,
-        ocean_mask,
-        advection_operator,
-    )
 
-    if initial_temperature is None:
+    if initial_state is None:
         guess = initial_guess_fn(
             monthly_insolation,
-            albedo_field,
+            current_albedo_field,
             radiation_config,
         )
+
+        initial_wind = None
+        if advection_model is not None:
+            initial_wind, _, _ = advection_model.wind_field(guess[0])
+
+        diagnostics = DiagnosticParameters(
+            albedo_field=current_albedo_field,
+            wind_field=initial_wind,
+        )
+
+        initial_state = ModelState(
+            temperature=guess,
+            diagnostics=diagnostics,
+        )
     else:
-        guess = initial_temperature
+        initial_state = ModelState(
+            temperature=initial_state.temperature,
+            diagnostics=DiagnosticParameters(
+                albedo_field=current_albedo_field,
+                wind_field=initial_state.diagnostics.wind_field,
+            ),
+        )
 
-    periodic_temperature = find_periodic_temperature(
-        guess,
+    rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
+        heat_capacity_field,
+        diffusion_operator,
+        radiation_config,
+    )
+
+    periodic_state = find_periodic_temperature(
+        initial_state,
+        diagnostic_models,
         monthly_insolation,
         month_durations,
         rhs_fn=rhs_fn,
@@ -454,8 +506,9 @@ def solve_periodic_cycle_for_albedo(
         solver_cache=solver_cache,
     )
 
-    monthly_temperatures = integrate_periodic_cycle(
-        periodic_temperature,
+    monthly_states = integrate_periodic_cycle(
+        periodic_state,
+        diagnostic_models,
         monthly_insolation,
         month_durations,
         rhs_fn=rhs_fn,
@@ -464,7 +517,7 @@ def solve_periodic_cycle_for_albedo(
         solver_cache=solver_cache,
     )
 
-    return periodic_temperature, monthly_temperatures
+    return periodic_state, monthly_states
 
 
 def compute_periodic_cycle_kelvin(
@@ -476,9 +529,9 @@ def compute_periodic_cycle_kelvin(
     initial_guess_fn: InitialGuessFunc,
     radiation_config: RadiationConfig,
     diffusion_config: DiffusionConfig,
-    advection_config: GeostrophicAdvectionConfig | None = None,
+    advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, list[ModelState]]:
     """Solve for the periodic temperature cycle and return results in Kelvin with the converged albedo field."""
     lon2d, lat2d = create_lat_lon_grid(resolution_deg)
 
@@ -488,17 +541,20 @@ def compute_periodic_cycle_kelvin(
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
     snow_cfg = snow_config or SnowAlbedoConfig()
     albedo_kwargs: dict[str, float] = {}
-    if snow_cfg.enabled:
-        albedo_kwargs = {"land_albedo": 0.25, "ocean_albedo": 0.25}
-    base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
     land_mask = compute_land_mask(lon2d, lat2d)
 
+    albedo_model = AlbedoModel(
+        lat2d,
+        lon2d,
+        config=snow_cfg,
+        land_mask=land_mask,
+    )
     if snow_cfg.enabled:
-        arctic_land = (lat2d >= ARCTIC_CIRCLE_LATITUDE_DEG) & land_mask
-        if np.any(arctic_land):
-            base_albedo_field = np.where(
-                arctic_land, snow_cfg.snow_albedo, base_albedo_field
-            )
+        albedo_kwargs = {"land_albedo": 0.25, "ocean_albedo": 0.25}
+
+    base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
+    current_albedo_field = base_albedo_field
+
     diffusion_operator = create_diffusion_operator(
         lon2d,
         lat2d,
@@ -507,14 +563,13 @@ def compute_periodic_cycle_kelvin(
         atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
         config=diffusion_config,
     )
-    ocean_mask = ~land_mask
-    advection_operator: GeostrophicAdvectionOperator | None = None
+    advection_model: AdvectionModel | None = None
     if (
         advection_config is not None
         and advection_config.enabled
         and radiation_config.include_atmosphere
     ):
-        advection_operator = GeostrophicAdvectionOperator(
+        advection_model = AdvectionModel(
             lon2d,
             lat2d,
             config=advection_config,
@@ -522,23 +577,27 @@ def compute_periodic_cycle_kelvin(
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
     solver_cache = LinearSolveCache()
 
-    albedo_field = base_albedo_field
-    previous_periodic: np.ndarray | None = None
-    final_monthly: np.ndarray | None = None
+    diagnostic_models = DiagnosticModels(
+        snow_albedo_model=albedo_model,
+        advection_model=advection_model,
+    )
+
+    previous_periodic: ModelState | None = None
+    monthly: list[ModelState] | None = None
 
     iterations = snow_cfg.picard_iterations if snow_cfg.enabled else 1
 
     for iteration in range(iterations):
-        previous_periodic, final_monthly = solve_periodic_cycle_for_albedo(
-            albedo_field,
-            initial_temperature=previous_periodic,
+        periodic_state, monthly = solve_periodic_cycle_for_albedo(
+            initial_state=previous_periodic,
+            current_albedo_field=current_albedo_field,
+            diagnostic_models=diagnostic_models,
             heat_capacity_field=heat_capacity_field,
             monthly_insolation=monthly_insolation,
             month_durations=month_durations,
             diffusion_operator=diffusion_operator,
             radiation_config=radiation_config,
-            ocean_mask=ocean_mask,
-            advection_operator=advection_operator,
+            advection_model=advection_model,
             rhs_factory=rhs_factory,
             initial_guess_fn=initial_guess_fn,
             temperature_floor=radiation_config.temperature_floor,
@@ -546,26 +605,41 @@ def compute_periodic_cycle_kelvin(
         )
 
         if not snow_cfg.enabled:
+            previous_periodic = periodic_state
             break
 
         if iteration == iterations - 1:
+            previous_periodic = periodic_state
             break
 
-        updated_albedo = apply_snow_albedo(
+        monthly_temperatures = np.array([state.temperature for state in monthly])
+        if monthly_temperatures.ndim == 4:
+            surface_temperatures = monthly_temperatures[:, 0]
+        else:
+            surface_temperatures = monthly_temperatures
+
+        updated_albedo = albedo_model.apply_snow_albedo(
             base_albedo_field,
-            land_mask,
-            final_monthly,
-            config=snow_cfg,
+            surface_temperatures,
         )
 
-        if np.array_equal(updated_albedo, albedo_field):
+        if np.array_equal(updated_albedo, current_albedo_field):
+            previous_periodic = periodic_state
             break
 
-        albedo_field = updated_albedo
+        current_albedo_field = updated_albedo
+        periodic_state = ModelState(
+            temperature=periodic_state.temperature,
+            diagnostics=DiagnosticParameters(
+                albedo_field=current_albedo_field,
+                wind_field=periodic_state.diagnostics.wind_field,
+            ),
+        )
+        previous_periodic = periodic_state
 
-    assert final_monthly is not None
+    assert monthly is not None
 
-    return lon2d, lat2d, final_monthly, albedo_field
+    return lon2d, lat2d, monthly
 
 
 def compute_periodic_cycle_results(
@@ -576,7 +650,7 @@ def compute_periodic_cycle_results(
     land_heat_capacity: float | None = None,
     radiation_config: RadiationConfig | None = None,
     diffusion_config: DiffusionConfig | None = None,
-    advection_config: GeostrophicAdvectionConfig | None = None,
+    advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     return_layer_map: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
@@ -599,16 +673,13 @@ def compute_periodic_cycle_results(
 
     resolved_radiation = radiation_config or RadiationConfig()
     resolved_diffusion = diffusion_config or DiffusionConfig()
-    resolved_advection = advection_config or GeostrophicAdvectionConfig()
+    resolved_advection = advection_config or AdvectionConfig()
     resolved_snow = snow_config or SnowAlbedoConfig()
 
     def rhs_factory(
         heat_capacity_field: np.ndarray,
-        albedo_field: np.ndarray,
         diffusion_operator: LayeredDiffusionOperator,
         config: RadiationConfig,
-        ocean_mask: np.ndarray,
-        advection_operator: GeostrophicAdvectionOperator | None,
     ):
         surface_matrix = None
         if diffusion_operator.surface.enabled:
@@ -624,29 +695,29 @@ def compute_periodic_cycle_results(
         # The diffusion matrices are already expressed as d(rhs)/dT in 1/s because the
         # discrete operator divides by the local heat capacity when it is assembled.
 
-        def rhs(temperature: np.ndarray, insolation: np.ndarray) -> np.ndarray:
+        def rhs(state: ModelState, insolation: np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
-                temperature,
+                state.temperature,
                 insolation,
                 heat_capacity_field=heat_capacity_field,
-                albedo_field=albedo_field,
+                albedo_field=state.diagnostics.albedo_field,
                 config=config,
             )
             if config.include_atmosphere:
                 radiative = radiative.copy()
                 if diffusion_operator.surface.enabled:
-                    radiative[0] += diffusion_operator.surface.tendency(temperature[0])
+                    radiative[0] += diffusion_operator.surface.tendency(state.temperature[0])
                 if diffusion_operator.atmosphere.enabled:
-                    radiative[1] += diffusion_operator.atmosphere.tendency(temperature[1])
+                    radiative[1] += diffusion_operator.atmosphere.tendency(state.temperature[1])
                 return radiative
             if diffusion_operator.surface.enabled:
-                radiative = radiative + diffusion_operator.surface.tendency(temperature)
+                radiative = radiative + diffusion_operator.surface.tendency(state.temperature)
             return radiative
 
-        def rhs_derivative(temperature: np.ndarray, insolation: np.ndarray) -> RhsDerivative:
+        def rhs_derivative(state: ModelState, insolation: np.ndarray) -> RhsDerivative:
             del insolation
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
-                temperature,
+                state.temperature,
                 heat_capacity_field=heat_capacity_field,
                 config=config,
             )
@@ -676,7 +747,7 @@ def compute_periodic_cycle_results(
             config=config,
         )
 
-    lon2d, lat2d, monthly_temperatures_K, final_albedo = compute_periodic_cycle_kelvin(
+    lon2d, lat2d, monthly_states = compute_periodic_cycle_kelvin(
         resolution_deg=resolution_deg,
         monthly_insolation_lat_fn=monthly_insolation_lat_fn,
         heat_capacity_field_fn=heat_capacity_field_fn,
@@ -688,18 +759,19 @@ def compute_periodic_cycle_results(
         snow_config=resolved_snow,
     )
 
-    if monthly_temperatures_K.ndim == 3:
-        monthly_surface_K = monthly_temperatures_K
+    monthly_T = np.array([state.temperature for state in monthly_states])
+    if monthly_T.ndim == 3:
+        monthly_surface_K = monthly_T
         layers_map = {"surface": monthly_surface_K - 273.15}
     else:
-        monthly_surface_K = monthly_temperatures_K[:, 0]
-        monthly_atmosphere_K = monthly_temperatures_K[:, 1]
+        monthly_surface_K = monthly_T[:, 0]
+        monthly_atmosphere_K = monthly_T[:, 1]
         layers_map = {
             "surface": monthly_surface_K - 273.15,
             "atmosphere": monthly_atmosphere_K - 273.15,
         }
 
-    layers_map["albedo"] = final_albedo
+    layers_map["albedo"] = np.array([state.diagnostics.albedo_field for state in monthly_states])
 
     if return_layer_map:
         return lon2d, lat2d, layers_map

@@ -9,7 +9,7 @@ import cmocean
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
 
-from climate_sim.modeling.advection import GeostrophicAdvectionConfig
+from climate_sim.modeling.advection import AdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
@@ -26,10 +26,10 @@ def _build_configs(
     enable_diffusion: bool,
     enable_advection: bool,
     include_atmosphere: bool,
-) -> Tuple[RadiationConfig, DiffusionConfig, GeostrophicAdvectionConfig]:
+) -> Tuple[RadiationConfig, DiffusionConfig, AdvectionConfig]:
     radiation_cfg = RadiationConfig(include_atmosphere=include_atmosphere)
     diffusion_cfg = DiffusionConfig(enabled=enable_diffusion)
-    advection_cfg = GeostrophicAdvectionConfig(enabled=enable_advection)
+    advection_cfg = AdvectionConfig(enabled=enable_advection)
     return radiation_cfg, diffusion_cfg, advection_cfg
 
 

@@ -13,7 +13,10 @@ VON_KARMAN_CONSTANT = 0.4
 REFERENCE_HEIGHT_M = 10.0
 WATER_ROUGHNESS_LENGTH_M = 2.0e-4
 
-from climate_sim.utils.constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2, GAS_CONSTANT_J_KG_K
+try:
+    from climate_sim.utils.constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2, GAS_CONSTANT_J_KG_K
+except ModuleNotFoundError:
+    from constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2, GAS_CONSTANT_J_KG_K
 
 def download_etopo(dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -391,7 +394,9 @@ def _roughness_to_image(roughness: np.ndarray) -> np.ndarray:
 def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolution: float = 0.1, contrast_water: bool = True) -> Path:
     out_dir = _resolve_output_dir(tif_path, out_dir)
 
-    da = rioxarray.open_rasterio(tif_path).squeeze()
+    da = rioxarray.open_rasterio(tif_path)
+    assert isinstance(da, xr.DataArray)
+    da = da.squeeze()
     data, _, _ = _resample_elevation_grid(da, resolution=resolution)
     # Compute min/max excluding NaNs
     finite = np.isfinite(data)
@@ -440,7 +445,9 @@ def write_roughness_png(
 ) -> Path:
     out_dir = _resolve_output_dir(tif_path, out_dir)
 
-    da = rioxarray.open_rasterio(tif_path).squeeze()
+    da = rioxarray.open_rasterio(tif_path)
+    assert isinstance(da, xr.DataArray)
+    da = da.squeeze()
     _, lon2d, lat2d = _resample_elevation_grid(da, resolution=resolution)
     roughness = compute_cell_roughness_length(lon2d, lat2d, data=da)
 
@@ -472,6 +479,7 @@ if __name__ == "__main__":
     out = write_elevation_png_1deg(etopo_path, resolution=resolution)
     print(f"Wrote: {out}")
 
+    assert isinstance(etopo_ds, xr.DataArray)
     surface_da = etopo_ds.squeeze()
     _, lon2d, lat2d = _resample_elevation_grid(surface_da, resolution=resolution)
     elevation_grid = compute_cell_elevation(lon2d, lat2d, data=surface_da)

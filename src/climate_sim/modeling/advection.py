@@ -119,12 +119,11 @@ def _compute_geostrophic_wind_components(
     temperature: np.ndarray,
     *,
     coriolis: np.ndarray,
-    config: "GeostrophicAdvectionConfig",
+    config: "AdvectionConfig",
     pressure: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return the geostrophic wind given horizontal temperature gradients."""
 
-    # coriolis = np.maximum(coriolis, config.coriolis_floor_s)
     coriolis_safe = np.sign(coriolis) * np.maximum(np.abs(coriolis), config.coriolis_floor_s)
     if pressure is not None:
         pressure_safe = np.maximum(pressure, 100.0)
@@ -145,27 +144,25 @@ def _compute_geostrophic_wind_components(
 
 
 @dataclass(frozen=True)
-class GeostrophicAdvectionConfig:
-    """Configuration for geostrophic advection tendencies."""
-
+class AdvectionConfig:
+    """Configuration for advection model."""
     enabled: bool = True
     earth_radius_m: float = 6.371e6
     earth_rotation_rate_rad_s: float = 7.2921e-5
     gravity_m_s2: float = 9.81
     troposphere_scale_height_m: float = 8000.0
-    coriolis_floor_s: float = 1e-4
+    coriolis_floor_s: float = 1e-5
     minimum_temperature_K: float = 150.0
-    use_pressure_gradients: bool = True
 
-class GeostrophicAdvectionOperator:
-    """Evaluate geostrophic advection tendencies on a fixed longitude/latitude grid."""
+class AdvectionModel:
+    """Evaluate advection on a fixed longitude/latitude grid."""
 
     def __init__(
         self,
         lon2d: np.ndarray,
         lat2d: np.ndarray,
         *,
-        config: GeostrophicAdvectionConfig,
+        config: AdvectionConfig,
     ) -> None:
         if lon2d.shape != lat2d.shape:
             raise ValueError("Longitude and latitude grids must share the same shape")
@@ -209,13 +206,12 @@ class GeostrophicAdvectionOperator:
             self._lon2d, self._lat2d, self._land_mask
         )
 
-        if config.use_pressure_gradients:
-            elevation_data = load_elevation_data()
-            assert elevation_data is not None, "Elevation data could not be loaded"
-            self.elevation_m = compute_cell_elevation(
-                self._lon2d, self._lat2d, data=elevation_data, sample_method="center"
-            )
-            self.elevation_m = np.maximum(self.elevation_m, 0.0)
+        elevation_data = load_elevation_data()
+        assert elevation_data is not None, "Elevation data could not be loaded"
+        self.elevation_m = compute_cell_elevation(
+            self._lon2d, self._lat2d, data=elevation_data, sample_method="center"
+        )
+        self.elevation_m = np.maximum(self.elevation_m, 0.0)
 
     @property
     def enabled(self) -> bool:
@@ -235,12 +231,8 @@ class GeostrophicAdvectionOperator:
             zeros = np.zeros_like(temperature)
             return (zeros, zeros, zeros), zeros, zeros
 
-        pressure = None
-        if self._config.use_pressure_gradients:
-            pressure = pressure_from_temperature_elevation(temperature)
-            grad_x, grad_y = self._horizontal_gradient(pressure)
-        else:
-            grad_x, grad_y = self._horizontal_gradient(temperature)
+        pressure = pressure_from_temperature_elevation(temperature)
+        grad_x, grad_y = self._horizontal_gradient(pressure)
         geostrophic = _compute_geostrophic_wind_components(
             grad_x,
             grad_y,
@@ -344,4 +336,3 @@ class GeostrophicAdvectionOperator:
             speed_final[zero_geo] = 0.0
 
         return u_final, v_final, speed_final
-

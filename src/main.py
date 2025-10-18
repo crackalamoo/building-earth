@@ -1,8 +1,9 @@
 import argparse
 
 import numpy as np
+import time
 
-from climate_sim.modeling.advection import GeostrophicAdvectionConfig
+from climate_sim.modeling.advection import AdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
@@ -99,10 +100,14 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
+    start = time.time()
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
-    advection_config = GeostrophicAdvectionConfig(enabled=args.advection)
+    advection_config = AdvectionConfig(enabled=args.advection)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
+    print(f"Configuration setup took {time.time() - start:.2f} seconds")
+
+    start = time.time()
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
@@ -112,6 +117,7 @@ def main() -> None:
         snow_config=snow_config,
         return_layer_map=True,
     )
+    print(f"Model run took {time.time() - start:.2f} seconds")
     assert type(layers) is dict
     surface_cycle = layers["surface"]
     albedo_field = layers.get("albedo")
@@ -154,12 +160,8 @@ def main() -> None:
     if atmosphere_cycle is not None:
         layer_cycles["Atmosphere"] = atmosphere_cycle
 
-        # The single-layer atmosphere represents the tropospheric slab whose depth is
-        # characterised by the geostrophic advection scale height. Treat the layer's
-        # temperature as representative of the slab midpoint and lapse-rate adjust to
-        # obtain a 2 m diagnostic (ignoring local topography).
-        troposphere_midpoint_m = 0.5 * advection_config.troposphere_scale_height_m
-        delta_to_two_m = 2.0 - troposphere_midpoint_m
+        atmosphere_height = 5000 # height of effective emission layer in meters
+        delta_to_two_m = 2.0 - atmosphere_height
         atmosphere_2m_cycle = adjust_temperature_by_elevation(
             atmosphere_cycle, delta_to_two_m
         )

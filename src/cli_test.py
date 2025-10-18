@@ -153,7 +153,7 @@ def _summarize_location(
 def main() -> None:
     args = _parse_args()
 
-    from climate_sim.modeling.advection import GeostrophicAdvectionConfig
+    from climate_sim.modeling.advection import AdvectionConfig
     from climate_sim.modeling.diffusion import DiffusionConfig
     from climate_sim.modeling.radiation import RadiationConfig
     from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
@@ -162,7 +162,7 @@ def main() -> None:
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
-    advection_config = GeostrophicAdvectionConfig(enabled=args.advection)
+    advection_config = AdvectionConfig(enabled=args.advection)
     snow_config = SnowAlbedoConfig(enabled=args.snow)
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,

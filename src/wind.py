@@ -10,8 +10,8 @@ from matplotlib.widgets import Slider
 from matplotlib.streamplot import StreamplotSet
 
 from climate_sim.modeling.advection import (
-    GeostrophicAdvectionConfig,
-    GeostrophicAdvectionOperator,
+    AdvectionConfig,
+    AdvectionModel,
 )
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
@@ -40,7 +40,7 @@ if args.resolution <= 0:
 
 radiation_config = RadiationConfig()
 diffusion_config = DiffusionConfig()
-advection_config = GeostrophicAdvectionConfig()
+advection_config = AdvectionConfig()
 snow_config = SnowAlbedoConfig()
 
 lon2d, lat2d, layers = compute_periodic_cycle_results(
@@ -63,7 +63,7 @@ temperature_cycle_k = temperature_cycle_c + 273.15
 
 pressure = pressure_from_temperature_elevation(temperature_cycle_k)
 
-operator = GeostrophicAdvectionOperator(
+operator = AdvectionModel(
     lon2d,
     lat2d,
     config=advection_config,
@@ -159,6 +159,7 @@ for month_idx in range(months):
     month_name = month_names[month_idx % len(month_names)]
     speed = avg_wind_speed[month_idx]
     print(f"  {month_name}: {speed:.2f} m/s")
+print("Mean wind speed overall: {:.2f} m/s".format(area_weighted_mean(wind_speed, cell_areas)))
 print("Max wind speed overall: {:.2f} m/s".format(float(np.max(wind_speed))))
 print("Min wind speed overall: {:.2f} m/s".format(float(np.min(wind_speed[np.nonzero(wind_speed)]))))
 
