@@ -245,7 +245,7 @@ def compute_cell_roughness_length(
 
     gamma = 0.3
     length_scale_m = 1000.0
-    z0_base_land = 0.02
+    z0_base_land = 5e-3
 
     z0_orographic = gamma * (slope ** 2) * length_scale_m
     z0_orographic = np.minimum(z0_orographic, 0.8)

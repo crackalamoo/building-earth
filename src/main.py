@@ -5,19 +5,24 @@ import numpy as np
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
-import matplotlib.patches
+import matplotlib.patches as mpatches
 from matplotlib.colors import Normalize
-from matplotlib.widgets import Slider
+from matplotlib.widgets import RadioButtons, Slider
 
 from climate_sim.modeling.advection import AdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
-from climate_sim.utils.atmosphere import adjust_temperature_by_elevation
+from climate_sim.utils.atmosphere import (
+    adjust_temperature_by_elevation,
+    log_law_map_wind_speed,
+)
 from climate_sim.utils.constants import R_EARTH_METERS
-from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
+from climate_sim.utils.elevation import compute_cell_roughness_length
 from climate_sim.utils.landmask import compute_land_mask
+from climate_sim.utils.elevation import compute_cell_roughness_length
+from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_results
 from climate_sim.utils.temperature import convert_temperature, temperature_unit
 
@@ -164,7 +169,8 @@ def main() -> None:
             f"area-weighted mean={convert_temperature(atmosphere_area_mean, args.fahrenheit):.1f}{unit}"
         )
 
-    land_mask = compute_land_mask(lon2d, lat2d).astype(float)
+    land_mask_bool = compute_land_mask(lon2d, lat2d)
+    land_mask = land_mask_bool.astype(float)
     ocean_mask = 1.0 - land_mask
     land_weights = cell_areas * land_mask
     ocean_weights = cell_areas * ocean_mask
@@ -199,7 +205,33 @@ def main() -> None:
     wind_v = layers.get("wind_v")
     wind_speed = layers.get("wind_speed")
 
+    wind_speed_10 = None
     if wind_u is not None and wind_v is not None and wind_speed is not None:
+        roughness_length = compute_cell_roughness_length(
+            lon2d,
+            lat2d,
+            land_mask=land_mask_bool,
+        )
+        height_ref_land_m = 1000.0
+        height_ref_ocean_m = 500.0
+        height_target_m = 10.0
+        height_ref_field = np.where(
+            land_mask_bool,
+            height_ref_land_m,
+            height_ref_ocean_m,
+        )
+        wind_speed_10 = log_law_map_wind_speed(
+            wind_speed,
+            height_ref_m=height_ref_field,
+            height_target_m=height_target_m,
+            roughness_length_m=roughness_length,
+        )
+        scale_factor = np.zeros_like(wind_speed)
+        mask_nonzero = wind_speed > 1.0e-6
+        scale_factor[mask_nonzero] = wind_speed_10[mask_nonzero] / wind_speed[mask_nonzero]
+        wind_u_10 = wind_u * scale_factor
+        wind_v_10 = wind_v * scale_factor
+
         projection = ccrs.PlateCarree()
         fig_wind, ax_wind = plt.subplots(
             figsize=(12, 6), subplot_kw=dict(projection=projection)
@@ -225,8 +257,11 @@ def main() -> None:
         wind_u_sorted = wind_u[:, :, lon_sort_idx]
         wind_v_sorted = wind_v[:, :, lon_sort_idx]
         wind_speed_sorted = wind_speed[:, :, lon_sort_idx]
+        wind_u_10_sorted = wind_u_10[:, :, lon_sort_idx]
+        wind_v_10_sorted = wind_v_10[:, :, lon_sort_idx]
+        wind_speed_10_sorted = wind_speed_10[:, :, lon_sort_idx]
 
-        max_speed = float(np.max(wind_speed_sorted))
+        max_speed = float(np.max(np.maximum(wind_speed_sorted, wind_speed_10_sorted)))
         if not np.isfinite(max_speed) or max_speed <= 0.0:
             max_speed = 1.0
 
@@ -248,60 +283,48 @@ def main() -> None:
         cmap = plt.cm.viridis
         norm = Normalize(vmin=0.0, vmax=max_speed)
 
-        month_names = [
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        ]
+        wind_levels = {
+            "100 m": {
+                "u": wind_u_sorted,
+                "v": wind_v_sorted,
+                "speed": wind_speed_sorted,
+            },
+            "10 m": {
+                "u": wind_u_10_sorted,
+                "v": wind_v_10_sorted,
+                "speed": wind_speed_10_sorted,
+            },
+        }
 
-        u0 = wind_u_sorted[0, ::stride, ::stride]
-        v0 = wind_v_sorted[0, ::stride, ::stride]
-        s0 = wind_speed_sorted[0, ::stride, ::stride]
-        u0_deg, v0_deg = _to_deg_per_sec(u0, v0)
-
-        stream = ax_wind.streamplot(
-            lon_coords,
-            lat_coords,
-            u0_deg,
-            v0_deg,
-            color=s0,
-            cmap=cmap,
-            norm=norm,
-            transform=projection,
-            density=1.8,
-            linewidth=1.2,
-            arrowsize=1.4,
-        )
-
-        ax_wind.set_title(f"Geostrophic Wind – {month_names[0]}")
+        level_names = list(wind_levels.keys())
+        current_state = {"level": level_names[0], "month": 0}
+        stream_container: dict[str, object | None] = {"obj": None}
+        scalar_mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
         cbar = fig_wind.colorbar(
-            stream.lines, ax=ax_wind, orientation="vertical", pad=0.04, fraction=0.046
+            scalar_mappable,
+            ax=ax_wind,
+            orientation="vertical",
+            pad=0.04,
+            fraction=0.046,
         )
         cbar.set_label("Wind speed (m/s)")
 
-        stream_container = {"obj": stream}
-
         def _clear_streamplot(stream_set) -> None:
+            if stream_set is None:
+                return
             stream_set.lines.set_segments([])
             stream_set.lines.set_array(np.array([]))
             stream_set.lines.set_visible(False)
-            for art in ax_wind.get_children():
-                if isinstance(art, matplotlib.patches.FancyArrowPatch):
+            for art in list(ax_wind.get_children()):
+                if isinstance(art, mpatches.FancyArrowPatch):
                     art.remove()
 
-        def _draw_streamplot(month_idx: int) -> None:
-            u_slice = wind_u_sorted[month_idx, ::stride, ::stride]
-            v_slice = wind_v_sorted[month_idx, ::stride, ::stride]
-            speed_slice = wind_speed_sorted[month_idx, ::stride, ::stride]
+        def _draw_streamplot() -> None:
+            level_data = wind_levels[current_state["level"]]
+            idx = current_state["month"]
+            u_slice = level_data["u"][idx, ::stride, ::stride]
+            v_slice = level_data["v"][idx, ::stride, ::stride]
+            speed_slice = level_data["speed"][idx, ::stride, ::stride]
             u_deg_slice, v_deg_slice = _to_deg_per_sec(u_slice, v_slice)
 
             current_stream = stream_container["obj"]
@@ -322,8 +345,9 @@ def main() -> None:
             )
 
             stream_container["obj"] = new_stream
-            cbar.update_normal(new_stream.lines)
-            ax_wind.set_title(f"Geostrophic Wind – {month_names[month_idx]}")
+            ax_wind.set_title(
+                f"Geostrophic Wind ({current_state['level']}) – {month_names[idx]}"
+            )
             fig_wind.canvas.draw_idle()
 
         slider_ax = fig_wind.add_axes([0.2, 0.08, 0.6, 0.03])
@@ -338,9 +362,21 @@ def main() -> None:
         )
 
         def _on_month_change(val: float) -> None:
-            _draw_streamplot(int(val))
+            current_state["month"] = int(val)
+            _draw_streamplot()
 
         month_slider.on_changed(_on_month_change)
+
+        radio_ax = fig_wind.add_axes([0.02, 0.55, 0.12, 0.18])
+        radio_ax.set_title("Wind Level", fontsize=9)
+        level_selector = RadioButtons(radio_ax, level_names, active=0)
+
+        def _on_level_change(label: str) -> None:
+            current_state["level"] = label
+            _draw_streamplot()
+
+        level_selector.on_clicked(_on_level_change)
+        _draw_streamplot()
 
     atmosphere_2m_cycle = layer_cycles.get("Atmosphere (2 m)")
 
@@ -383,6 +419,13 @@ def main() -> None:
         else:
             print("  Wind speed mean (land/ocean) [m/s]: N/A (advection disabled)")
 
+        if wind_speed_10 is not None:
+            wind10_land = area_weighted_mean(wind_speed_10[idx], land_weights)
+            wind10_ocean = area_weighted_mean(wind_speed_10[idx], ocean_weights)
+            print(f"  Wind speed 10 m mean (land/ocean) [m/s]: {wind10_land:.2f} / {wind10_ocean:.2f}")
+        else:
+            print("  Wind speed 10 m mean (land/ocean) [m/s]: N/A (advection disabled)")
+
     print("Annual statistics:")
     surface_land_annual = area_weighted_mean(surface_cycle.mean(axis=0), land_weights)
     surface_ocean_annual = area_weighted_mean(surface_cycle.mean(axis=0), ocean_weights)
@@ -408,6 +451,13 @@ def main() -> None:
         print(f"  Wind speed mean (land/ocean) [m/s]: {wind_land_annual:.2f} / {wind_ocean_annual:.2f}")
     else:
         print("  Wind speed mean (land/ocean) [m/s]: N/A (advection disabled)")
+
+    if wind_speed_10 is not None:
+        wind10_land_annual = area_weighted_mean(wind_speed_10.mean(axis=0), land_weights)
+        wind10_ocean_annual = area_weighted_mean(wind_speed_10.mean(axis=0), ocean_weights)
+        print(f"  Wind speed 10 m mean (land/ocean) [m/s]: {wind10_land_annual:.2f} / {wind10_ocean_annual:.2f}")
+    else:
+        print("  Wind speed 10 m mean (land/ocean) [m/s]: N/A (advection disabled)")
 
     plot_layered_monthly_temperature_cycle(
         lon2d,
