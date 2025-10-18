@@ -61,6 +61,16 @@ class LinearSolveCache:
 DEFAULT_LINEAR_SOLVE_CACHE = LinearSolveCache()
 
 
+@dataclass(frozen=True)
+class SurfaceHeatCapacityContext:
+    """Container for surface-layer heat-capacity metadata."""
+
+    albedo_model: AlbedoModel
+    land_mask: np.ndarray
+    base_C_land: float
+    base_C_ocean: float
+
+
 def _get_identity_matrix(size: int, *, cache: LinearSolveCache) -> sparse.csc_matrix:
     identity = cache.identity_matrices.get(size)
     if identity is None:
@@ -165,11 +175,22 @@ def monthly_step(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
+    surface_context: SurfaceHeatCapacityContext | None = None,
 ) -> ModelState:
     """Advance the column temperature one implicit backward-Euler step."""
     start_temp = state.temperature
     temp_next = np.maximum(start_temp, temperature_floor)
     cache = solver_cache or DEFAULT_LINEAR_SOLVE_CACHE
+
+    def _effective_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
+        if surface_context is None:
+            return np.ones_like(temp_surface, dtype=float)
+        return surface_context.albedo_model.effective_heat_capacity_surface(
+            temp_surface,
+            land_mask=surface_context.land_mask,
+            base_C_land=surface_context.base_C_land,
+            base_C_ocean=surface_context.base_C_ocean,
+        )
 
     if start_temp.ndim == 2:
         identity_single_layer = _get_identity_matrix(start_temp.size, cache=cache)
@@ -189,21 +210,19 @@ def monthly_step(
             wind_field=wind_field,
         )
         rhs_value = rhs_fn(state_capped, insolation_W_m2)
-        residual = temp_capped - start_temp - dt_seconds * rhs_value
         linearisation = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
 
         if temp_capped.ndim == 2:
+            ceff = _effective_surface_capacity(temp_capped)
             diag = linearisation.diag
             diffusion_matrix = linearisation.surface_diffusion_matrix
 
+            residual = ceff * (temp_capped - start_temp) - dt_seconds * (ceff * rhs_value)
             size = temp_capped.size
             residual_flat = residual.ravel()
 
-            if identity_single_layer is not None and identity_single_layer.shape[0] == size:
-                jacobian = identity_single_layer.copy()
-            else:
-                jacobian = _get_identity_matrix(size, cache=cache).copy()
-            jacobian -= dt_seconds * sparse.diags(diag.ravel(), format="csc")
+            jacobian = sparse.diags(ceff.ravel(), format="csc")
+            jacobian -= dt_seconds * sparse.diags((ceff * diag).ravel(), format="csc")
 
             if diffusion_matrix is not None:
                 jacobian = jacobian - dt_seconds * diffusion_matrix
@@ -227,14 +246,23 @@ def monthly_step(
             surface_matrix = linearisation.surface_diffusion_matrix
             atmosphere_matrix = linearisation.atmosphere_diffusion_matrix
 
+            ceff_surface = _effective_surface_capacity(temp_capped[0])
+            residual_surface = ceff_surface * (temp_capped[0] - start_temp[0]) - dt_seconds * (
+                ceff_surface * rhs_value[0]
+            )
+            residual_atmosphere = temp_capped[1] - start_temp[1] - dt_seconds * rhs_value[1]
+            residual = np.stack([residual_surface, residual_atmosphere])
+
             nlat, nlon = surface_diag.shape
             size = nlat * nlon
 
             identity = identity_single_layer
             if identity is None or identity.shape[0] != size or identity.shape[1] != size:
                 identity = _get_identity_matrix(size, cache=cache)
-            surface_block = identity.copy()
-            surface_block -= dt_seconds * sparse.diags(surface_diag.ravel(), format="csc")
+            surface_block = sparse.diags(ceff_surface.ravel(), format="csc")
+            surface_block -= dt_seconds * sparse.diags(
+                (ceff_surface * surface_diag).ravel(), format="csc"
+            )
             atmosphere_block = identity.copy()
             atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
 
@@ -244,7 +272,7 @@ def monthly_step(
                 atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
 
             coupling_surface_atm = -dt_seconds * sparse.diags(
-                cross[0, 1].ravel(), format="csc"
+                (ceff_surface * cross[0, 1]).ravel(), format="csc"
             )
             coupling_atm_surface = -dt_seconds * sparse.diags(
                 cross[1, 0].ravel(), format="csc"
@@ -256,7 +284,7 @@ def monthly_step(
             )
 
             residual_flat = np.concatenate(
-                [residual[0].ravel(), residual[1].ravel()],
+                [residual_surface.ravel(), residual_atmosphere.ravel()],
                 axis=0,
             )
 
@@ -284,7 +312,24 @@ def monthly_step(
                 wind_field=wind_field,
             )
             rhs_candidate = rhs_fn(state_candidate, insolation_W_m2)
-            residual_candidate = temp_candidate - start_temp - dt_seconds * rhs_candidate
+            if temp_candidate.ndim == 2:
+                ceff_candidate = _effective_surface_capacity(temp_candidate)
+                residual_candidate = ceff_candidate * (
+                    temp_candidate - start_temp
+                ) - dt_seconds * (ceff_candidate * rhs_candidate)
+            else:
+                if temp_candidate.ndim < 1 or temp_candidate.shape[0] != 2:
+                    raise ValueError("Layered derivative requires a two-layer temperature field")
+                ceff_candidate = _effective_surface_capacity(temp_candidate[0])
+                residual_surface_candidate = ceff_candidate * (
+                    temp_candidate[0] - start_temp[0]
+                ) - dt_seconds * (ceff_candidate * rhs_candidate[0])
+                residual_atmosphere_candidate = (
+                    temp_candidate[1] - start_temp[1] - dt_seconds * rhs_candidate[1]
+                )
+                residual_candidate = np.stack(
+                    [residual_surface_candidate, residual_atmosphere_candidate]
+                )
             candidate_norm = float(np.max(np.abs(residual_candidate)))
 
             if candidate_norm <= (1.0 - 1e-4 * damping) * max_residual:
@@ -320,6 +365,7 @@ def apply_annual_map(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
+    surface_context: SurfaceHeatCapacityContext | None = None,
 ) -> ModelState:
     """Propagate the state through 12 implicit steps and return the end-of-December temperature."""
     for month in range(12):
@@ -332,6 +378,7 @@ def apply_annual_map(
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
             solver_cache=solver_cache,
+            surface_context=surface_context,
         )
     return state
 
@@ -381,6 +428,7 @@ def find_periodic_temperature(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
+    surface_context: SurfaceHeatCapacityContext | None = None,
 ) -> ModelState:
     """Solve P(T) = T for the annual map using Anderson acceleration."""
 
@@ -401,6 +449,7 @@ def find_periodic_temperature(
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
             solver_cache=solver_cache,
+            surface_context=surface_context,
         )
 
         residual = advanced.temperature - state.temperature
@@ -461,6 +510,7 @@ def integrate_periodic_cycle(
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
+    surface_context: SurfaceHeatCapacityContext | None = None,
 ) -> list[ModelState]:
     """Return the 12-month sequence of month-midpoint temperatures for the periodic solution."""
     states = []
@@ -474,6 +524,7 @@ def integrate_periodic_cycle(
             rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
             temperature_floor=temperature_floor,
             solver_cache=solver_cache,
+            surface_context=surface_context,
         )
         state = next_state
         states.append(next_state)
@@ -498,6 +549,7 @@ def solve_periodic_cycle_for_albedo(
     land_mask: np.ndarray,
     roughness_length: np.ndarray,
     sensible_heat_cfg: SensibleHeatExchangeConfig,
+    albedo_model: AlbedoModel,
 ) -> tuple[ModelState, list[ModelState]]:
     """Compute the periodic solution and monthly mean temperatures for a given albedo field."""
 
@@ -529,6 +581,25 @@ def solve_periodic_cycle_for_albedo(
         sensible_heat_cfg,
     )
 
+    land_values = heat_capacity_field[land_mask]
+    if land_values.size == 0:
+        base_C_land = float(np.mean(heat_capacity_field))
+    else:
+        base_C_land = float(np.mean(land_values))
+    ocean_mask = ~land_mask
+    ocean_values = heat_capacity_field[ocean_mask]
+    if ocean_values.size == 0:
+        base_C_ocean = base_C_land
+    else:
+        base_C_ocean = float(np.mean(ocean_values))
+
+    surface_context = SurfaceHeatCapacityContext(
+        albedo_model=albedo_model,
+        land_mask=land_mask,
+        base_C_land=base_C_land,
+        base_C_ocean=base_C_ocean,
+    )
+
     periodic_state = find_periodic_temperature(
         state_init,
         monthly_insolation,
@@ -538,6 +609,7 @@ def solve_periodic_cycle_for_albedo(
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
         temperature_floor=temperature_floor,
         solver_cache=solver_cache,
+        surface_context=surface_context,
     )
 
     monthly_states = integrate_periodic_cycle(
@@ -549,6 +621,7 @@ def solve_periodic_cycle_for_albedo(
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
         temperature_floor=temperature_floor,
         solver_cache=solver_cache,
+        surface_context=surface_context,
     )
 
     return periodic_state, monthly_states
@@ -650,6 +723,7 @@ def compute_periodic_cycle_kelvin(
             land_mask=land_mask,
             roughness_length=roughness_length,
             sensible_heat_cfg=sensible_heat_cfg,
+            albedo_model=albedo_model,
         )
 
         monthly_temperatures = np.array([state.temperature for state in monthly])

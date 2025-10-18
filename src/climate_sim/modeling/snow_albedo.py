@@ -17,6 +17,9 @@ class SnowAlbedoConfig:
     freeze_temperature_c: float = -2.0
     melt_temperature_c: float = 1.0
     picard_iterations: int = 2
+    latent_melt_center_K: float = 273.15
+    latent_melt_halfwidth_K: float = 2.0
+    latent_energy_J_per_m2: float = 3.34e7
 
 
 class AlbedoModel:
@@ -80,3 +83,32 @@ class AlbedoModel:
 
         adjusted = base_albedo + (self.config.snow_albedo - base_albedo) * land_snow_fraction
         return adjusted
+
+    def effective_heat_capacity_surface(
+        self,
+        T_surface: np.ndarray,
+        *,
+        land_mask: np.ndarray,
+        base_C_land: float,
+        base_C_ocean: float,
+    ) -> np.ndarray:
+        """Return the latent-heat-adjusted surface heat capacity field."""
+
+        ceff = np.where(land_mask, base_C_land, base_C_ocean).astype(float)
+
+        melt_halfwidth = self.config.latent_melt_halfwidth_K
+        latent_energy = self.config.latent_energy_J_per_m2
+        if melt_halfwidth <= 0.0 or latent_energy <= 0.0:
+            return ceff
+
+        melt_center = self.config.latent_melt_center_K
+        band_lo = melt_center - melt_halfwidth
+        band_hi = melt_center + melt_halfwidth
+        in_band = (T_surface >= band_lo) & (T_surface <= band_hi) & land_mask
+        if not np.any(in_band):
+            return ceff
+
+        added_capacity = latent_energy / (2.0 * melt_halfwidth)
+        ceff = ceff.copy()
+        ceff[in_band] += added_capacity
+        return ceff
