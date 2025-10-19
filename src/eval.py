@@ -265,6 +265,10 @@ def build_reference_climatology(mask_path: Path | None) -> xr.Dataset:
         print("No external land mask provided; auto-derived from land dataset.")
 
     mask3 = mask_land.broadcast_like(clim_land)
+    # Some high-latitude and remote land cells remain NaN in the NOAA GHCN/CAMS
+    # dataset because there are no in-situ observations to constrain the
+    # climatology. We preserve those NaNs so downstream plots can highlight the
+    # lack of observational coverage explicitly.
     clim_surface = xr.where(mask3, clim_land, clim_sst)
 
     ds_out = xr.Dataset(
@@ -455,6 +459,7 @@ def plot_baseline_and_anomaly(
         obs_surface,
         title="NOAA 1981–2010 Monthly Climatology",
         use_fahrenheit=use_fahrenheit,
+        missing_label="No NOAA observations",
     )
 
     max_abs = float(np.nanmax(np.abs(anomaly))) if anomaly.size else 0.0
@@ -478,6 +483,7 @@ def plot_baseline_and_anomaly(
         colorbar_label=f"Temperature anomaly ({unit})",
         use_fahrenheit=use_fahrenheit,
         value_is_delta=True,
+        missing_label="No NOAA observations",
     )
 
 

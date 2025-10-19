@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.patches import Patch
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.widgets import RadioButtons, Slider
 from PIL import Image
@@ -59,10 +60,12 @@ def plot_field(
 
     divider = make_axes_locatable(ax)
 
+    display_field = np.ma.masked_invalid(field)
+
     mesh = ax.pcolormesh(
         lon2d,
         lat2d,
-        field,
+        display_field,
         transform=ccrs.PlateCarree(),
         shading="auto",
         cmap=cmap,
@@ -115,7 +118,7 @@ def plot_field(
             transform=stats_ax.transAxes,
         )
 
-    add_status_readout(fig, ax, lon2d, lat2d, field, unit_label=status_unit)
+    add_status_readout(fig, ax, lon2d, lat2d, display_field, unit_label=status_unit)
 
     plt.show()
 
@@ -201,9 +204,15 @@ def add_status_readout(
         sample_lat = lat2d[lat_idx, lon_idx]
         temperature = field[lat_idx, lon_idx]
 
+        if np.ma.is_masked(temperature) or not np.isfinite(temperature):
+            toolbar.set_message(
+                f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  missing"
+            )
+            return
+
         suffix = f" {unit_label}" if unit_label else ""
         toolbar.set_message(
-            f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {temperature:.1f}{suffix}"
+            f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {float(temperature):.1f}{suffix}"
         )
 
     fig.canvas.mpl_connect("motion_notify_event", on_move)
@@ -222,6 +231,8 @@ def plot_monthly_temperature_cycle(
     colorbar_ticks: Iterable[float] | None = None,
     use_fahrenheit: bool = False,
     value_is_delta: bool = False,
+    missing_color: str = "#4A1486",
+    missing_label: str | None = "Missing data",
 ) -> None:
     """Interactive monthly cycle viewer driven by a slider."""
     plot_layered_monthly_temperature_cycle(
@@ -235,6 +246,8 @@ def plot_monthly_temperature_cycle(
         colorbar_ticks=colorbar_ticks,
         use_fahrenheit=use_fahrenheit,
         value_is_delta=value_is_delta,
+        missing_color=missing_color,
+        missing_label=missing_label,
     )
 
 
@@ -250,6 +263,8 @@ def plot_layered_monthly_temperature_cycle(
     colorbar_ticks: Iterable[float] | None = None,
     use_fahrenheit: bool = False,
     value_is_delta: bool = False,
+    missing_color: str = "#4A1486",
+    missing_label: str | None = "Missing data",
 ) -> None:
     """Interactive monthly cycle viewer with month slider and layer selector."""
 
@@ -300,6 +315,8 @@ def plot_layered_monthly_temperature_cycle(
     if use_fahrenheit and colorbar_label.endswith("°C)"):
         colorbar_label = colorbar_label[:-3] + "°F)"
 
+    cmap = cmap.with_extremes(bad=missing_color)
+
     projection = ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
     ax.set_global()
@@ -314,7 +331,9 @@ def plot_layered_monthly_temperature_cycle(
     current_state = {"layer": 0, "month": 0}
 
     data_stack_display = [
-        convert_temperature(field, use_fahrenheit, is_delta=value_is_delta)
+        np.ma.masked_invalid(
+            convert_temperature(field, use_fahrenheit, is_delta=value_is_delta)
+        )
         for field in data_stack
     ]
 
@@ -327,6 +346,17 @@ def plot_layered_monthly_temperature_cycle(
         shading="auto",
         transform=projection,
     )
+
+    if missing_label is not None and any(
+        np.ma.getmaskarray(field).any() for field in data_stack_display
+    ):
+        legend = ax.legend(
+            handles=[Patch(facecolor=missing_color, label=missing_label)],
+            loc="lower left",
+            fontsize=8,
+            framealpha=0.85,
+        )
+        legend.set_zorder(mesh.get_zorder() + 0.5)
 
     def format_title() -> str:
         month_label = month_names[current_state["month"]]
@@ -395,8 +425,14 @@ def plot_layered_monthly_temperature_cycle(
             sample_lat = lat2d[lat_idx, lon_idx]
             temperature = current_field["data"][lat_idx, lon_idx]
 
+            if np.ma.is_masked(temperature) or not np.isfinite(temperature):
+                toolbar.set_message(
+                    f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  missing"
+                )
+                return
+
             toolbar.set_message(
-                f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {temperature:.1f} {unit}"
+                f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {float(temperature):.1f} {unit}"
             )
 
         fig.canvas.mpl_connect("motion_notify_event", on_move)
@@ -406,7 +442,7 @@ def plot_layered_monthly_temperature_cycle(
 
     def update_plot() -> None:
         data = data_stack_display[current_state["layer"]][current_state["month"]]
-        mesh.set_array(data.ravel())
+        mesh.set_array(np.ma.ravel(data))
         ax.set_title(format_title())
         current_field["data"] = data
         fig.canvas.draw_idle()
