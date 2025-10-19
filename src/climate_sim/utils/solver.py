@@ -69,6 +69,7 @@ class SurfaceHeatCapacityContext:
     land_mask: np.ndarray
     base_C_land: float
     base_C_ocean: float
+    baseline_capacity: np.ndarray
 
 
 def _get_identity_matrix(size: int, *, cache: LinearSolveCache) -> sparse.csc_matrix:
@@ -182,6 +183,10 @@ def monthly_step(
     temp_next = np.maximum(start_temp, temperature_floor)
     cache = solver_cache or DEFAULT_LINEAR_SOLVE_CACHE
 
+    baseline_capacity_field = (
+        surface_context.baseline_capacity if surface_context is not None else None
+    )
+
     def _effective_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
         if surface_context is None:
             return np.ones_like(temp_surface, dtype=float)
@@ -191,6 +196,11 @@ def monthly_step(
             base_C_land=surface_context.base_C_land,
             base_C_ocean=surface_context.base_C_ocean,
         )
+
+    def _baseline_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
+        if surface_context is None:
+            return np.ones_like(temp_surface, dtype=float)
+        return baseline_capacity_field
 
     if start_temp.ndim == 2:
         identity_single_layer = _get_identity_matrix(start_temp.size, cache=cache)
@@ -213,19 +223,29 @@ def monthly_step(
         linearisation = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
 
         if temp_capped.ndim == 2:
+            base_capacity = _baseline_surface_capacity(temp_capped)
             ceff = _effective_surface_capacity(temp_capped)
             diag = linearisation.diag
             diffusion_matrix = linearisation.surface_diffusion_matrix
 
-            residual = ceff * (temp_capped - start_temp) - dt_seconds * (ceff * rhs_value)
+            flux_term = base_capacity * rhs_value
+            residual = ceff * (temp_capped - start_temp) - dt_seconds * flux_term
             size = temp_capped.size
             residual_flat = residual.ravel()
 
             jacobian = sparse.diags(ceff.ravel(), format="csc")
-            jacobian -= dt_seconds * sparse.diags((ceff * diag).ravel(), format="csc")
+            jacobian -= dt_seconds * sparse.diags(
+                (base_capacity * diag).ravel(), format="csc"
+            )
 
             if diffusion_matrix is not None:
-                jacobian = jacobian - dt_seconds * diffusion_matrix
+                if surface_context is None:
+                    jacobian = jacobian - dt_seconds * diffusion_matrix
+                else:
+                    capacity_diag = sparse.diags(
+                        base_capacity.ravel(), format="csc"
+                    )
+                    jacobian = jacobian - dt_seconds * capacity_diag @ diffusion_matrix
 
             fingerprint = linearisation.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
             linearisation.solver_fingerprint = fingerprint
@@ -246,9 +266,11 @@ def monthly_step(
             surface_matrix = linearisation.surface_diffusion_matrix
             atmosphere_matrix = linearisation.atmosphere_diffusion_matrix
 
+            base_capacity_surface = _baseline_surface_capacity(temp_capped[0])
             ceff_surface = _effective_surface_capacity(temp_capped[0])
+            flux_surface = base_capacity_surface * rhs_value[0]
             residual_surface = ceff_surface * (temp_capped[0] - start_temp[0]) - dt_seconds * (
-                ceff_surface * rhs_value[0]
+                flux_surface
             )
             residual_atmosphere = temp_capped[1] - start_temp[1] - dt_seconds * rhs_value[1]
             residual = np.stack([residual_surface, residual_atmosphere])
@@ -261,18 +283,24 @@ def monthly_step(
                 identity = _get_identity_matrix(size, cache=cache)
             surface_block = sparse.diags(ceff_surface.ravel(), format="csc")
             surface_block -= dt_seconds * sparse.diags(
-                (ceff_surface * surface_diag).ravel(), format="csc"
+                (base_capacity_surface * surface_diag).ravel(), format="csc"
             )
             atmosphere_block = identity.copy()
             atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
 
             if surface_matrix is not None:
-                surface_block = surface_block - dt_seconds * surface_matrix
+                if surface_context is None:
+                    surface_block = surface_block - dt_seconds * surface_matrix
+                else:
+                    capacity_diag = sparse.diags(
+                        base_capacity_surface.ravel(), format="csc"
+                    )
+                    surface_block = surface_block - dt_seconds * capacity_diag @ surface_matrix
             if atmosphere_matrix is not None:
                 atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
 
             coupling_surface_atm = -dt_seconds * sparse.diags(
-                (ceff_surface * cross[0, 1]).ravel(), format="csc"
+                (base_capacity_surface * cross[0, 1]).ravel(), format="csc"
             )
             coupling_atm_surface = -dt_seconds * sparse.diags(
                 cross[1, 0].ravel(), format="csc"
@@ -313,17 +341,19 @@ def monthly_step(
             )
             rhs_candidate = rhs_fn(state_candidate, insolation_W_m2)
             if temp_candidate.ndim == 2:
+                base_capacity_candidate = _baseline_surface_capacity(temp_candidate)
                 ceff_candidate = _effective_surface_capacity(temp_candidate)
                 residual_candidate = ceff_candidate * (
                     temp_candidate - start_temp
-                ) - dt_seconds * (ceff_candidate * rhs_candidate)
+                ) - dt_seconds * (base_capacity_candidate * rhs_candidate)
             else:
                 if temp_candidate.ndim < 1 or temp_candidate.shape[0] != 2:
                     raise ValueError("Layered derivative requires a two-layer temperature field")
+                base_capacity_candidate = _baseline_surface_capacity(temp_candidate[0])
                 ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                 residual_surface_candidate = ceff_candidate * (
                     temp_candidate[0] - start_temp[0]
-                ) - dt_seconds * (ceff_candidate * rhs_candidate[0])
+                ) - dt_seconds * (base_capacity_candidate * rhs_candidate[0])
                 residual_atmosphere_candidate = (
                     temp_candidate[1] - start_temp[1] - dt_seconds * rhs_candidate[1]
                 )
@@ -593,11 +623,14 @@ def solve_periodic_cycle_for_albedo(
     else:
         base_C_ocean = float(np.mean(ocean_values))
 
+    baseline_capacity = np.where(land_mask, base_C_land, base_C_ocean).astype(float)
+
     surface_context = SurfaceHeatCapacityContext(
         albedo_model=albedo_model,
         land_mask=land_mask,
         base_C_land=base_C_land,
         base_C_ocean=base_C_ocean,
+        baseline_capacity=baseline_capacity,
     )
 
     periodic_state = find_periodic_temperature(
