@@ -245,7 +245,7 @@ def monthly_step(
                 (base_capacity * diag).ravel(), format="csc"
             )
 
-            if diffusion_matrix is not None:
+            if diffusion_matrix is not None and diffusion_matrix.nnz > 0:
                 if surface_context is None:
                     jacobian = jacobian - dt_seconds * diffusion_matrix
                 else:
@@ -295,7 +295,7 @@ def monthly_step(
             atmosphere_block = identity.copy()
             atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
 
-            if surface_matrix is not None:
+            if surface_matrix is not None and surface_matrix.nnz > 0:
                 if surface_context is None:
                     surface_block = surface_block - dt_seconds * surface_matrix
                 else:
@@ -303,7 +303,7 @@ def monthly_step(
                         base_capacity_surface.ravel(), format="csc"
                     )
                     surface_block = surface_block - dt_seconds * capacity_diag @ surface_matrix
-            if atmosphere_matrix is not None:
+            if atmosphere_matrix is not None and atmosphere_matrix.nnz > 0:
                 atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
 
             coupling_surface_atm = -dt_seconds * sparse.diags(
@@ -894,19 +894,31 @@ def compute_periodic_cycle_results(
         topographic_elevation: np.ndarray,
         sensible_heat_cfg_local: SensibleHeatExchangeConfig,
     ):
+        surface_diffusion_diag: np.ndarray | None = None
         surface_matrix = None
         if diffusion_operator.surface.enabled:
-            surface_matrix = diffusion_operator.surface.matrix
-            if not sparse.isspmatrix_csc(surface_matrix):
-                surface_matrix = surface_matrix.tocsc()
+            surface_diffusion_diag, surface_offdiag = (
+                diffusion_operator.surface.linearised_tendency()
+            )
+            if surface_offdiag is not None and surface_offdiag.nnz > 0:
+                surface_matrix = (
+                    surface_offdiag
+                    if sparse.isspmatrix_csc(surface_offdiag)
+                    else surface_offdiag.tocsc()
+                )
 
+        atmosphere_diffusion_diag: np.ndarray | None = None
         atmosphere_matrix = None
         if config.include_atmosphere and diffusion_operator.atmosphere.enabled:
-            atmosphere_matrix = diffusion_operator.atmosphere.matrix
-            if not sparse.isspmatrix_csc(atmosphere_matrix):
-                atmosphere_matrix = atmosphere_matrix.tocsc()
-        # The diffusion matrices are already expressed as d(rhs)/dT in 1/s because the
-        # discrete operator divides by the local heat capacity when it is assembled.
+            atmosphere_diffusion_diag, atmosphere_offdiag = (
+                diffusion_operator.atmosphere.linearised_tendency()
+            )
+            if atmosphere_offdiag is not None and atmosphere_offdiag.nnz > 0:
+                atmosphere_matrix = (
+                    atmosphere_offdiag
+                    if sparse.isspmatrix_csc(atmosphere_offdiag)
+                    else atmosphere_offdiag.tocsc()
+                )
 
         sensible_heat_model: SensibleHeatExchangeModel | None = None
         if config.include_atmosphere and sensible_heat_cfg_local.enabled:
@@ -963,17 +975,22 @@ def compute_periodic_cycle_results(
                 config=config,
             )
             if config.include_atmosphere:
-                diag, cross = radiative_derivative
+                radiative_diag, cross = radiative_derivative
+                diag = radiative_diag.copy()
+                if surface_diffusion_diag is not None:
+                    diag[0] = diag[0] + surface_diffusion_diag
+                if atmosphere_diffusion_diag is not None:
+                    diag[1] = diag[1] + atmosphere_diffusion_diag
                 return Linearisation(
                     diag=diag,
                     cross=cross,
                     surface_diffusion_matrix=surface_matrix,
                     atmosphere_diffusion_matrix=atmosphere_matrix,
                 )
-            return Linearisation(
-                diag=radiative_derivative,
-                surface_diffusion_matrix=surface_matrix,
-            )
+            diag = radiative_derivative.copy()
+            if surface_diffusion_diag is not None:
+                diag = diag + surface_diffusion_diag
+            return Linearisation(diag=diag, surface_diffusion_matrix=surface_matrix)
 
         return rhs, rhs_derivative
 
