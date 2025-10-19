@@ -319,6 +319,9 @@ def main() -> None:
     vmax = max_abs_display if max_abs_display > 0 else 1.0
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
+    for anomaly in anomalies:
+        anomalies[anomaly] = np.concatenate([anomalies[anomaly], np.mean(anomalies[anomaly], axis=0, keepdims=True)], axis=0)
+
     plot_layered_monthly_temperature_cycle(
         lon2d,
         lat2d,
