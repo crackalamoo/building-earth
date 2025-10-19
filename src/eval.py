@@ -400,6 +400,7 @@ def main() -> None:
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
+        clouds=args.clouds,
         radiation_config=radiation_config,
         diffusion_config=diffusion_config,
         snow_config=snow_config,

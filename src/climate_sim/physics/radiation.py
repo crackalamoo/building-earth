@@ -29,16 +29,23 @@ def radiative_balance_rhs(
     *,
     heat_capacity_field: np.ndarray,
     albedo_field: np.ndarray,
+    atmosphere_albedo_field: np.ndarray | None = None,
     config: RadiationConfig,
 ) -> np.ndarray:
     """Column energy-balance tendency for the configured radiative model."""
 
     floor = config.temperature_floor
 
+    if atmosphere_albedo_field is None:
+        albedo_atmosphere = 0.0
+    else:
+        albedo_atmosphere = atmosphere_albedo_field
+
     if not config.include_atmosphere:
         temperature = _with_floor(temperature_K, floor)
         emitted = config.emissivity_surface * config.stefan_boltzmann * np.power(temperature, 4)
-        absorbed = insolation_W_m2 * (1.0 - albedo_field)
+        transmitted_shortwave = insolation_W_m2 * (1.0 - albedo_atmosphere)
+        absorbed = transmitted_shortwave * (1.0 - albedo_field)
         return (absorbed - emitted) / heat_capacity_field
 
     surface = _with_floor(temperature_K[0], floor)
@@ -52,8 +59,9 @@ def radiative_balance_rhs(
     emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
 
     alpha_sw_atm = getattr(config, "shortwave_absorptance_atmosphere", 0.20)
-    absorbed_shortwave_atm = alpha_sw_atm * insolation_W_m2
-    absorbed_shortwave_sfc = (1.0 - alpha_sw_atm) * insolation_W_m2 * (1.0 - albedo_field)
+    transmitted_shortwave = insolation_W_m2 * (1.0 - albedo_atmosphere)
+    absorbed_shortwave_atm = alpha_sw_atm * transmitted_shortwave
+    absorbed_shortwave_sfc = (1.0 - alpha_sw_atm) * transmitted_shortwave * (1.0 - albedo_field)
     # absorbed_shortwave_sfc = absorbed_shortwave
     # absorbed_shortwave_atm = 0.0
 
@@ -75,10 +83,12 @@ def radiative_balance_rhs_temperature_derivative(
     temperature_K: np.ndarray,
     *,
     heat_capacity_field: np.ndarray,
+    atmosphere_albedo_field: np.ndarray | None = None,
     config: RadiationConfig,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Partial derivatives of the radiative tendency with respect to temperature."""
 
+    del atmosphere_albedo_field  # shortwave reflection is temperature-independent
     floor = config.temperature_floor
     sigma = config.stefan_boltzmann
 
@@ -124,12 +134,19 @@ def radiative_equilibrium_initial_guess(
     monthly_insolation: np.ndarray,
     *,
     albedo_field: np.ndarray,
+    atmosphere_albedo_field: np.ndarray | None = None,
     config: RadiationConfig,
 ) -> np.ndarray:
     """Initial temperature guess via local radiative equilibrium."""
 
     sigma = config.stefan_boltzmann
-    absorbed = monthly_insolation.mean(axis=0) * (1.0 - albedo_field)
+    if atmosphere_albedo_field is None:
+        albedo_atmosphere = 0.0
+    else:
+        albedo_atmosphere = atmosphere_albedo_field
+
+    transmitted = monthly_insolation.mean(axis=0) * (1.0 - albedo_atmosphere)
+    absorbed = transmitted * (1.0 - albedo_field)
     absorbed = np.maximum(absorbed, 1e-6)
 
     if not config.include_atmosphere:

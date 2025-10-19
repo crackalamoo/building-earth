@@ -59,12 +59,30 @@ def main() -> None:
     )
     add_boolean_flag(
         parser,
+        dest="base_clouds",
+        default=True,
+        enable_option="--base-clouds",
+        disable_option="--no-base-clouds",
+        help_enable="Include cloud shortwave reflection in the baseline case (default)",
+        help_disable="Disable cloud shortwave reflection in the baseline case",
+    )
+    add_boolean_flag(
+        parser,
         dest="experiment_elliptical_orbit",
         default=True,
         enable_option="--exp-elliptical-orbit",
         disable_option="--exp-circular-orbit",
         help_enable="Apply Earth's orbital eccentricity correction in the experiment case (default)",
         help_disable="Disable the orbital eccentricity correction in the experiment case",
+    )
+    add_boolean_flag(
+        parser,
+        dest="experiment_clouds",
+        default=True,
+        enable_option="--exp-clouds",
+        disable_option="--no-exp-clouds",
+        help_enable="Include cloud shortwave reflection in the experiment case (default)",
+        help_disable="Disable cloud shortwave reflection in the experiment case",
     )
     add_boolean_flag(
         parser,
@@ -212,6 +230,7 @@ def main() -> None:
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.base_elliptical_orbit,
+        clouds=args.base_clouds,
         radiation_config=base_rad,
         diffusion_config=base_diff,
         snow_config=base_snow,
@@ -222,6 +241,7 @@ def main() -> None:
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.experiment_elliptical_orbit,
+        clouds=args.experiment_clouds,
         radiation_config=exp_rad,
         diffusion_config=exp_diff,
         snow_config=exp_snow,
@@ -245,6 +265,7 @@ def main() -> None:
 
     base_summary = {
         "elliptical_orbit": args.base_elliptical_orbit,
+        "clouds": args.base_clouds,
         "diffusion": args.base_diffusion,
         "atmosphere": args.base_atmosphere,
         "snow": args.base_snow,
@@ -254,6 +275,7 @@ def main() -> None:
     }
     exp_summary = {
         "elliptical_orbit": args.experiment_elliptical_orbit,
+        "clouds": args.experiment_clouds,
         "diffusion": args.experiment_diffusion,
         "atmosphere": args.experiment_atmosphere,
         "snow": args.experiment_snow,

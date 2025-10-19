@@ -151,6 +151,15 @@ def add_common_model_arguments(
         help_enable="Apply Earth's orbital eccentricity correction to insolation (default)",
         help_disable="Disable the orbital eccentricity correction and assume a circular orbit",
     )
+    add_boolean_flag(
+        parser,
+        dest="clouds",
+        default=True,
+        enable_option="--clouds",
+        disable_option="--no-clouds",
+        help_enable="Include prescribed cloud shortwave reflection (default)",
+        help_disable="Disable the cloud shortwave reflection adjustment",
+    )
     if include_temperature_unit:
         add_temperature_unit_argument(
             parser,

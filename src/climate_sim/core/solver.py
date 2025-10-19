@@ -112,8 +112,10 @@ def _get_factorized_solver(
 @dataclass
 class ModelState:
     """State variables for the climate model."""
+
     temperature: np.ndarray
     albedo_field: np.ndarray
+    atmosphere_albedo_field: np.ndarray | None = None
     wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
 
@@ -168,7 +170,10 @@ RhsFactory = Callable[
     ],
     Tuple[RhsFunc, RhsDerivativeFunc],
 ]
-InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig], np.ndarray]
+InitialGuessFunc = Callable[
+    [np.ndarray, np.ndarray, RadiationConfig, np.ndarray | None],
+    np.ndarray,
+]
 MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
 HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
@@ -224,6 +229,7 @@ def monthly_step(
         state_capped = ModelState(
             temperature=temp_capped,
             albedo_field=state.albedo_field,
+            atmosphere_albedo_field=state.atmosphere_albedo_field,
             wind_field=wind_field,
         )
         rhs_value = rhs_fn(state_capped, insolation_W_m2)
@@ -344,6 +350,7 @@ def monthly_step(
             state_candidate = ModelState(
                 temperature=temp_candidate,
                 albedo_field=state.albedo_field,
+                atmosphere_albedo_field=state.atmosphere_albedo_field,
                 wind_field=wind_field,
             )
             rhs_candidate = rhs_fn(state_candidate, insolation_W_m2)
@@ -388,6 +395,7 @@ def monthly_step(
     return ModelState(
         temperature=temp_next,
         albedo_field=state.albedo_field,
+        atmosphere_albedo_field=state.atmosphere_albedo_field,
         wind_field=wind_field,
     )
 
@@ -572,6 +580,7 @@ def solve_periodic_cycle_for_albedo(
     *,
     initial_state: ModelState | None,
     current_albedo_field: np.ndarray,
+    atmosphere_albedo_field: np.ndarray | None,
     heat_capacity_field: np.ndarray,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
@@ -596,17 +605,20 @@ def solve_periodic_cycle_for_albedo(
             monthly_insolation,
             current_albedo_field,
             radiation_config,
+            atmosphere_albedo_field,
         )
 
         state_init = ModelState(
             temperature=guess,
             albedo_field=current_albedo_field,
+            atmosphere_albedo_field=atmosphere_albedo_field,
             wind_field=wind_fields[0] if wind_fields is not None else None,
         )
     else:
         state_init = ModelState(
             temperature=initial_state.temperature,
             albedo_field=current_albedo_field,
+            atmosphere_albedo_field=atmosphere_albedo_field,
             wind_field=wind_fields[0] if wind_fields is not None else initial_state.wind_field,
         )
 
@@ -681,6 +693,7 @@ def compute_periodic_cycle_kelvin(
     advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     sensible_heat_config: SensibleHeatExchangeConfig | None = None,
+    clouds: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[ModelState]]:
     """Solve for the periodic temperature cycle and return diagnostics.
 
@@ -698,7 +711,6 @@ def compute_periodic_cycle_kelvin(
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
     snow_cfg = snow_config or SnowAlbedoConfig()
     sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
-    albedo_kwargs: dict[str, float] = {}
     land_mask = compute_land_mask(lon2d, lat2d)
 
     albedo_model = AlbedoModel(
@@ -707,11 +719,21 @@ def compute_periodic_cycle_kelvin(
         config=snow_cfg,
         land_mask=land_mask,
     )
-    if snow_cfg.enabled:
+    if clouds:
+        albedo_kwargs: dict[str, float] = {"land_albedo": 0.18, "ocean_albedo": 0.06}
+    elif snow_cfg.enabled:
         albedo_kwargs = {"land_albedo": 0.25, "ocean_albedo": 0.25}
+    else:
+        albedo_kwargs = {}
 
     base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
     current_albedo_field = base_albedo_field
+
+    atmosphere_albedo_field: np.ndarray | None
+    if clouds:
+        atmosphere_albedo_field = np.where(land_mask, 0.18, 0.22)
+    else:
+        atmosphere_albedo_field = None
 
     roughness_length = compute_cell_roughness_length(
         lon2d,
@@ -764,6 +786,7 @@ def compute_periodic_cycle_kelvin(
         periodic_state, monthly = solve_periodic_cycle_for_albedo(
             initial_state=previous_periodic,
             current_albedo_field=current_albedo_field,
+            atmosphere_albedo_field=atmosphere_albedo_field,
             heat_capacity_field=heat_capacity_field,
             monthly_insolation=monthly_insolation,
             month_durations=month_durations,
@@ -807,6 +830,7 @@ def compute_periodic_cycle_kelvin(
                 monthly[idx] = ModelState(
                     temperature=month_state.temperature,
                     albedo_field=current_albedo_field,
+                    atmosphere_albedo_field=month_state.atmosphere_albedo_field,
                     wind_field=wind_components,
                 )
             wind_converged = _winds_equal(new_wind_fields, current_wind_fields)
@@ -814,6 +838,7 @@ def compute_periodic_cycle_kelvin(
             periodic_state = ModelState(
                 temperature=periodic_state.temperature,
                 albedo_field=current_albedo_field,
+                atmosphere_albedo_field=periodic_state.atmosphere_albedo_field,
                 wind_field=new_wind_fields[-1],
             )
         else:
@@ -823,11 +848,13 @@ def compute_periodic_cycle_kelvin(
                 monthly[idx] = ModelState(
                     temperature=month_state.temperature,
                     albedo_field=current_albedo_field,
+                    atmosphere_albedo_field=month_state.atmosphere_albedo_field,
                     wind_field=None,
                 )
             periodic_state = ModelState(
                 temperature=periodic_state.temperature,
                 albedo_field=current_albedo_field,
+                atmosphere_albedo_field=periodic_state.atmosphere_albedo_field,
                 wind_field=None,
             )
 
@@ -846,6 +873,7 @@ def compute_periodic_cycle_results(
     *,
     solar_constant: float | None = None,
     use_elliptical_orbit: bool = True,
+    clouds: bool = True,
     ocean_heat_capacity: float | None = None,
     land_heat_capacity: float | None = None,
     radiation_config: RadiationConfig | None = None,
@@ -925,6 +953,7 @@ def compute_periodic_cycle_results(
                 insolation,
                 heat_capacity_field=heat_capacity_field,
                 albedo_field=state.albedo_field,
+                atmosphere_albedo_field=state.atmosphere_albedo_field,
                 config=config,
             )
             if config.include_atmosphere:
@@ -960,6 +989,7 @@ def compute_periodic_cycle_results(
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 state.temperature,
                 heat_capacity_field=heat_capacity_field,
+                atmosphere_albedo_field=state.atmosphere_albedo_field,
                 config=config,
             )
             if config.include_atmosphere:
@@ -981,10 +1011,12 @@ def compute_periodic_cycle_results(
         monthly_insolation: np.ndarray,
         albedo_field: np.ndarray,
         config: RadiationConfig,
+        atmosphere_albedo_field: np.ndarray | None,
     ) -> np.ndarray:
         return radiation.radiative_equilibrium_initial_guess(
             monthly_insolation,
             albedo_field=albedo_field,
+            atmosphere_albedo_field=atmosphere_albedo_field,
             config=config,
         )
 
@@ -999,6 +1031,7 @@ def compute_periodic_cycle_results(
         advection_config=resolved_advection,
         snow_config=resolved_snow,
         sensible_heat_config=sensible_heat_cfg,
+        clouds=clouds,
     )
 
     monthly_T = np.array([state.temperature for state in monthly_states])
@@ -1028,6 +1061,10 @@ def compute_periodic_cycle_results(
     layers_map["temperature_2m"] = temperature_2m_c
 
     layers_map["albedo"] = np.array([state.albedo_field for state in monthly_states])
+
+    atmosphere_albedo_fields = [state.atmosphere_albedo_field for state in monthly_states]
+    if all(field is not None for field in atmosphere_albedo_fields):
+        layers_map["atmosphere_albedo"] = np.stack(atmosphere_albedo_fields, axis=0)
 
     wind_fields = [state.wind_field for state in monthly_states]
     if all(wind is not None for wind in wind_fields):
