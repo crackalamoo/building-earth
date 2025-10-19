@@ -15,6 +15,12 @@ from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConf
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.utils.atmosphere import adjust_temperature_by_elevation
+from climate_sim.utils.cli import (
+    add_boolean_flag,
+    add_resolution_argument,
+    add_solar_constant_argument,
+    add_temperature_unit_argument,
+)
 from climate_sim.utils.solver import compute_periodic_cycle_results
 from climate_sim.utils.temperature import convert_temperature, temperature_unit
 
@@ -40,182 +46,120 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Plot anomalies between two climate model configurations.",
     )
-    parser.add_argument(
-        "--resolution", "-r",
-        type=float,
-        default=1.0,
-        help="Grid resolution in degrees",
-    )
-    parser.add_argument(
-        "--solar-constant",
-        type=float,
-        default=None,
-        help="Override the solar constant (W m^-2)",
-    )
-    parser.add_argument(
-        "--base-elliptical-orbit",
+    default_atmosphere = RadiationConfig().include_atmosphere
+    add_resolution_argument(parser)
+    add_solar_constant_argument(parser)
+    add_boolean_flag(
+        parser,
         dest="base_elliptical_orbit",
-        action="store_true",
         default=True,
-        help="Apply Earth's orbital eccentricity correction in the baseline case (default)",
+        enable_option="--base-elliptical-orbit",
+        disable_option="--base-circular-orbit",
+        help_enable="Apply Earth's orbital eccentricity correction in the baseline case (default)",
+        help_disable="Disable the orbital eccentricity correction in the baseline case",
     )
-    parser.add_argument(
-        "--base-circular-orbit",
-        dest="base_elliptical_orbit",
-        action="store_false",
-        help="Disable the orbital eccentricity correction in the baseline case",
-    )
-    parser.add_argument(
-        "--exp-elliptical-orbit",
+    add_boolean_flag(
+        parser,
         dest="experiment_elliptical_orbit",
-        action="store_true",
         default=True,
-        help="Apply Earth's orbital eccentricity correction in the experiment case (default)",
+        enable_option="--exp-elliptical-orbit",
+        disable_option="--exp-circular-orbit",
+        help_enable="Apply Earth's orbital eccentricity correction in the experiment case (default)",
+        help_disable="Disable the orbital eccentricity correction in the experiment case",
     )
-    parser.add_argument(
-        "--exp-circular-orbit",
-        dest="experiment_elliptical_orbit",
-        action="store_false",
-        help="Disable the orbital eccentricity correction in the experiment case",
-    )
-
-    parser.add_argument(
-        "--base-snow",
+    add_boolean_flag(
+        parser,
         dest="base_snow",
-        action="store_true",
         default=True,
-        help="Enable snow-albedo adjustments in the baseline case (default)",
+        enable_option="--base-snow",
+        disable_option="--no-base-snow",
+        help_enable="Enable snow-albedo adjustments in the baseline case (default)",
+        help_disable="Disable snow-albedo adjustments in the baseline case",
     )
-    parser.add_argument(
-        "--no-base-snow",
-        dest="base_snow",
-        action="store_false",
-        help="Disable snow-albedo adjustments in the baseline case",
-    )
-    parser.add_argument(
-        "--base-latent-heat",
+    add_boolean_flag(
+        parser,
         dest="base_latent_heat",
-        action="store_true",
         default=True,
-        help="Include latent heat of fusion in the baseline surface heat capacity (default)",
+        enable_option="--base-latent-heat",
+        disable_option="--no-base-latent-heat",
+        help_enable="Include latent heat of fusion in the baseline surface heat capacity (default)",
+        help_disable="Disable the baseline latent heat of fusion adjustment",
     )
-    parser.add_argument(
-        "--no-base-latent-heat",
-        dest="base_latent_heat",
-        action="store_false",
-        help="Disable the baseline latent heat of fusion adjustment",
-    )
-
-    parser.add_argument(
-        "--base-diffusion",
+    add_boolean_flag(
+        parser,
         dest="base_diffusion",
-        action="store_true",
         default=True,
-        help="Enable lateral diffusion in the baseline case (default)",
+        enable_option="--base-diffusion",
+        disable_option="--no-base-diffusion",
+        help_enable="Enable lateral diffusion in the baseline case (default)",
+        help_disable="Disable lateral diffusion in the baseline case",
     )
-    parser.add_argument(
-        "--no-base-diffusion",
-        dest="base_diffusion",
-        action="store_false",
-        help="Disable lateral diffusion in the baseline case",
-    )
-    parser.add_argument(
-        "--base-atmosphere",
+    add_boolean_flag(
+        parser,
         dest="base_atmosphere",
-        action="store_true",
-        default=True,
-        help="Include an explicit atmospheric layer in the baseline case (default)",
+        default=default_atmosphere,
+        enable_option="--base-atmosphere",
+        disable_option="--no-base-atmosphere",
+        help_enable="Include an explicit atmospheric layer in the baseline case (default)",
+        help_disable="Exclude the atmospheric layer in the baseline case",
     )
-    parser.add_argument(
-        "--no-base-atmosphere",
-        dest="base_atmosphere",
-        action="store_false",
-        help="Exclude the atmospheric layer in the baseline case",
-    )
-
-    parser.add_argument(
-        "--exp-diffusion",
+    add_boolean_flag(
+        parser,
         dest="experiment_diffusion",
-        action="store_true",
         default=True,
-        help="Enable lateral diffusion in the experiment case (default)",
+        enable_option="--exp-diffusion",
+        disable_option="--no-exp-diffusion",
+        help_enable="Enable lateral diffusion in the experiment case (default)",
+        help_disable="Disable lateral diffusion in the experiment case",
     )
-    parser.add_argument(
-        "--no-exp-diffusion",
-        dest="experiment_diffusion",
-        action="store_false",
-        help="Disable lateral diffusion in the experiment case",
-    )
-    parser.add_argument(
-        "--exp-atmosphere",
+    add_boolean_flag(
+        parser,
         dest="experiment_atmosphere",
-        action="store_true",
-        default=True,
-        help="Include an explicit atmospheric layer in the experiment case (default)",
+        default=default_atmosphere,
+        enable_option="--exp-atmosphere",
+        disable_option="--no-exp-atmosphere",
+        help_enable="Include an explicit atmospheric layer in the experiment case (default)",
+        help_disable="Exclude the atmospheric layer in the experiment case",
     )
-    parser.add_argument(
-        "--no-exp-atmosphere",
-        dest="experiment_atmosphere",
-        action="store_false",
-        help="Exclude the atmospheric layer in the experiment case",
-    )
-    parser.add_argument(
-        "--exp-snow",
+    add_boolean_flag(
+        parser,
         dest="experiment_snow",
-        action="store_true",
         default=True,
-        help="Enable snow-albedo adjustments in the experiment case (default)",
+        enable_option="--exp-snow",
+        disable_option="--no-exp-snow",
+        help_enable="Enable snow-albedo adjustments in the experiment case (default)",
+        help_disable="Disable snow-albedo adjustments in the experiment case",
     )
-    parser.add_argument(
-        "--no-exp-snow",
-        dest="experiment_snow",
-        action="store_false",
-        help="Disable snow-albedo adjustments in the experiment case",
-    )
-    parser.add_argument(
-        "--exp-latent-heat",
+    add_boolean_flag(
+        parser,
         dest="experiment_latent_heat",
-        action="store_true",
         default=True,
-        help="Include latent heat of fusion in the experiment surface heat capacity (default)",
+        enable_option="--exp-latent-heat",
+        disable_option="--no-exp-latent-heat",
+        help_enable="Include latent heat of fusion in the experiment surface heat capacity (default)",
+        help_disable="Disable the experiment latent heat of fusion adjustment",
     )
-    parser.add_argument(
-        "--no-exp-latent-heat",
-        dest="experiment_latent_heat",
-        action="store_false",
-        help="Disable the experiment latent heat of fusion adjustment",
-    )
-    parser.add_argument(
-        "--base-bulk-exchange",
+    add_boolean_flag(
+        parser,
         dest="base_bulk_exchange",
-        action="store_true",
         default=True,
-        help="Enable bulk sensible heat exchange in the baseline case (default)",
+        enable_option="--base-bulk-exchange",
+        disable_option="--no-base-bulk-exchange",
+        help_enable="Enable bulk sensible heat exchange in the baseline case (default)",
+        help_disable="Disable bulk sensible heat exchange in the baseline case",
     )
-    parser.add_argument(
-        "--no-base-bulk-exchange",
-        dest="base_bulk_exchange",
-        action="store_false",
-        help="Disable bulk sensible heat exchange in the baseline case",
-    )
-    parser.add_argument(
-        "--exp-bulk-exchange",
+    add_boolean_flag(
+        parser,
         dest="experiment_bulk_exchange",
-        action="store_true",
         default=True,
-        help="Enable bulk sensible heat exchange in the experiment case (default)",
+        enable_option="--exp-bulk-exchange",
+        disable_option="--no-exp-bulk-exchange",
+        help_enable="Enable bulk sensible heat exchange in the experiment case (default)",
+        help_disable="Disable bulk sensible heat exchange in the experiment case",
     )
-    parser.add_argument(
-        "--no-exp-bulk-exchange",
-        dest="experiment_bulk_exchange",
-        action="store_false",
-        help="Disable bulk sensible heat exchange in the experiment case",
-    )
-    parser.add_argument(
-        "--fahrenheit", "-f",
-        dest="fahrenheit",
-        action="store_true",
-        help="Display anomalies in degrees Fahrenheit instead of Celsius",
+    add_temperature_unit_argument(
+        parser,
+        help_text="Display anomalies in degrees Fahrenheit instead of Celsius",
     )
 
     args = parser.parse_args()

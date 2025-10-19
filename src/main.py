@@ -19,6 +19,8 @@ from climate_sim.plotting import (
     plot_layered_monthly_temperature_cycle,
     save_monthly_temperature_gif,
 )
+from climate_sim.utils.calendar import MONTH_NAMES
+from climate_sim.utils.cli import add_common_model_arguments
 from climate_sim.utils.atmosphere import (
     adjust_temperature_by_elevation,
     log_law_map_wind_speed,
@@ -39,106 +41,12 @@ load_dotenv()
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the climate model and plot the cycle.")
-    parser.add_argument(
-        "--resolution", "-r",
-        type=float,
-        default=1.0,
-        help="Grid resolution in degrees",
-    )
-    parser.add_argument(
-        "--solar-constant",
-        type=float,
-        default=None,
-        help="Override the solar constant (W m^-2)",
-    )
-    parser.add_argument(
-        "--diffusion",
-        dest="diffusion",
-        action="store_true",
-        default=True,
-        help="Enable lateral diffusion (default)",
-    )
-    parser.add_argument(
-        "--no-diffusion",
-        dest="diffusion",
-        action="store_false",
-        help="Disable lateral diffusion",
-    )
-
     default_atmosphere = RadiationConfig().include_atmosphere
-    parser.add_argument(
-        "--atmosphere",
-        dest="atmosphere",
-        action="store_true",
-        default=default_atmosphere,
-        help="Include an explicit atmospheric layer",
+    add_common_model_arguments(
+        parser,
+        default_atmosphere=default_atmosphere,
+        fahrenheit_help="Display temperatures in degrees Fahrenheit instead of Celsius",
     )
-    parser.add_argument(
-        "--no-atmosphere",
-        dest="atmosphere",
-        action="store_false",
-        help="Exclude the atmospheric layer",
-    )
-
-    parser.add_argument(
-        "--snow",
-        dest="snow",
-        action="store_true",
-        default=True,
-        help="Enable diagnostic snow-albedo adjustments (default)",
-    )
-    parser.add_argument(
-        "--no-snow",
-        dest="snow",
-        action="store_false",
-        help="Disable snow-albedo adjustments",
-    )
-    parser.add_argument(
-        "--latent-heat",
-        dest="latent_heat",
-        action="store_true",
-        default=True,
-        help="Include latent heat of fusion in the surface heat capacity (default)",
-    )
-    parser.add_argument(
-        "--no-latent-heat",
-        dest="latent_heat",
-        action="store_false",
-        help="Disable the latent heat of fusion adjustment",
-    )
-    parser.add_argument(
-        "--bulk-exchange",
-        dest="bulk_exchange",
-        action="store_true",
-        default=True,
-        help="Enable the neutral bulk sensible heat exchange model (default)",
-    )
-    parser.add_argument(
-        "--no-bulk-exchange",
-        dest="bulk_exchange",
-        action="store_false",
-        help="Disable the neutral bulk sensible heat exchange model",
-    )
-    parser.add_argument(
-        "--elliptical-orbit",
-        dest="elliptical_orbit",
-        action="store_true",
-        default=True,
-        help="Apply Earth's orbital eccentricity correction to insolation (default)",
-    )
-    parser.add_argument(
-        "--circular-orbit",
-        dest="elliptical_orbit",
-        action="store_false",
-        help="Disable the orbital eccentricity correction and assume a circular orbit",
-    )
-    parser.add_argument(
-        "--fahrenheit", "-f",
-        dest="fahrenheit",
-        action="store_true",
-        help="Display temperatures in degrees Fahrenheit instead of Celsius",
-    )
-
     return parser.parse_args()
 
 
@@ -211,20 +119,7 @@ def main() -> None:
     land_weights = cell_areas * land_mask
     ocean_weights = cell_areas * ocean_mask
 
-    month_names = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ]
+    month_names = list(MONTH_NAMES)
 
     layer_cycles: dict[str, np.ndarray] = {"Surface": surface_cycle}
     if atmosphere_cycle is not None:

@@ -12,6 +12,7 @@ from matplotlib.widgets import RadioButtons, Slider
 from PIL import Image
 from typing import Iterable, Mapping, Sequence
 
+from climate_sim.utils.calendar import MONTH_NAMES
 from climate_sim.utils.temperature import convert_temperature, temperature_unit
 
 
@@ -272,21 +273,7 @@ def plot_layered_monthly_temperature_cycle(
         if field.shape != reference_shape:
             raise ValueError("All layer fields must share the same shape")
 
-    month_names = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-        "Average",
-    ]
+    month_names = list(MONTH_NAMES) + ["Average"]
 
     unit = temperature_unit(use_fahrenheit)
     default_cmap, bounds = build_temperature_cmap(unit=unit[-1])
@@ -465,20 +452,7 @@ def save_monthly_temperature_gif(
         is_delta=value_is_delta,
     )
 
-    month_names = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ]
+    month_names = list(MONTH_NAMES)
 
     projection = ccrs.PlateCarree()
     frames: list[Image.Image] = []

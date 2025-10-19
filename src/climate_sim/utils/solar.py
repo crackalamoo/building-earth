@@ -5,13 +5,13 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional
 
+from climate_sim.utils.calendar import DAYS_PER_MONTH
+
 ECCENTRICITY_AMPLITUDE = 0.033  # Approximate fractional variation (≈2e) in solar flux
 
 SOLAR_CONSTANT = 1361.0  # W m-2
 OBLIQUITY_DEGREES = 23.44
-SECONDS_PER_DAY = 86400.0
-DAYS_PER_MONTH = np.array([31, 28.2425, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=float)
-ANNUAL_DAYS = DAYS_PER_MONTH.sum()
+ANNUAL_DAYS = float(DAYS_PER_MONTH.sum())
 
 
 def monthly_midpoint_days() -> np.ndarray:
