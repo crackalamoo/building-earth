@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional
 
+ECCENTRICITY_AMPLITUDE = 0.033  # Approximate fractional variation (≈2e) in solar flux
+
 SOLAR_CONSTANT = 1361.0  # W m-2
 OBLIQUITY_DEGREES = 23.44
 SECONDS_PER_DAY = 86400.0
@@ -25,7 +27,13 @@ def solar_declination(day_of_year: np.ndarray) -> np.ndarray:
     return np.arcsin(np.sin(obliquity_rad) * np.sin(mean_longitude))
 
 
-def daily_mean_insolation(lat_rad: np.ndarray, declination_rad: np.ndarray, *, solar_constant: float) -> np.ndarray:
+def daily_mean_insolation(
+    lat_rad: np.ndarray,
+    declination_rad: np.ndarray,
+    *,
+    solar_constant: float,
+    orbital_distance_factor: np.ndarray | None = None,
+) -> np.ndarray:
     """Compute daily-mean top-of-atmosphere insolation for a given declination."""
     tan_lat = np.tan(lat_rad)
     tan_dec = np.tan(declination_rad)
@@ -49,21 +57,39 @@ def daily_mean_insolation(lat_rad: np.ndarray, declination_rad: np.ndarray, *, s
         / np.pi
         * (hour_angle * sin_lat * sin_dec + cos_lat * cos_dec * np.sin(hour_angle))
     )
+    if orbital_distance_factor is not None:
+        flux = flux * orbital_distance_factor[None, :]
     return np.maximum(flux, 0.0)
 
 
 def compute_monthly_insolation_field(
     lat2d: np.ndarray,
     *,
-    solar_constant: Optional[float]=SOLAR_CONSTANT,
+    solar_constant: Optional[float] = SOLAR_CONSTANT,
+    use_elliptical_orbit: bool = True,
 ) -> np.ndarray:
     """Return monthly-averaged insolation (W m-2) at the top of the atmosphere."""
     solar_constant = solar_constant if solar_constant is not None else SOLAR_CONSTANT
     lat_rad = np.deg2rad(lat2d[:, 0])
     midpoints = monthly_midpoint_days()
     declinations = solar_declination(midpoints)
-    insolation_by_lat_month = daily_mean_insolation(lat_rad, declinations, solar_constant=solar_constant)
+    distance_factor = None
+    if use_elliptical_orbit:
+        distance_factor = orbital_distance_correction(midpoints)
+    insolation_by_lat_month = daily_mean_insolation(
+        lat_rad,
+        declinations,
+        solar_constant=solar_constant,
+        orbital_distance_factor=distance_factor,
+    )
     return insolation_by_lat_month.T  # month, lat
+
+
+def orbital_distance_correction(day_of_year: np.ndarray) -> np.ndarray:
+    """Return multiplicative correction for solar flux due to orbital eccentricity."""
+
+    anomaly = 2.0 * np.pi * (day_of_year - 3.0) / ANNUAL_DAYS
+    return 1.0 + ECCENTRICITY_AMPLITUDE * np.cos(anomaly)
 
 
 if __name__ == '__main__':

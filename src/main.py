@@ -11,7 +11,6 @@ from matplotlib.colors import Normalize
 from matplotlib.widgets import RadioButtons, Slider
 from pathlib import Path
 
-from climate_sim.modeling.advection import AdvectionConfig
 from climate_sim.modeling.diffusion import DiffusionConfig
 from climate_sim.modeling.radiation import RadiationConfig
 from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
@@ -27,7 +26,6 @@ from climate_sim.utils.atmosphere import (
 from climate_sim.utils.constants import R_EARTH_METERS
 from climate_sim.utils.elevation import compute_cell_roughness_length
 from climate_sim.utils.landmask import compute_land_mask
-from climate_sim.utils.elevation import compute_cell_roughness_length
 from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_results
 from climate_sim.utils.temperature import convert_temperature, temperature_unit
@@ -64,20 +62,6 @@ def _parse_args() -> argparse.Namespace:
         help="Disable lateral diffusion",
     )
 
-    parser.add_argument(
-        "--advection",
-        dest="advection",
-        action="store_true",
-        default=True,
-        help="Enable geostrophic atmospheric advection (default)",
-    )
-    parser.add_argument(
-        "--no-advection",
-        dest="advection",
-        action="store_false",
-        help="Disable geostrophic atmospheric advection",
-    )
-
     default_atmosphere = RadiationConfig().include_atmosphere
     parser.add_argument(
         "--atmosphere",
@@ -107,17 +91,43 @@ def _parse_args() -> argparse.Namespace:
         help="Disable snow-albedo adjustments",
     )
     parser.add_argument(
-        "--sensible-heat",
-        dest="sensible_heat",
+        "--latent-heat",
+        dest="latent_heat",
         action="store_true",
         default=True,
-        help="Enable the neutral sensible heat exchange model (default)",
+        help="Include latent heat of fusion in the surface heat capacity (default)",
     )
     parser.add_argument(
-        "--no-sensible-heat",
-        dest="sensible_heat",
+        "--no-latent-heat",
+        dest="latent_heat",
         action="store_false",
-        help="Disable the neutral sensible heat exchange model",
+        help="Disable the latent heat of fusion adjustment",
+    )
+    parser.add_argument(
+        "--bulk-exchange",
+        dest="bulk_exchange",
+        action="store_true",
+        default=True,
+        help="Enable the neutral bulk sensible heat exchange model (default)",
+    )
+    parser.add_argument(
+        "--no-bulk-exchange",
+        dest="bulk_exchange",
+        action="store_false",
+        help="Disable the neutral bulk sensible heat exchange model",
+    )
+    parser.add_argument(
+        "--elliptical-orbit",
+        dest="elliptical_orbit",
+        action="store_true",
+        default=True,
+        help="Apply Earth's orbital eccentricity correction to insolation (default)",
+    )
+    parser.add_argument(
+        "--circular-orbit",
+        dest="elliptical_orbit",
+        action="store_false",
+        help="Disable the orbital eccentricity correction and assume a circular orbit",
     )
     parser.add_argument(
         "--fahrenheit", "-f",
@@ -135,18 +145,20 @@ def main() -> None:
     start = time.time()
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
-    advection_config = AdvectionConfig(enabled=args.advection)
-    snow_config = SnowAlbedoConfig(enabled=args.snow)
-    sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.sensible_heat)
+    snow_config = SnowAlbedoConfig(
+        enabled=args.snow,
+        latent_heat_enabled=args.latent_heat,
+    )
+    sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.bulk_exchange)
     print(f"Configuration setup took {time.time() - start:.2f} seconds")
 
     start = time.time()
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
+        use_elliptical_orbit=args.elliptical_orbit,
         radiation_config=radiation_config,
         diffusion_config=diffusion_config,
-        advection_config=advection_config,
         snow_config=snow_config,
         sensible_heat_config=sensible_heat_config,
         return_layer_map=True,
@@ -463,14 +475,24 @@ def main() -> None:
             wind_ocean = area_weighted_mean(wind_speed[idx], ocean_weights)
             print(f"  Wind speed mean (land/ocean) [m/s]: {wind_land:.2f} / {wind_ocean:.2f}")
         else:
-            print("  Wind speed mean (land/ocean) [m/s]: N/A (advection disabled)")
+            reason = (
+                "bulk exchange disabled"
+                if not sensible_heat_config.enabled
+                else "winds unavailable"
+            )
+            print(f"  Wind speed mean (land/ocean) [m/s]: N/A ({reason})")
 
         if wind_speed_10 is not None:
             wind10_land = area_weighted_mean(wind_speed_10[idx], land_weights)
             wind10_ocean = area_weighted_mean(wind_speed_10[idx], ocean_weights)
             print(f"  Wind speed 10 m mean (land/ocean) [m/s]: {wind10_land:.2f} / {wind10_ocean:.2f}")
         else:
-            print("  Wind speed 10 m mean (land/ocean) [m/s]: N/A (advection disabled)")
+            reason = (
+                "bulk exchange disabled"
+                if not sensible_heat_config.enabled
+                else "winds unavailable"
+            )
+            print(f"  Wind speed 10 m mean (land/ocean) [m/s]: N/A ({reason})")
 
     print("Annual statistics:")
     surface_land_annual = area_weighted_mean(surface_cycle.mean(axis=0), land_weights)
@@ -496,14 +518,20 @@ def main() -> None:
         wind_ocean_annual = area_weighted_mean(wind_speed.mean(axis=0), ocean_weights)
         print(f"  Wind speed mean (land/ocean) [m/s]: {wind_land_annual:.2f} / {wind_ocean_annual:.2f}")
     else:
-        print("  Wind speed mean (land/ocean) [m/s]: N/A (advection disabled)")
+        reason = (
+            "bulk exchange disabled" if not sensible_heat_config.enabled else "winds unavailable"
+        )
+        print(f"  Wind speed mean (land/ocean) [m/s]: N/A ({reason})")
 
     if wind_speed_10 is not None:
         wind10_land_annual = area_weighted_mean(wind_speed_10.mean(axis=0), land_weights)
         wind10_ocean_annual = area_weighted_mean(wind_speed_10.mean(axis=0), ocean_weights)
         print(f"  Wind speed 10 m mean (land/ocean) [m/s]: {wind10_land_annual:.2f} / {wind10_ocean_annual:.2f}")
     else:
-        print("  Wind speed 10 m mean (land/ocean) [m/s]: N/A (advection disabled)")
+        reason = (
+            "bulk exchange disabled" if not sensible_heat_config.enabled else "winds unavailable"
+        )
+        print(f"  Wind speed 10 m mean (land/ocean) [m/s]: N/A ({reason})")
 
     plot_layered_monthly_temperature_cycle(
         lon2d,
