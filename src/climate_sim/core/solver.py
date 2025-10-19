@@ -10,31 +10,31 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse import linalg as splinalg
 
-import climate_sim.modeling.radiation as radiation
-from climate_sim.modeling.advection import (
+import climate_sim.physics.radiation as radiation
+from climate_sim.physics.advection import (
     AdvectionConfig,
     AdvectionModel,
 )
-from climate_sim.modeling.diffusion import (
+from climate_sim.physics.diffusion import (
     DiffusionConfig,
     LayeredDiffusionOperator,
     create_diffusion_operator,
 )
-from climate_sim.modeling.radiation import RadiationConfig
-from climate_sim.modeling.snow_albedo import SnowAlbedoConfig, AlbedoModel
-from climate_sim.modeling.sensible_heat_exchange import (
+from climate_sim.physics.radiation import RadiationConfig
+from climate_sim.physics.snow_albedo import SnowAlbedoConfig, AlbedoModel
+from climate_sim.physics.sensible_heat_exchange import (
     SensibleHeatExchangeConfig,
     SensibleHeatExchangeModel,
 )
-from climate_sim.utils.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
-from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
-from climate_sim.utils.solar import compute_monthly_insolation_field
-from climate_sim.utils.landmask import (
+from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
+from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
+from climate_sim.physics.solar import compute_monthly_insolation_field
+from climate_sim.data.landmask import (
     compute_albedo_field,
     compute_heat_capacity_field,
     compute_land_mask,
 )
-from climate_sim.utils.elevation import compute_cell_roughness_length
+from climate_sim.data.elevation import compute_cell_roughness_length
 
 NEWTON_STEP_TOLERANCE_K = 1.0
 PERIODIC_FIXED_POINT_TOLERANCE_K = 1.0

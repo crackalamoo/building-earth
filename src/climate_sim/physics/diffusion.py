@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import sparse
 
-from climate_sim.utils.math_core import (
+from climate_sim.core.math_core import (
     harmonic_mean,
     regular_latitude_edges,
     regular_longitude_edges,

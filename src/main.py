@@ -11,29 +11,29 @@ from matplotlib.colors import Normalize
 from matplotlib.widgets import RadioButtons, Slider
 from pathlib import Path
 
-from climate_sim.modeling.diffusion import DiffusionConfig
-from climate_sim.modeling.radiation import RadiationConfig
-from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
-from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.diffusion import DiffusionConfig
+from climate_sim.physics.radiation import RadiationConfig
+from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
+from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import (
     plot_layered_monthly_temperature_cycle,
     save_monthly_temperature_gif,
 )
-from climate_sim.utils.calendar import MONTH_NAMES
-from climate_sim.utils.cli import add_common_model_arguments
-from climate_sim.utils.atmosphere import (
+from climate_sim.data.calendar import MONTH_NAMES
+from climate_sim.runtime.cli import add_common_model_arguments
+from climate_sim.physics.atmosphere import (
     adjust_temperature_by_elevation,
     log_law_map_wind_speed,
 )
-from climate_sim.utils.constants import R_EARTH_METERS
-from climate_sim.utils.elevation import (
+from climate_sim.data.constants import R_EARTH_METERS
+from climate_sim.data.elevation import (
     compute_cell_roughness_length,
-    pressure_from_temperature_elevation,
 )
-from climate_sim.utils.landmask import compute_land_mask
-from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
-from climate_sim.utils.solver import compute_periodic_cycle_results
-from climate_sim.utils.temperature import convert_temperature, temperature_unit
+from climate_sim.physics.pressure import pressure_from_temperature_elevation
+from climate_sim.data.landmask import compute_land_mask
+from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
+from climate_sim.core.solver import compute_periodic_cycle_results
+from climate_sim.core.units import convert_temperature, temperature_unit
 
 from dotenv import load_dotenv
 load_dotenv()
