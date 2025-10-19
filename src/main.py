@@ -24,7 +24,10 @@ from climate_sim.utils.atmosphere import (
     log_law_map_wind_speed,
 )
 from climate_sim.utils.constants import R_EARTH_METERS
-from climate_sim.utils.elevation import compute_cell_roughness_length
+from climate_sim.utils.elevation import (
+    compute_cell_roughness_length,
+    pressure_from_temperature_elevation,
+)
 from climate_sim.utils.landmask import compute_land_mask
 from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_results
@@ -238,6 +241,27 @@ def main() -> None:
     wind_v = layers.get("wind_v")
     wind_speed = layers.get("wind_speed")
 
+    Tatm_field = layers.get("Tatm")
+    Tatm_cycle_K: np.ndarray | None = None
+    if Tatm_field is not None:
+        Tatm_arr = np.asarray(Tatm_field, dtype=float)
+        if Tatm_arr.ndim == 3:
+            mean_Tatm = float(np.nanmean(Tatm_arr))
+            if mean_Tatm < 200.0:
+                Tatm_arr = Tatm_arr + 273.15
+            Tatm_cycle_K = Tatm_arr
+    elif atmosphere_cycle is not None:
+        Tatm_cycle_K = atmosphere_cycle + 273.15
+
+    slp_cycle_hpa: np.ndarray | None = None
+    if Tatm_cycle_K is not None:
+        pressure_monthly = np.empty_like(Tatm_cycle_K, dtype=float)
+        for idx in range(Tatm_cycle_K.shape[0]):
+            pressure_monthly[idx] = pressure_from_temperature_elevation(
+                Tatm_cycle_K[idx]
+            )
+        slp_cycle_hpa = pressure_monthly * 0.01
+
     wind_speed_10 = None
     if wind_u is not None and wind_v is not None and wind_speed is not None:
         roughness_length = compute_cell_roughness_length(
@@ -294,6 +318,10 @@ def main() -> None:
         wind_v_10_sorted = wind_v_10[:, :, lon_sort_idx]
         wind_speed_10_sorted = wind_speed_10[:, :, lon_sort_idx]
 
+        slp_sorted = None
+        if slp_cycle_hpa is not None:
+            slp_sorted = slp_cycle_hpa[:, :, lon_sort_idx]
+
         max_speed = float(np.max(np.maximum(wind_speed_sorted, wind_speed_10_sorted)))
         if not np.isfinite(max_speed) or max_speed <= 0.0:
             max_speed = 1.0
@@ -342,6 +370,45 @@ def main() -> None:
         )
         cbar.set_label("Wind speed (m/s)")
 
+        pressure_container: dict[str, object | None] = {"artist": None, "data": None}
+        if slp_sorted is not None:
+            slp_min = float(np.nanmin(slp_sorted))
+            slp_max = float(np.nanmax(slp_sorted))
+            if not np.isfinite(slp_min) or not np.isfinite(slp_max):
+                slp_min, slp_max = 980.0, 1030.0
+            elif slp_max - slp_min < 1.0e-3:
+                slp_min -= 1.0
+                slp_max += 1.0
+
+            slp_norm = Normalize(vmin=slp_min, vmax=slp_max)
+            pressure_extent = (
+                float(lon_sorted[0]),
+                float(lon_sorted[-1]),
+                float(np.min(lat2d[:, 0])),
+                float(np.max(lat2d[:, 0])),
+            )
+            pressure_artist = ax_wind.imshow(
+                slp_sorted[0],
+                extent=pressure_extent,
+                origin="lower",
+                transform=projection,
+                cmap=plt.cm.cividis,
+                norm=slp_norm,
+                alpha=0.65,
+                zorder=0.1,
+                interpolation="nearest",
+            )
+            pressure_container["artist"] = pressure_artist
+            pressure_container["data"] = slp_sorted
+
+            pressure_cax = fig_wind.add_axes([0.2, 0.02, 0.6, 0.02])
+            pressure_cbar = fig_wind.colorbar(
+                pressure_artist,
+                cax=pressure_cax,
+                orientation="horizontal",
+            )
+            pressure_cbar.set_label("Sea-level pressure (hPa)")
+
         def _clear_streamplot(stream_set) -> None:
             if stream_set is None:
                 return
@@ -378,6 +445,10 @@ def main() -> None:
             )
 
             stream_container["obj"] = new_stream
+            pressure_artist = pressure_container.get("artist")
+            slp_data = pressure_container.get("data")
+            if pressure_artist is not None and slp_data is not None:
+                pressure_artist.set_data(slp_data[idx])
             ax_wind.set_title(
                 f"Geostrophic Wind ({current_state['level']}) – {month_names[idx]}"
             )
