@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.widgets import RadioButtons, Slider
@@ -231,12 +232,15 @@ def plot_monthly_temperature_cycle(
     colorbar_ticks: Iterable[float] | None = None,
     use_fahrenheit: bool = False,
     value_is_delta: bool = False,
-    missing_color: str = "#4A1486",
+    missing_color: str = "#8B5FBF",
     missing_label: str | None = "Missing data",
     month_labels: Sequence[str] | None = None,
-) -> None:
+    missing_mask: np.ndarray | None = None,
+    show: bool = True,
+    figure: Figure | None = None,
+) -> Figure:
     """Interactive monthly cycle viewer driven by a slider."""
-    plot_layered_monthly_temperature_cycle(
+    return plot_layered_monthly_temperature_cycle(
         lon2d,
         lat2d,
         {"Surface": monthly_field},
@@ -250,6 +254,9 @@ def plot_monthly_temperature_cycle(
         missing_color=missing_color,
         missing_label=missing_label,
         month_labels=month_labels,
+        missing_mask=missing_mask,
+        show=show,
+        figure=figure,
     )
 
 
@@ -265,10 +272,13 @@ def plot_layered_monthly_temperature_cycle(
     colorbar_ticks: Iterable[float] | None = None,
     use_fahrenheit: bool = False,
     value_is_delta: bool = False,
-    missing_color: str = "#4A1486",
+    missing_color: str = "#8B5FBF",
     missing_label: str | None = "Missing data",
     month_labels: Sequence[str] | None = None,
-) -> None:
+    missing_mask: np.ndarray | None = None,
+    show: bool = True,
+    figure: Figure | None = None,
+) -> Figure:
     """Interactive monthly cycle viewer with month slider and layer selector."""
 
     if isinstance(layer_fields, Mapping):
@@ -326,7 +336,12 @@ def plot_layered_monthly_temperature_cycle(
     cmap = cmap.with_extremes(bad=missing_color)
 
     projection = ccrs.PlateCarree()
-    fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
+    if figure is not None:
+        fig = figure
+        fig.set_size_inches(12, 6, forward=True)
+        ax = fig.add_subplot(1, 1, 1, projection=projection)
+    else:
+        fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
     ax.set_global()
     ax.coastlines(linewidth=0.4)
     ax.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
@@ -338,9 +353,27 @@ def plot_layered_monthly_temperature_cycle(
 
     current_state = {"layer": 0, "month": 0}
 
+    mask_template: np.ndarray | None = None
+    if missing_mask is not None:
+        candidate = np.asarray(missing_mask, dtype=bool)
+        if candidate.shape == reference_shape:
+            mask_template = candidate
+        else:
+            try:
+                mask_template = np.broadcast_to(candidate, reference_shape)
+            except ValueError as exc:
+                raise ValueError(
+                    "missing_mask must broadcast to the shape of the layer fields"
+                ) from exc
+        if mask_template is not None:
+            mask_template = np.asarray(mask_template, dtype=bool)
+
     data_stack_display = [
-        np.ma.masked_invalid(
-            convert_temperature(field, use_fahrenheit, is_delta=value_is_delta)
+        _build_masked_display(
+            field,
+            use_fahrenheit=use_fahrenheit,
+            is_delta=value_is_delta,
+            mask_template=mask_template,
         )
         for field in data_stack
     ]
@@ -474,7 +507,24 @@ def plot_layered_monthly_temperature_cycle(
 
         _layer_selector.on_clicked(on_layer)
 
-    plt.show()
+    if show:
+        plt.show()
+
+    return fig
+
+
+def _build_masked_display(
+    field: np.ndarray,
+    *,
+    use_fahrenheit: bool,
+    is_delta: bool,
+    mask_template: np.ndarray | None,
+) -> np.ma.MaskedArray:
+    converted = convert_temperature(field, use_fahrenheit, is_delta=is_delta)
+    masked = np.ma.masked_invalid(np.asarray(converted))
+    if mask_template is not None:
+        masked = np.ma.masked_where(mask_template, masked)
+    return masked
 
 
 def save_monthly_temperature_gif(

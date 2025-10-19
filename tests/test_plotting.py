@@ -14,7 +14,8 @@ from climate_sim.utils import solver
 
 def test_plot_monthly_temperature_cycle_runs():
     lon2d, lat2d, monthly_temps = solver.compute_periodic_cycle_results(resolution_deg=90.0)
-    plot_monthly_temperature_cycle(lon2d, lat2d, monthly_temps)
+    fig = plot_monthly_temperature_cycle(lon2d, lat2d, monthly_temps, show=False)
+    assert fig is not None
     plt.close("all")
 
 
@@ -25,5 +26,6 @@ def test_plot_layered_monthly_temperature_cycle_runs():
     layer_fields = {"Surface": layers["surface"]}
     if "atmosphere" in layers:
         layer_fields["Atmosphere"] = layers["atmosphere"]
-    plot_layered_monthly_temperature_cycle(lon2d, lat2d, layer_fields)
+    fig = plot_layered_monthly_temperature_cycle(lon2d, lat2d, layer_fields, show=False)
+    assert fig is not None
     plt.close("all")

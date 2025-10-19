@@ -21,6 +21,7 @@ load_dotenv()
 import numpy as np
 import pooch
 import xarray as xr
+import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import Normalize
 
@@ -453,6 +454,9 @@ def plot_baseline_and_anomaly(
 ) -> None:
     """Generate baseline and anomaly plots."""
 
+    missing_mask = ~np.isfinite(obs_surface)
+
+    baseline_fig = plt.figure(figsize=(12, 6))
     plot_monthly_temperature_cycle(
         lon2d,
         lat2d,
@@ -460,6 +464,9 @@ def plot_baseline_and_anomaly(
         title="NOAA 1981–2010 Monthly Climatology",
         use_fahrenheit=use_fahrenheit,
         missing_label="No NOAA observations",
+        missing_mask=missing_mask,
+        show=False,
+        figure=baseline_fig,
     )
 
     max_abs = float(np.nanmax(np.abs(anomaly))) if anomaly.size else 0.0
@@ -490,7 +497,11 @@ def plot_baseline_and_anomaly(
     with np.errstate(invalid="ignore"):
         annual_mean = np.nanmean(anomaly, axis=0, keepdims=True)
     anomaly_with_mean = np.concatenate([anomaly, annual_mean], axis=0)
+    missing_mask_with_mean = np.concatenate(
+        [missing_mask, np.all(missing_mask, axis=0, keepdims=True)], axis=0
+    )
 
+    anomaly_fig = plt.figure(figsize=(12, 6))
     plot_monthly_temperature_cycle(
         lon2d,
         lat2d,
@@ -503,7 +514,12 @@ def plot_baseline_and_anomaly(
         value_is_delta=True,
         missing_label="No NOAA observations",
         month_labels=[*monthly_labels, "Annual mean"],
+        missing_mask=missing_mask_with_mean,
+        show=False,
+        figure=anomaly_fig,
     )
+
+    plt.show()
 
 
 # ----------------------------
