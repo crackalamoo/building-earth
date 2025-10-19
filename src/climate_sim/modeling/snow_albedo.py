@@ -13,6 +13,7 @@ class SnowAlbedoConfig:
     """Configuration for the diagnostic snow albedo scheme."""
 
     enabled: bool = True
+    latent_heat_enabled: bool = True
     snow_albedo: float = 0.65
     freeze_temperature_c: float = -2.0
     melt_temperature_c: float = 1.0
@@ -95,6 +96,9 @@ class AlbedoModel:
         """Return the latent-heat-adjusted surface heat capacity field."""
 
         ceff = np.where(land_mask, base_C_land, base_C_ocean).astype(float)
+
+        if not self.config.latent_heat_enabled:
+            return ceff
 
         melt_halfwidth = self.config.latent_melt_halfwidth_K
         latent_energy = self.config.latent_energy_J_per_m2

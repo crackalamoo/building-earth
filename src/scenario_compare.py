@@ -92,6 +92,19 @@ def main() -> None:
         action="store_false",
         help="Disable snow-albedo adjustments in the baseline case",
     )
+    parser.add_argument(
+        "--base-latent-heat",
+        dest="base_latent_heat",
+        action="store_true",
+        default=True,
+        help="Include latent heat of fusion in the baseline surface heat capacity (default)",
+    )
+    parser.add_argument(
+        "--no-base-latent-heat",
+        dest="base_latent_heat",
+        action="store_false",
+        help="Disable the baseline latent heat of fusion adjustment",
+    )
 
     parser.add_argument(
         "--base-diffusion",
@@ -160,6 +173,19 @@ def main() -> None:
         help="Disable snow-albedo adjustments in the experiment case",
     )
     parser.add_argument(
+        "--exp-latent-heat",
+        dest="experiment_latent_heat",
+        action="store_true",
+        default=True,
+        help="Include latent heat of fusion in the experiment surface heat capacity (default)",
+    )
+    parser.add_argument(
+        "--no-exp-latent-heat",
+        dest="experiment_latent_heat",
+        action="store_false",
+        help="Disable the experiment latent heat of fusion adjustment",
+    )
+    parser.add_argument(
         "--base-bulk-exchange",
         dest="base_bulk_exchange",
         action="store_true",
@@ -203,8 +229,14 @@ def main() -> None:
         include_atmosphere=args.experiment_atmosphere,
     )
 
-    base_snow = SnowAlbedoConfig(enabled=args.base_snow)
-    exp_snow = SnowAlbedoConfig(enabled=args.experiment_snow)
+    base_snow = SnowAlbedoConfig(
+        enabled=args.base_snow,
+        latent_heat_enabled=args.base_latent_heat,
+    )
+    exp_snow = SnowAlbedoConfig(
+        enabled=args.experiment_snow,
+        latent_heat_enabled=args.experiment_latent_heat,
+    )
 
     base_sensible_heat = SensibleHeatExchangeConfig(enabled=args.base_bulk_exchange)
     exp_sensible_heat = SensibleHeatExchangeConfig(enabled=args.experiment_bulk_exchange)
@@ -254,6 +286,7 @@ def main() -> None:
         "diffusion": args.base_diffusion,
         "atmosphere": args.base_atmosphere,
         "snow": args.base_snow,
+        "latent_heat": args.base_latent_heat,
         "bulk_exchange": args.base_bulk_exchange,
     }
     exp_summary = {
@@ -261,6 +294,7 @@ def main() -> None:
         "diffusion": args.experiment_diffusion,
         "atmosphere": args.experiment_atmosphere,
         "snow": args.experiment_snow,
+        "latent_heat": args.experiment_latent_heat,
         "bulk_exchange": args.experiment_bulk_exchange,
     }
 

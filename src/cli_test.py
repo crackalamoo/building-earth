@@ -75,6 +75,19 @@ def _parse_args() -> argparse.Namespace:
         help="Disable snow-albedo adjustments",
     )
     parser.add_argument(
+        "--latent-heat",
+        dest="latent_heat",
+        action="store_true",
+        default=True,
+        help="Include latent heat of fusion in the surface heat capacity (default)",
+    )
+    parser.add_argument(
+        "--no-latent-heat",
+        dest="latent_heat",
+        action="store_false",
+        help="Disable the latent heat of fusion adjustment",
+    )
+    parser.add_argument(
         "--fahrenheit",
         dest="fahrenheit",
         action="store_true",
@@ -175,7 +188,10 @@ def main() -> None:
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
-    snow_config = SnowAlbedoConfig(enabled=args.snow)
+    snow_config = SnowAlbedoConfig(
+        enabled=args.snow,
+        latent_heat_enabled=args.latent_heat,
+    )
     sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.bulk_exchange)
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
