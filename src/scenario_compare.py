@@ -9,20 +9,20 @@ import cmocean
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
 
-from climate_sim.modeling.diffusion import DiffusionConfig
-from climate_sim.modeling.radiation import RadiationConfig
-from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
-from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.diffusion import DiffusionConfig
+from climate_sim.physics.radiation import RadiationConfig
+from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
+from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
-from climate_sim.utils.atmosphere import adjust_temperature_by_elevation
-from climate_sim.utils.cli import (
+from climate_sim.physics.atmosphere import adjust_temperature_by_elevation
+from climate_sim.runtime.cli import (
     add_boolean_flag,
     add_resolution_argument,
     add_solar_constant_argument,
     add_temperature_unit_argument,
 )
-from climate_sim.utils.solver import compute_periodic_cycle_results
-from climate_sim.utils.temperature import convert_temperature, temperature_unit
+from climate_sim.core.solver import compute_periodic_cycle_results
+from climate_sim.core.units import convert_temperature, temperature_unit
 
 from dotenv import load_dotenv
 load_dotenv()

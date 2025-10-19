@@ -6,16 +6,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.utils.atmosphere import (
+from climate_sim.physics.atmosphere import (
     STANDARD_LAPSE_RATE_K_PER_M,
     adjust_temperature_by_elevation,
     log_law_map_wind_speed,
 )
-from climate_sim.utils.constants import GAS_CONSTANT_J_KG_K
-from climate_sim.utils.elevation import (
+from climate_sim.data.constants import GAS_CONSTANT_J_KG_K
+from climate_sim.data.elevation import (
     VON_KARMAN_CONSTANT,
-    pressure_from_temperature_elevation,
 )
+from climate_sim.physics.pressure import pressure_from_temperature_elevation
 
 
 @dataclass(frozen=True)

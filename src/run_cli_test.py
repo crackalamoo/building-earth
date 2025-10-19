@@ -10,7 +10,7 @@ load_dotenv()
 
 import numpy as np
 
-from climate_sim.utils.cli import add_common_model_arguments
+from climate_sim.runtime.cli import add_common_model_arguments
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Summarize the model climate at a few reference locations.",
     )
-    from climate_sim.modeling.radiation import RadiationConfig
+    from climate_sim.physics.radiation import RadiationConfig
 
     default_atmosphere = RadiationConfig().include_atmosphere
     add_common_model_arguments(
@@ -93,12 +93,12 @@ def _summarize_location(
 def main() -> None:
     args = _parse_args()
 
-    from climate_sim.modeling.diffusion import DiffusionConfig
-    from climate_sim.modeling.radiation import RadiationConfig
-    from climate_sim.modeling.sensible_heat_exchange import SensibleHeatExchangeConfig
-    from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
-    from climate_sim.utils.solver import compute_periodic_cycle_results
-    from climate_sim.utils.math_core import area_weighted_mean, spherical_cell_area
+    from climate_sim.physics.diffusion import DiffusionConfig
+    from climate_sim.physics.radiation import RadiationConfig
+    from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
+    from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+    from climate_sim.core.solver import compute_periodic_cycle_results
+    from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)

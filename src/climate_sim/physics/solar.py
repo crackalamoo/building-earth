@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional
 
-from climate_sim.utils.calendar import DAYS_PER_MONTH
+from climate_sim.data.calendar import DAYS_PER_MONTH
 
 ECCENTRICITY_AMPLITUDE = 0.033  # Approximate fractional variation (≈2e) in solar flux
 

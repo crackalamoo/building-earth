@@ -6,21 +6,21 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.utils.elevation import (
+from climate_sim.data.elevation import (
     load_elevation_data,
     compute_cell_elevation,
     compute_cell_roughness_length,
     neutral_drag_from_roughness_length,
     WATER_ROUGHNESS_LENGTH_M,
-    pressure_from_temperature_elevation,
 )
-from climate_sim.utils.constants import GAS_CONSTANT_J_KG_K, R_EARTH_METERS
-from climate_sim.utils.math_core import (
+from climate_sim.physics.pressure import pressure_from_temperature_elevation
+from climate_sim.data.constants import GAS_CONSTANT_J_KG_K, R_EARTH_METERS
+from climate_sim.core.math_core import (
     regular_latitude_edges,
     regular_longitude_edges,
     spherical_cell_area,
 )
-from climate_sim.utils.landmask import compute_land_mask
+from climate_sim.data.landmask import compute_land_mask
 
 def compute_surface_roughness(
     lon2d: np.ndarray,

@@ -12,8 +12,8 @@ from matplotlib.widgets import RadioButtons, Slider
 from PIL import Image
 from typing import Iterable, Mapping, Sequence
 
-from climate_sim.utils.calendar import MONTH_NAMES
-from climate_sim.utils.temperature import convert_temperature, temperature_unit
+from climate_sim.data.calendar import MONTH_NAMES
+from climate_sim.core.units import convert_temperature, temperature_unit
 
 
 def build_temperature_cmap(
