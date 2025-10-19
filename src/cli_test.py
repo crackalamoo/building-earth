@@ -10,6 +10,8 @@ load_dotenv()
 
 import numpy as np
 
+from climate_sim.utils.cli import add_common_model_arguments
+
 
 @dataclass(frozen=True)
 class Location:
@@ -22,102 +24,14 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Summarize the model climate at a few reference locations.",
     )
-    parser.add_argument(
-        "--resolution",
-        type=float,
-        default=1.0,
-        help="Grid resolution in degrees",
-    )
-    parser.add_argument(
-        "--solar-constant",
-        type=float,
-        default=None,
-        help="Override the solar constant (W m^-2)",
-    )
-    parser.add_argument(
-        "--diffusion",
-        dest="diffusion",
-        action="store_true",
-        default=True,
-        help="Enable lateral diffusion (default)",
-    )
-    parser.add_argument(
-        "--no-diffusion",
-        dest="diffusion",
-        action="store_false",
-        help="Disable lateral diffusion",
-    )
+    from climate_sim.modeling.radiation import RadiationConfig
 
-    parser.add_argument(
-        "--atmosphere",
-        dest="atmosphere",
-        action="store_true",
-        default=True,
-        help="Include an explicit atmospheric layer",
-    )
-    parser.add_argument(
-        "--no-atmosphere",
-        dest="atmosphere",
-        action="store_false",
-        help="Exclude the atmospheric layer",
-    )
-    parser.add_argument(
-        "--snow",
-        dest="snow",
-        action="store_true",
-        default=True,
-        help="Enable diagnostic snow-albedo adjustments (default)",
-    )
-    parser.add_argument(
-        "--no-snow",
-        dest="snow",
-        action="store_false",
-        help="Disable snow-albedo adjustments",
-    )
-    parser.add_argument(
-        "--latent-heat",
-        dest="latent_heat",
-        action="store_true",
-        default=True,
-        help="Include latent heat of fusion in the surface heat capacity (default)",
-    )
-    parser.add_argument(
-        "--no-latent-heat",
-        dest="latent_heat",
-        action="store_false",
-        help="Disable the latent heat of fusion adjustment",
-    )
-    parser.add_argument(
-        "--fahrenheit",
-        dest="fahrenheit",
-        action="store_true",
-        help="Display temperatures in degrees Fahrenheit instead of Celsius",
-    )
-    parser.add_argument(
-        "--bulk-exchange",
-        dest="bulk_exchange",
-        action="store_true",
-        default=True,
-        help="Enable the neutral bulk sensible heat exchange model (default)",
-    )
-    parser.add_argument(
-        "--no-bulk-exchange",
-        dest="bulk_exchange",
-        action="store_false",
-        help="Disable the neutral bulk sensible heat exchange model",
-    )
-    parser.add_argument(
-        "--elliptical-orbit",
-        dest="elliptical_orbit",
-        action="store_true",
-        default=True,
-        help="Apply Earth's orbital eccentricity correction to insolation (default)",
-    )
-    parser.add_argument(
-        "--circular-orbit",
-        dest="elliptical_orbit",
-        action="store_false",
-        help="Disable the orbital eccentricity correction and assume a circular orbit",
+    default_atmosphere = RadiationConfig().include_atmosphere
+    add_common_model_arguments(
+        parser,
+        default_atmosphere=default_atmosphere,
+        fahrenheit_help="Display temperatures in degrees Fahrenheit instead of Celsius",
+        fahrenheit_options=("--fahrenheit",),
     )
     return parser.parse_args()
 

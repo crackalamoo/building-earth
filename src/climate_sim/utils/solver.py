@@ -26,8 +26,9 @@ from climate_sim.modeling.sensible_heat_exchange import (
     SensibleHeatExchangeConfig,
     SensibleHeatExchangeModel,
 )
+from climate_sim.utils.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.utils.grid import create_lat_lon_grid, expand_latitude_field
-from climate_sim.utils.solar import DAYS_PER_MONTH, SECONDS_PER_DAY, compute_monthly_insolation_field
+from climate_sim.utils.solar import compute_monthly_insolation_field
 from climate_sim.utils.landmask import (
     compute_albedo_field,
     compute_heat_capacity_field,

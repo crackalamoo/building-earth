@@ -32,6 +32,8 @@ from climate_sim.modeling.sensible_heat_exchange import (
 from climate_sim.modeling.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.utils.atmosphere import adjust_temperature_by_elevation
+from climate_sim.utils.calendar import MONTH_NAMES
+from climate_sim.utils.cli import add_common_model_arguments
 from climate_sim.utils.landmask import compute_land_mask
 from climate_sim.utils.math_core import spherical_cell_area
 from climate_sim.utils.solver import compute_periodic_cycle_results
@@ -74,106 +76,11 @@ def _parse_args() -> argparse.Namespace:
             "simulation performance."
         )
     )
-    parser.add_argument(
-        "--resolution",
-        "-r",
-        type=float,
-        default=1.0,
-        help="Grid resolution in degrees",
-    )
-    parser.add_argument(
-        "--solar-constant",
-        type=float,
-        default=None,
-        help="Override the solar constant (W m^-2)",
-    )
-    parser.add_argument(
-        "--diffusion",
-        dest="diffusion",
-        action="store_true",
-        default=True,
-        help="Enable lateral diffusion (default)",
-    )
-    parser.add_argument(
-        "--no-diffusion",
-        dest="diffusion",
-        action="store_false",
-        help="Disable lateral diffusion",
-    )
-
     default_atmosphere = RadiationConfig().include_atmosphere
-    parser.add_argument(
-        "--atmosphere",
-        dest="atmosphere",
-        action="store_true",
-        default=default_atmosphere,
-        help="Include an explicit atmospheric layer",
-    )
-    parser.add_argument(
-        "--no-atmosphere",
-        dest="atmosphere",
-        action="store_false",
-        help="Exclude the atmospheric layer",
-    )
-
-    parser.add_argument(
-        "--snow",
-        dest="snow",
-        action="store_true",
-        default=True,
-        help="Enable diagnostic snow-albedo adjustments (default)",
-    )
-    parser.add_argument(
-        "--no-snow",
-        dest="snow",
-        action="store_false",
-        help="Disable snow-albedo adjustments",
-    )
-    parser.add_argument(
-        "--latent-heat",
-        dest="latent_heat",
-        action="store_true",
-        default=True,
-        help="Include latent heat of fusion in the surface heat capacity",
-    )
-    parser.add_argument(
-        "--no-latent-heat",
-        dest="latent_heat",
-        action="store_false",
-        help="Disable the latent heat of fusion adjustment",
-    )
-    parser.add_argument(
-        "--bulk-exchange",
-        dest="bulk_exchange",
-        action="store_true",
-        default=True,
-        help="Enable the neutral bulk sensible heat exchange model",
-    )
-    parser.add_argument(
-        "--no-bulk-exchange",
-        dest="bulk_exchange",
-        action="store_false",
-        help="Disable the neutral bulk sensible heat exchange model",
-    )
-    parser.add_argument(
-        "--elliptical-orbit",
-        dest="elliptical_orbit",
-        action="store_true",
-        default=True,
-        help="Apply Earth's orbital eccentricity correction to insolation",
-    )
-    parser.add_argument(
-        "--circular-orbit",
-        dest="elliptical_orbit",
-        action="store_false",
-        help="Assume a circular orbit and disable the eccentricity correction",
-    )
-    parser.add_argument(
-        "--fahrenheit",
-        "-f",
-        dest="fahrenheit",
-        action="store_true",
-        help="Display plots/statistics in Fahrenheit instead of Celsius",
+    add_common_model_arguments(
+        parser,
+        default_atmosphere=default_atmosphere,
+        fahrenheit_help="Display plots/statistics in Fahrenheit instead of Celsius",
     )
     parser.add_argument(
         "--mask-path",
@@ -407,27 +314,12 @@ def format_rmse_table(
             return "    —"
         return f"{value:8.2f}"
 
-    month_names = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ]
-
     header = f"{'Month':<12}{'Land':>10}{'Ocean':>10}{'Global':>10}"
     print("\nArea-weighted RMSE (" + unit + ")")
     print(header)
     print("-" * len(header))
 
-    for name, row in zip(month_names, monthly):
+    for name, row in zip(MONTH_NAMES, monthly):
         land = fmt(convert(row["land"]))
         ocean = fmt(convert(row["ocean"]))
         global_rmse = fmt(convert(row["global"]))
