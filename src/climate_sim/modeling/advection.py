@@ -279,32 +279,27 @@ class AdvectionModel:
         coriolis = self._coriolis
         coriolis_abs = np.maximum(np.abs(coriolis), self._config.coriolis_floor_s)
 
-        h_m = np.where(self._land_mask, 1000.0, 500.0)
+        h_m = np.where(self._land_mask, 400.0, 1000.0)
         k = drag_coeff / h_m
 
-        geo_speed_safe = np.maximum(speed_geo, 1.0e-6)
-        inv_g2 = 1.0 / (geo_speed_safe**2)
-        inv_g4 = inv_g2**2
+        Ug = np.maximum(speed_geo, 0.0)
+        a = (k / coriolis_abs) ** 2  # (k/f)^2
 
-        ratio = (k**2) / (coriolis_abs**2 * geo_speed_safe**2)
+        eps = 1e-16
+        general = a > eps
+        y = np.empty_like(Ug)
 
-        sqrt_term = np.sqrt(inv_g4 + 4.0 * ratio)
-        numerator = -inv_g2 + sqrt_term
-        denominator = 2.0 * ratio
+        if np.any(general):
+            sqrt_term = np.sqrt(1.0 + 4.0 * a[general] * (Ug[general] ** 2))
+            y[general] = (-1.0 + sqrt_term) / (2.0 * a[general])
 
-        x = np.zeros_like(geo_speed_safe)
-        near_zero = ratio < 1.0e-14
-        x[near_zero] = geo_speed_safe[near_zero] ** 2
+        if np.any(~general):
+            y[~general] = Ug[~general] ** 2
 
-        valid = ~near_zero
-        if np.any(valid):
-            with np.errstate(divide="ignore", invalid="ignore"):
-                x_valid = numerator[valid] / denominator[valid]
-            x[valid] = np.clip(x_valid, 0.0, None)
+        y = np.clip(y, 0.0, None)
+        u_mag = np.sqrt(y)
 
-        u_mag = np.sqrt(np.clip(x, 0.0, None))
-
-        zero_geo = speed_geo < 1.0e-6
+        zero_geo = Ug <= 1.0e-12
         if np.any(zero_geo):
             u_mag[zero_geo] = 0.0
 
@@ -317,20 +312,20 @@ class AdvectionModel:
         if np.any(zero_geo):
             alpha[zero_geo] = 0.0
 
-        scale = 1.0 / np.sqrt(1.0 + r_over_f**2)
-        if np.any(zero_geo):
-            scale[zero_geo] = 1.0
-
         rotation_angle = np.where(coriolis >= 0.0, -alpha, alpha)
         cos_a = np.cos(rotation_angle)
         sin_a = np.sin(rotation_angle)
 
-        u_rot = u_geo * cos_a - v_geo * sin_a
-        v_rot = u_geo * sin_a + v_geo * cos_a
+        Ug_safe = np.maximum(Ug, 1e-12)
+        ux = np.where(Ug_safe > 0.0, u_geo / Ug_safe, 0.0)
+        vy = np.where(Ug_safe > 0.0, v_geo / Ug_safe, 0.0)
 
-        u_final = scale * u_rot
-        v_final = scale * v_rot
-        speed_final = np.hypot(u_final, v_final)
+        ux_rot = ux * cos_a - vy * sin_a
+        vy_rot = ux * sin_a + vy * cos_a
+
+        u_final = u_mag * ux_rot
+        v_final = u_mag * vy_rot
+        speed_final = u_mag
 
         if np.any(zero_geo):
             speed_final[zero_geo] = 0.0

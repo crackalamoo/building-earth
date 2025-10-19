@@ -408,8 +408,7 @@ def pressure_from_temperature_elevation(
     smooth_mean = area_weighted_mean(temp_smooth, weights)
     temp_smooth = temp_smooth + (target_mean - smooth_mean)
 
-    dT = temperature - temp_smooth
-    dT = dT - area_weighted_mean(dT, weights)
+    dT = temp_smooth - area_weighted_mean(temp_smooth, weights)
 
     beta = 200.0
     dp_th = -beta * dT
