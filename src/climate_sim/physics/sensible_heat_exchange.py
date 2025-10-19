@@ -28,9 +28,9 @@ class SensibleHeatExchangeConfig:
     gas_constant_dry_air_J_kg_K: float = GAS_CONSTANT_J_KG_K
     lapse_rate_K_per_m: float = STANDARD_LAPSE_RATE_K_PER_M
     minimum_wind_speed_m_s: float = 0.1
-    reference_height_surface_m: float = 10.0
-    land_reference_height_m: float = 1000.0
-    ocean_reference_height_m: float = 500.0
+    reference_height_surface_m: float = 2.0
+    land_reference_height_m: float = 400.0
+    ocean_reference_height_m: float = 1000.0
     include_lapse_rate_elevation: bool = False
 
 
@@ -85,19 +85,11 @@ class SensibleHeatExchangeModel:
             self._config.land_reference_height_m,
             self._config.ocean_reference_height_m,
         )
-        self._elevation_delta_to_surface = (
-            self._config.reference_height_surface_m - self._reference_height_atmosphere
-        )
+        self._elevation_delta_to_surface = - self._reference_height_atmosphere
 
     @property
     def enabled(self) -> bool:
         return self._config.enabled
-
-    @property
-    def reference_height_field(self) -> np.ndarray:
-        """Height of the atmospheric reference level used for the bulk exchange."""
-
-        return self._reference_height_atmosphere
 
     def _wind_speed_10m(self, wind_speed_reference_m_s: np.ndarray | None) -> np.ndarray:
         if wind_speed_reference_m_s is None:
@@ -110,7 +102,7 @@ class SensibleHeatExchangeModel:
         return log_law_map_wind_speed(
             wind_speed,
             height_ref_m=100,
-            height_target_m=self._config.reference_height_surface_m,
+            height_target_m=10,
             roughness_length_m=self._roughness,
         )
 
@@ -143,7 +135,7 @@ class SensibleHeatExchangeModel:
         wind_speed_10m = self._wind_speed_10m(wind_speed_reference_m_s)
 
         atmosphere_temperature_c = atmosphere_temperature - 273.15
-        elevation_delta = self._elevation_delta_to_surface
+        elevation_delta = self._elevation_delta_to_surface - self._config.reference_height_surface_m
         if self._config.include_lapse_rate_elevation:
             elevation_delta = elevation_delta + self._topographic_elevation
 
@@ -151,15 +143,15 @@ class SensibleHeatExchangeModel:
             atmosphere_temperature_c,
             elevation_delta,
         )
-        near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 1.0)
+        near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 10.0)
 
         gas_constant = self._config.gas_constant_dry_air_J_kg_K
-        # rho = pressure / (gas_constant * near_surface_air_K)
-        rho = 1.2
+        rho = pressure / (gas_constant * near_surface_air_K)
+        # rho = 1.2
 
-        log_height_surface = self._config.reference_height_surface_m
+        log_height_surface = 10.0
         roughness_momentum = self._roughness
-        roughness_heat = np.maximum(roughness_momentum / 100.0, 1.0e-9)
+        roughness_heat = np.maximum(roughness_momentum / 10.0, 1.0e-9)
 
         lm = np.log(
             np.maximum(log_height_surface / roughness_momentum, 1.0 + 1.0e-9)
