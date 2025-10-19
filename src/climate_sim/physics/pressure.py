@@ -1,3 +1,5 @@
+"""Surface pressure estimation utilities driven by climate model fields."""
+
 import numpy as np
 from functools import lru_cache
 from climate_sim.physics.diffusion import DiffusionConfig, DiffusionOperator, create_diffusion_operator

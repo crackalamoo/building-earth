@@ -1,3 +1,5 @@
+"""Elevation data utilities and roughness calculations for the climate model."""
+
 from pathlib import Path
 import os
 from dotenv import load_dotenv

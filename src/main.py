@@ -1,3 +1,5 @@
+"""CLI entry point for running and visualizing the climate simulator."""
+
 import argparse
 import os
 import time

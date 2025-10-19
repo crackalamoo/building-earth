@@ -12,24 +12,26 @@ The concept:
 The goal is an app that’s physically honest, first-principles, and emotionally engaging — a small masterpiece of climate storytelling.
 
 ## Repository tour
-- `src/climate_sim/modeling/`: physical parameterizations (radiation balance, diffusion, snow albedo, etc.). These modules are pure numerics with extensive `numpy` usage and rely on dataclasses for configuration objects.
-- `src/climate_sim/utils/`: numerical helpers such as grid generation, heat-capacity bookkeeping, and the solver (`compute_periodic_cycle_results`). Expect well-factored, unit-testable functions.
-- `src/climate_sim/plotting.py`: convenience wrappers around Matplotlib/Cartopy to render global temperature fields.
-- `src/main.py`: single-run driver that prints summary statistics and produces plots for the surface (and optionally atmosphere) temperature cycles.
-- `src/scenario_compare.py`: CLI that toggles specific physics options and shows anomaly maps between two model configurations.
+- `src/climate_sim/core/`: grid generation, solver infrastructure, and shared numerical utilities.
+- `src/climate_sim/data/`: static datasets, constants, and loaders for elevation and calendar information.
+- `src/climate_sim/physics/`: parameterization modules for radiation, diffusion, advection, sensible heat, and related processes.
+- `src/climate_sim/runtime/`: command-line plumbing shared across entry points.
+- `src/climate_sim/plotting.py`: rendering helpers for global temperature and diagnostic plots.
+- `src/main.py`: interactive visualization driver for a single model configuration.
+- `src/scenario_compare.py`: CLI for contrasting physics toggles and producing anomaly outputs.
 - `tests/`: `pytest` suite focused on smoke-testing the plotting pipeline.
 
 ## Models Implemented
 The following models have already been implemented:
 
-- `src/climate_sim/modeling/advection.py`: Coriolis force.
-- `src/climate_sim/modeling/diffusion.py`: Atmospheric and oceanic diffusion.
-- `src/climate_sim/modeling/radiation.py`: Radiation with a solar constant and a single-layer atmosphere.
-- `src/climate_sim/modeling/snow_albedo.py`: Increase albedo of land for freezing temperatures.
+- `src/climate_sim/physics/advection.py`: Coriolis force.
+- `src/climate_sim/physics/diffusion.py`: Atmospheric and oceanic diffusion.
+- `src/climate_sim/physics/radiation.py`: Radiation with a solar constant and a single-layer atmosphere.
+- `src/climate_sim/physics/snow_albedo.py`: Increase albedo of land for freezing temperatures.
 
-All models are tied together in the main solver: `src/climate_sim/utils/solver.py`.
+All models are tied together in the main solver: `src/climate_sim/core/solver.py`.
 
-Also of note: `src/climate_sim/utils/landmask.py` computes which cells are land vs water, including heat capacities in each case.
+Also of note: `src/climate_sim/data/landmask.py` computes which cells are land vs water, including heat capacities in each case.
 
 The main goal at the current stage of development is to extend this with new models while maintaining good performance.
 

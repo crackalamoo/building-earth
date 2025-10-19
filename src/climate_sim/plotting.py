@@ -1,3 +1,5 @@
+"""Visualization helpers for rendering climate model outputs."""
+
 import io
 from pathlib import Path
 
