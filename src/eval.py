@@ -467,6 +467,7 @@ def plot_baseline_and_anomaly(
     cmap = cm.get_cmap("RdBu_r")
     norm = Normalize(vmin=-display_max, vmax=display_max)
     unit = temperature_unit(use_fahrenheit)
+    anomaly = np.concatenate([anomaly, np.mean(anomaly, axis=0, keepdims=True)], axis=0)
 
     plot_monthly_temperature_cycle(
         lon2d,

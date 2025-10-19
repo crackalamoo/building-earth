@@ -272,9 +272,6 @@ def plot_layered_monthly_temperature_cycle(
         if field.shape != reference_shape:
             raise ValueError("All layer fields must share the same shape")
 
-    if reference_shape[0] != 12:
-        raise ValueError("Expected 12 monthly slices per layer")
-
     month_names = [
         "January",
         "February",
@@ -288,6 +285,7 @@ def plot_layered_monthly_temperature_cycle(
         "October",
         "November",
         "December",
+        "Average",
     ]
 
     unit = temperature_unit(use_fahrenheit)
@@ -350,7 +348,7 @@ def plot_layered_monthly_temperature_cycle(
         slider_ax,
         label="Month",
         valmin=0,
-        valmax=11,
+        valmax=reference_shape[0] - 1,
         valinit=current_state["month"],
         valstep=1,
         valfmt="%0.0f",
