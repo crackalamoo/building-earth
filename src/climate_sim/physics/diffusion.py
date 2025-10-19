@@ -141,6 +141,7 @@ class DiffusionOperator:
     west_coeff: np.ndarray
     diagonal: np.ndarray
     matrix: sparse.csr_matrix | None
+    off_diagonal_matrix: sparse.csr_matrix | None = None
 
     enabled: bool = True
 
@@ -154,6 +155,7 @@ class DiffusionOperator:
             west_coeff=zeros,
             diagonal=zeros,
             matrix=None,
+            off_diagonal_matrix=None,
             enabled=False,
         )
 
@@ -171,6 +173,40 @@ class DiffusionOperator:
             south_term[0, :] = 0.0
 
         return north_term + south_term + east_term + west_term
+
+    def linearised_tendency(self) -> tuple[np.ndarray, sparse.csr_matrix | None]:
+        """Return diagonal and off-diagonal pieces of the diffusion Jacobian."""
+
+        diag = np.zeros_like(self.diagonal)
+        if not self.enabled:
+            return diag, None
+
+        diag = self.diagonal.copy()
+
+        if self.matrix is None:
+            self.matrix = _assemble_sparse_matrix(
+                self.north_coeff,
+                self.south_coeff,
+                self.east_coeff,
+                self.west_coeff,
+                self.diagonal,
+            )
+
+        if self.off_diagonal_matrix is None:
+            base_matrix = self.matrix
+            if not sparse.isspmatrix_csr(base_matrix):
+                base_matrix = base_matrix.tocsr()
+
+            diag_matrix = sparse.diags(diag.ravel(), format="csr")
+            off_diag = base_matrix - diag_matrix
+            off_diag.eliminate_zeros()
+
+            if off_diag.nnz == 0:
+                self.off_diagonal_matrix = sparse.csr_matrix(base_matrix.shape)
+            else:
+                self.off_diagonal_matrix = off_diag
+
+        return diag, self.off_diagonal_matrix
 
 @dataclass
 class LayeredDiffusionOperator:
