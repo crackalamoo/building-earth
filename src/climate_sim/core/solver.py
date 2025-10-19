@@ -26,6 +26,7 @@ from climate_sim.physics.sensible_heat_exchange import (
     SensibleHeatExchangeConfig,
     SensibleHeatExchangeModel,
 )
+from climate_sim.physics.atmosphere import adjust_temperature_by_elevation
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.physics.solar import compute_monthly_insolation_field
@@ -34,7 +35,10 @@ from climate_sim.data.landmask import (
     compute_heat_capacity_field,
     compute_land_mask,
 )
-from climate_sim.data.elevation import compute_cell_roughness_length
+from climate_sim.data.elevation import (
+    compute_cell_elevation,
+    compute_cell_roughness_length,
+)
 
 NEWTON_STEP_TOLERANCE_K = 1.0
 PERIODIC_FIXED_POINT_TOLERANCE_K = 1.0
@@ -42,6 +46,7 @@ NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
+ATMOSPHERE_REFERENCE_HEIGHT_M = 5000.0
 
 
 @dataclass
@@ -156,6 +161,7 @@ RhsFactory = Callable[
         np.ndarray,
         LayeredDiffusionOperator,
         RadiationConfig,
+        np.ndarray,
         np.ndarray,
         np.ndarray,
         SensibleHeatExchangeConfig,
@@ -579,6 +585,7 @@ def solve_periodic_cycle_for_albedo(
     solver_cache: LinearSolveCache,
     land_mask: np.ndarray,
     roughness_length: np.ndarray,
+    topographic_elevation: np.ndarray,
     sensible_heat_cfg: SensibleHeatExchangeConfig,
     albedo_model: AlbedoModel,
 ) -> tuple[ModelState, list[ModelState]]:
@@ -609,6 +616,7 @@ def solve_periodic_cycle_for_albedo(
         radiation_config,
         land_mask,
         roughness_length,
+        topographic_elevation,
         sensible_heat_cfg,
     )
 
@@ -673,8 +681,15 @@ def compute_periodic_cycle_kelvin(
     advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     sensible_heat_config: SensibleHeatExchangeConfig | None = None,
-) -> tuple[np.ndarray, np.ndarray, list[ModelState]]:
-    """Solve for the periodic temperature cycle and return results in Kelvin with the converged albedo field."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[ModelState]]:
+    """Solve for the periodic temperature cycle and return diagnostics.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray, list[ModelState]]
+        Longitude grid, latitude grid, topographic elevation (m), and the
+        monthly model states expressed in Kelvin.
+    """
     lon2d, lat2d = create_lat_lon_grid(resolution_deg)
 
     monthly_insolation_lat = monthly_insolation_lat_fn(lat2d)
@@ -703,6 +718,12 @@ def compute_periodic_cycle_kelvin(
         lat2d,
         land_mask=land_mask,
     )
+
+    if sensible_heat_cfg.include_lapse_rate_elevation:
+        topographic_elevation = compute_cell_elevation(lon2d, lat2d)
+        topographic_elevation = np.maximum(topographic_elevation, 0.0)
+    else:
+        topographic_elevation = np.zeros_like(lon2d, dtype=float)
 
     diffusion_operator = create_diffusion_operator(
         lon2d,
@@ -756,6 +777,7 @@ def compute_periodic_cycle_kelvin(
             solver_cache=solver_cache,
             land_mask=land_mask,
             roughness_length=roughness_length,
+            topographic_elevation=topographic_elevation,
             sensible_heat_cfg=sensible_heat_cfg,
             albedo_model=albedo_model,
         )
@@ -816,7 +838,7 @@ def compute_periodic_cycle_kelvin(
 
     assert monthly is not None
 
-    return lon2d, lat2d, monthly
+    return lon2d, lat2d, topographic_elevation, monthly
 
 
 def compute_periodic_cycle_results(
@@ -869,6 +891,7 @@ def compute_periodic_cycle_results(
         config: RadiationConfig,
         land_mask: np.ndarray,
         roughness_length: np.ndarray,
+        topographic_elevation: np.ndarray,
         sensible_heat_cfg_local: SensibleHeatExchangeConfig,
     ):
         surface_matrix = None
@@ -892,6 +915,7 @@ def compute_periodic_cycle_results(
                 roughness_length_m=roughness_length,
                 surface_heat_capacity_J_m2_K=heat_capacity_field,
                 atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
+                topographic_elevation_m=topographic_elevation,
                 config=sensible_heat_cfg_local,
             )
 
@@ -964,7 +988,7 @@ def compute_periodic_cycle_results(
             config=config,
         )
 
-    lon2d, lat2d, monthly_states = compute_periodic_cycle_kelvin(
+    lon2d, lat2d, topographic_elevation, monthly_states = compute_periodic_cycle_kelvin(
         resolution_deg=resolution_deg,
         monthly_insolation_lat_fn=monthly_insolation_lat_fn,
         heat_capacity_field_fn=heat_capacity_field_fn,
@@ -978,16 +1002,30 @@ def compute_periodic_cycle_results(
     )
 
     monthly_T = np.array([state.temperature for state in monthly_states])
+    temperature_2m_c: np.ndarray | None = None
     if monthly_T.ndim == 3:
         monthly_surface_K = monthly_T
         layers_map = {"surface": monthly_surface_K - 273.15}
     else:
         monthly_surface_K = monthly_T[:, 0]
         monthly_atmosphere_K = monthly_T[:, 1]
+        atmosphere_c = monthly_atmosphere_K - 273.15
+        delta_to_two_m = 2.0 - ATMOSPHERE_REFERENCE_HEIGHT_M
+        if sensible_heat_cfg.include_lapse_rate_elevation:
+            delta_to_two_m = delta_to_two_m + topographic_elevation
+        temperature_2m_c = adjust_temperature_by_elevation(
+            atmosphere_c,
+            delta_to_two_m,
+        )
         layers_map = {
             "surface": monthly_surface_K - 273.15,
-            "atmosphere": monthly_atmosphere_K - 273.15,
+            "atmosphere": atmosphere_c,
         }
+
+    if temperature_2m_c is None:
+        temperature_2m_c = layers_map["surface"].copy()
+
+    layers_map["temperature_2m"] = temperature_2m_c
 
     layers_map["albedo"] = np.array([state.albedo_field for state in monthly_states])
 

@@ -29,9 +29,9 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import (
     SensibleHeatExchangeConfig,
 )
+from climate_sim.physics.atmosphere import adjust_temperature_by_elevation
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
-from climate_sim.physics.atmosphere import adjust_temperature_by_elevation
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.data.landmask import compute_land_mask
@@ -391,7 +391,10 @@ def main() -> None:
         enabled=args.snow,
         latent_heat_enabled=args.latent_heat,
     )
-    sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.bulk_exchange)
+    sensible_heat_config = SensibleHeatExchangeConfig(
+        enabled=args.bulk_exchange,
+        include_lapse_rate_elevation=args.lapse_rate_elevation,
+    )
 
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
@@ -407,15 +410,20 @@ def main() -> None:
     surface_cycle = layers["surface"]
     atmosphere_cycle = layers.get("atmosphere")
 
-    if atmosphere_cycle is None:
-        print(
-            "Warning: atmosphere layer disabled; using surface temperatures as a "
-            "proxy for 2 m land temperatures."
-        )
-        sim_t2m = surface_cycle.copy()
+    temperature_2m = layers.get("temperature_2m")
+
+    if temperature_2m is None:
+        if atmosphere_cycle is None:
+            print(
+                "Warning: atmosphere layer disabled; using surface temperatures as a "
+                "proxy for 2 m land temperatures."
+            )
+            sim_t2m = surface_cycle.copy()
+        else:
+            delta_to_two_m = 2.0 - ATMOSPHERE_REFERENCE_HEIGHT_M
+            sim_t2m = adjust_temperature_by_elevation(atmosphere_cycle, delta_to_two_m)
     else:
-        delta_to_two_m = 2.0 - ATMOSPHERE_REFERENCE_HEIGHT_M
-        sim_t2m = adjust_temperature_by_elevation(atmosphere_cycle, delta_to_two_m)
+        sim_t2m = temperature_2m
 
     lat_sim = lat2d[:, 0]
     lon_sim = lon2d[0, :]

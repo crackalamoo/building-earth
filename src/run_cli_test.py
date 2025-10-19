@@ -106,7 +106,10 @@ def main() -> None:
         enabled=args.snow,
         latent_heat_enabled=args.latent_heat,
     )
-    sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.bulk_exchange)
+    sensible_heat_config = SensibleHeatExchangeConfig(
+        enabled=args.bulk_exchange,
+        include_lapse_rate_elevation=args.lapse_rate_elevation,
+    )
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
