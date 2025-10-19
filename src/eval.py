@@ -15,6 +15,9 @@ import os
 from pathlib import Path
 from typing import Iterable
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import numpy as np
 import pooch
 import xarray as xr
@@ -244,6 +247,8 @@ def build_reference_climatology(mask_path: Path | None) -> xr.Dataset:
 
     t_land = land_ds["air"].sel(time=slice(BASELINE_START, BASELINE_END))
     t_sst = sst_ds["sst"].sel(time=slice(BASELINE_START, BASELINE_END))
+    t_land -= 273.15  # K to °C
+    # t_sst is already in °C
 
     t_land_1deg = regrid_1deg(t_land)
     t_sst_1deg = regrid_1deg(t_sst)
