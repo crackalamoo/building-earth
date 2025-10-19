@@ -21,6 +21,21 @@ from climate_sim.utils.temperature import convert_temperature, temperature_unit
 from dotenv import load_dotenv
 load_dotenv()
 
+MONTH_NAMES = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
+
 
 def _build_configs(
     *,
@@ -319,16 +334,26 @@ def main() -> None:
     vmax = max_abs_display if max_abs_display > 0 else 1.0
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
+    with np.errstate(invalid="ignore"):
+        anomalies_with_mean = {
+            name: np.concatenate(
+                [field, np.nanmean(field, axis=0, keepdims=True)],
+                axis=0,
+            )
+            for name, field in anomalies.items()
+        }
+
     plot_layered_monthly_temperature_cycle(
         lon2d,
         lat2d,
-        anomalies,
+        anomalies_with_mean,
         title=f"Experiment − Baseline Temperature Anomalies ({unit})",
         cmap=cmocean.cm.balance,
         norm=norm,
         colorbar_label=f"Temperature anomaly ({unit})",
         use_fahrenheit=args.fahrenheit,
         value_is_delta=True,
+        month_labels=[*MONTH_NAMES, "Annual mean"],
     )
 
 

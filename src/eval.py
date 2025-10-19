@@ -473,10 +473,28 @@ def plot_baseline_and_anomaly(
     norm = Normalize(vmin=-display_max, vmax=display_max)
     unit = temperature_unit(use_fahrenheit)
 
+    monthly_labels = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ]
+    with np.errstate(invalid="ignore"):
+        annual_mean = np.nanmean(anomaly, axis=0, keepdims=True)
+    anomaly_with_mean = np.concatenate([anomaly, annual_mean], axis=0)
+
     plot_monthly_temperature_cycle(
         lon2d,
         lat2d,
-        anomaly,
+        anomaly_with_mean,
         title="Simulation − NOAA Surface Anomaly",
         cmap=cmap,
         norm=norm,
@@ -484,6 +502,7 @@ def plot_baseline_and_anomaly(
         use_fahrenheit=use_fahrenheit,
         value_is_delta=True,
         missing_label="No NOAA observations",
+        month_labels=[*monthly_labels, "Annual mean"],
     )
 
 

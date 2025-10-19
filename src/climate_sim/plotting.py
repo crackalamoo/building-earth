@@ -233,6 +233,7 @@ def plot_monthly_temperature_cycle(
     value_is_delta: bool = False,
     missing_color: str = "#4A1486",
     missing_label: str | None = "Missing data",
+    month_labels: Sequence[str] | None = None,
 ) -> None:
     """Interactive monthly cycle viewer driven by a slider."""
     plot_layered_monthly_temperature_cycle(
@@ -248,6 +249,7 @@ def plot_monthly_temperature_cycle(
         value_is_delta=value_is_delta,
         missing_color=missing_color,
         missing_label=missing_label,
+        month_labels=month_labels,
     )
 
 
@@ -265,6 +267,7 @@ def plot_layered_monthly_temperature_cycle(
     value_is_delta: bool = False,
     missing_color: str = "#4A1486",
     missing_label: str | None = "Missing data",
+    month_labels: Sequence[str] | None = None,
 ) -> None:
     """Interactive monthly cycle viewer with month slider and layer selector."""
 
@@ -287,23 +290,28 @@ def plot_layered_monthly_temperature_cycle(
         if field.shape != reference_shape:
             raise ValueError("All layer fields must share the same shape")
 
-    if reference_shape[0] != 12:
-        raise ValueError("Expected 12 monthly slices per layer")
+    n_months = reference_shape[0]
+    if month_labels is None:
+        if n_months != 12:
+            raise ValueError("Expected 12 monthly slices per layer when month_labels is not provided")
+        month_labels = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ]
 
-    month_names = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ]
+    month_label_list = [str(label) for label in month_labels]
+    if len(month_label_list) != n_months:
+        raise ValueError("Number of month_labels must match the leading dimension of the layer fields")
 
     unit = temperature_unit(use_fahrenheit)
     default_cmap, bounds = build_temperature_cmap(unit=unit[-1])
@@ -359,7 +367,7 @@ def plot_layered_monthly_temperature_cycle(
         legend.set_zorder(mesh.get_zorder() + 0.5)
 
     def format_title() -> str:
-        month_label = month_names[current_state["month"]]
+        month_label = month_label_list[current_state["month"]]
         if len(layer_names) == 1:
             return f"{title} – {month_label}"
         layer_label = layer_names[current_state["layer"]]
@@ -380,11 +388,12 @@ def plot_layered_monthly_temperature_cycle(
         slider_ax,
         label="Month",
         valmin=0,
-        valmax=11,
+        valmax=n_months - 1,
         valinit=current_state["month"],
         valstep=1,
         valfmt="%0.0f",
     )
+    slider.valtext.set_text(month_label_list[current_state["month"]])
 
     current_field = {
         "data": data_stack_display[current_state["layer"]][current_state["month"]]
@@ -450,6 +459,7 @@ def plot_layered_monthly_temperature_cycle(
     def on_update(idx: float) -> None:
         current_state["month"] = int(idx)
         update_plot()
+        slider.valtext.set_text(month_label_list[current_state["month"]])
 
     slider.on_changed(on_update)
 
