@@ -304,7 +304,12 @@ def interpolate_to_sim_grid(ds: xr.Dataset, lat: np.ndarray, lon: np.ndarray) ->
     }
 
     interpolated = ds.drop_vars("land_mask").interp(coords, method="linear")
-    mask_interp = ds["land_mask"].interp(coords, method="nearest")
+
+    # xarray cannot interpolate boolean arrays directly, so cast to float prior to
+    # interpolation and convert back after applying the nearest-neighbor scheme.
+    mask_interp = (
+        ds["land_mask"].astype("float32").interp(coords, method="nearest") >= 0.5
+    )
     interpolated["land_mask"] = mask_interp.astype(bool)
     return interpolated
 
