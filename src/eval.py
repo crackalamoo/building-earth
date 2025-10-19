@@ -463,6 +463,7 @@ def plot_baseline_and_anomaly(
     display_max = float(convert_temperature(max_abs, use_fahrenheit, is_delta=True))
     if display_max <= 0:
         display_max = 0.5
+    display_max = np.minimum(display_max, 10.0)
 
     cmap = cm.get_cmap("RdBu_r")
     norm = Normalize(vmin=-display_max, vmax=display_max)
@@ -553,4 +554,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
