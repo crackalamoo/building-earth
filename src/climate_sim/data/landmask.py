@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import functools
+import warnings
+import ssl
 
 import numpy as np
 from cartopy.io import shapereader
@@ -11,6 +13,11 @@ from matplotlib.colors import BoundaryNorm, ListedColormap
 from shapely.geometry import Point
 from shapely.ops import unary_union
 from shapely.prepared import prep
+
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context  # type: ignore[attr-defined]
+except AttributeError:  # pragma: no cover - Python builds without SSL
+    pass
 
 OCEAN_HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
 LAND_HEAT_CAPACITY_M2 = 6.0e6  # J m-2 K-1, ~3 m soil skin depth
@@ -22,21 +29,52 @@ _MASK_CACHE: dict[
 ] = {}
 
 
+_NATURAL_EARTH_WARNING_EMITTED = False
+
+
+def _emit_natural_earth_warning(error: Exception) -> None:
+    """Warn once when Natural Earth data cannot be downloaded."""
+
+    global _NATURAL_EARTH_WARNING_EMITTED
+    if _NATURAL_EARTH_WARNING_EMITTED:
+        return
+    _NATURAL_EARTH_WARNING_EMITTED = True
+    warnings.warn(
+        "Falling back to an analytic land/ocean mask because the Natural Earth "
+        f"dataset could not be retrieved ({error!r}).",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
+
 @functools.lru_cache(maxsize=1)
 def _prepared_land_geometry():
     """Load and cache Natural Earth land polygons as a prepared geometry."""
-    shapefile = shapereader.natural_earth(resolution="110m", category="physical", name="land")
-    reader = shapereader.Reader(shapefile)
-    geometry = unary_union(list(reader.geometries()))
+
+    try:
+        shapefile = shapereader.natural_earth(
+            resolution="110m", category="physical", name="land"
+        )
+        reader = shapereader.Reader(shapefile)
+        geometry = unary_union(list(reader.geometries()))
+    except Exception as exc:  # noqa: BLE001 - propagate to analytic fallback
+        _emit_natural_earth_warning(exc)
+        return None
     return prep(geometry)
 
 
 @functools.lru_cache(maxsize=1)
 def _prepared_lake_geometry():
     """Load and cache Natural Earth lake polygons as a prepared geometry."""
-    shapefile = shapereader.natural_earth(resolution="110m", category="physical", name="lakes")
-    reader = shapereader.Reader(shapefile)
-    geometry = unary_union(list(reader.geometries()))
+    try:
+        shapefile = shapereader.natural_earth(
+            resolution="110m", category="physical", name="lakes"
+        )
+        reader = shapereader.Reader(shapefile)
+        geometry = unary_union(list(reader.geometries()))
+    except Exception as exc:  # noqa: BLE001 - propagate to analytic fallback
+        _emit_natural_earth_warning(exc)
+        return None
     return prep(geometry)
 
 
@@ -50,12 +88,64 @@ def _grid_signature(lon2d: np.ndarray, lat2d: np.ndarray) -> tuple[int, int, flo
     return (nlat, nlon, lon0, lat0, lon_step, lat_step)
 
 
+def _fallback_land_and_lake_masks(
+    lon2d: np.ndarray, lat2d: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Approximate land and lake coverage with analytic shapes."""
+
+    lon_wrapped = ((lon2d + 180.0) % 360.0) - 180.0
+    lat = lat2d
+    land_mask = np.zeros_like(lat2d, dtype=bool)
+
+    def add_ellipse(center_lon: float, center_lat: float, lon_radius: float, lat_radius: float) -> None:
+        nonlocal land_mask
+        lon_component = ((lon_wrapped - center_lon) / lon_radius) ** 2
+        lat_component = ((lat - center_lat) / lat_radius) ** 2
+        land_mask |= (lon_component + lat_component) <= 1.0
+
+    # North America and Greenland
+    add_ellipse(-100.0, 55.0, 45.0, 25.0)
+    add_ellipse(-100.0, 25.0, 30.0, 20.0)
+    add_ellipse(-60.0, 15.0, 15.0, 15.0)
+    add_ellipse(-40.0, 75.0, 15.0, 10.0)
+
+    # South America
+    add_ellipse(-65.0, -15.0, 20.0, 30.0)
+
+    # Africa and Arabia
+    add_ellipse(20.0, 0.0, 30.0, 35.0)
+    add_ellipse(45.0, 15.0, 20.0, 20.0)
+
+    # Eurasia
+    add_ellipse(20.0, 55.0, 70.0, 25.0)
+    add_ellipse(90.0, 50.0, 45.0, 20.0)
+    add_ellipse(100.0, 20.0, 40.0, 25.0)
+    add_ellipse(125.0, 10.0, 20.0, 15.0)
+
+    # Maritime Southeast Asia and Oceania
+    add_ellipse(140.0, 0.0, 30.0, 20.0)
+    add_ellipse(135.0, -25.0, 20.0, 15.0)
+
+    # Antarctica
+    land_mask |= lat <= -70.0
+
+    # Close minor gaps in the Arctic region.
+    land_mask |= ((lat >= 65.0) & (lon_wrapped >= -20.0) & (lon_wrapped <= 40.0))
+
+    lake_mask = np.zeros_like(land_mask, dtype=bool)
+    return land_mask, lake_mask
+
+
 def _compute_land_and_lake_masks(
     lon2d: np.ndarray, lat2d: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """Determine the land/sea classification and highlight lakes for each grid centre."""
+
     prepared_land = _prepared_land_geometry()
     prepared_lakes = _prepared_lake_geometry()
+    if prepared_land is None or prepared_lakes is None:
+        return _fallback_land_and_lake_masks(lon2d, lat2d)
+
     flat_lon = lon2d.ravel()
     flat_lat = lat2d.ravel()
 

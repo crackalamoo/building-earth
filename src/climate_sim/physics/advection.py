@@ -22,6 +22,8 @@ from climate_sim.core.math_core import (
 )
 from climate_sim.data.landmask import compute_land_mask
 
+DEFAULT_LAND_ROUGHNESS_LENGTH_M = 0.05
+
 def compute_surface_roughness(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
@@ -37,7 +39,13 @@ def compute_surface_roughness(
     land_mask_bool = np.asarray(land_mask, dtype=bool)
 
     elevation_data = load_elevation_data()
-    assert elevation_data is not None, "Elevation data could not be loaded"
+    if elevation_data is None:
+        roughness_map = np.where(
+            land_mask_bool,
+            DEFAULT_LAND_ROUGHNESS_LENGTH_M,
+            WATER_ROUGHNESS_LENGTH_M,
+        )
+        return neutral_drag_from_roughness_length(roughness_map)
     land_shape = land_mask_bool.shape
 
     lat_centers = lat2d[:, 0]
@@ -207,10 +215,12 @@ class AdvectionModel:
         )
 
         elevation_data = load_elevation_data()
-        assert elevation_data is not None, "Elevation data could not be loaded"
-        self.elevation_m = compute_cell_elevation(
-            self._lon2d, self._lat2d, data=elevation_data, sample_method="center"
-        )
+        if elevation_data is None:
+            self.elevation_m = np.zeros_like(self._lon2d)
+        else:
+            self.elevation_m = compute_cell_elevation(
+                self._lon2d, self._lat2d, data=elevation_data, sample_method="center"
+            )
         self.elevation_m = np.maximum(self.elevation_m, 0.0)
 
     @property

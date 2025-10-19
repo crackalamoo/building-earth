@@ -2,12 +2,23 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 import urllib.request
+import warnings
 
 import numpy as np
 import rioxarray
 from PIL import Image
 from functools import lru_cache
 import xarray as xr
+
+_ELEVATION_WARNING_EMITTED = False
+
+
+def _emit_elevation_warning(message: str) -> None:
+    global _ELEVATION_WARNING_EMITTED
+    if _ELEVATION_WARNING_EMITTED:
+        return
+    _ELEVATION_WARNING_EMITTED = True
+    warnings.warn(message, RuntimeWarning, stacklevel=2)
 
 VON_KARMAN_CONSTANT = 0.4
 REFERENCE_HEIGHT_M = 10.0
@@ -37,17 +48,25 @@ def _wrap_longitudes(lon_deg: np.ndarray) -> np.ndarray:
 def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
     """Return an elevation dataset registered to WGS84 coordinates."""
 
+    dataset_path: Path | None
     if path is None:
         data_dir = os.getenv("DATA_DIR")
         if data_dir is None:
-            raise ValueError("Please set the DATA_DIR environment variable.")
+            _emit_elevation_warning(
+                "Elevation dataset unavailable because DATA_DIR is not configured; "
+                "using a flat surface instead."
+            )
+            return None
         data_dir = Path(data_dir)
+        dataset_path = data_dir / "etopo_60s.tif"
+    else:
+        dataset_path = Path(path)
 
-        path = data_dir / "etopo_60s.tif"
-
-    dataset_path = Path(path)
     if not dataset_path.exists():
-        raise FileNotFoundError(f"Elevation data file not found at {dataset_path}")
+        _emit_elevation_warning(
+            f"Elevation data file not found at {dataset_path}. Using a flat surface instead."
+        )
+        return None
 
     data = rioxarray.open_rasterio(dataset_path)
     assert isinstance(data, xr.DataArray)
@@ -127,7 +146,7 @@ def compute_cell_elevation(
 
     res = np.nan_to_num(values, nan=0.0)
 
-    if cache:
+    if cache and dataset is not None:
         # save to disk
         data_dir = os.getenv("DATA_DIR")
         assert data_dir is not None, "Please set the DATA_DIR environment variable to enable elevation caching."

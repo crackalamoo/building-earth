@@ -726,12 +726,12 @@ def compute_periodic_cycle_kelvin(
     else:
         albedo_kwargs = {}
 
-    base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
-    current_albedo_field = base_albedo_field
+    base_surface_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
+    current_albedo_field = base_surface_albedo_field
 
     atmosphere_albedo_field: np.ndarray | None
     if clouds:
-        atmosphere_albedo_field = np.where(land_mask, 0.18, 0.22)
+        atmosphere_albedo_field = np.where(land_mask, 0.12, 0.18)
     else:
         atmosphere_albedo_field = None
 
@@ -741,11 +741,8 @@ def compute_periodic_cycle_kelvin(
         land_mask=land_mask,
     )
 
-    if sensible_heat_cfg.include_lapse_rate_elevation:
-        topographic_elevation = compute_cell_elevation(lon2d, lat2d)
-        topographic_elevation = np.maximum(topographic_elevation, 0.0)
-    else:
-        topographic_elevation = np.zeros_like(lon2d, dtype=float)
+    topographic_elevation = compute_cell_elevation(lon2d, lat2d)
+    topographic_elevation = np.maximum(topographic_elevation, 0.0)
 
     diffusion_operator = create_diffusion_operator(
         lon2d,
@@ -815,7 +812,7 @@ def compute_periodic_cycle_kelvin(
         snow_converged = True
         if snow_cfg.enabled:
             updated_albedo = albedo_model.apply_snow_albedo(
-                base_albedo_field,
+                base_surface_albedo_field,
                 surface_temperatures,
             )
             snow_converged = np.array_equal(updated_albedo, current_albedo_field)
@@ -1043,9 +1040,7 @@ def compute_periodic_cycle_results(
         monthly_surface_K = monthly_T[:, 0]
         monthly_atmosphere_K = monthly_T[:, 1]
         atmosphere_c = monthly_atmosphere_K - 273.15
-        delta_to_two_m = 2.0 - ATMOSPHERE_REFERENCE_HEIGHT_M
-        if sensible_heat_cfg.include_lapse_rate_elevation:
-            delta_to_two_m = delta_to_two_m + topographic_elevation
+        delta_to_two_m = 2.0 - ATMOSPHERE_REFERENCE_HEIGHT_M + topographic_elevation
         temperature_2m_c = adjust_temperature_by_elevation(
             atmosphere_c,
             delta_to_two_m,
@@ -1060,11 +1055,23 @@ def compute_periodic_cycle_results(
 
     layers_map["temperature_2m"] = temperature_2m_c
 
-    layers_map["albedo"] = np.array([state.albedo_field for state in monthly_states])
-
+    surface_albedo_stack = np.array([state.albedo_field for state in monthly_states])
     atmosphere_albedo_fields = [state.atmosphere_albedo_field for state in monthly_states]
+
+    layers_map["surface_albedo"] = surface_albedo_stack
+
+    alpha_sw = resolved_radiation.shortwave_absorptance_atmosphere
     if all(field is not None for field in atmosphere_albedo_fields):
-        layers_map["atmosphere_albedo"] = np.stack(atmosphere_albedo_fields, axis=0)
+        atmosphere_stack = np.stack(atmosphere_albedo_fields, axis=0)
+        layers_map["atmosphere_albedo"] = atmosphere_stack
+        combined_albedo = radiation.combine_surface_and_atmosphere_albedo(
+            surface_albedo_stack,
+            atmosphere_stack,
+            shortwave_absorptance_atmosphere=alpha_sw,
+        )
+        layers_map["albedo"] = combined_albedo
+    else:
+        layers_map["albedo"] = surface_albedo_stack
 
     wind_fields = [state.wind_field for state in monthly_states]
     if all(wind is not None for wind in wind_fields):
