@@ -14,7 +14,6 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
-from climate_sim.physics.atmosphere import adjust_temperature_by_elevation
 from climate_sim.runtime.cli import (
     add_boolean_flag,
     add_resolution_argument,
@@ -150,12 +149,30 @@ def main() -> None:
     )
     add_boolean_flag(
         parser,
+        dest="base_lapse_rate_elevation",
+        default=False,
+        enable_option="--base-lapse-rate-elevation",
+        disable_option="--no-base-lapse-rate-elevation",
+        help_enable="Include lapse-rate elevation corrections in the baseline case",
+        help_disable="Ignore lapse-rate elevation in the baseline case (default)",
+    )
+    add_boolean_flag(
+        parser,
         dest="experiment_bulk_exchange",
         default=True,
         enable_option="--exp-bulk-exchange",
         disable_option="--no-exp-bulk-exchange",
         help_enable="Enable bulk sensible heat exchange in the experiment case (default)",
         help_disable="Disable bulk sensible heat exchange in the experiment case",
+    )
+    add_boolean_flag(
+        parser,
+        dest="experiment_lapse_rate_elevation",
+        default=False,
+        enable_option="--exp-lapse-rate-elevation",
+        disable_option="--no-exp-lapse-rate-elevation",
+        help_enable="Include lapse-rate elevation corrections in the experiment case",
+        help_disable="Ignore lapse-rate elevation in the experiment case (default)",
     )
     add_temperature_unit_argument(
         parser,
@@ -182,8 +199,14 @@ def main() -> None:
         latent_heat_enabled=args.experiment_latent_heat,
     )
 
-    base_sensible_heat = SensibleHeatExchangeConfig(enabled=args.base_bulk_exchange)
-    exp_sensible_heat = SensibleHeatExchangeConfig(enabled=args.experiment_bulk_exchange)
+    base_sensible_heat = SensibleHeatExchangeConfig(
+        enabled=args.base_bulk_exchange,
+        include_lapse_rate_elevation=args.base_lapse_rate_elevation,
+    )
+    exp_sensible_heat = SensibleHeatExchangeConfig(
+        enabled=args.experiment_bulk_exchange,
+        include_lapse_rate_elevation=args.experiment_lapse_rate_elevation,
+    )
 
     lon2d, lat2d, base_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
@@ -215,14 +238,9 @@ def main() -> None:
     if base_atmosphere is not None and exp_atmosphere is not None:
         anomalies["Atmosphere"] = exp_atmosphere - base_atmosphere
 
-        atmosphere_height = 5000  # effective emission layer height (m)
-        delta_to_two_m = 2.0 - atmosphere_height
-        base_two_meter = adjust_temperature_by_elevation(
-            base_atmosphere, delta_to_two_m
-        )
-        exp_two_meter = adjust_temperature_by_elevation(
-            exp_atmosphere, delta_to_two_m
-        )
+    base_two_meter = base_layers.get("temperature_2m")
+    exp_two_meter = exp_layers.get("temperature_2m")
+    if base_two_meter is not None and exp_two_meter is not None:
         anomalies["Two-meter"] = exp_two_meter - base_two_meter
 
     base_summary = {
@@ -232,6 +250,7 @@ def main() -> None:
         "snow": args.base_snow,
         "latent_heat": args.base_latent_heat,
         "bulk_exchange": args.base_bulk_exchange,
+        "lapse_rate_elevation": args.base_lapse_rate_elevation,
     }
     exp_summary = {
         "elliptical_orbit": args.experiment_elliptical_orbit,
@@ -240,6 +259,7 @@ def main() -> None:
         "snow": args.experiment_snow,
         "latent_heat": args.experiment_latent_heat,
         "bulk_exchange": args.experiment_bulk_exchange,
+        "lapse_rate_elevation": args.experiment_lapse_rate_elevation,
     }
 
     print("Baseline configuration:", _summarize(base_summary))

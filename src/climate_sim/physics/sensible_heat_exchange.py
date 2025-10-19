@@ -31,6 +31,7 @@ class SensibleHeatExchangeConfig:
     reference_height_surface_m: float = 10.0
     land_reference_height_m: float = 1000.0
     ocean_reference_height_m: float = 500.0
+    include_lapse_rate_elevation: bool = False
 
 
 class SensibleHeatExchangeModel:
@@ -43,6 +44,7 @@ class SensibleHeatExchangeModel:
         roughness_length_m: np.ndarray,
         surface_heat_capacity_J_m2_K: np.ndarray,
         atmosphere_heat_capacity_J_m2_K: np.ndarray | float,
+        topographic_elevation_m: np.ndarray | None = None,
         config: SensibleHeatExchangeConfig | None = None,
     ) -> None:
         self._config = config or SensibleHeatExchangeConfig()
@@ -51,6 +53,10 @@ class SensibleHeatExchangeModel:
         roughness = np.asarray(roughness_length_m, dtype=float)
         heat_capacity_surface = np.asarray(surface_heat_capacity_J_m2_K, dtype=float)
         heat_capacity_atmosphere = np.asarray(atmosphere_heat_capacity_J_m2_K, dtype=float)
+        if topographic_elevation_m is None:
+            topographic = np.zeros_like(land_mask_bool, dtype=float)
+        else:
+            topographic = np.asarray(topographic_elevation_m, dtype=float)
 
         if land_mask_bool.shape != roughness.shape:
             raise ValueError("Land mask and roughness fields must share the same shape")
@@ -60,6 +66,8 @@ class SensibleHeatExchangeModel:
             raise ValueError(
                 "Atmospheric heat capacity must be scalar or match the land mask shape"
             )
+        if topographic.shape != land_mask_bool.shape:
+            raise ValueError("Topographic elevation must match the land mask shape")
 
         if heat_capacity_atmosphere.shape == ():
             heat_capacity_atmosphere = np.full(
@@ -70,6 +78,7 @@ class SensibleHeatExchangeModel:
         self._land_mask = land_mask_bool
         self._surface_heat_capacity = np.maximum(heat_capacity_surface, 1.0e-9)
         self._atmosphere_heat_capacity = np.maximum(heat_capacity_atmosphere, 1.0e-9)
+        self._topographic_elevation = np.maximum(topographic, 0.0)
 
         self._reference_height_atmosphere = np.where(
             land_mask_bool,
@@ -134,9 +143,13 @@ class SensibleHeatExchangeModel:
         wind_speed_10m = self._wind_speed_10m(wind_speed_reference_m_s)
 
         atmosphere_temperature_c = atmosphere_temperature - 273.15
+        elevation_delta = self._elevation_delta_to_surface
+        if self._config.include_lapse_rate_elevation:
+            elevation_delta = elevation_delta + self._topographic_elevation
+
         near_surface_air_c = adjust_temperature_by_elevation(
             atmosphere_temperature_c,
-            self._elevation_delta_to_surface,
+            elevation_delta,
         )
         near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 1.0)
 

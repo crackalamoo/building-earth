@@ -135,6 +135,15 @@ def add_common_model_arguments(
     )
     add_boolean_flag(
         parser,
+        dest="lapse_rate_elevation",
+        default=False,
+        enable_option="--lapse-rate-elevation",
+        disable_option="--no-lapse-rate-elevation",
+        help_enable="Apply lapse-rate adjustments using topographic elevation",
+        help_disable="Ignore topographic elevation in lapse-rate adjustments (default)",
+    )
+    add_boolean_flag(
+        parser,
         dest="elliptical_orbit",
         default=True,
         enable_option="--elliptical-orbit",

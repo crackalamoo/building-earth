@@ -22,7 +22,6 @@ from climate_sim.plotting import (
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.physics.atmosphere import (
-    adjust_temperature_by_elevation,
     log_law_map_wind_speed,
 )
 from climate_sim.data.constants import R_EARTH_METERS
@@ -60,7 +59,10 @@ def main() -> None:
         enabled=args.snow,
         latent_heat_enabled=args.latent_heat,
     )
-    sensible_heat_config = SensibleHeatExchangeConfig(enabled=args.bulk_exchange)
+    sensible_heat_config = SensibleHeatExchangeConfig(
+        enabled=args.bulk_exchange,
+        include_lapse_rate_elevation=args.lapse_rate_elevation,
+    )
     print(f"Configuration setup took {time.time() - start:.2f} seconds")
 
     start = time.time()
@@ -125,12 +127,9 @@ def main() -> None:
     if atmosphere_cycle is not None:
         layer_cycles["Atmosphere"] = atmosphere_cycle
 
-        atmosphere_height = 5000  # height of effective emission layer in meters
-        delta_to_two_m = 2.0 - atmosphere_height
-        atmosphere_2m_cycle = adjust_temperature_by_elevation(
-            atmosphere_cycle, delta_to_two_m
-        )
-        layer_cycles["Atmosphere (2 m)"] = atmosphere_2m_cycle
+        atmosphere_2m_cycle = layers.get("temperature_2m")
+        if atmosphere_2m_cycle is not None:
+            layer_cycles["Atmosphere (2 m)"] = atmosphere_2m_cycle
 
     wind_u = layers.get("wind_u")
     wind_v = layers.get("wind_v")
