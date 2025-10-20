@@ -22,7 +22,7 @@ def build_temperature_cmap(
     unit: str = "C",
 ) -> tuple[LinearSegmentedColormap, np.ndarray]:
     """Custom temperature ramp with category-aware transitions."""
-    bounds = np.array([-30.0, 0.0, 15.0, 20.0, 25.0, 30.0, 45.0])
+    bounds = np.array([-30.0, 0.0, 0.0, 10.0, 21.0, 25.0, 30.0, 40.0])
     colors = [
         "#0B1E6D",  # deep cold blue (<0 °C)
         "#1E88E5",  # cooler blue
@@ -30,7 +30,8 @@ def build_temperature_cmap(
         "#66BB6A",  # green (15–20 °C)
         "#FFEB3B",  # yellow (20–25 °C)
         "#FB8C00",  # orange (25–30 °C)
-        "#D32F2F",  # red (30+ °C)
+        "#D32F2F",  # red (30 °C)
+        "#B5382A",  # deep red (40 °C)
     ]
     normalized = (bounds - bounds[0]) / (bounds[-1] - bounds[0])
     cmap = LinearSegmentedColormap.from_list(
