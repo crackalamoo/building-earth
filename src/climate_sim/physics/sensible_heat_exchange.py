@@ -7,9 +7,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from climate_sim.physics.atmosphere import (
-    STANDARD_LAPSE_RATE_K_PER_M,
-    adjust_temperature_by_elevation,
+    compute_two_meter_temperature,
     log_law_map_wind_speed,
+    STANDARD_LAPSE_RATE_K_PER_M
 )
 from climate_sim.data.constants import GAS_CONSTANT_J_KG_K, HEAT_CAPACITY_AIR_J_KG_K
 from climate_sim.data.elevation import (
@@ -28,8 +28,6 @@ class SensibleHeatExchangeConfig:
     lapse_rate_K_per_m: float = STANDARD_LAPSE_RATE_K_PER_M
     minimum_wind_speed_m_s: float = 0.1
     reference_height_surface_m: float = 2.0
-    land_reference_height_m: float = 400.0
-    ocean_reference_height_m: float = 1000.0
     include_lapse_rate_elevation: bool = False
 
 
@@ -79,12 +77,9 @@ class SensibleHeatExchangeModel:
         self._atmosphere_heat_capacity = np.maximum(heat_capacity_atmosphere, 1.0e-9)
         self._topographic_elevation = np.maximum(topographic, 0.0)
 
-        self._reference_height_atmosphere = np.where(
-            land_mask_bool,
-            self._config.land_reference_height_m,
-            self._config.ocean_reference_height_m,
-        )
-        self._elevation_delta_to_surface = - self._reference_height_atmosphere
+        # Atmosphere reference height no longer configurable here; two-meter
+        # temperature is computed via compute_two_meter_temperature.
+        self._elevation_delta_to_surface = np.zeros_like(land_mask_bool, dtype=float)
 
     @property
     def enabled(self) -> bool:
@@ -134,13 +129,14 @@ class SensibleHeatExchangeModel:
         wind_speed_10m = self._wind_speed_10m(wind_speed_reference_m_s)
 
         atmosphere_temperature_c = atmosphere_temperature - 273.15
-        elevation_delta = self._elevation_delta_to_surface - self._config.reference_height_surface_m
-        if self._config.include_lapse_rate_elevation:
-            elevation_delta = elevation_delta + self._topographic_elevation
-
-        near_surface_air_c = adjust_temperature_by_elevation(
+        near_surface_air_c = compute_two_meter_temperature(
             atmosphere_temperature_c,
-            elevation_delta,
+            surface_temperature - 273.15,
+            atmosphere_reference_height_m=5000.0,  # representative free-air node
+            topographic_elevation_m=(
+                self._topographic_elevation if self._config.include_lapse_rate_elevation else None
+            ),
+            include_lapse_rate_elevation=self._config.include_lapse_rate_elevation,
         )
         near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 10.0)
 

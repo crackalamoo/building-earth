@@ -165,14 +165,8 @@ def main() -> None:
             lat2d,
             land_mask=land_mask_bool,
         )
-        height_ref_land_m = sensible_heat_config.land_reference_height_m
-        height_ref_ocean_m = sensible_heat_config.ocean_reference_height_m
+        height_ref_field = np.where(land_mask_bool, 400.0, 1000.0)
         height_target_m = sensible_heat_config.reference_height_surface_m
-        height_ref_field = np.where(
-            land_mask_bool,
-            height_ref_land_m,
-            height_ref_ocean_m,
-        )
         wind_speed_10 = log_law_map_wind_speed(
             wind_speed,
             height_ref_m=height_ref_field,
