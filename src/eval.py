@@ -254,14 +254,46 @@ def weighted_rmse(diff: np.ndarray, weights: np.ndarray) -> float:
     return float(rmse)
 
 
+def weighted_mean(diff: np.ndarray, weights: np.ndarray) -> float:
+    """Compute the area-weighted mean (bias), ignoring NaNs."""
+
+    diff_array = np.asarray(diff, dtype=float)
+    weights_2d = np.asarray(weights, dtype=float)
+
+    if diff_array.ndim == 2:
+        weights_b = weights_2d
+    elif diff_array.ndim == 3:
+        weights_b = np.broadcast_to(weights_2d, diff_array.shape)
+    else:
+        raise ValueError("diff must be 2-D or 3-D")
+
+    valid = np.isfinite(diff_array) & np.isfinite(weights_b) & (weights_b > 0)
+    if not np.any(valid):
+        return float("nan")
+
+    weights_valid = weights_b[valid]
+    total_weight = np.sum(weights_valid)
+    if total_weight <= 0:
+        return float("nan")
+
+    mean_val = np.sum(weights_valid * diff_array[valid]) / total_weight
+    return float(mean_val)
+
+
 def compute_rmse_statistics(
     sim_surface: np.ndarray,
     sim_t2m: np.ndarray,
     obs: xr.Dataset,
     land_mask: np.ndarray,
     cell_areas: np.ndarray,
-) -> tuple[list[dict[str, float]], dict[str, float], np.ndarray]:
-    """Return monthly RMSE values, annual RMSE values, and anomaly fields."""
+) -> tuple[
+    list[dict[str, float]],
+    dict[str, float],
+    list[dict[str, float]],
+    dict[str, float],
+    np.ndarray,
+]:
+    """Return monthly/annual RMSE and bias values, and anomaly fields."""
 
     weights_land = cell_areas * land_mask
     weights_ocean = cell_areas * (~land_mask)
@@ -276,23 +308,36 @@ def compute_rmse_statistics(
     ocean_diff = sim_surface - obs_sst
     global_diff = sim_combined - obs_surface
 
-    monthly_results: list[dict[str, float]] = []
+    monthly_rmse: list[dict[str, float]] = []
+    monthly_bias: list[dict[str, float]] = []
     for month_idx in range(sim_surface.shape[0]):
-        monthly_results.append(
+        monthly_rmse.append(
             {
                 "land": weighted_rmse(land_diff[month_idx], weights_land),
                 "ocean": weighted_rmse(ocean_diff[month_idx], weights_ocean),
                 "global": weighted_rmse(global_diff[month_idx], cell_areas),
             }
         )
+        monthly_bias.append(
+            {
+                "land": weighted_mean(land_diff[month_idx], weights_land),
+                "ocean": weighted_mean(ocean_diff[month_idx], weights_ocean),
+                "global": weighted_mean(global_diff[month_idx], cell_areas),
+            }
+        )
 
-    annual_results = {
+    annual_rmse = {
         "land": weighted_rmse(land_diff, weights_land),
         "ocean": weighted_rmse(ocean_diff, weights_ocean),
         "global": weighted_rmse(global_diff, cell_areas),
     }
+    annual_bias = {
+        "land": weighted_mean(land_diff, weights_land),
+        "ocean": weighted_mean(ocean_diff, weights_ocean),
+        "global": weighted_mean(global_diff, cell_areas),
+    }
 
-    return monthly_results, annual_results, global_diff
+    return monthly_rmse, annual_rmse, monthly_bias, annual_bias, global_diff
 
 
 def format_rmse_table(
@@ -332,6 +377,43 @@ def format_rmse_table(
     print(f"{'Annual':<12}{land_avg:>10}{ocean_avg:>10}{global_avg:>10}")
 
 
+def format_bias_table(
+    monthly: Iterable[dict[str, float]],
+    annual: dict[str, float],
+    use_fahrenheit: bool,
+) -> None:
+    """Print a nicely formatted Bias (area-weighted mean error) table."""
+
+    unit = temperature_unit(use_fahrenheit)
+
+    def convert(value: float) -> float:
+        if not np.isfinite(value):
+            return value
+        return float(convert_temperature(value, use_fahrenheit, is_delta=True))
+
+    def fmt(value: float) -> str:
+        if not np.isfinite(value):
+            return "    —"
+        return f"{value:8.2f}"
+
+    header = f"{'Month':<12}{'Land':>10}{'Ocean':>10}{'Global':>10}"
+    print("\nArea-weighted Bias (" + unit + ")")
+    print(header)
+    print("-" * len(header))
+
+    for name, row in zip(MONTH_NAMES, monthly):
+        land = fmt(convert(row["land"]))
+        ocean = fmt(convert(row["ocean"]))
+        global_bias = fmt(convert(row["global"]))
+        print(f"{name:<12}{land:>10}{ocean:>10}{global_bias:>10}")
+
+    land_avg = fmt(convert(annual["land"]))
+    ocean_avg = fmt(convert(annual["ocean"]))
+    global_avg = fmt(convert(annual["global"]))
+    print("-" * len(header))
+    print(f"{'Annual':<12}{land_avg:>10}{ocean_avg:>10}{global_avg:>10}")
+
+
 def plot_baseline_and_anomaly(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
@@ -341,11 +423,14 @@ def plot_baseline_and_anomaly(
 ) -> None:
     """Generate baseline and anomaly plots."""
 
+    obs_with_annual = np.concatenate(
+        [obs_surface, np.mean(obs_surface, axis=0, keepdims=True)], axis=0
+    )
     plot_monthly_temperature_cycle(
         lon2d,
         lat2d,
-        obs_surface,
-        title="NOAA 1981–2010 Monthly Climatology",
+        obs_with_annual,
+        title="NOAA 1981–2010 Monthly Climatology (incl. annual mean)",
         use_fahrenheit=use_fahrenheit,
     )
 
@@ -427,7 +512,7 @@ def main() -> None:
     land_mask = compute_land_mask(lon2d, lat2d)
     cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m)
 
-    monthly, annual, anomaly = compute_rmse_statistics(
+    monthly_rmse, annual_rmse, monthly_bias, annual_bias, anomaly = compute_rmse_statistics(
         surface_cycle,
         sim_t2m,
         interpolated_obs,
@@ -435,7 +520,8 @@ def main() -> None:
         cell_areas,
     )
 
-    format_rmse_table(monthly, annual, args.fahrenheit)
+    format_rmse_table(monthly_rmse, annual_rmse, args.fahrenheit)
+    format_bias_table(monthly_bias, annual_bias, args.fahrenheit)
 
     plot_baseline_and_anomaly(
         lon2d,

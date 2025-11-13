@@ -26,10 +26,7 @@ from climate_sim.physics.sensible_heat_exchange import (
     SensibleHeatExchangeConfig,
     SensibleHeatExchangeModel,
 )
-from climate_sim.physics.atmosphere import (
-    adjust_temperature_by_elevation,
-    compute_two_meter_temperature,
-)
+from climate_sim.physics.atmosphere import compute_two_meter_temperature
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.physics.solar import compute_monthly_insolation_field
