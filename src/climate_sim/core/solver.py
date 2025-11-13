@@ -26,7 +26,10 @@ from climate_sim.physics.sensible_heat_exchange import (
     SensibleHeatExchangeConfig,
     SensibleHeatExchangeModel,
 )
-from climate_sim.physics.atmosphere import adjust_temperature_by_elevation
+from climate_sim.physics.atmosphere import (
+    adjust_temperature_by_elevation,
+    compute_two_meter_temperature,
+)
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.physics.solar import compute_monthly_insolation_field
@@ -1027,12 +1030,12 @@ def compute_periodic_cycle_results(
         monthly_surface_K = monthly_T[:, 0]
         monthly_atmosphere_K = monthly_T[:, 1]
         atmosphere_c = monthly_atmosphere_K - 273.15
-        delta_to_two_m = 2.0 - ATMOSPHERE_REFERENCE_HEIGHT_M
-        if sensible_heat_cfg.include_lapse_rate_elevation:
-            delta_to_two_m = delta_to_two_m + topographic_elevation
-        temperature_2m_c = adjust_temperature_by_elevation(
+        temperature_2m_c = compute_two_meter_temperature(
             atmosphere_c,
-            delta_to_two_m,
+            monthly_surface_K - 273.15,
+            atmosphere_reference_height_m=ATMOSPHERE_REFERENCE_HEIGHT_M,
+            topographic_elevation_m=topographic_elevation,
+            include_lapse_rate_elevation=sensible_heat_cfg.include_lapse_rate_elevation,
         )
         layers_map = {
             "surface": monthly_surface_K - 273.15,

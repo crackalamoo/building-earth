@@ -11,7 +11,7 @@ from climate_sim.physics.atmosphere import (
     adjust_temperature_by_elevation,
     log_law_map_wind_speed,
 )
-from climate_sim.data.constants import GAS_CONSTANT_J_KG_K
+from climate_sim.data.constants import GAS_CONSTANT_J_KG_K, HEAT_CAPACITY_AIR_J_KG_K
 from climate_sim.data.elevation import (
     VON_KARMAN_CONSTANT,
 )
@@ -24,7 +24,6 @@ class SensibleHeatExchangeConfig:
 
     enabled: bool = True
     von_karman: float = VON_KARMAN_CONSTANT
-    heat_capacity_air_J_kg_K: float = 1005.0
     gas_constant_dry_air_J_kg_K: float = GAS_CONSTANT_J_KG_K
     lapse_rate_K_per_m: float = STANDARD_LAPSE_RATE_K_PER_M
     minimum_wind_speed_m_s: float = 0.1
@@ -147,7 +146,6 @@ class SensibleHeatExchangeModel:
 
         gas_constant = self._config.gas_constant_dry_air_J_kg_K
         rho = pressure / (gas_constant * near_surface_air_K)
-        # rho = 1.2
 
         log_height_surface = 10.0
         roughness_momentum = self._roughness
@@ -168,7 +166,7 @@ class SensibleHeatExchangeModel:
         wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
 
         # New: resistive throttling to the free-air node (Ta ~ your atmosphere_temperature)
-        cp = self._config.heat_capacity_air_J_kg_K
+        cp = HEAT_CAPACITY_AIR_J_KG_K
 
         # Surface conductance (W m-2 K-1)
         g_surf = rho * cp * ch * wind_abs
@@ -180,7 +178,7 @@ class SensibleHeatExchangeModel:
         tau = (self._surface_heat_capacity * self._atmosphere_heat_capacity) / (    
             self._surface_heat_capacity + self._atmosphere_heat_capacity
         ) / (rho
-            * self._config.heat_capacity_air_J_kg_K
+            * HEAT_CAPACITY_AIR_J_KG_K
             * ch
             * wind_abs)
         r_mix = tau / Cbl

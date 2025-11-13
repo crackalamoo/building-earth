@@ -408,20 +408,14 @@ def main() -> None:
     )
 
     surface_cycle = layers["surface"]
-    atmosphere_cycle = layers.get("atmosphere")
-
     temperature_2m = layers.get("temperature_2m")
 
     if temperature_2m is None:
-        if atmosphere_cycle is None:
-            print(
-                "Warning: atmosphere layer disabled; using surface temperatures as a "
-                "proxy for 2 m land temperatures."
-            )
-            sim_t2m = surface_cycle.copy()
-        else:
-            delta_to_two_m = 2.0 - ATMOSPHERE_REFERENCE_HEIGHT_M
-            sim_t2m = adjust_temperature_by_elevation(atmosphere_cycle, delta_to_two_m)
+        print(
+            "Warning: atmosphere layer disabled; using surface temperatures as a "
+            "proxy for 2 m land temperatures."
+        )
+        sim_t2m = surface_cycle.copy()
     else:
         sim_t2m = temperature_2m
 
