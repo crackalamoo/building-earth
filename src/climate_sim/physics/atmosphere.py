@@ -36,10 +36,6 @@ def adjust_temperature_by_elevation(
 def compute_two_meter_temperature(
     atmosphere_c: np.ndarray | None,
     surface_c: np.ndarray,
-    *,
-    atmosphere_reference_height_m: float,
-    topographic_elevation_m: np.ndarray | float | None = None,
-    include_lapse_rate_elevation: bool = True,
 ) -> np.ndarray:
     """Compute 2 m air temperature from available layers.
 
@@ -56,13 +52,6 @@ def compute_two_meter_temperature(
         Monthly cycle of atmosphere temperature in °C, or None if unavailable.
     surface_c:
         Monthly cycle of surface temperature in °C.
-    atmosphere_reference_height_m:
-        Reference height of the atmosphere layer (e.g., 5000 m).
-    topographic_elevation_m:
-        Cell elevation in metres. Can be a scalar or array; only used when
-        ``include_lapse_rate_elevation`` is True.
-    include_lapse_rate_elevation:
-        Whether to include topographic elevation in the lapse-rate adjustment.
 
     Returns
     -------
@@ -70,16 +59,13 @@ def compute_two_meter_temperature(
         Monthly cycle of 2 m temperature in °C.
     """
     if atmosphere_c is None:
-        return np.asarray(surface_c, dtype=float).copy()
-
-    delta_to_two_m = 2.0 - float(atmosphere_reference_height_m)
-    if include_lapse_rate_elevation and topographic_elevation_m is not None:
-        delta_to_two_m = delta_to_two_m + np.asarray(topographic_elevation_m, dtype=float)
-
-    return adjust_temperature_by_elevation(
-        np.asarray(atmosphere_c, dtype=float),
-        delta_to_two_m,
-    )
+        return surface_c.copy()
+    Ks = 6
+    Ke = 0.4
+    surface_K = surface_c + 273.15
+    atmosphere_K = atmosphere_c + 273.15
+    Tbl = (Ks*surface_K + Ke*atmosphere_K) / (Ks + Ke) - 273.15
+    return Tbl
 
 def log_law_map_wind_speed(
     wind_speed_ref_m_s: np.ndarray,

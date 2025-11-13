@@ -132,11 +132,6 @@ class SensibleHeatExchangeModel:
         near_surface_air_c = compute_two_meter_temperature(
             atmosphere_temperature_c,
             surface_temperature - 273.15,
-            atmosphere_reference_height_m=5000.0,  # representative free-air node
-            topographic_elevation_m=(
-                self._topographic_elevation if self._config.include_lapse_rate_elevation else None
-            ),
-            include_lapse_rate_elevation=self._config.include_lapse_rate_elevation,
         )
         near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 10.0)
 

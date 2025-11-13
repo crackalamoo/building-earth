@@ -1030,9 +1030,6 @@ def compute_periodic_cycle_results(
         temperature_2m_c = compute_two_meter_temperature(
             atmosphere_c,
             monthly_surface_K - 273.15,
-            atmosphere_reference_height_m=ATMOSPHERE_REFERENCE_HEIGHT_M,
-            topographic_elevation_m=topographic_elevation,
-            include_lapse_rate_elevation=sensible_heat_cfg.include_lapse_rate_elevation,
         )
         layers_map = {
             "surface": monthly_surface_K - 273.15,
