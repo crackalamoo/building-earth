@@ -14,8 +14,8 @@ class SnowAlbedoConfig:
 
     enabled: bool = True
     latent_heat_enabled: bool = True
-    snow_albedo: float = 0.65
-    freeze_temperature_c: float = -2.0
+    snow_albedo: float = 0.45
+    freeze_temperature_c: float = -5.0
     melt_temperature_c: float = 1.0
     picard_iterations: int = 2
     latent_melt_center_K: float = 273.15
