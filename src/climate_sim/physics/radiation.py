@@ -13,7 +13,7 @@ class RadiationConfig:
 
     stefan_boltzmann: float = 5.670374419e-8  # W m-2 K-4
     emissivity_surface: float = 1.0
-    emissivity_atmosphere: float = 0.77
+    emissivity_atmosphere: float = 0.84
     include_atmosphere: bool = True
     atmosphere_heat_capacity: float = 1.0e7  # J m-2 K-1, ~2-3 km troposphere column
     temperature_floor: float = 10.0  # K
@@ -44,6 +44,8 @@ def radiative_balance_rhs(
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
 
+    atm_albedo_field = 0.2 * np.ones_like(albedo_field)
+
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
     eps_atm = config.emissivity_atmosphere
@@ -51,12 +53,18 @@ def radiative_balance_rhs(
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
     emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
 
-    alpha_sw_atm = getattr(config, "shortwave_absorptance_atmosphere", 0.20)
-    absorbed_shortwave_atm = alpha_sw_atm * insolation_W_m2
-    absorbed_shortwave_sfc = (1.0 - alpha_sw_atm) * insolation_W_m2 * (1.0 - albedo_field)
-    # absorbed_shortwave_sfc = absorbed_shortwave
-    # absorbed_shortwave_atm = 0.0
+    # Shortwave partitioning
+    alpha_atm = atm_albedo_field
+    beta_atm = getattr(config, "shortwave_absorptance_atmosphere", 0.0)
 
+    # SW absorbed in atmosphere
+    absorbed_shortwave_atm = beta_atm * insolation_W_m2
+
+    # SW reaching surface, then partially absorbed
+    sw_down_surface = (1.0 - alpha_atm - beta_atm) * insolation_W_m2
+    absorbed_shortwave_sfc = sw_down_surface * (1.0 - albedo_field)
+
+    # Longwave
     downward_longwave = emitted_atmosphere
     absorbed_from_surface = eps_atm * emitted_surface
 

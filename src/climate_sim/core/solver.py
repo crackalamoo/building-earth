@@ -708,7 +708,7 @@ def compute_periodic_cycle_kelvin(
         land_mask=land_mask,
     )
     if snow_cfg.enabled:
-        albedo_kwargs = {"land_albedo": 0.25, "ocean_albedo": 0.25}
+        albedo_kwargs = {"land_albedo": 0.18, "ocean_albedo": 0.06}
 
     base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
     current_albedo_field = base_albedo_field
