@@ -124,7 +124,11 @@ def _compute_geostrophic_wind_components(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return the geostrophic wind given horizontal temperature gradients."""
 
-    coriolis_safe = np.sign(coriolis) * np.maximum(np.abs(coriolis), config.coriolis_floor_s)
+    # Apply a Coriolis floor while preserving hemisphere sign, including exactly
+    # at the equator where the raw Coriolis parameter is zero.
+    sign = np.sign(coriolis)
+    sign[sign == 0.0] = 1.0
+    coriolis_safe = sign * np.maximum(np.abs(coriolis), config.coriolis_floor_s)
     if pressure is not None:
         pressure_safe = np.maximum(pressure, 100.0)
         scale = GAS_CONSTANT_J_KG_K * temperature / (coriolis_safe * pressure_safe + 1e-8)
