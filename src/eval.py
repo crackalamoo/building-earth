@@ -26,10 +26,7 @@ from matplotlib.colors import Normalize
 
 from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.physics.sensible_heat_exchange import (
-    SensibleHeatExchangeConfig,
-)
-from climate_sim.physics.atmosphere import adjust_temperature_by_elevation
+from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.data.calendar import MONTH_NAMES
@@ -206,24 +203,108 @@ def build_reference_climatology(mask_path: Path | None) -> xr.Dataset:
 # Evaluation helpers
 # ----------------------------
 
+def aggregate_reference_to_sim_grid(
+    ds: xr.Dataset,
+    lon2d_sim: np.ndarray,
+    lat2d_sim: np.ndarray,
+) -> xr.Dataset:
+    """Aggregate the 1° NOAA climatology onto the simulation grid via cell means.
 
-def interpolate_to_sim_grid(ds: xr.Dataset, lat: np.ndarray, lon: np.ndarray) -> xr.Dataset:
-    """Interpolate the NOAA fields to the simulation grid."""
+    Each simulation grid cell is classified as land or ocean by the model's own
+    land mask (not here), but the observational fields are averaged over all 1°
+    NOAA cell centres that fall within the simulation cell's lat/lon bounds.
+    """
 
-    coords = {
-        "lat": xr.DataArray(lat, dims="lat"),
-        "lon": xr.DataArray(lon, dims="lon"),
-    }
+    lat_noaa = np.asarray(ds["lat"].values, dtype=float)
+    lon_noaa = np.asarray(ds["lon"].values, dtype=float)
 
-    interpolated = ds.drop_vars("land_mask").interp(coords, method="linear")
+    # Assume lon2d_sim/lat2d_sim come from a regular grid centred on cell middles.
+    lat_centres_sim = lat2d_sim[:, 0]
+    lon_centres_sim = lon2d_sim[0, :]
 
-    # xarray cannot interpolate boolean arrays directly, so cast to float prior to
-    # interpolation and convert back after applying the nearest-neighbor scheme.
-    mask_interp = (
-        ds["land_mask"].astype("float32").interp(coords, method="nearest") >= 0.5
+    if lat_centres_sim.size > 1:
+        dlat_sim = float(lat_centres_sim[1] - lat_centres_sim[0])
+    else:
+        dlat_sim = 180.0
+    if lon_centres_sim.size > 1:
+        dlon_sim = float(lon_centres_sim[1] - lon_centres_sim[0])
+    else:
+        dlon_sim = 360.0
+
+    lat_edges_min = lat_centres_sim - 0.5 * dlat_sim
+    lat_edges_max = lat_centres_sim + 0.5 * dlat_sim
+    lon_edges_min = lon_centres_sim - 0.5 * dlon_sim
+    lon_edges_max = lon_centres_sim + 0.5 * dlon_sim
+
+    # Ensure longitudes are in 0–360 for comparison, matching LAT_T/LON_T convention.
+    lon_noaa_wrapped = lon_noaa % 360.0
+    lon_centres_sim_wrapped = lon_centres_sim % 360.0
+    lon_edges_min_wrapped = lon_edges_min % 360.0
+    lon_edges_max_wrapped = lon_edges_max % 360.0
+
+    t_land_src = np.asarray(ds["t_land_clim"].values, dtype=float)
+    t_sst_src = np.asarray(ds["t_sst_clim"].values, dtype=float)
+
+    nmonth = t_land_src.shape[0]
+    nlat_sim = lat_centres_sim.size
+    nlon_sim = lon_centres_sim.size
+
+    t_land_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
+    t_sst_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
+
+    # Precompute latitude membership masks for efficiency.
+    lat_masks = [
+        (lat_noaa >= lat_edges_min[i]) & (lat_noaa < lat_edges_max[i])
+        for i in range(nlat_sim)
+    ]
+
+    for j in range(nlon_sim):
+        # Handle potential wrap-around in longitude: assume cell width is not huge.
+        lon_min = lon_edges_min_wrapped[j]
+        lon_max = lon_edges_max_wrapped[j]
+
+        if lon_min < lon_max:
+            lon_mask = (lon_noaa_wrapped >= lon_min) & (lon_noaa_wrapped < lon_max)
+        else:
+            # Cell crosses the 0° meridian in wrapped coordinates.
+            lon_mask = (lon_noaa_wrapped >= lon_min) | (lon_noaa_wrapped < lon_max)
+
+        if not np.any(lon_mask):
+            continue
+
+        for i in range(nlat_sim):
+            lat_mask = lat_masks[i]
+            cell_mask = lat_mask[:, None] & lon_mask[None, :]
+
+            if not np.any(cell_mask):
+                continue
+
+            # Flatten spatial dimensions and take the mean over the overlapping NOAA cells.
+            land_slice = t_land_src[:, cell_mask]
+            sst_slice = t_sst_src[:, cell_mask]
+
+            if land_slice.size > 0:
+                with np.errstate(invalid="ignore"):
+                    t_land_out[:, i, j] = np.nanmean(land_slice, axis=1)
+            if sst_slice.size > 0:
+                with np.errstate(invalid="ignore"):
+                    t_sst_out[:, i, j] = np.nanmean(sst_slice, axis=1)
+
+    # Build a dataset on the simulation grid; surface field will be constructed later
+    # using the model land mask.
+    ds_out = xr.Dataset(
+        dict(
+            t_land_clim=(("month", "lat", "lon"), t_land_out),
+            t_sst_clim=(("month", "lat", "lon"), t_sst_out),
+        ),
+        coords=dict(
+            month=("month", np.arange(1, nmonth + 1, dtype=int)),
+            lat=("lat", lat_centres_sim),
+            lon=("lon", lon_centres_sim_wrapped),
+        ),
     )
-    interpolated["land_mask"] = mask_interp.astype(bool)
-    return interpolated
+
+    return ds_out
 
 
 def weighted_rmse(diff: np.ndarray, weights: np.ndarray) -> float:
@@ -504,18 +585,34 @@ def main() -> None:
     else:
         sim_t2m = temperature_2m
 
-    lat_sim = lat2d[:, 0]
-    lon_sim = lon2d[0, :]
-
-    interpolated_obs = interpolate_to_sim_grid(reference, lat_sim, lon_sim)
-
     land_mask = compute_land_mask(lon2d, lat2d)
     cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m)
+
+    # Aggregate NOAA reference data onto the simulation grid using cell-mean values.
+    aggregated_obs = aggregate_reference_to_sim_grid(reference, lon2d, lat2d)
+    obs_land = aggregated_obs["t_land_clim"].values
+    obs_sst = aggregated_obs["t_sst_clim"].values
+    obs_surface = np.where(land_mask[None, ...], obs_land, obs_sst)
+
+    # Wrap aggregated fields back into a lightweight Dataset so the existing
+    # compute_rmse_statistics interface can be reused without modification.
+    obs_for_stats = xr.Dataset(
+        dict(
+            t_land_clim=(("month", "lat", "lon"), obs_land),
+            t_sst_clim=(("month", "lat", "lon"), obs_sst),
+            t_surface_clim=(("month", "lat", "lon"), obs_surface),
+        ),
+        coords=dict(
+            month=("month", aggregated_obs["month"].values),
+            lat=("lat", aggregated_obs["lat"].values),
+            lon=("lon", aggregated_obs["lon"].values),
+        ),
+    )
 
     monthly_rmse, annual_rmse, monthly_bias, annual_bias, anomaly = compute_rmse_statistics(
         surface_cycle,
         sim_t2m,
-        interpolated_obs,
+        obs_for_stats,
         land_mask,
         cell_areas,
     )
@@ -526,7 +623,7 @@ def main() -> None:
     plot_baseline_and_anomaly(
         lon2d,
         lat2d,
-        interpolated_obs["t_surface_clim"].values,
+        obs_surface,
         anomaly,
         args.fahrenheit,
     )
