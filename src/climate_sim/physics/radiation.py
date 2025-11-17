@@ -48,11 +48,11 @@ def radiative_balance_rhs(
     atmosphere = _with_floor(temperature_K[1], floor)
 
     cloud_cover = compute_cloud_cover(temperature_K, land_mask=land_mask)
-    atm_albedo_field = 0.5 * cloud_cover
+    atm_albedo_field = 0.05 + 0.35 * cloud_cover
 
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
-    eps_atm = 0.7 + 0.3 * cloud_cover
+    eps_atm = 0.7 + 0.25 * cloud_cover
     eps_toa = 0.6
 
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
@@ -158,7 +158,7 @@ def radiative_equilibrium_initial_guess(
     dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
     cloud_cover = compute_cloud_cover(dummy_temp, land_mask=land_mask)
     epsilon_atm = 0.7 + 0.3 * cloud_cover
- 
+
     denom = np.maximum(2.0 - epsilon_atm, 1e-6)
     atmosphere = np.power(absorbed / (denom * sigma), 0.25)
     surface = np.power(2.0 * absorbed / (denom * sigma), 0.25)
