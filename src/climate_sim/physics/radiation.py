@@ -32,6 +32,7 @@ def radiative_balance_rhs(
     heat_capacity_field: np.ndarray,
     albedo_field: np.ndarray,
     config: RadiationConfig,
+    land_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Column energy-balance tendency for the configured radiative model."""
 
@@ -46,7 +47,7 @@ def radiative_balance_rhs(
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
 
-    cloud_cover = compute_cloud_cover(temperature_K)
+    cloud_cover = compute_cloud_cover(temperature_K, land_mask=land_mask)
     atm_albedo_field = 0.5 * cloud_cover
 
     sigma = config.stefan_boltzmann
@@ -88,6 +89,7 @@ def radiative_balance_rhs_temperature_derivative(
     *,
     heat_capacity_field: np.ndarray,
     config: RadiationConfig,
+    land_mask: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Partial derivatives of the radiative tendency with respect to temperature."""
 
@@ -102,8 +104,8 @@ def radiative_balance_rhs_temperature_derivative(
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
 
-    cloud_cover = compute_cloud_cover(temperature_K)
-    eps_atm = 0.45 + 0.55 * cloud_cover
+    cloud_cover = compute_cloud_cover(temperature_K, land_mask=land_mask)
+    eps_atm = 0.7 + 0.3 * cloud_cover
 
     surface_diag = (
         -4.0 * config.emissivity_surface * sigma * np.power(surface, 3)
@@ -140,6 +142,7 @@ def radiative_equilibrium_initial_guess(
     *,
     albedo_field: np.ndarray,
     config: RadiationConfig,
+    land_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Initial temperature guess via local radiative equilibrium."""
 
@@ -153,8 +156,8 @@ def radiative_equilibrium_initial_guess(
 
     # Create a dummy temperature field with the correct shape to compute cloud cover
     dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
-    cloud_cover = compute_cloud_cover(dummy_temp)
-    epsilon_atm = 0.55 + 0.45 * cloud_cover
+    cloud_cover = compute_cloud_cover(dummy_temp, land_mask=land_mask)
+    epsilon_atm = 0.7 + 0.3 * cloud_cover
  
     denom = np.maximum(2.0 - epsilon_atm, 1e-6)
     atmosphere = np.power(absorbed / (denom * sigma), 0.25)

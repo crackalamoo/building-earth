@@ -168,7 +168,7 @@ RhsFactory = Callable[
     ],
     Tuple[RhsFunc, RhsDerivativeFunc],
 ]
-InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig], np.ndarray]
+InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig, np.ndarray], np.ndarray]
 MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
 HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
@@ -596,6 +596,7 @@ def solve_periodic_cycle_for_albedo(
             monthly_insolation,
             current_albedo_field,
             radiation_config,
+            land_mask,
         )
 
         state_init = ModelState(
@@ -938,6 +939,7 @@ def compute_periodic_cycle_results(
                 heat_capacity_field=heat_capacity_field,
                 albedo_field=state.albedo_field,
                 config=config,
+                land_mask=land_mask,
             )
             if config.include_atmosphere:
                 radiative = radiative.copy()
@@ -973,6 +975,7 @@ def compute_periodic_cycle_results(
                 state.temperature,
                 heat_capacity_field=heat_capacity_field,
                 config=config,
+                land_mask=land_mask,
             )
             if config.include_atmosphere:
                 radiative_diag, cross = radiative_derivative
@@ -998,11 +1001,13 @@ def compute_periodic_cycle_results(
         monthly_insolation: np.ndarray,
         albedo_field: np.ndarray,
         config: RadiationConfig,
+        land_mask: np.ndarray,
     ) -> np.ndarray:
         return radiation.radiative_equilibrium_initial_guess(
             monthly_insolation,
             albedo_field=albedo_field,
             config=config,
+            land_mask=land_mask,
         )
 
     lon2d, lat2d, topographic_elevation, monthly_states = compute_periodic_cycle_kelvin(
