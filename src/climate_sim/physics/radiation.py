@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from climate_sim.physics.clouds import compute_cloud_cover
+
 
 @dataclass(frozen=True)
 class RadiationConfig:
@@ -13,7 +15,7 @@ class RadiationConfig:
 
     stefan_boltzmann: float = 5.670374419e-8  # W m-2 K-4
     emissivity_surface: float = 1.0
-    emissivity_atmosphere: float = 0.84
+    emissivity_atmosphere: float = 0.88
     include_atmosphere: bool = True
     atmosphere_heat_capacity: float = 1.0e7  # J m-2 K-1, ~2-3 km troposphere column
     temperature_floor: float = 10.0  # K
@@ -44,15 +46,17 @@ def radiative_balance_rhs(
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
 
-    atm_albedo_field = 0.2 * np.ones_like(albedo_field)
+    cloud_cover = compute_cloud_cover(temperature_K)
+    atm_albedo_field = 0.5 * cloud_cover
 
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
-    eps_atm = config.emissivity_atmosphere
+    eps_atm = 0.7 + 0.3 * cloud_cover
+    eps_toa = 0.6
 
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
     emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
-
+    emitted_toa = eps_toa * sigma * np.power(atmosphere, 4)
     # Shortwave partitioning
     alpha_atm = atm_albedo_field
     beta_atm = getattr(config, "shortwave_absorptance_atmosphere", 0.0)
@@ -73,7 +77,7 @@ def radiative_balance_rhs(
     ) / heat_capacity_field
 
     atmosphere_tendency = (
-        absorbed_shortwave_atm + absorbed_from_surface - 2.0 * emitted_atmosphere
+        absorbed_shortwave_atm + absorbed_from_surface - emitted_atmosphere - emitted_toa
     ) / config.atmosphere_heat_capacity
 
     return np.stack([surface_tendency, atmosphere_tendency])
@@ -98,23 +102,26 @@ def radiative_balance_rhs_temperature_derivative(
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
 
+    cloud_cover = compute_cloud_cover(temperature_K)
+    eps_atm = 0.45 + 0.55 * cloud_cover
+
     surface_diag = (
         -4.0 * config.emissivity_surface * sigma * np.power(surface, 3)
     ) / heat_capacity_field
     atmosphere_diag = (
-        -8.0 * config.emissivity_atmosphere * sigma * np.power(atmosphere, 3)
+        -8.0 * eps_atm * sigma * np.power(atmosphere, 3)
     ) / config.atmosphere_heat_capacity
 
     surface_coupling = (
         4.0
-        * config.emissivity_atmosphere
+        * eps_atm
         * sigma
         * np.power(atmosphere, 3)
         / heat_capacity_field
     )
     atmosphere_coupling = (
         4.0
-        * config.emissivity_atmosphere
+        * eps_atm
         * config.emissivity_surface
         * sigma
         * np.power(surface, 3)
@@ -144,7 +151,11 @@ def radiative_equilibrium_initial_guess(
         surface = np.power(absorbed / (config.emissivity_surface * sigma), 0.25)
         return np.maximum(surface, config.temperature_floor)
 
-    epsilon_atm = config.emissivity_atmosphere
+    # Create a dummy temperature field with the correct shape to compute cloud cover
+    dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
+    cloud_cover = compute_cloud_cover(dummy_temp)
+    epsilon_atm = 0.55 + 0.45 * cloud_cover
+ 
     denom = np.maximum(2.0 - epsilon_atm, 1e-6)
     atmosphere = np.power(absorbed / (denom * sigma), 0.25)
     surface = np.power(2.0 * absorbed / (denom * sigma), 0.25)
