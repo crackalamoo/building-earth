@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.physics.clouds import compute_cloud_cover
+from climate_sim.physics.humidity import compute_cloud_cover
 
 
 @dataclass(frozen=True)
