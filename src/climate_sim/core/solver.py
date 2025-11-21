@@ -29,7 +29,11 @@ from climate_sim.physics.sensible_heat_exchange import (
 from climate_sim.physics.atmosphere import compute_two_meter_temperature
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
-from climate_sim.physics.solar import compute_monthly_insolation_field
+from climate_sim.physics.solar import (
+    compute_monthly_insolation_field,
+    compute_monthly_declinations,
+)
+from climate_sim.physics.humidity import compute_humidity_q
 from climate_sim.data.landmask import (
     compute_albedo_field,
     compute_heat_capacity_field,
@@ -115,6 +119,7 @@ class ModelState:
     temperature: np.ndarray
     albedo_field: np.ndarray
     wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    humidity_field: np.ndarray | None = None
 
 
 def _select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
@@ -128,6 +133,16 @@ def _select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
             return temperature[1]
     raise ValueError("Unsupported temperature field shape for wind calculation")
 
+
+def _select_humidity_temperature(temperature: np.ndarray) -> np.ndarray:
+    """Return the temperature field to use when computing humidity diagnostics.
+    """
+    if temperature.ndim == 2:
+        return temperature
+    if temperature.ndim == 3:
+        # Always use surface temperature (layer 0) for humidity
+        return temperature[0]
+    raise ValueError("Unsupported temperature field shape for humidity calculation")
 
 def _winds_equal(
     winds_a: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
@@ -389,6 +404,7 @@ def monthly_step(
         temperature=temp_next,
         albedo_field=state.albedo_field,
         wind_field=wind_field,
+        humidity_field=state.humidity_field,
     )
 
 
@@ -576,6 +592,7 @@ def solve_periodic_cycle_for_albedo(
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
+    humidity_fields: Sequence[np.ndarray] | None,
     diffusion_operator: LayeredDiffusionOperator,
     radiation_config: RadiationConfig,
     advection_model: AdvectionModel | None,
@@ -603,12 +620,14 @@ def solve_periodic_cycle_for_albedo(
             temperature=guess,
             albedo_field=current_albedo_field,
             wind_field=wind_fields[0] if wind_fields is not None else None,
+            humidity_field=humidity_fields[0] if humidity_fields is not None else None,
         )
     else:
         state_init = ModelState(
             temperature=initial_state.temperature,
             albedo_field=current_albedo_field,
             wind_field=wind_fields[0] if wind_fields is not None else initial_state.wind_field,
+            humidity_field=humidity_fields[0] if humidity_fields is not None else initial_state.humidity_field,
         )
 
     rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
@@ -761,6 +780,36 @@ def compute_periodic_cycle_kelvin(
     snow_iterations = snow_cfg.picard_iterations if snow_cfg.enabled else 1
     iterations = max(snow_iterations, wind_iterations)
 
+    # Initialize humidity fields from radiative equilibrium temperature guess
+    monthly_declinations = compute_monthly_declinations()
+    initial_guess_temp = initial_guess_fn(
+        monthly_insolation,
+        base_albedo_field,
+        radiation_config,
+        land_mask,
+    )
+    
+    current_humidity_fields: list[np.ndarray] = []
+    for month_idx in range(12):
+        # Extract temperature for this month
+        if initial_guess_temp.ndim == 2:
+            # Single-layer model: use the temperature directly
+            temp_for_month = initial_guess_temp
+        elif initial_guess_temp.ndim == 3:
+            # Two-layer model: use surface temperature (layer 0)
+            temp_for_month = initial_guess_temp[0]
+        else:
+            raise ValueError(f"Unexpected initial guess temperature shape: {initial_guess_temp.shape}")
+        
+        # Compute humidity for this month
+        humidity = compute_humidity_q(
+            lat2d,
+            temp_for_month,
+            monthly_declinations[month_idx],
+            land_mask=land_mask,
+        )
+        current_humidity_fields.append(humidity)
+
     for iteration in range(iterations):
         periodic_state, monthly = solve_periodic_cycle_for_albedo(
             initial_state=previous_periodic,
@@ -769,6 +818,7 @@ def compute_periodic_cycle_kelvin(
             monthly_insolation=monthly_insolation,
             month_durations=month_durations,
             wind_fields=current_wind_fields,
+            humidity_fields=current_humidity_fields,
             diffusion_operator=diffusion_operator,
             radiation_config=radiation_config,
             advection_model=advection_model,
@@ -799,6 +849,19 @@ def compute_periodic_cycle_kelvin(
             snow_converged = np.array_equal(updated_albedo, current_albedo_field)
             current_albedo_field = updated_albedo
 
+        # Update humidity fields based on converged temperatures
+        new_humidity_fields: list[np.ndarray] = []
+        for idx, month_state in enumerate(monthly):
+            humidity_temperature = _select_humidity_temperature(month_state.temperature)
+            humidity = compute_humidity_q(
+                lat2d,
+                humidity_temperature,
+                monthly_declinations[idx],
+                land_mask=land_mask,
+            )
+            new_humidity_fields.append(humidity)
+        current_humidity_fields = new_humidity_fields
+
         if advection_model is not None and advection_model.enabled:
             new_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
             for idx, month_state in enumerate(monthly):
@@ -809,6 +872,7 @@ def compute_periodic_cycle_kelvin(
                     temperature=month_state.temperature,
                     albedo_field=current_albedo_field,
                     wind_field=wind_components,
+                    humidity_field=new_humidity_fields[idx],
                 )
             wind_converged = _winds_equal(new_wind_fields, current_wind_fields)
             current_wind_fields = new_wind_fields
@@ -816,6 +880,7 @@ def compute_periodic_cycle_kelvin(
                 temperature=periodic_state.temperature,
                 albedo_field=current_albedo_field,
                 wind_field=new_wind_fields[-1],
+                humidity_field=new_humidity_fields[-1],
             )
         else:
             wind_converged = True
@@ -825,11 +890,13 @@ def compute_periodic_cycle_kelvin(
                     temperature=month_state.temperature,
                     albedo_field=current_albedo_field,
                     wind_field=None,
+                    humidity_field=new_humidity_fields[idx],
                 )
             periodic_state = ModelState(
                 temperature=periodic_state.temperature,
                 albedo_field=current_albedo_field,
                 wind_field=None,
+                humidity_field=new_humidity_fields[-1],
             )
 
         previous_periodic = periodic_state
@@ -1056,6 +1123,11 @@ def compute_periodic_cycle_results(
         layers_map["wind_u"] = wind_u
         layers_map["wind_v"] = wind_v
         layers_map["wind_speed"] = wind_speed
+
+    humidity_fields = [state.humidity_field for state in monthly_states]
+    if all(humidity is not None for humidity in humidity_fields):
+        humidity_q = np.stack([humidity for humidity in humidity_fields if humidity is not None], axis=0)
+        layers_map["humidity"] = humidity_q
 
     if return_layer_map:
         return lon2d, lat2d, layers_map

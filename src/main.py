@@ -35,6 +35,7 @@ from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.solver import compute_periodic_cycle_results
 from climate_sim.core.units import convert_temperature, temperature_unit
+from climate_sim.physics.humidity import compute_cloud_cover
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -371,6 +372,164 @@ def main() -> None:
 
         level_selector.on_clicked(_on_level_change)
         _draw_streamplot()
+
+    # Humidity plot
+    humidity_q_cycle = layers.get("humidity")
+    if humidity_q_cycle is not None:
+        # Use stored humidity from solver state
+        # Compute relative humidity from stored specific humidity
+        # Use surface temperature (matching solver's _select_humidity_temperature behavior)
+        temp_for_humidity = surface_cycle + 273.15  # Convert to Kelvin
+        
+        # Compute RH from q: rh = q / q_sat
+        # where q_sat is computed from temperature and pressure
+        monthly_humidity_rh = []
+        for month_idx in range(12):
+            temp_K = temp_for_humidity[month_idx]
+            p = pressure_from_temperature_elevation(temp_K)
+            e_sat = 6.112 * np.exp(17.67 * temp_K / (temp_K + 243.5))
+            q_sat = (0.622 * e_sat) / (p - (1 - 0.622) * e_sat)
+            q = humidity_q_cycle[month_idx]
+            rh = q / q_sat
+            rh = np.clip(rh, 0.0, 1.0)  # Ensure valid range
+            monthly_humidity_rh.append(rh)
+        
+        humidity_rh_cycle = np.stack(monthly_humidity_rh, axis=0)
+        
+        # Compute cloud cover for each month
+        # Note: cloud cover is latitude-dependent and doesn't change with temperature values,
+        # but we compute it for each month for consistency with the monthly cycle structure
+        monthly_cloud_cover = []
+        for month_idx in range(12):
+            temp_K = temp_for_humidity[month_idx]
+            cloud_cover = compute_cloud_cover(temp_K, land_mask=land_mask_bool)
+            monthly_cloud_cover.append(cloud_cover)
+        
+        cloud_cover_cycle = np.stack(monthly_cloud_cover, axis=0)
+        
+        # Setup humidity plot
+        projection = ccrs.PlateCarree()
+        fig_humidity, ax_humidity = plt.subplots(
+            figsize=(12, 6), subplot_kw=dict(projection=projection)
+        )
+        ax_humidity.set_global()
+        ax_humidity.coastlines(linewidth=0.4)
+        ax_humidity.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+        ax_humidity.add_feature(
+            cfeature.NaturalEarthFeature(
+                "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+            ),
+            linewidth=0.2,
+        )
+        ax_humidity.add_feature(
+            cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0
+        )
+        
+        # Wrap longitude for proper display
+        lon_full = lon2d[0]
+        lon_wrapped = ((lon_full + 180.0) % 360.0) - 180.0
+        lon_sort_idx = np.argsort(lon_wrapped)
+        lon_sorted = lon_wrapped[lon_sort_idx]
+        
+        humidity_q_sorted = humidity_q_cycle[:, :, lon_sort_idx]
+        humidity_rh_sorted = humidity_rh_cycle[:, :, lon_sort_idx]
+        cloud_cover_sorted = cloud_cover_cycle[:, :, lon_sort_idx]
+        
+        humidity_data = {
+            "Specific Humidity (q)": humidity_q_sorted,
+            "Relative Humidity (RH)": humidity_rh_sorted,
+            "Cloud Cover": cloud_cover_sorted,
+        }
+        
+        # Initial state
+        current_state_humidity = {"month": 0, "type": "Specific Humidity (q)"}
+        
+        def get_norm_and_label(humidity_type: str) -> tuple[Normalize, str]:
+            if humidity_type == "Specific Humidity (q)":
+                vmin = float(humidity_q_cycle.min())
+                vmax = float(humidity_q_cycle.max())
+                label = "Specific Humidity (kg/kg)"
+            elif humidity_type == "Relative Humidity (RH)":
+                vmin = float(humidity_rh_cycle.min())
+                vmax = float(humidity_rh_cycle.max())
+                label = "Relative Humidity"
+            else:  # Cloud Cover
+                vmin = float(cloud_cover_cycle.min())
+                vmax = float(cloud_cover_cycle.max())
+                label = "Cloud Cover Fraction"
+            return Normalize(vmin=vmin, vmax=vmax), label
+        
+        norm_humidity, colorbar_label_humidity = get_norm_and_label(current_state_humidity["type"])
+        cmap_humidity = plt.cm.viridis
+        
+        # Create sorted lat/lon grids for pcolormesh
+        lat_sorted = lat2d[:, 0]
+        lon_sorted_2d, lat_sorted_2d = np.meshgrid(lon_sorted, lat_sorted)
+        
+        humidity_mesh = ax_humidity.pcolormesh(
+            lon_sorted_2d,
+            lat_sorted_2d,
+            humidity_data[current_state_humidity["type"]][current_state_humidity["month"]],
+            cmap=cmap_humidity,
+            norm=norm_humidity,
+            shading="auto",
+            transform=projection,
+        )
+        
+        ax_humidity.set_title(
+            f"{current_state_humidity['type']} – {month_names[current_state_humidity['month']]}"
+        )
+        
+        # Colorbar
+        cbar_humidity = fig_humidity.colorbar(
+            humidity_mesh,
+            ax=ax_humidity,
+            orientation="vertical",
+            pad=0.04,
+            fraction=0.046,
+        )
+        cbar_humidity.set_label(colorbar_label_humidity)
+        
+        def _update_humidity_plot() -> None:
+            data = humidity_data[current_state_humidity["type"]][current_state_humidity["month"]]
+            norm_humidity, colorbar_label_humidity = get_norm_and_label(current_state_humidity["type"])
+            humidity_mesh.set_norm(norm_humidity)
+            humidity_mesh.set_array(data.ravel())
+            cbar_humidity.set_label(colorbar_label_humidity)
+            cbar_humidity.update_normal(humidity_mesh)
+            ax_humidity.set_title(
+                f"{current_state_humidity['type']} – {month_names[current_state_humidity['month']]}"
+            )
+            fig_humidity.canvas.draw_idle()
+        
+        slider_humidity_ax = fig_humidity.add_axes([0.2, 0.08, 0.6, 0.03])
+        month_slider_humidity = Slider(
+            slider_humidity_ax,
+            label="Month",
+            valmin=0,
+            valmax=11,
+            valinit=0,
+            valstep=1,
+            valfmt="%0.0f",
+        )
+        
+        def _on_humidity_month_change(val: float) -> None:
+            current_state_humidity["month"] = int(val)
+            _update_humidity_plot()
+        
+        month_slider_humidity.on_changed(_on_humidity_month_change)
+        
+        radio_humidity_ax = fig_humidity.add_axes([0.02, 0.55, 0.12, 0.18])
+        radio_humidity_ax.set_title("Variable", fontsize=9)
+        type_names_humidity = list(humidity_data.keys())
+        type_selector_humidity = RadioButtons(radio_humidity_ax, type_names_humidity, active=0)
+        
+        def _on_humidity_type_change(label: str) -> None:
+            current_state_humidity["type"] = label
+            _update_humidity_plot()
+        
+        type_selector_humidity.on_clicked(_on_humidity_type_change)
+        _update_humidity_plot()
 
     atmosphere_2m_cycle = layer_cycles.get("Atmosphere (2 m)")
 

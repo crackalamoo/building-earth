@@ -26,6 +26,10 @@ def solar_declination(day_of_year: np.ndarray) -> np.ndarray:
     obliquity_rad = np.deg2rad(OBLIQUITY_DEGREES)
     return np.arcsin(np.sin(obliquity_rad) * np.sin(mean_longitude))
 
+def compute_monthly_declinations() -> np.ndarray:
+    """Return solar declination angle (radians) for the midpoint of each month."""
+    midpoints = monthly_midpoint_days()
+    return solar_declination(midpoints)
 
 def daily_mean_insolation(
     lat_rad: np.ndarray,

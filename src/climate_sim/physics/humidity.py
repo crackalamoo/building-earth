@@ -43,7 +43,7 @@ def _guess_humidity_rh_function(itcz: np.ndarray,
 
 def compute_humidity_q(
     lat_2d: np.ndarray,
-    T_guess: np.ndarray,
+    temperature: np.ndarray,
     declination_rad: np.ndarray,
     *,
     return_rh: bool = False,
@@ -54,8 +54,8 @@ def compute_humidity_q(
     Parameters
     ----------
     lat_2d : np.ndarray
-        Latitude field in radians.
-    T_guess : np.ndarray
+        Latitude field in degrees.
+    temperature : np.ndarray
         Temperature field in Kelvin.
     declination_rad : np.ndarray
         Solar declination angle in radians.
@@ -71,19 +71,22 @@ def compute_humidity_q(
         Humidity field. If return_rh is False, returns specific humidity in kg/kg.
         If return_rh is True, returns relative humidity as a fraction (0-1).
     """
+    # Convert latitude to radians for internal computation
+    lat_2d_rad = np.deg2rad(lat_2d)
+    
     itcz = declination_rad * 0.7
     rh_function = _guess_humidity_rh_function(itcz)
-    rh = rh_function(lat_2d)
+    rh = rh_function(lat_2d_rad)
 
     # Apply ocean boost if land mask is provided
     if land_mask is not None:
         ocean_mask = ~land_mask
         rh_function_ocean = _guess_humidity_rh_function(declination_rad * 0.3,
         RH_POLES_WATER, RH_SUBTROPICS_WATER, RH_ITCZ_WATER)
-        rh_ocean = rh_function_ocean(lat_2d)
+        rh_ocean = rh_function_ocean(lat_2d_rad)
         rh = np.where(ocean_mask, rh_ocean, rh)
 
-    lat_rel = lat_2d - itcz
+    lat_rel = lat_2d_rad - itcz
     storm_bump = 0.5 * (1 - np.cos(2*np.pi * (lat_rel - STORM_BAND[0])/(STORM_BAND[1] - STORM_BAND[0])))
     storm_bump = np.where(
         ((STORM_BAND[0] < lat_rel) & (lat_rel < STORM_BAND[1]))
@@ -97,8 +100,8 @@ def compute_humidity_q(
     if return_rh:
         return rh
 
-    p_guess = pressure_from_temperature_elevation(T_guess)
-    e_sat = 6.112 * np.exp(17.67 * T_guess / (T_guess + 243.5))
+    p_guess = pressure_from_temperature_elevation(temperature)
+    e_sat = 6.112 * np.exp(17.67 * temperature / (temperature + 243.5))
     q_sat = (0.622 * e_sat)/(p_guess - (1-0.622)*e_sat)
 
     return q_sat * rh
@@ -171,3 +174,4 @@ def compute_cloud_cover(temperature: np.ndarray, land_mask: np.ndarray | None = 
         cloud_cover = np.where(ocean_mask, cloud_cover * OCEAN_CLOUD_COVER_BOOST, cloud_cover)
 
     return cloud_cover
+
