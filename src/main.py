@@ -35,7 +35,7 @@ from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.solver import compute_periodic_cycle_results
 from climate_sim.core.units import convert_temperature, temperature_unit
-from climate_sim.physics.humidity import compute_cloud_cover
+from climate_sim.physics.humidity import compute_cloud_cover, specific_humidity_to_relative_humidity
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -51,6 +51,15 @@ def _parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
+def _print_mean(
+    label: str,
+    field: np.ndarray | None,
+    weights: np.ndarray,
+    fallback: str,
+) -> str:
+    if field is None:
+        return fallback
+    return f"{area_weighted_mean(field, weights):.2f}"
 
 def main() -> None:
     args = _parse_args()
@@ -386,23 +395,20 @@ def main() -> None:
         monthly_humidity_rh = []
         for month_idx in range(12):
             temp_K = temp_for_humidity[month_idx]
-            p = pressure_from_temperature_elevation(temp_K)
-            e_sat = 6.112 * np.exp(17.67 * temp_K / (temp_K + 243.5))
-            q_sat = (0.622 * e_sat) / (p - (1 - 0.622) * e_sat)
             q = humidity_q_cycle[month_idx]
-            rh = q / q_sat
-            rh = np.clip(rh, 0.0, 1.0)  # Ensure valid range
+            rh = specific_humidity_to_relative_humidity(q, temp_K)
             monthly_humidity_rh.append(rh)
         
         humidity_rh_cycle = np.stack(monthly_humidity_rh, axis=0)
         
-        # Compute cloud cover for each month
-        # Note: cloud cover is latitude-dependent and doesn't change with temperature values,
-        # but we compute it for each month for consistency with the monthly cycle structure
+        # Compute cloud cover for each month from relative humidity
         monthly_cloud_cover = []
         for month_idx in range(12):
-            temp_K = temp_for_humidity[month_idx]
-            cloud_cover = compute_cloud_cover(temp_K, land_mask=land_mask_bool)
+            rh = humidity_rh_cycle[month_idx]
+            cloud_cover = compute_cloud_cover(
+                relative_humidity=rh,
+                land_mask=land_mask_bool,
+            )
             monthly_cloud_cover.append(cloud_cover)
         
         cloud_cover_cycle = np.stack(monthly_cloud_cover, axis=0)
@@ -557,16 +563,6 @@ def main() -> None:
         _save_cycle("Two-meter", atmosphere_2m_cycle, "two_meter_temperature_cycle.gif")
     if atmosphere_cycle is not None:
         _save_cycle("Atmosphere", atmosphere_cycle, "atmosphere_temperature_cycle.gif")
-
-    def _print_mean(
-        label: str,
-        field: np.ndarray | None,
-        weights: np.ndarray,
-        fallback: str,
-    ) -> str:
-        if field is None:
-            return fallback
-        return f"{area_weighted_mean(field, weights):.2f}"
 
     for idx in range(12):
         print(f"{month_names[idx]} statistics:")

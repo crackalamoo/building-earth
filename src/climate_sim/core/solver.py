@@ -1007,6 +1007,7 @@ def compute_periodic_cycle_results(
                 albedo_field=state.albedo_field,
                 config=config,
                 land_mask=land_mask,
+                humidity_q=state.humidity_field,
             )
             if config.include_atmosphere:
                 radiative = radiative.copy()
@@ -1043,6 +1044,7 @@ def compute_periodic_cycle_results(
                 heat_capacity_field=heat_capacity_field,
                 config=config,
                 land_mask=land_mask,
+                humidity_q=state.humidity_field,
             )
             if config.include_atmosphere:
                 radiative_diag, cross = radiative_derivative

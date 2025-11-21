@@ -6,7 +6,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.physics.humidity import compute_cloud_cover
+from climate_sim.physics.humidity import (
+    compute_cloud_cover,
+    specific_humidity_to_relative_humidity,
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,7 @@ def radiative_balance_rhs(
     albedo_field: np.ndarray,
     config: RadiationConfig,
     land_mask: np.ndarray | None = None,
+    humidity_q: np.ndarray | None = None,
 ) -> np.ndarray:
     """Column energy-balance tendency for the configured radiative model."""
 
@@ -47,7 +51,19 @@ def radiative_balance_rhs(
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
 
-    cloud_cover = compute_cloud_cover(temperature_K, land_mask=land_mask)
+    # Compute cloud cover from humidity if available, else use latitude fallback
+    if humidity_q is not None:
+        rh = specific_humidity_to_relative_humidity(humidity_q, surface)
+        cloud_cover = compute_cloud_cover(
+            relative_humidity=rh,
+            land_mask=land_mask,
+        )
+    else:
+        # Fallback to latitude-based cloud cover (for compatibility with radiation module)
+        cloud_cover = compute_cloud_cover(
+            temperature=temperature_K,
+            land_mask=land_mask,
+        )
     atm_albedo_field = 0.05 + 0.35 * cloud_cover
 
     sigma = config.stefan_boltzmann
@@ -90,6 +106,7 @@ def radiative_balance_rhs_temperature_derivative(
     heat_capacity_field: np.ndarray,
     config: RadiationConfig,
     land_mask: np.ndarray | None = None,
+    humidity_q: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Partial derivatives of the radiative tendency with respect to temperature."""
 
@@ -104,7 +121,18 @@ def radiative_balance_rhs_temperature_derivative(
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
 
-    cloud_cover = compute_cloud_cover(temperature_K, land_mask=land_mask)
+    # Compute cloud cover from humidity if available, else use latitude fallback
+    if humidity_q is not None:
+        rh = specific_humidity_to_relative_humidity(humidity_q, surface)
+        cloud_cover = compute_cloud_cover(
+            relative_humidity=rh,
+            land_mask=land_mask,
+        )
+    else:
+        cloud_cover = compute_cloud_cover(
+            temperature=temperature_K,
+            land_mask=land_mask,
+        )
     eps_atm = 0.7 + 0.3 * cloud_cover
 
     surface_diag = (
@@ -154,9 +182,9 @@ def radiative_equilibrium_initial_guess(
         surface = np.power(absorbed / (config.emissivity_surface * sigma), 0.25)
         return np.maximum(surface, config.temperature_floor)
 
-    # Create a dummy temperature field with the correct shape to compute cloud cover
+    # Use latitude-based fallback for initial guess since we don't have actual humidity yet
     dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
-    cloud_cover = compute_cloud_cover(dummy_temp, land_mask=land_mask)
+    cloud_cover = compute_cloud_cover(temperature=dummy_temp, land_mask=land_mask)
     epsilon_atm = 0.7 + 0.3 * cloud_cover
 
     denom = np.maximum(2.0 - epsilon_atm, 1e-6)

@@ -19,6 +19,34 @@ DELTA_SUBTROPICS = np.deg2rad(20)
 LAT_POLES = np.deg2rad(70)
 
 
+def specific_humidity_to_relative_humidity(
+    q: np.ndarray,
+    temperature_K: np.ndarray,
+) -> np.ndarray:
+    """Convert specific humidity to relative humidity.
+    
+    Parameters
+    ----------
+    q : np.ndarray
+        Specific humidity (kg/kg).
+    temperature_K : np.ndarray
+        Temperature field in Kelvin.
+    
+    Returns
+    -------
+    np.ndarray
+        Relative humidity as a fraction (0-1).
+    """
+    # Compute saturation vapor pressure (Magnus formula)
+    p = pressure_from_temperature_elevation(temperature_K)
+    e_sat = 6.112 * np.exp(17.67 * temperature_K / (temperature_K + 243.5))
+    q_sat = (0.622 * e_sat) / (p - (1 - 0.622) * e_sat)
+    
+    # Compute RH = q / q_sat, clamped to valid range
+    rh = q / np.maximum(q_sat, 1e-10)
+    return np.clip(rh, 0.0, 1.0)
+
+
 def _guess_humidity_rh_function(itcz: np.ndarray,
     rh_poles=RH_POLES, rh_subtropics=RH_SUBTROPICS, rh_itcz=RH_ITCZ) -> PchipInterpolator:
     phi = np.array([
@@ -74,7 +102,7 @@ def compute_humidity_q(
     # Convert latitude to radians for internal computation
     lat_2d_rad = np.deg2rad(lat_2d)
     
-    itcz = declination_rad * 0.7
+    itcz = declination_rad * 0.65
     rh_function = _guess_humidity_rh_function(itcz)
     rh = rh_function(lat_2d_rad)
 
@@ -106,36 +134,55 @@ def compute_humidity_q(
 
     return q_sat * rh
 
-def compute_cloud_cover(temperature: np.ndarray, land_mask: np.ndarray | None = None) -> np.ndarray:
-    """Compute latitude-dependent cloud cover fraction.
+def compute_cloud_cover(
+    relative_humidity: np.ndarray | None = None,
+    land_mask: np.ndarray | None = None,
+    temperature: np.ndarray | None = None,
+) -> np.ndarray:
+    """Compute cloud cover fraction from relative humidity.
     
-    Uses a simple parameterization based on latitude only:
-        C = 0.65 - 2.59 * sin²(lat) + 3.55 * sin⁴(lat)
-    
-    The result is clamped to a maximum of 0.9, then boosted over ocean cells
-    by OCEAN_CLOUD_COVER_BOOST if a land mask is provided.
+    Uses a physically-based parameterization where cloud cover depends on
+    relative humidity with different thresholds for land and ocean:
+        C = max(0, (RH - RH_threshold) / (1 - RH_threshold)) ^ power
     
     Parameters
     ----------
-    temperature : np.ndarray
-        Temperature field (K) used to infer grid shape. The temperature values
-        themselves are not used in the computation; only the shape is needed
-        to reconstruct the latitude grid.
+    relative_humidity : np.ndarray | None, optional
+        Relative humidity field (0-1). If None, falls back to latitude-based
+        prescription for backward compatibility.
     land_mask : np.ndarray | None, optional
         Boolean array indicating land cells (True) vs ocean cells (False).
-        If provided, cloud cover is boosted over ocean cells by
-        OCEAN_CLOUD_COVER_BOOST. If None, no boost is applied.
-    
+        If provided, different values are used for land vs ocean in the fallback.
+    temperature : np.ndarray | None, optional
+        Temperature field (K).   
     Returns
     -------
     np.ndarray
-        Cloud cover fraction (0-1) at each grid point, with the same shape
-        as the innermost spatial dimensions of the temperature field.
+        Cloud cover fraction (0-1) at each grid point.
+    """
+    # Fallback to latitude-based prescription if RH not provided
+    if relative_humidity is None:
+        if temperature is None:
+            raise ValueError("Either relative_humidity or temperature must be provided")
+        return _compute_cloud_cover_latitude_fallback(temperature, land_mask)
     
-    Notes
-    -----
-    The latitude grid is derived from the temperature field shape assuming
-    a regular lat/lon grid with cell centers at the midpoints.
+    rh_crit = 0.35
+    rh_max = 0.85
+    cloud_param = np.clip((relative_humidity - rh_crit)/(rh_max - rh_crit), 0, 1)
+
+    cloud_cover = 3*cloud_param**2 - 2*cloud_param**3
+    cloud_cover = 0.07 + (0.8 - 0.07) * cloud_cover
+    
+    return cloud_cover
+
+
+def _compute_cloud_cover_latitude_fallback(
+    temperature: np.ndarray, land_mask: np.ndarray | None = None
+) -> np.ndarray:
+    """Fallback latitude-dependent cloud cover (for backward compatibility).
+    
+    Uses a simple parameterization based on latitude only:
+        C = 0.65 - 2.59 * sin²(lat) + 3.55 * sin⁴(lat)
     """
     # Extract the spatial shape from the temperature field
     if temperature.ndim == 2:
