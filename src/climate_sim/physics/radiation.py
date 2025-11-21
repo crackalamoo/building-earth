@@ -10,6 +10,7 @@ from climate_sim.physics.humidity import (
     compute_cloud_cover,
     specific_humidity_to_relative_humidity,
 )
+from climate_sim.physics.atmosphere import STANDARD_LAPSE_RATE_K_PER_M
 
 
 @dataclass(frozen=True)
@@ -69,11 +70,11 @@ def radiative_balance_rhs(
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
     eps_atm = 0.7 + 0.25 * cloud_cover
-    eps_toa = 0.6
+    eps_toa = eps_atm
 
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
-    emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
-    emitted_toa = eps_toa * sigma * np.power(atmosphere, 4)
+    emitted_atmosphere = eps_atm * sigma * np.power(atmosphere + STANDARD_LAPSE_RATE_K_PER_M*2000, 4)
+    emitted_toa = eps_toa * sigma * np.power(atmosphere - STANDARD_LAPSE_RATE_K_PER_M*2000, 4)
     # Shortwave partitioning
     alpha_atm = atm_albedo_field
     beta_atm = getattr(config, "shortwave_absorptance_atmosphere", 0.0)
