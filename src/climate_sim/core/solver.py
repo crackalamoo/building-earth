@@ -101,7 +101,6 @@ def _fingerprint_csc_matrix(matrix: sparse.csc_matrix) -> str:
     hasher.update(matrix.data.tobytes())
     return hasher.hexdigest()
 
-
 def _get_factorized_solver(
     matrix: sparse.csc_matrix, *, cache: LinearSolveCache, fingerprint: str | None = None
 ) -> Callable[[np.ndarray], np.ndarray]:
@@ -234,6 +233,7 @@ def monthly_step(
         identity_single_layer = None
 
     # implicit solver loop
+    solve_linear = None
     for _ in range(NEWTON_MAX_ITERS):
         temp_capped = np.maximum(temp_next, temperature_floor)
         state_capped = ModelState(
@@ -271,7 +271,8 @@ def monthly_step(
 
             fingerprint = linearisation.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
             linearisation.solver_fingerprint = fingerprint
-            solve_linear = _get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
+            if solve_linear is None:
+                solve_linear = _get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
             correction_flat = solve_linear(residual_flat)
             correction = correction_flat.reshape(temp_capped.shape)
         else:
@@ -341,7 +342,8 @@ def monthly_step(
             assert isinstance(jacobian, sparse.csc_matrix)
             fingerprint = linearisation.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
             linearisation.solver_fingerprint = fingerprint
-            solve_linear = _get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
+            if solve_linear is None:
+                solve_linear = _get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
             correction_flat = solve_linear(residual_flat)
             correction_surface = correction_flat[:size].reshape(surface_diag.shape)
             correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
@@ -1091,7 +1093,6 @@ def compute_periodic_cycle_results(
         snow_config=resolved_snow,
         sensible_heat_config=sensible_heat_cfg,
     )
-
     monthly_T = np.array([state.temperature for state in monthly_states])
     temperature_2m_c: np.ndarray | None = None
     if monthly_T.ndim == 3:
