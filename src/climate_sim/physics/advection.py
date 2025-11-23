@@ -226,6 +226,23 @@ class AdvectionModel:
         self._roughness_length = compute_cell_roughness_length(
             self._lon2d, self._lat2d, data=elevation_data, land_mask=self._land_mask
         )
+        
+        # Pre-compute bulk transfer coefficient (constant for the grid)
+        log_height_surface = 10.0
+        roughness_momentum = self._roughness_length
+        roughness_heat = np.maximum(roughness_momentum / 10.0, 1.0e-9)
+        
+        lm = np.log(
+            np.maximum(log_height_surface / roughness_momentum, 1.0 + 1.0e-9)
+        )
+        lh = np.log(
+            np.maximum(log_height_surface / roughness_heat, 1.0 + 1.0e-9)
+        )
+        ch_raw = (VON_KARMAN_CONSTANT**2) / (lm * lh)
+        
+        ch_land = np.clip(ch_raw, 1e-4, 2.0e-3)
+        ch_ocean = np.clip(ch_raw, 3e-4, 3.0e-3)
+        self._bulk_transfer_coefficient = np.where(self._land_mask, ch_land, ch_ocean)
 
     @property
     def enabled(self) -> bool:
@@ -392,21 +409,5 @@ class AdvectionModel:
         # Air density
         air_density = pressure / (GAS_CONSTANT_J_KG_K * near_surface_air_K)
         
-        # Bulk transfer coefficient
-        log_height_surface = 10.0
-        roughness_momentum = self._roughness_length
-        roughness_heat = np.maximum(roughness_momentum / 10.0, 1.0e-9)
-        
-        lm = np.log(
-            np.maximum(log_height_surface / roughness_momentum, 1.0 + 1.0e-9)
-        )
-        lh = np.log(
-            np.maximum(log_height_surface / roughness_heat, 1.0 + 1.0e-9)
-        )
-        ch_raw = (VON_KARMAN_CONSTANT**2) / (lm * lh)
-        
-        ch_land = np.clip(ch_raw, 1e-4, 2.0e-3)
-        ch_ocean = np.clip(ch_raw, 3e-4, 3.0e-3)
-        bulk_transfer_coefficient = np.where(self._land_mask, ch_land, ch_ocean)
-        
-        return pressure, air_density, wind_speed_10m, bulk_transfer_coefficient
+        # Return pre-computed bulk transfer coefficient
+        return pressure, air_density, wind_speed_10m, self._bulk_transfer_coefficient
