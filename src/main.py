@@ -16,6 +16,7 @@ from pathlib import Path
 from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
+from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import (
     plot_layered_monthly_temperature_cycle,
@@ -75,6 +76,9 @@ def main() -> None:
         enabled=args.bulk_exchange,
         include_lapse_rate_elevation=args.lapse_rate_elevation,
     )
+    latent_heat_config = LatentHeatExchangeConfig(
+        enabled=args.latent_heat_exchange,
+    )
     print(f"Configuration setup took {time.time() - start:.2f} seconds")
 
     start = time.time()
@@ -86,6 +90,7 @@ def main() -> None:
         diffusion_config=diffusion_config,
         snow_config=snow_config,
         sensible_heat_config=sensible_heat_config,
+        latent_heat_config=latent_heat_config,
         return_layer_map=True,
     )
     print(f"Model run took {time.time() - start:.2f} seconds")

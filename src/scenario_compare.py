@@ -12,6 +12,7 @@ from matplotlib.colors import TwoSlopeNorm
 from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
+from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.runtime.cli import (
@@ -158,6 +159,15 @@ def main() -> None:
     )
     add_boolean_flag(
         parser,
+        dest="base_latent_heat_exchange",
+        default=True,
+        enable_option="--base-latent-heat-exchange",
+        disable_option="--no-base-latent-heat-exchange",
+        help_enable="Enable latent heat exchange in the baseline case (default)",
+        help_disable="Disable latent heat exchange in the baseline case",
+    )
+    add_boolean_flag(
+        parser,
         dest="experiment_bulk_exchange",
         default=True,
         enable_option="--exp-bulk-exchange",
@@ -173,6 +183,15 @@ def main() -> None:
         disable_option="--no-exp-lapse-rate-elevation",
         help_enable="Include lapse-rate elevation corrections in the experiment case",
         help_disable="Ignore lapse-rate elevation in the experiment case (default)",
+    )
+    add_boolean_flag(
+        parser,
+        dest="experiment_latent_heat_exchange",
+        default=True,
+        enable_option="--exp-latent-heat-exchange",
+        disable_option="--no-exp-latent-heat-exchange",
+        help_enable="Enable latent heat exchange in the experiment case (default)",
+        help_disable="Disable latent heat exchange in the experiment case",
     )
     add_temperature_unit_argument(
         parser,
@@ -207,6 +226,12 @@ def main() -> None:
         enabled=args.experiment_bulk_exchange,
         include_lapse_rate_elevation=args.experiment_lapse_rate_elevation,
     )
+    base_latent_heat = LatentHeatExchangeConfig(
+        enabled=args.base_latent_heat_exchange,
+    )
+    exp_latent_heat = LatentHeatExchangeConfig(
+        enabled=args.experiment_latent_heat_exchange,
+    )
 
     lon2d, lat2d, base_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
@@ -216,6 +241,7 @@ def main() -> None:
         diffusion_config=base_diff,
         snow_config=base_snow,
         sensible_heat_config=base_sensible_heat,
+        latent_heat_config=base_latent_heat,
         return_layer_map=True,
     )
     _, _, exp_layers = compute_periodic_cycle_results(
@@ -226,6 +252,7 @@ def main() -> None:
         diffusion_config=exp_diff,
         snow_config=exp_snow,
         sensible_heat_config=exp_sensible_heat,
+        latent_heat_config=exp_latent_heat,
         return_layer_map=True,
     )
 
@@ -250,6 +277,7 @@ def main() -> None:
         "snow": args.base_snow,
         "latent_heat": args.base_latent_heat,
         "bulk_exchange": args.base_bulk_exchange,
+        "latent_heat_exchange": args.base_latent_heat_exchange,
         "lapse_rate_elevation": args.base_lapse_rate_elevation,
     }
     exp_summary = {
@@ -259,6 +287,7 @@ def main() -> None:
         "snow": args.experiment_snow,
         "latent_heat": args.experiment_latent_heat,
         "bulk_exchange": args.experiment_bulk_exchange,
+        "latent_heat_exchange": args.experiment_latent_heat_exchange,
         "lapse_rate_elevation": args.experiment_lapse_rate_elevation,
     }
 

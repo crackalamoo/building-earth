@@ -135,6 +135,15 @@ def add_common_model_arguments(
     )
     add_boolean_flag(
         parser,
+        dest="latent_heat_exchange",
+        default=True,
+        enable_option="--latent-heat-exchange",
+        disable_option="--no-latent-heat-exchange",
+        help_enable="Enable latent heat exchange between surface and atmosphere (default)",
+        help_disable="Disable latent heat exchange between surface and atmosphere",
+    )
+    add_boolean_flag(
+        parser,
         dest="lapse_rate_elevation",
         default=False,
         enable_option="--lapse-rate-elevation",

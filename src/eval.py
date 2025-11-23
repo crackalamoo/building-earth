@@ -27,6 +27,7 @@ from matplotlib.colors import Normalize
 from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
+from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.data.calendar import MONTH_NAMES
@@ -561,6 +562,9 @@ def main() -> None:
         enabled=args.bulk_exchange,
         include_lapse_rate_elevation=args.lapse_rate_elevation,
     )
+    latent_heat_config = LatentHeatExchangeConfig(
+        enabled=args.latent_heat_exchange,
+    )
 
     lon2d, lat2d, layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
@@ -570,6 +574,7 @@ def main() -> None:
         diffusion_config=diffusion_config,
         snow_config=snow_config,
         sensible_heat_config=sensible_heat_config,
+        latent_heat_config=latent_heat_config,
         return_layer_map=True,
     )
 

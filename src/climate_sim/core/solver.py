@@ -26,6 +26,10 @@ from climate_sim.physics.sensible_heat_exchange import (
     SensibleHeatExchangeConfig,
     SensibleHeatExchangeModel,
 )
+from climate_sim.physics.latent_heat_exchange import (
+    LatentHeatExchangeConfig,
+    LatentHeatExchangeModel,
+)
 from climate_sim.physics.atmosphere import compute_two_meter_temperature
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
@@ -179,6 +183,7 @@ RhsFactory = Callable[
         np.ndarray,
         np.ndarray,
         SensibleHeatExchangeConfig,
+        LatentHeatExchangeConfig,
     ],
     Tuple[RhsFunc, RhsDerivativeFunc],
 ]
@@ -240,6 +245,7 @@ def monthly_step(
             temperature=temp_capped,
             albedo_field=state.albedo_field,
             wind_field=wind_field,
+            humidity_field=state.humidity_field,
         )
         rhs_value = rhs_fn(state_capped, insolation_W_m2)
         linearisation = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
@@ -362,6 +368,7 @@ def monthly_step(
                 temperature=temp_candidate,
                 albedo_field=state.albedo_field,
                 wind_field=wind_field,
+                humidity_field=state.humidity_field,
             )
             rhs_candidate = rhs_fn(state_candidate, insolation_W_m2)
             if temp_candidate.ndim == 2:
@@ -606,6 +613,7 @@ def solve_periodic_cycle_for_albedo(
     roughness_length: np.ndarray,
     topographic_elevation: np.ndarray,
     sensible_heat_cfg: SensibleHeatExchangeConfig,
+    latent_heat_cfg: LatentHeatExchangeConfig,
     albedo_model: AlbedoModel,
 ) -> tuple[ModelState, list[ModelState]]:
     """Compute the periodic solution and monthly mean temperatures for a given albedo field."""
@@ -640,6 +648,7 @@ def solve_periodic_cycle_for_albedo(
         roughness_length,
         topographic_elevation,
         sensible_heat_cfg,
+        latent_heat_cfg,
     )
 
     land_values = heat_capacity_field[land_mask]
@@ -703,6 +712,7 @@ def compute_periodic_cycle_kelvin(
     advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     sensible_heat_config: SensibleHeatExchangeConfig | None = None,
+    latent_heat_config: LatentHeatExchangeConfig | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[ModelState]]:
     """Solve for the periodic temperature cycle and return diagnostics.
 
@@ -720,6 +730,7 @@ def compute_periodic_cycle_kelvin(
     heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
     snow_cfg = snow_config or SnowAlbedoConfig()
     sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
+    latent_heat_cfg = latent_heat_config or LatentHeatExchangeConfig()
     albedo_kwargs: dict[str, float] = {}
     land_mask = compute_land_mask(lon2d, lat2d)
 
@@ -832,6 +843,7 @@ def compute_periodic_cycle_kelvin(
             roughness_length=roughness_length,
             topographic_elevation=topographic_elevation,
             sensible_heat_cfg=sensible_heat_cfg,
+            latent_heat_cfg=latent_heat_cfg,
             albedo_model=albedo_model,
         )
 
@@ -923,6 +935,7 @@ def compute_periodic_cycle_results(
     advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     sensible_heat_config: SensibleHeatExchangeConfig | None = None,
+    latent_heat_config: LatentHeatExchangeConfig | None = None,
     return_layer_map: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Produce the periodic cycle fields in Celsius along with the converged albedo layer.
@@ -951,6 +964,7 @@ def compute_periodic_cycle_results(
     resolved_advection = advection_config or AdvectionConfig()
     resolved_snow = snow_config or SnowAlbedoConfig()
     sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
+    latent_heat_cfg = latent_heat_config or LatentHeatExchangeConfig()
 
     if not sensible_heat_cfg.enabled and resolved_advection.enabled:
         resolved_advection = replace(resolved_advection, enabled=False)
@@ -963,6 +977,7 @@ def compute_periodic_cycle_results(
         roughness_length: np.ndarray,
         topographic_elevation: np.ndarray,
         sensible_heat_cfg_local: SensibleHeatExchangeConfig,
+        latent_heat_cfg_local: LatentHeatExchangeConfig,
     ):
         surface_diffusion_diag: np.ndarray | None = None
         surface_matrix = None
@@ -1001,6 +1016,18 @@ def compute_periodic_cycle_results(
                 config=sensible_heat_cfg_local,
             )
 
+        latent_heat_model: LatentHeatExchangeModel | None = None
+        if config.include_atmosphere and latent_heat_cfg_local.enabled:
+            latent_heat_model = LatentHeatExchangeModel(
+                land_mask=land_mask,
+                roughness_length_m=roughness_length,
+                surface_heat_capacity_J_m2_K=heat_capacity_field,
+                atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
+                topographic_elevation_m=topographic_elevation,
+                config=latent_heat_cfg_local,
+            )
+
+
         def rhs(state: ModelState, insolation: np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
                 state.temperature,
@@ -1013,21 +1040,36 @@ def compute_periodic_cycle_results(
             )
             if config.include_atmosphere:
                 radiative = radiative.copy()
+                surface_temperature = state.temperature[0]
+                atmosphere_temperature = state.temperature[1]
+                wind_speed_ref = state.wind_field[2] if state.wind_field is not None else None
+                humidity_field = state.humidity_field
                 if diffusion_operator.surface.enabled:
-                    radiative[0] += diffusion_operator.surface.tendency(state.temperature[0])
+                    radiative[0] += diffusion_operator.surface.tendency(surface_temperature)
                 if diffusion_operator.atmosphere.enabled:
-                    radiative[1] += diffusion_operator.atmosphere.tendency(state.temperature[1])
+                    radiative[1] += diffusion_operator.atmosphere.tendency(atmosphere_temperature)
 
                 if sensible_heat_model is not None:
-                    surface_temperature = state.temperature[0]
-                    atmosphere_temperature = state.temperature[1]
-                    wind_speed_ref = state.wind_field[2] if state.wind_field is not None else None
                     (
                         surface_tendency,
                         atmosphere_tendency,
                     ) = sensible_heat_model.compute_tendencies(
                         surface_temperature_K=surface_temperature,
                         atmosphere_temperature_K=atmosphere_temperature,
+                        wind_speed_reference_m_s=wind_speed_ref,
+                    )
+
+                    radiative[0] += surface_tendency
+                    radiative[1] += atmosphere_tendency
+
+                if humidity_field is not None and latent_heat_model is not None:
+                    (
+                        surface_tendency,
+                        atmosphere_tendency,
+                    ) = latent_heat_model.compute_tendencies(
+                        surface_temperature_K=surface_temperature,
+                        atmosphere_temperature_K=atmosphere_temperature,
+                        humidity_q=humidity_field,
                         wind_speed_reference_m_s=wind_speed_ref,
                     )
 
@@ -1092,6 +1134,7 @@ def compute_periodic_cycle_results(
         advection_config=resolved_advection,
         snow_config=resolved_snow,
         sensible_heat_config=sensible_heat_cfg,
+        latent_heat_config=latent_heat_cfg,
     )
     monthly_T = np.array([state.temperature for state in monthly_states])
     temperature_2m_c: np.ndarray | None = None
