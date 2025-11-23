@@ -58,14 +58,7 @@ def compute_two_meter_temperature(
     numpy.ndarray
         Monthly cycle of 2 m temperature in °C.
     """
-    if atmosphere_c is None:
-        return surface_c.copy()
-    Ks = 6
-    Ke = 0.4
-    surface_K = surface_c + 273.15
-    atmosphere_K = atmosphere_c + 273.15
-    Tbl = (Ks*surface_K + Ke*atmosphere_K) / (Ks + Ke) - 273.15
-    return Tbl
+    return surface_c.copy()
 
 def log_law_map_wind_speed(
     wind_speed_ref_m_s: np.ndarray,
