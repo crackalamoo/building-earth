@@ -1,4 +1,4 @@
-"""Geostrophic advection utilities for atmospheric heat transport."""
+"""Geostrophic advection utilities for wind and atmospheric heat transport."""
 
 from __future__ import annotations
 
@@ -14,6 +14,10 @@ from climate_sim.data.elevation import (
     WATER_ROUGHNESS_LENGTH_M,
 )
 from climate_sim.physics.pressure import compute_pressure
+from climate_sim.physics.atmosphere import (
+    compute_two_meter_temperature,
+    log_law_map_wind_speed,
+)
 from climate_sim.data.constants import GAS_CONSTANT_J_KG_K, R_EARTH_METERS
 from climate_sim.core.math_core import (
     regular_latitude_edges,
@@ -21,6 +25,7 @@ from climate_sim.core.math_core import (
     spherical_cell_area,
 )
 from climate_sim.data.landmask import compute_land_mask
+from climate_sim.data.elevation import VON_KARMAN_CONSTANT
 
 def compute_surface_roughness(
     lon2d: np.ndarray,
@@ -216,6 +221,11 @@ class AdvectionModel:
             self._lon2d, self._lat2d, data=elevation_data, sample_method="center"
         )
         self.elevation_m = np.maximum(self.elevation_m, 0.0)
+        
+        # Store roughness length for wind speed calculations
+        self._roughness_length = compute_cell_roughness_length(
+            self._lon2d, self._lat2d, data=elevation_data, land_mask=self._land_mask
+        )
 
     @property
     def enabled(self) -> bool:
@@ -335,3 +345,68 @@ class AdvectionModel:
             speed_final[zero_geo] = 0.0
 
         return u_final, v_final, speed_final
+    
+    def compute_atmospheric_properties(
+        self,
+        surface_temperature_K: np.ndarray,
+        atmosphere_temperature_K: np.ndarray,
+        wind_speed_reference_m_s: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Compute atmospheric properties needed for heat exchange calculations.
+        
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+            - pressure: Atmospheric pressure in Pa
+            - air_density: Air density in kg/m³
+            - wind_speed_10m: Wind speed at 10 m in m/s
+            - bulk_transfer_coefficient: Dimensionless bulk transfer coefficient
+        """
+        if surface_temperature_K.shape != self._lon2d.shape:
+            raise ValueError("Surface temperature must match grid shape")
+        if atmosphere_temperature_K.shape != self._lon2d.shape:
+            raise ValueError("Atmosphere temperature must match grid shape")
+        
+        # Compute pressure from atmosphere temperature
+        pressure = compute_pressure(atmosphere_temperature_K)
+        
+        # Map wind speed to 10 m height
+        if wind_speed_reference_m_s is None:
+            wind_speed_10m = np.zeros_like(surface_temperature_K)
+        else:
+            wind_speed_10m = log_law_map_wind_speed(
+                wind_speed_reference_m_s,
+                height_ref_m=100,
+                height_target_m=10,
+                roughness_length_m=self._roughness_length,
+            )
+        
+        # Compute near-surface air temperature for density calculation
+        atmosphere_temperature_c = atmosphere_temperature_K - 273.15
+        near_surface_air_c = compute_two_meter_temperature(
+            atmosphere_temperature_c,
+            surface_temperature_K - 273.15,
+        )
+        near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 10.0)
+        
+        # Air density
+        air_density = pressure / (GAS_CONSTANT_J_KG_K * near_surface_air_K)
+        
+        # Bulk transfer coefficient
+        log_height_surface = 10.0
+        roughness_momentum = self._roughness_length
+        roughness_heat = np.maximum(roughness_momentum / 10.0, 1.0e-9)
+        
+        lm = np.log(
+            np.maximum(log_height_surface / roughness_momentum, 1.0 + 1.0e-9)
+        )
+        lh = np.log(
+            np.maximum(log_height_surface / roughness_heat, 1.0 + 1.0e-9)
+        )
+        ch_raw = (VON_KARMAN_CONSTANT**2) / (lm * lh)
+        
+        ch_land = np.clip(ch_raw, 1e-4, 2.0e-3)
+        ch_ocean = np.clip(ch_raw, 3e-4, 3.0e-3)
+        bulk_transfer_coefficient = np.where(self._land_mask, ch_land, ch_ocean)
+        
+        return pressure, air_density, wind_speed_10m, bulk_transfer_coefficient

@@ -184,6 +184,7 @@ RhsFactory = Callable[
         np.ndarray,
         SensibleHeatExchangeConfig,
         LatentHeatExchangeConfig,
+        AdvectionModel | None,
     ],
     Tuple[RhsFunc, RhsDerivativeFunc],
 ]
@@ -649,6 +650,7 @@ def solve_periodic_cycle_for_albedo(
         topographic_elevation,
         sensible_heat_cfg,
         latent_heat_cfg,
+        advection_model,
     )
 
     land_values = heat_capacity_field[land_mask]
@@ -978,6 +980,7 @@ def compute_periodic_cycle_results(
         topographic_elevation: np.ndarray,
         sensible_heat_cfg_local: SensibleHeatExchangeConfig,
         latent_heat_cfg_local: LatentHeatExchangeConfig,
+        advection_model_local: AdvectionModel | None,
     ):
         surface_diffusion_diag: np.ndarray | None = None
         surface_matrix = None
@@ -1009,10 +1012,9 @@ def compute_periodic_cycle_results(
         if config.include_atmosphere and sensible_heat_cfg_local.enabled:
             sensible_heat_model = SensibleHeatExchangeModel(
                 land_mask=land_mask,
-                roughness_length_m=roughness_length,
                 surface_heat_capacity_J_m2_K=heat_capacity_field,
                 atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
-                topographic_elevation_m=topographic_elevation,
+                advection_model=advection_model_local,
                 config=sensible_heat_cfg_local,
             )
 
@@ -1020,10 +1022,9 @@ def compute_periodic_cycle_results(
         if config.include_atmosphere and latent_heat_cfg_local.enabled:
             latent_heat_model = LatentHeatExchangeModel(
                 land_mask=land_mask,
-                roughness_length_m=roughness_length,
                 surface_heat_capacity_J_m2_K=heat_capacity_field,
                 atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
-                topographic_elevation_m=topographic_elevation,
+                advection_model=advection_model_local,
                 config=latent_heat_cfg_local,
             )
 
