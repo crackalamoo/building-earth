@@ -1058,7 +1058,6 @@ def compute_periodic_cycle_results(
                         atmosphere_temperature_K=atmosphere_temperature,
                         wind_speed_reference_m_s=wind_speed_ref,
                     )
-
                     radiative[0] += surface_tendency
                     radiative[1] += atmosphere_tendency
 

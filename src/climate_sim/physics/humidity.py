@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 from scipy.interpolate import PchipInterpolator
 
-from climate_sim.data.constants import OCEAN_CLOUD_COVER_BOOST
 from climate_sim.physics.pressure import compute_pressure
 
 RH_POLES = 0.85
@@ -218,11 +217,6 @@ def _compute_cloud_cover_latitude_fallback(
 
     # Clamp to maximum of 0.9
     cloud_cover = np.minimum(cloud_cover, 0.9)
-
-    # Apply ocean boost if land mask is provided
-    if land_mask is not None:
-        ocean_mask = ~land_mask
-        cloud_cover = np.where(ocean_mask, cloud_cover * OCEAN_CLOUD_COVER_BOOST, cloud_cover)
 
     return cloud_cover
 
