@@ -13,7 +13,7 @@ from climate_sim.data.elevation import (
     neutral_drag_from_roughness_length,
     WATER_ROUGHNESS_LENGTH_M,
 )
-from climate_sim.physics.pressure import pressure_from_temperature_elevation
+from climate_sim.physics.pressure import compute_pressure
 from climate_sim.data.constants import GAS_CONSTANT_J_KG_K, R_EARTH_METERS
 from climate_sim.core.math_core import (
     regular_latitude_edges,
@@ -235,7 +235,7 @@ class AdvectionModel:
             zeros = np.zeros_like(temperature)
             return (zeros, zeros, zeros), zeros, zeros
 
-        pressure = pressure_from_temperature_elevation(temperature)
+        pressure = compute_pressure(temperature)
         grad_x, grad_y = self._horizontal_gradient(pressure)
         geostrophic = _compute_geostrophic_wind_components(
             grad_x,

@@ -31,7 +31,7 @@ from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.data.elevation import (
     compute_cell_roughness_length,
 )
-from climate_sim.physics.pressure import pressure_from_temperature_elevation
+from climate_sim.physics.pressure import compute_pressure
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.solver import compute_periodic_cycle_results
@@ -154,6 +154,7 @@ def main() -> None:
 
     Tatm_field = layers.get("Tatm")
     Tatm_cycle_K: np.ndarray | None = None
+    humidity_q_cycle = layers.get("humidity")
     if Tatm_field is not None:
         Tatm_arr = np.asarray(Tatm_field, dtype=float)
         if Tatm_arr.ndim == 3:
@@ -168,8 +169,8 @@ def main() -> None:
     if Tatm_cycle_K is not None:
         pressure_monthly = np.empty_like(Tatm_cycle_K, dtype=float)
         for idx in range(Tatm_cycle_K.shape[0]):
-            pressure_monthly[idx] = pressure_from_temperature_elevation(
-                Tatm_cycle_K[idx]
+            pressure_monthly[idx] = compute_pressure(
+                Tatm_cycle_K[idx],
             )
         slp_cycle_hpa = pressure_monthly * 0.01
 
@@ -388,7 +389,6 @@ def main() -> None:
         _draw_streamplot()
 
     # Humidity plot
-    humidity_q_cycle = layers.get("humidity")
     if humidity_q_cycle is not None:
         # Use stored humidity from solver state
         # Compute relative humidity from stored specific humidity

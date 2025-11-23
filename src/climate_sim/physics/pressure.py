@@ -60,9 +60,10 @@ def _smooth_temperature_field(
     return smoothed
 
 
-def pressure_from_temperature_elevation(
+def compute_pressure(
     temperature_K: np.ndarray,
     elevation_m: np.ndarray | None = None,
+    humidity_q: np.ndarray | None = None,
     gravity_m_s2: float = 9.81,
 ) -> np.ndarray:
     """Compute surface pressure (Pa) from temperature and elevation using hydrostatic balance."""
@@ -79,15 +80,25 @@ def pressure_from_temperature_elevation(
         if elevation.shape != shape:
             raise ValueError("Temperature and elevation fields must share the same shape")
 
+    if humidity_q is not None:
+        humidity = np.asarray(humidity_q, dtype=float)
+        if humidity.shape != shape:
+            raise ValueError("Temperature and humidity fields must share the same shape")
+
     mean_p = ATMOSPHERE_MASS * gravity_m_s2 / EARTH_SURFACE_AREA_M2
 
     lat_deg, diffusion_operator = _grid_latitude_and_diffusion(shape)
     cos_lat = np.clip(np.cos(np.deg2rad(lat_deg)), 1.0e-6, None)
     weights = np.asarray(np.broadcast_to(cos_lat[:, None], shape), dtype=float)
 
-    temp_smooth = _smooth_temperature_field(temperature, diffusion_operator, passes=10)
+    if humidity_q is not None:
+        virtual_temperature = temperature * (1 + 0.61 * humidity_q)
+        temp_smooth = _smooth_temperature_field(virtual_temperature, diffusion_operator, passes=10)
+        target_mean = area_weighted_mean(virtual_temperature, weights)
+    else:
+        temp_smooth = _smooth_temperature_field(temperature, diffusion_operator, passes=10)
+        target_mean = area_weighted_mean(temperature, weights)
 
-    target_mean = area_weighted_mean(temperature, weights)
     smooth_mean = area_weighted_mean(temp_smooth, weights)
     temp_smooth = temp_smooth + (target_mean - smooth_mean)
 

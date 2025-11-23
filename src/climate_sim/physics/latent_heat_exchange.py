@@ -15,7 +15,7 @@ from climate_sim.data.constants import GAS_CONSTANT_J_KG_K, HEAT_CAPACITY_AIR_J_
 from climate_sim.data.elevation import (
     VON_KARMAN_CONSTANT,
 )
-from climate_sim.physics.pressure import pressure_from_temperature_elevation
+from climate_sim.physics.pressure import compute_pressure
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ class LatentHeatExchangeModel:
             )
 
         
-        pressure = pressure_from_temperature_elevation(atmosphere_temperature)
+        pressure = compute_pressure(atmosphere_temperature)
         wind_speed_10m = self._wind_speed_10m(wind_speed_reference_m_s)
         wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
 

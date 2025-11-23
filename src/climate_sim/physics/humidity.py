@@ -6,7 +6,7 @@ import numpy as np
 from scipy.interpolate import PchipInterpolator
 
 from climate_sim.data.constants import OCEAN_CLOUD_COVER_BOOST
-from climate_sim.physics.pressure import pressure_from_temperature_elevation
+from climate_sim.physics.pressure import compute_pressure
 
 RH_POLES = 0.85
 RH_SUBTROPICS= 0.35
@@ -40,7 +40,7 @@ def specific_humidity_to_relative_humidity(
     # Compute saturation vapor pressure (Magnus formula)
     # Magnus formula requires temperature in Celsius
     temperature_C = temperature_K - 273.15
-    p = pressure_from_temperature_elevation(temperature_K)
+    p = compute_pressure(temperature_K)
     e_sat = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
     q_sat = (0.622 * e_sat) / (p - (1 - 0.622) * e_sat)
     
@@ -132,7 +132,7 @@ def compute_humidity_q(
 
     # Magnus formula requires temperature in Celsius
     temperature_C = temperature - 273.15
-    p_guess = pressure_from_temperature_elevation(temperature)
+    p_guess = compute_pressure(temperature)
     e_sat = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
     q_sat = (0.622 * e_sat)/(p_guess - (1-0.622)*e_sat)
 
