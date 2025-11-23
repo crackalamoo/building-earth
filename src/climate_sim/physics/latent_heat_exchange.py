@@ -1,4 +1,4 @@
-"""Neutral sensible heat exchange between the surface and atmosphere."""
+"""Latent heat exchange between the surface and atmosphere."""
 
 from __future__ import annotations
 
@@ -19,20 +19,15 @@ from climate_sim.physics.pressure import pressure_from_temperature_elevation
 
 
 @dataclass(frozen=True)
-class SensibleHeatExchangeConfig:
-    """Configuration for the neutral sensible heat exchange model."""
+class LatentHeatExchangeConfig:
+    """Configuration for the latent heat exchange model."""
 
     enabled: bool = True
-    von_karman: float = VON_KARMAN_CONSTANT
-    gas_constant_dry_air_J_kg_K: float = GAS_CONSTANT_J_KG_K
-    lapse_rate_K_per_m: float = STANDARD_LAPSE_RATE_K_PER_M
     minimum_wind_speed_m_s: float = 0.1
-    reference_height_surface_m: float = 2.0
-    include_lapse_rate_elevation: bool = False
 
 
-class SensibleHeatExchangeModel:
-    """Compute tendencies from neutral sensible heat exchange."""
+class LatentHeatExchangeModel:
+    """Compute tendencies from latent heat exchange."""
 
     def __init__(
         self,
@@ -42,9 +37,9 @@ class SensibleHeatExchangeModel:
         surface_heat_capacity_J_m2_K: np.ndarray,
         atmosphere_heat_capacity_J_m2_K: np.ndarray | float,
         topographic_elevation_m: np.ndarray | None = None,
-        config: SensibleHeatExchangeConfig | None = None,
+        config: LatentHeatExchangeConfig | None = None,
     ) -> None:
-        self._config = config or SensibleHeatExchangeConfig()
+        self._config = config or LatentHeatExchangeConfig()
 
         land_mask_bool = np.asarray(land_mask, dtype=bool)
         roughness = np.asarray(roughness_length_m, dtype=float)
@@ -81,6 +76,7 @@ class SensibleHeatExchangeModel:
         # temperature is computed via compute_two_meter_temperature.
         self._elevation_delta_to_surface = np.zeros_like(land_mask_bool, dtype=float)
 
+
     @property
     def enabled(self) -> bool:
         return self._config.enabled
@@ -104,10 +100,11 @@ class SensibleHeatExchangeModel:
         self,
         surface_temperature_K: np.ndarray,
         atmosphere_temperature_K: np.ndarray,
+        humidity_q: np.ndarray,
         *,
         wind_speed_reference_m_s: np.ndarray | None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Return surface and atmospheric tendencies from sensible heat exchange."""
+        """Return surface and atmospheric tendencies from latent heat exchange."""
 
         if not self.enabled:
             zeros = np.zeros_like(surface_temperature_K, dtype=float)
@@ -125,17 +122,19 @@ class SensibleHeatExchangeModel:
                 "Atmosphere temperature must match the surface heat capacity field shape"
             )
 
+        
         pressure = pressure_from_temperature_elevation(atmosphere_temperature)
         wind_speed_10m = self._wind_speed_10m(wind_speed_reference_m_s)
+        wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
 
         atmosphere_temperature_c = atmosphere_temperature - 273.15
         near_surface_air_c = compute_two_meter_temperature(
-            atmosphere_temperature_c,
-            surface_temperature - 273.15,
-        )
+                atmosphere_temperature_c,
+                surface_temperature - 273.15,
+            )
         near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 10.0)
 
-        gas_constant = self._config.gas_constant_dry_air_J_kg_K
+        gas_constant = GAS_CONSTANT_J_KG_K
         rho = pressure / (gas_constant * near_surface_air_K)
 
         log_height_surface = 10.0
@@ -148,40 +147,23 @@ class SensibleHeatExchangeModel:
         lh = np.log(
             np.maximum(log_height_surface / roughness_heat, 1.0 + 1.0e-9)
         )
-        ch_raw = (self._config.von_karman**2) / (lm * lh)
+        ch_raw = (VON_KARMAN_CONSTANT**2) / (lm * lh)
 
         ch_land = np.clip(ch_raw, 1e-4, 2.0e-3)
         ch_ocean = np.clip(ch_raw, 3e-4, 3.0e-3)
         ch = np.where(self._land_mask, ch_land, ch_ocean)
 
-        wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
+        # Magnus formula requires temperature in Celsius
+        surface_temperature_C = surface_temperature_K - 273.15
+        e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
+        q_sat = (0.622 * e_sat) / (pressure - (1 - 0.622) * e_sat)
 
-        # New: resistive throttling to the free-air node (Ta ~ your atmosphere_temperature)
-        cp = HEAT_CAPACITY_AIR_J_KG_K
-
-        # Surface conductance (W m-2 K-1)
-        g_surf = rho * cp * ch * wind_abs
-        r_surf = 1.0 / np.maximum(g_surf, 1e-9)
-
-        # Mixing resistance (choose once; split land/ocean if you want)
-        Cbl = 1.2e5  # J m-2 K-1
-        tau = np.where(self._land_mask, 2*86400.0, 4*86400.0)  # s
-        tau = (self._surface_heat_capacity * self._atmosphere_heat_capacity) / (    
-            self._surface_heat_capacity + self._atmosphere_heat_capacity
-        ) / (rho
-            * HEAT_CAPACITY_AIR_J_KG_K
-            * ch
-            * wind_abs)
-        r_mix = tau / Cbl
-
-        # Effective flux to the free-air node (your atmosphere_temperature)
-        delta_to_free = surface_temperature - near_surface_air_K
-        heat_flux = delta_to_free / (r_surf + r_mix)
-
-        # print(np.mean(ch_land), np.mean(ch_ocean), np.mean(ch), np.min(ch), np.max(ch))
+        humidity_q = np.minimum(humidity_q, q_sat)
+        heat_flux = rho * 2.5e6 * ch * wind_abs * (q_sat - humidity_q)
+        heat_flux = np.where(self._land_mask, 0, heat_flux)
 
         surface_tendency = -heat_flux / self._surface_heat_capacity
         atmosphere_tendency = heat_flux / self._atmosphere_heat_capacity
-        # return np.zeros_like(surface_tendency), np.zeros_like(atmosphere_tendency)
+
         return surface_tendency, atmosphere_tendency
 
