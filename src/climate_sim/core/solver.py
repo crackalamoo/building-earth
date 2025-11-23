@@ -59,7 +59,7 @@ ATMOSPHERE_REFERENCE_HEIGHT_M = 5000.0
 
 
 @dataclass
-class Linearisation:
+class Linearization:
     diag: np.ndarray
     cross: np.ndarray | None = None
     surface_diffusion_matrix: sparse.csr_matrix | None = None
@@ -81,6 +81,8 @@ class SurfaceHeatCapacityContext:
     """Container for surface-layer heat-capacity metadata."""
 
     albedo_model: AlbedoModel
+    advection_model: AdvectionModel
+    base_albedo: np.ndarray
     land_mask: np.ndarray
     base_C_land: float
     base_C_ocean: float
@@ -173,7 +175,7 @@ def _winds_equal(
     return True
 
 RhsFunc = Callable[[ModelState, np.ndarray], np.ndarray]
-RhsDerivative = Linearisation
+RhsDerivative = Linearization
 RhsDerivativeFunc = Callable[[ModelState, np.ndarray], RhsDerivative]
 RhsFactory = Callable[
     [
@@ -196,15 +198,15 @@ HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
 def monthly_step(
     state: ModelState,
-    wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
     insolation_W_m2: np.ndarray,
+    declination: np.ndarray,
     dt_seconds: float,
     *,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
-    surface_context: SurfaceHeatCapacityContext | None = None,
+    surface_context: SurfaceHeatCapacityContext,
 ) -> ModelState:
     """Advance the column temperature one implicit backward-Euler step."""
     with time_block("monthly_step"):
@@ -212,24 +214,30 @@ def monthly_step(
         temp_next = np.maximum(start_temp, temperature_floor)
         cache = solver_cache or DEFAULT_LINEAR_SOLVE_CACHE
 
-        baseline_capacity_field = (
-            surface_context.baseline_capacity if surface_context is not None else None
-        )
+        base_capacity = surface_context.baseline_capacity
 
         def _effective_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
-            if surface_context is None:
-                return np.ones_like(temp_surface, dtype=float)
             return surface_context.albedo_model.effective_heat_capacity_surface(
                 temp_surface,
                 land_mask=surface_context.land_mask,
                 base_C_land=surface_context.base_C_land,
                 base_C_ocean=surface_context.base_C_ocean,
             )
+        
+        def _init_state(temp: np.ndarray) -> ModelState:
+            with time_block("_init_state"):
+                lat2d = surface_context.advection_model._lat2d
+                albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, temp_next[0])
+                wind_field = surface_context.advection_model.wind_field(temp[1])
+                humidity_field = compute_humidity_q(lat2d, temp[0], declination)
+                return ModelState(
+                    temperature=temp,
+                    albedo_field=albedo_field,
+                    wind_field=wind_field,
+                    humidity_field=humidity_field,
+                )
 
-        def _baseline_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
-            if surface_context is None:
-                return np.ones_like(temp_surface, dtype=float)
-            return baseline_capacity_field
+        base_albedo_field = surface_context.base_albedo
 
         if start_temp.ndim == 2:
             identity_single_layer = _get_identity_matrix(start_temp.size, cache=cache)
@@ -242,27 +250,21 @@ def monthly_step(
 
         # implicit solver loop
         solve_linear = None
-        linearisation = None
+        linearization = None
         for newton_iter in range(NEWTON_MAX_ITERS):
             with time_block("newton_iteration"):
                 temp_capped = np.maximum(temp_next, temperature_floor)
-                state_capped = ModelState(
-                    temperature=temp_capped,
-                    albedo_field=state.albedo_field,
-                    wind_field=wind_field,
-                    humidity_field=state.humidity_field,
-                )
+                state_capped = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
                     rhs_value = rhs_fn(state_capped, insolation_W_m2)
-                if linearisation is None:
+                if linearization is None:
                     with time_block("rhs_derivative"):
-                        linearisation = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
+                        linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
 
                 if temp_capped.ndim == 2:
-                    base_capacity = _baseline_surface_capacity(temp_capped)
                     ceff = _effective_surface_capacity(temp_capped)
-                    diag = linearisation.diag
-                    diffusion_matrix = linearisation.surface_diffusion_matrix
+                    diag = linearization.diag
+                    diffusion_matrix = linearization.surface_diffusion_matrix
 
                     flux_term = base_capacity * rhs_value
                     residual = ceff * (temp_capped - start_temp) - dt_seconds * flux_term
@@ -276,16 +278,13 @@ def monthly_step(
                         )
 
                         if diffusion_matrix is not None and diffusion_matrix.nnz > 0:
-                            if surface_context is None:
-                                jacobian = jacobian - dt_seconds * diffusion_matrix
-                            else:
-                                capacity_diag = sparse.diags(
-                                    base_capacity.ravel(), format="csc"
-                                )
-                                jacobian = jacobian - dt_seconds * capacity_diag @ diffusion_matrix
+                            capacity_diag = sparse.diags(
+                                base_capacity.ravel(), format="csc"
+                            )
+                            jacobian = jacobian - dt_seconds * capacity_diag @ diffusion_matrix
 
-                    fingerprint = linearisation.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
-                    linearisation.solver_fingerprint = fingerprint
+                    fingerprint = linearization.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
+                    linearization.solver_fingerprint = fingerprint
                     with time_block("linear_solve"):
                         if solve_linear is None:
                             with time_block("factorize_solver"):
@@ -296,19 +295,18 @@ def monthly_step(
                     if temp_capped.ndim < 1 or temp_capped.shape[0] != 2:
                         raise ValueError("Layered derivative requires a two-layer temperature field")
 
-                    diag = linearisation.diag
-                    cross = linearisation.cross
+                    diag = linearization.diag
+                    cross = linearization.cross
                     if cross is None:
                         raise ValueError("Missing cross-layer coupling for layered system")
 
                     surface_diag = diag[0]
                     atmosphere_diag = diag[1]
-                    surface_matrix = linearisation.surface_diffusion_matrix
-                    atmosphere_matrix = linearisation.atmosphere_diffusion_matrix
+                    surface_matrix = linearization.surface_diffusion_matrix
+                    atmosphere_matrix = linearization.atmosphere_diffusion_matrix
 
-                    base_capacity_surface = _baseline_surface_capacity(temp_capped[0])
                     ceff_surface = _effective_surface_capacity(temp_capped[0])
-                    flux_surface = base_capacity_surface * rhs_value[0]
+                    flux_surface = base_capacity * rhs_value[0]
                     residual_surface = ceff_surface * (temp_capped[0] - start_temp[0]) - dt_seconds * (
                         flux_surface
                     )
@@ -325,24 +323,21 @@ def monthly_step(
                     with time_block("jacobian_assembly"):
                         surface_block = sparse.diags(ceff_surface.ravel(), format="csc")
                         surface_block -= dt_seconds * sparse.diags(
-                            (base_capacity_surface * surface_diag).ravel(), format="csc"
+                            (base_capacity * surface_diag).ravel(), format="csc"
                         )
                         atmosphere_block = identity.copy()
                         atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
 
                         if surface_matrix is not None and surface_matrix.nnz > 0:
-                            if surface_context is None:
-                                surface_block = surface_block - dt_seconds * surface_matrix
-                            else:
-                                capacity_diag = sparse.diags(
-                                    base_capacity_surface.ravel(), format="csc"
-                                )
-                                surface_block = surface_block - dt_seconds * capacity_diag @ surface_matrix
+                            capacity_diag = sparse.diags(
+                                base_capacity.ravel(), format="csc"
+                            )
+                            surface_block = surface_block - dt_seconds * capacity_diag @ surface_matrix
                         if atmosphere_matrix is not None and atmosphere_matrix.nnz > 0:
                             atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
 
                         coupling_surface_atm = -dt_seconds * sparse.diags(
-                            (base_capacity_surface * cross[0, 1]).ravel(), format="csc"
+                            (base_capacity * cross[0, 1]).ravel(), format="csc"
                         )
                         coupling_atm_surface = -dt_seconds * sparse.diags(
                             cross[1, 0].ravel(), format="csc"
@@ -359,8 +354,8 @@ def monthly_step(
                     )
 
                     assert isinstance(jacobian, sparse.csc_matrix)
-                    fingerprint = linearisation.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
-                    linearisation.solver_fingerprint = fingerprint
+                    fingerprint = linearization.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
+                    linearization.solver_fingerprint = fingerprint
                     with time_block("linear_solve"):
                         if solve_linear is None:
                             with time_block("factorize_solver"):
@@ -379,16 +374,11 @@ def monthly_step(
 
                 while damping >= NEWTON_BACKTRACK_CUTOFF:
                     temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
-                    state_candidate = ModelState(
-                        temperature=temp_candidate,
-                        albedo_field=state.albedo_field,
-                        wind_field=wind_field,
-                        humidity_field=state.humidity_field,
-                    )
+                    state_candidate = _init_state(temp_candidate)
                     with time_block("backtrack_rhs"):
                         rhs_candidate = rhs_fn(state_candidate, insolation_W_m2)
                     if temp_candidate.ndim == 2:
-                        base_capacity_candidate = _baseline_surface_capacity(temp_candidate)
+                        base_capacity_candidate = base_capacity
                         ceff_candidate = _effective_surface_capacity(temp_candidate)
                         residual_candidate = ceff_candidate * (
                             temp_candidate - start_temp
@@ -396,7 +386,7 @@ def monthly_step(
                     else:
                         if temp_candidate.ndim < 1 or temp_candidate.shape[0] != 2:
                             raise ValueError("Layered derivative requires a two-layer temperature field")
-                        base_capacity_candidate = _baseline_surface_capacity(temp_candidate[0])
+                        base_capacity_candidate = base_capacity
                         ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                         residual_surface_candidate = ceff_candidate * (
                             temp_candidate[0] - start_temp[0]
@@ -425,51 +415,30 @@ def monthly_step(
                 if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
                     break
 
-        return ModelState(
-            temperature=temp_next,
-            albedo_field=state.albedo_field,
-            wind_field=wind_field,
-            humidity_field=state.humidity_field,
-        )
 
+        return _init_state(temp_next)
 
-def apply_annual_map(
+def evolve_year(
     state: ModelState,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
-    wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
-    humidity_fields: Sequence[np.ndarray] | None,
     *,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
-    surface_context: SurfaceHeatCapacityContext | None = None,
+    surface_context: SurfaceHeatCapacityContext,
 ) -> list[ModelState]:
     """Propagate the state through 12 implicit steps"""
-    states = []
-    with time_block("apply_annual_map"):
+    states: list[ModelState] = []
+    monthly_declinations = compute_monthly_declinations()
+    with time_block("evolve_year"):
         for month_n in range(12):
             month = (month_n + 2) % 12 # start from March so initial guess is better
-            wind_for_month = wind_fields[month] if wind_fields is not None else None
-            if humidity_fields is not None:
-                humidity_for_month: np.ndarray | None = humidity_fields[month]
-            else:
-                humidity_for_month = state.humidity_field
-            if humidity_for_month is None:
-                humidity_for_month = state.humidity_field
-
-            state_for_step = ModelState(
-                temperature=state.temperature,
-                albedo_field=state.albedo_field,
-                wind_field=wind_for_month,
-                humidity_field=humidity_for_month,
-            )
-
             state = monthly_step(
-                state_for_step,
-                wind_for_month,
+                state,
                 monthly_insolation[month],
+                monthly_declinations[month],
                 month_durations[month],
                 rhs_fn=rhs_fn,
                 rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
@@ -521,13 +490,11 @@ def find_periodic_temperature(
     initial_state: ModelState,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
-    wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
-    humidity_fields: Sequence[np.ndarray] | None,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
+    surface_context: SurfaceHeatCapacityContext,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
-    surface_context: SurfaceHeatCapacityContext | None = None,
 ) -> list[ModelState]:
     """Solve P(T) = T for the annual map using Anderson acceleration."""
 
@@ -541,12 +508,10 @@ def find_periodic_temperature(
 
         for iter_idx in range(FIXED_POINT_MAX_ITERS):
             with time_block("periodic_iteration"):
-                advanced_states = apply_annual_map(
+                advanced_states = evolve_year(
                     state,
                     monthly_insolation,
                     month_durations,
-                    wind_fields,
-                    humidity_fields,
                     rhs_fn=rhs_fn,
                     rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
                     temperature_floor=temperature_floor,
@@ -555,8 +520,9 @@ def find_periodic_temperature(
                 )
 
                 advanced = advanced_states[-1]
-                residual = advanced.temperature - state.temperature
+                residual = advanced.temperature[0] - state.temperature[0]
                 max_residual = float(np.max(np.abs(residual)))
+                print(max_residual)
 
                 if max_residual < PERIODIC_FIXED_POINT_TOLERANCE_K:
                     return [advanced_states[(i - 2) % 12] for i in range(12)] # convert from March start to January start
@@ -606,12 +572,10 @@ def find_periodic_temperature(
 def solve_periodic_cycle_for_albedo(
     *,
     initial_state: ModelState | None,
-    current_albedo_field: np.ndarray,
+    base_albedo_field: np.ndarray,
     heat_capacity_field: np.ndarray,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
-    wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
-    humidity_fields: Sequence[np.ndarray] | None,
     diffusion_operator: LayeredDiffusionOperator,
     radiation_config: RadiationConfig,
     advection_model: AdvectionModel | None,
@@ -633,24 +597,19 @@ def solve_periodic_cycle_for_albedo(
             with time_block("initial_guess"):
                 guess = initial_guess_fn(
                     monthly_insolation,
-                    current_albedo_field,
+                    base_albedo_field,
                     radiation_config,
                     land_mask,
                 )
 
             state_init = ModelState(
                 temperature=guess,
-                albedo_field=current_albedo_field,
-                wind_field=wind_fields[2] if wind_fields is not None else None,
-                humidity_field=humidity_fields[2] if humidity_fields is not None else None,
+                albedo_field=base_albedo_field,
+                wind_field=None,
+                humidity_field=None,
             )
         else:
-            state_init = ModelState(
-                temperature=initial_state.temperature,
-                albedo_field=current_albedo_field,
-                wind_field=wind_fields[2] if wind_fields is not None else initial_state.wind_field,
-                humidity_field=humidity_fields[2] if humidity_fields is not None else initial_state.humidity_field,
-            )
+            state_init = initial_state
 
         with time_block("rhs_factory"):
             rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
@@ -681,6 +640,8 @@ def solve_periodic_cycle_for_albedo(
 
     surface_context = SurfaceHeatCapacityContext(
         albedo_model=albedo_model,
+        advection_model=advection_model,
+        base_albedo=base_albedo_field,
         land_mask=land_mask,
         base_C_land=base_C_land,
         base_C_ocean=base_C_ocean,
@@ -691,13 +652,11 @@ def solve_periodic_cycle_for_albedo(
         state_init,
         monthly_insolation,
         month_durations,
-        wind_fields,
-        humidity_fields,
         rhs_fn=rhs_fn,
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
+        surface_context=surface_context,
         temperature_floor=temperature_floor,
         solver_cache=solver_cache,
-        surface_context=surface_context,
     )
 
     return annual_periodic_states
@@ -748,7 +707,6 @@ def compute_periodic_cycle_kelvin(
                 albedo_kwargs = {"land_albedo": 0.18, "ocean_albedo": 0.06}
 
             base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
-            current_albedo_field = base_albedo_field
 
             roughness_length = compute_cell_roughness_length(
                 lon2d,
@@ -787,17 +745,6 @@ def compute_periodic_cycle_kelvin(
         previous_periodic: ModelState | None = None
         monthly: list[ModelState] | None = None
 
-        if advection_model is not None and advection_model.enabled:
-            current_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray] | None] = [None] * 12
-            wind_iterations = 2
-        else:
-            current_wind_fields = [None] * 12
-            wind_iterations = 1
-
-        snow_iterations = snow_cfg.picard_iterations if snow_cfg.enabled else 1
-        iterations = max(snow_iterations, wind_iterations)
-        iterations = 2
-
         # Initialize humidity fields from radiative equilibrium temperature guess
         with time_block("initialize_humidity_fields"):
             monthly_declinations = compute_monthly_declinations()
@@ -807,7 +754,7 @@ def compute_periodic_cycle_kelvin(
                 radiation_config,
                 land_mask,
             )
-            
+
             current_humidity_fields: list[np.ndarray] = []
             for month_idx in range(12):
                 # Extract temperature for this month
@@ -829,93 +776,41 @@ def compute_periodic_cycle_kelvin(
                 )
                 current_humidity_fields.append(humidity)
 
-        with time_block("picard_iterations"):
-            for iteration in range(iterations):
-                with time_block("picard_iteration"):
-                    monthly = solve_periodic_cycle_for_albedo(
-                        initial_state=previous_periodic,
-                        current_albedo_field=current_albedo_field,
-                        heat_capacity_field=heat_capacity_field,
-                        monthly_insolation=monthly_insolation,
-                        month_durations=month_durations,
-                        wind_fields=current_wind_fields,
-                        humidity_fields=current_humidity_fields,
-                        diffusion_operator=diffusion_operator,
-                        radiation_config=radiation_config,
-                        advection_model=advection_model,
-                        rhs_factory=rhs_factory,
-                        initial_guess_fn=initial_guess_fn,
-                        temperature_floor=radiation_config.temperature_floor,
-                        solver_cache=solver_cache,
-                        land_mask=land_mask,
-                        roughness_length=roughness_length,
-                        topographic_elevation=topographic_elevation,
-                        sensible_heat_cfg=sensible_heat_cfg,
-                        latent_heat_cfg=latent_heat_cfg,
-                        albedo_model=albedo_model,
+        monthly = solve_periodic_cycle_for_albedo(
+            initial_state=previous_periodic,
+            base_albedo_field=base_albedo_field,
+            heat_capacity_field=heat_capacity_field,
+            monthly_insolation=monthly_insolation,
+            month_durations=month_durations,
+            diffusion_operator=diffusion_operator,
+            radiation_config=radiation_config,
+            advection_model=advection_model,
+            rhs_factory=rhs_factory,
+            initial_guess_fn=initial_guess_fn,
+            temperature_floor=radiation_config.temperature_floor,
+            solver_cache=solver_cache,
+            land_mask=land_mask,
+            roughness_length=roughness_length,
+            topographic_elevation=topographic_elevation,
+            sensible_heat_cfg=sensible_heat_cfg,
+            latent_heat_cfg=latent_heat_cfg,
+            albedo_model=albedo_model,
+        )
+
+        if advection_model is not None and advection_model.enabled:
+            with time_block("update_wind_fields"):
+                new_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+                for idx, month_state in enumerate(monthly):
+                    wind_temperature = _select_wind_temperature(month_state.temperature)
+                    wind_field = month_state.wind_field or advection_model.wind_field(wind_temperature)
+                    wind_components, _, _ = wind_field
+                    new_wind_fields.append(wind_components)
+                    monthly[idx] = ModelState(
+                        temperature=month_state.temperature,
+                        albedo_field=base_albedo_field,
+                        wind_field=wind_components,
+                        humidity_field=month_state.humidity_field,
                     )
-
-                    monthly_temperatures = np.array([state.temperature for state in monthly])
-                    if monthly_temperatures.ndim == 4:
-                        surface_temperatures = monthly_temperatures[:, 0]
-                    else:
-                        surface_temperatures = monthly_temperatures
-
-                    updated_albedo = current_albedo_field
-                    snow_converged = True
-                    if snow_cfg.enabled:
-                        with time_block("update_snow_albedo"):
-                            updated_albedo = albedo_model.apply_snow_albedo(
-                                base_albedo_field,
-                                surface_temperatures,
-                            )
-                        snow_converged = np.array_equal(updated_albedo, current_albedo_field)
-                        current_albedo_field = updated_albedo
-
-                    # Update humidity fields based on converged temperatures
-                    with time_block("update_humidity_fields"):
-                        new_humidity_fields: list[np.ndarray] = []
-                        for idx, month_state in enumerate(monthly):
-                            humidity_temperature = _select_humidity_temperature(month_state.temperature)
-                            humidity = compute_humidity_q(
-                                lat2d,
-                                humidity_temperature,
-                                monthly_declinations[idx],
-                                land_mask=land_mask,
-                            )
-                            new_humidity_fields.append(humidity)
-                        current_humidity_fields = new_humidity_fields
-
-                    if advection_model is not None and advection_model.enabled:
-                        with time_block("update_wind_fields"):
-                            new_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-                            for idx, month_state in enumerate(monthly):
-                                wind_temperature = _select_wind_temperature(month_state.temperature)
-                                wind_components, _, _ = advection_model.wind_field(wind_temperature)
-                                new_wind_fields.append(wind_components)
-                                monthly[idx] = ModelState(
-                                    temperature=month_state.temperature,
-                                    albedo_field=current_albedo_field,
-                                    wind_field=wind_components,
-                                    humidity_field=new_humidity_fields[idx],
-                                )
-                            wind_converged = _winds_equal(new_wind_fields, current_wind_fields)
-                            current_wind_fields = new_wind_fields
-                    else:
-                        wind_converged = True
-                        current_wind_fields = [None] * 12
-                        for idx, month_state in enumerate(monthly):
-                            monthly[idx] = ModelState(
-                                temperature=month_state.temperature,
-                                albedo_field=current_albedo_field,
-                                wind_field=None,
-                                humidity_field=new_humidity_fields[idx],
-                            )
-
-                    if snow_converged and wind_converged:
-                        break
-
-        assert monthly is not None
 
         return lon2d, lat2d, topographic_elevation, monthly
 
@@ -1092,7 +987,7 @@ def compute_periodic_cycle_results(
                     diag[0] = diag[0] + surface_diffusion_diag
                 if atmosphere_diffusion_diag is not None:
                     diag[1] = diag[1] + atmosphere_diffusion_diag
-                return Linearisation(
+                return Linearization(
                     diag=diag,
                     cross=cross,
                     surface_diffusion_matrix=surface_matrix,
@@ -1101,7 +996,7 @@ def compute_periodic_cycle_results(
             diag = radiative_derivative.copy()
             if surface_diffusion_diag is not None:
                 diag = diag + surface_diffusion_diag
-            return Linearisation(diag=diag, surface_diffusion_matrix=surface_matrix)
+            return Linearization(diag=diag, surface_diffusion_matrix=surface_matrix)
 
         return rhs, rhs_derivative
 

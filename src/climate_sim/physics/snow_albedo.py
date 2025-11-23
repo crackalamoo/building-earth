@@ -60,13 +60,13 @@ class AlbedoModel:
         if self.config.freeze_temperature_c >= self.config.melt_temperature_c:
             raise ValueError("Snow melt temperature must exceed freeze temperature")
 
-        if monthly_temperatures_K.ndim == 3:
+        if monthly_temperatures_K.ndim == 2 or monthly_temperatures_K.ndim == 3:
             surface_temperatures = monthly_temperatures_K
         elif monthly_temperatures_K.ndim == 4:
             surface_temperatures = monthly_temperatures_K[:, 0]
         else:
             raise ValueError(
-                "Expected 3-D (month, lat, lon) or 4-D (month, layer, lat, lon) "
+                "Expected 2-D (lat, lon), 3-D (month, lat, lon), or 4-D (month, layer, lat, lon) "
                 "temperature arrays for snow albedo calculation."
             )
 
