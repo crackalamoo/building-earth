@@ -242,6 +242,7 @@ def monthly_step(
 
         # implicit solver loop
         solve_linear = None
+        linearisation = None
         for newton_iter in range(NEWTON_MAX_ITERS):
             with time_block("newton_iteration"):
                 temp_capped = np.maximum(temp_next, temperature_floor)
@@ -253,8 +254,9 @@ def monthly_step(
                 )
                 with time_block("rhs_evaluation"):
                     rhs_value = rhs_fn(state_capped, insolation_W_m2)
-                with time_block("rhs_derivative"):
-                    linearisation = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
+                if linearisation is None:
+                    with time_block("rhs_derivative"):
+                        linearisation = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
 
                 if temp_capped.ndim == 2:
                     base_capacity = _baseline_surface_capacity(temp_capped)
@@ -436,19 +438,37 @@ def apply_annual_map(
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
+    humidity_fields: Sequence[np.ndarray] | None,
     *,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext | None = None,
-) -> ModelState:
-    """Propagate the state through 12 implicit steps and return the end-of-December temperature."""
+) -> list[ModelState]:
+    """Propagate the state through 12 implicit steps"""
+    states = []
     with time_block("apply_annual_map"):
-        for month in range(12):
+        for month_n in range(12):
+            month = (month_n + 2) % 12 # start from March so initial guess is better
+            wind_for_month = wind_fields[month] if wind_fields is not None else None
+            if humidity_fields is not None:
+                humidity_for_month: np.ndarray | None = humidity_fields[month]
+            else:
+                humidity_for_month = state.humidity_field
+            if humidity_for_month is None:
+                humidity_for_month = state.humidity_field
+
+            state_for_step = ModelState(
+                temperature=state.temperature,
+                albedo_field=state.albedo_field,
+                wind_field=wind_for_month,
+                humidity_field=humidity_for_month,
+            )
+
             state = monthly_step(
-                state,
-                wind_fields[month] if wind_fields is not None else None,
+                state_for_step,
+                wind_for_month,
                 monthly_insolation[month],
                 month_durations[month],
                 rhs_fn=rhs_fn,
@@ -457,7 +477,8 @@ def apply_annual_map(
                 solver_cache=solver_cache,
                 surface_context=surface_context,
             )
-        return state
+            states.append(state)
+        return states
 
 
 def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | None:
@@ -501,12 +522,13 @@ def find_periodic_temperature(
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
+    humidity_fields: Sequence[np.ndarray] | None,
     rhs_fn: RhsFunc,
     rhs_temperature_derivative_fn: RhsDerivativeFunc,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext | None = None,
-) -> ModelState:
+) -> list[ModelState]:
     """Solve P(T) = T for the annual map using Anderson acceleration."""
 
     with time_block("find_periodic_temperature"):
@@ -519,11 +541,12 @@ def find_periodic_temperature(
 
         for iter_idx in range(FIXED_POINT_MAX_ITERS):
             with time_block("periodic_iteration"):
-                advanced = apply_annual_map(
+                advanced_states = apply_annual_map(
                     state,
                     monthly_insolation,
                     month_durations,
                     wind_fields,
+                    humidity_fields,
                     rhs_fn=rhs_fn,
                     rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
                     temperature_floor=temperature_floor,
@@ -531,11 +554,12 @@ def find_periodic_temperature(
                     surface_context=surface_context,
                 )
 
+                advanced = advanced_states[-1]
                 residual = advanced.temperature - state.temperature
                 max_residual = float(np.max(np.abs(residual)))
 
                 if max_residual < PERIODIC_FIXED_POINT_TOLERANCE_K:
-                    return advanced
+                    return [advanced_states[(i - 2) % 12] for i in range(12)] # convert from March start to January start
 
                 residual_flat = residual.ravel()
                 advanced_flat = advanced.temperature.ravel()
@@ -579,39 +603,6 @@ def find_periodic_temperature(
             f"{FIXED_POINT_MAX_ITERS} iterations (last residual {max_residual:.3e} K)"
         )
 
-
-def integrate_periodic_cycle(
-    state: ModelState,
-    monthly_insolation: np.ndarray,
-    month_durations: np.ndarray,
-    wind_fields: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
-    *,
-    rhs_fn: RhsFunc,
-    rhs_temperature_derivative_fn: RhsDerivativeFunc,
-    temperature_floor: float,
-    solver_cache: LinearSolveCache | None = None,
-    surface_context: SurfaceHeatCapacityContext | None = None,
-) -> list[ModelState]:
-    """Return the 12-month sequence of month-midpoint temperatures for the periodic solution."""
-    with time_block("integrate_periodic_cycle"):
-        states = []
-        for month in range(12):
-            next_state = monthly_step(
-                state,
-                wind_fields[month] if wind_fields is not None else None,
-                monthly_insolation[month],
-                month_durations[month],
-                rhs_fn=rhs_fn,
-                rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-                temperature_floor=temperature_floor,
-                solver_cache=solver_cache,
-                surface_context=surface_context,
-            )
-            state = next_state
-            states.append(next_state)
-        return states
-
-
 def solve_periodic_cycle_for_albedo(
     *,
     initial_state: ModelState | None,
@@ -634,7 +625,7 @@ def solve_periodic_cycle_for_albedo(
     sensible_heat_cfg: SensibleHeatExchangeConfig,
     latent_heat_cfg: LatentHeatExchangeConfig,
     albedo_model: AlbedoModel,
-) -> tuple[ModelState, list[ModelState]]:
+) -> list[ModelState]:
     """Compute the periodic solution and monthly mean temperatures for a given albedo field."""
 
     with time_block("solve_periodic_cycle_for_albedo"):
@@ -650,15 +641,15 @@ def solve_periodic_cycle_for_albedo(
             state_init = ModelState(
                 temperature=guess,
                 albedo_field=current_albedo_field,
-                wind_field=wind_fields[0] if wind_fields is not None else None,
-                humidity_field=humidity_fields[0] if humidity_fields is not None else None,
+                wind_field=wind_fields[2] if wind_fields is not None else None,
+                humidity_field=humidity_fields[2] if humidity_fields is not None else None,
             )
         else:
             state_init = ModelState(
                 temperature=initial_state.temperature,
                 albedo_field=current_albedo_field,
-                wind_field=wind_fields[0] if wind_fields is not None else initial_state.wind_field,
-                humidity_field=humidity_fields[0] if humidity_fields is not None else initial_state.humidity_field,
+                wind_field=wind_fields[2] if wind_fields is not None else initial_state.wind_field,
+                humidity_field=humidity_fields[2] if humidity_fields is not None else initial_state.humidity_field,
             )
 
         with time_block("rhs_factory"):
@@ -696,11 +687,12 @@ def solve_periodic_cycle_for_albedo(
         baseline_capacity=baseline_capacity,
     )
 
-    periodic_state = find_periodic_temperature(
+    annual_periodic_states = find_periodic_temperature(
         state_init,
         monthly_insolation,
         month_durations,
         wind_fields,
+        humidity_fields,
         rhs_fn=rhs_fn,
         rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
         temperature_floor=temperature_floor,
@@ -708,20 +700,7 @@ def solve_periodic_cycle_for_albedo(
         surface_context=surface_context,
     )
 
-    monthly_states = integrate_periodic_cycle(
-        periodic_state,
-        monthly_insolation,
-        month_durations,
-        wind_fields,
-        rhs_fn=rhs_fn,
-        rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-        temperature_floor=temperature_floor,
-        solver_cache=solver_cache,
-        surface_context=surface_context,
-    )
-
-    return periodic_state, monthly_states
-
+    return annual_periodic_states
 
 def compute_periodic_cycle_kelvin(
     *,
@@ -817,6 +796,7 @@ def compute_periodic_cycle_kelvin(
 
         snow_iterations = snow_cfg.picard_iterations if snow_cfg.enabled else 1
         iterations = max(snow_iterations, wind_iterations)
+        iterations = 2
 
         # Initialize humidity fields from radiative equilibrium temperature guess
         with time_block("initialize_humidity_fields"):
@@ -852,7 +832,7 @@ def compute_periodic_cycle_kelvin(
         with time_block("picard_iterations"):
             for iteration in range(iterations):
                 with time_block("picard_iteration"):
-                    periodic_state, monthly = solve_periodic_cycle_for_albedo(
+                    monthly = solve_periodic_cycle_for_albedo(
                         initial_state=previous_periodic,
                         current_albedo_field=current_albedo_field,
                         heat_capacity_field=heat_capacity_field,
@@ -921,12 +901,6 @@ def compute_periodic_cycle_kelvin(
                                 )
                             wind_converged = _winds_equal(new_wind_fields, current_wind_fields)
                             current_wind_fields = new_wind_fields
-                            periodic_state = ModelState(
-                                temperature=periodic_state.temperature,
-                                albedo_field=current_albedo_field,
-                                wind_field=new_wind_fields[-1],
-                                humidity_field=new_humidity_fields[-1],
-                            )
                     else:
                         wind_converged = True
                         current_wind_fields = [None] * 12
@@ -937,14 +911,6 @@ def compute_periodic_cycle_kelvin(
                                 wind_field=None,
                                 humidity_field=new_humidity_fields[idx],
                             )
-                        periodic_state = ModelState(
-                            temperature=periodic_state.temperature,
-                            albedo_field=current_albedo_field,
-                            wind_field=None,
-                            humidity_field=new_humidity_fields[-1],
-                        )
-
-                    previous_periodic = periodic_state
 
                     if snow_converged and wind_converged:
                         break
