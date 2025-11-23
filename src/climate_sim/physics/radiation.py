@@ -69,15 +69,17 @@ def radiative_balance_rhs(
 
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
-    eps_atm = 0.7 + 0.25 * cloud_cover
+    eps_atm = 0.78 + 0.10 * cloud_cover
     eps_toa = eps_atm
 
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
-    emitted_atmosphere = eps_atm * sigma * np.power(atmosphere + STANDARD_LAPSE_RATE_K_PER_M*2000, 4)
-    emitted_toa = eps_toa * sigma * np.power(atmosphere - STANDARD_LAPSE_RATE_K_PER_M*2000, 4)
+    emitted_atmosphere = eps_atm * sigma * np.power(atmosphere + STANDARD_LAPSE_RATE_K_PER_M*300, 4)
+    emitted_toa = eps_toa * sigma * np.power(atmosphere - STANDARD_LAPSE_RATE_K_PER_M*1000, 4)
+    emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
+    # emitted_toa = eps_toa * sigma * np.power(atmosphere, 4)
     # Shortwave partitioning
     alpha_atm = atm_albedo_field
-    beta_atm = getattr(config, "shortwave_absorptance_atmosphere", 0.0)
+    beta_atm = getattr(config, "shortwave_absorptance_atmosphere", 0.2)
 
     # SW absorbed in atmosphere
     absorbed_shortwave_atm = beta_atm * insolation_W_m2
@@ -134,7 +136,7 @@ def radiative_balance_rhs_temperature_derivative(
             temperature=temperature_K,
             land_mask=land_mask,
         )
-    eps_atm = 0.7 + 0.3 * cloud_cover
+    eps_atm = 0.78 + 0.10 * cloud_cover
 
     surface_diag = (
         -4.0 * config.emissivity_surface * sigma * np.power(surface, 3)
@@ -186,9 +188,9 @@ def radiative_equilibrium_initial_guess(
     # Use latitude-based fallback for initial guess since we don't have actual humidity yet
     dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
     cloud_cover = compute_cloud_cover(temperature=dummy_temp, land_mask=land_mask)
-    epsilon_atm = 0.7 + 0.3 * cloud_cover
+    eps_atm = 0.78 + 0.10 * cloud_cover
 
-    denom = np.maximum(2.0 - epsilon_atm, 1e-6)
+    denom = np.maximum(2.0 - eps_atm, 1e-6)
     atmosphere = np.power(absorbed / (denom * sigma), 0.25)
     surface = np.power(2.0 * absorbed / (denom * sigma), 0.25)
 
