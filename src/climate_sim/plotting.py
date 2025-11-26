@@ -123,43 +123,6 @@ def plot_field(
 
     plt.show()
 
-
-def plot_temperature_field(
-    lon2d: np.ndarray,
-    lat2d: np.ndarray,
-    field: np.ndarray,
-    *,
-    title: str = "Temperature Field",
-    use_fahrenheit: bool = False,
-    value_is_delta: bool = False,
-) -> None:
-    """Specialised helper for temperature fields with unit conversions."""
-    unit = temperature_unit(use_fahrenheit)
-    cmap, bounds = build_temperature_cmap(unit=unit[-1])
-    display_field = convert_temperature(field, use_fahrenheit, is_delta=value_is_delta)
-    vmin, vmax = bounds[0], bounds[-1]
-    norm = Normalize(vmin=vmin, vmax=vmax)
-    stats_text = (
-        f"min {display_field.min():.1f}{unit}\n"
-        f"mean {display_field.mean():.1f}{unit}\n"
-        f"max {display_field.max():.1f}{unit}"
-    )
-
-    plot_field(
-        lon2d,
-        lat2d,
-        display_field,
-        title=title,
-        cmap=cmap,
-        norm=norm,
-        colorbar_label=f"Temperature ({unit})",
-        colorbar_ticks=bounds,
-        colorbar_orientation="vertical",
-        stats_text=stats_text,
-        status_unit=unit,
-    )
-
-
 def add_status_readout(
     fig: plt.Figure,
     ax: plt.Axes,
