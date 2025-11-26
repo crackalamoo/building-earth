@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import Normalize
 from matplotlib.widgets import RadioButtons, Slider
+import cmocean
 from pathlib import Path
 
 from climate_sim.physics.diffusion import DiffusionConfig
@@ -247,7 +248,7 @@ def main() -> None:
             v_deg = v_slice / meters_per_deg_lat
             return u_deg, v_deg
 
-        cmap = plt.cm.viridis
+        cmap = cmocean.cm.speed
         norm = Normalize(vmin=0.0, vmax=max_speed)
 
         wind_levels = {
@@ -457,21 +458,21 @@ def main() -> None:
         
         def get_norm_and_label(humidity_type: str) -> tuple[Normalize, str]:
             if humidity_type == "Specific Humidity (q)":
-                vmin = float(humidity_q_cycle.min())
+                vmin = 0
                 vmax = float(humidity_q_cycle.max())
                 label = "Specific Humidity (kg/kg)"
             elif humidity_type == "Relative Humidity (RH)":
-                vmin = float(humidity_rh_cycle.min())
-                vmax = float(humidity_rh_cycle.max())
+                vmin = 0
+                vmax = 1
                 label = "Relative Humidity"
             else:  # Cloud Cover
-                vmin = float(cloud_cover_cycle.min())
-                vmax = float(cloud_cover_cycle.max())
+                vmin = 0
+                vmax = 1
                 label = "Cloud Cover Fraction"
             return Normalize(vmin=vmin, vmax=vmax), label
         
         norm_humidity, colorbar_label_humidity = get_norm_and_label(current_state_humidity["type"])
-        cmap_humidity = plt.cm.viridis
+        cmap_humidity = cmocean.cm.rain
         
         # Create sorted lat/lon grids for pcolormesh
         lat_sorted = lat2d[:, 0]
