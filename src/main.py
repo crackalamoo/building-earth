@@ -19,6 +19,7 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.plotting import (
     plot_layered_monthly_temperature_cycle,
     save_monthly_temperature_gif,
@@ -46,6 +47,13 @@ load_dotenv()
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the climate model and plot the cycle.")
     default_atmosphere = RadiationConfig().include_atmosphere
+    parser.add_argument(
+        "--cache",
+        dest="cache",
+        action="store_true",
+        default=False,
+        help="load from cache",
+    )
     add_common_model_arguments(
         parser,
         default_atmosphere=default_atmosphere,
@@ -83,17 +91,27 @@ def main() -> None:
     print(f"Configuration setup took {time.time() - start:.2f} seconds")
 
     start = time.time()
-    lon2d, lat2d, layers = compute_periodic_cycle_results(
-        resolution_deg=args.resolution,
-        solar_constant=args.solar_constant,
-        use_elliptical_orbit=args.elliptical_orbit,
-        radiation_config=radiation_config,
-        diffusion_config=diffusion_config,
-        snow_config=snow_config,
-        sensible_heat_config=sensible_heat_config,
-        latent_heat_config=latent_heat_config,
-        return_layer_map=True,
-    )
+    data_dir = os.getenv("DATA_DIR")
+    assert data_dir is not None, "Please set the DATA_DIR environment variable to enable caching."
+    data_dir = Path(data_dir)
+    cache_path = data_dir / "main.npz"
+    if args.cache:
+        lon2d, lat2d = create_lat_lon_grid(args.resolution)
+        with np.load(cache_path) as cached:
+            layers = {k: cached[k] for k in cached}
+    else:
+        lon2d, lat2d, layers = compute_periodic_cycle_results(
+            resolution_deg=args.resolution,
+            solar_constant=args.solar_constant,
+            use_elliptical_orbit=args.elliptical_orbit,
+            radiation_config=radiation_config,
+            diffusion_config=diffusion_config,
+            snow_config=snow_config,
+            sensible_heat_config=sensible_heat_config,
+            latent_heat_config=latent_heat_config,
+            return_layer_map=True,
+        )
+        np.savez_compressed(cache_path, **layers)
     print(f"Model run took {time.time() - start:.2f} seconds")
     assert type(layers) is dict
     surface_cycle = layers["surface"]
