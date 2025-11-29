@@ -50,7 +50,8 @@ from climate_sim.data.elevation import (
 from climate_sim.core.timing import time_block, get_profiler, reset_profiler
 
 NEWTON_STEP_TOLERANCE_K = 1.0
-PERIODIC_FIXED_POINT_TOLERANCE_K = 1.0
+PERIODIC_FIXED_POINT_TOLERANCE_K = 0.5
+PERIODIC_FIXED_POINT_TOLERANCE_K_99P = 1.0
 NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
@@ -501,10 +502,10 @@ def find_periodic_temperature(
     with time_block("find_periodic_temperature"):
         state = initial_state
         state.temperature = np.maximum(initial_state.temperature, temperature_floor)
+        states = [initial_state] * 12
         residual_history: list[np.ndarray] = []
         advanced_history: list[np.ndarray] = []
         history_limit = 5
-        max_residual = 0.0
 
         for iter_idx in range(FIXED_POINT_MAX_ITERS):
             with time_block("periodic_iteration"):
@@ -520,12 +521,19 @@ def find_periodic_temperature(
                 )
 
                 advanced = advanced_states[-1]
-                residual = advanced.temperature[0] - state.temperature[0]
-                max_residual = float(np.max(np.abs(residual)))
-                print(max_residual)
+                residual = np.array([
+                    advanced_states[i].temperature[0] - states[i].temperature[0] for i in range(12)
+                ])
+                residual_rms = np.sqrt(np.mean(np.square(residual)))
+                residual_99p = np.percentile(np.abs(residual), 99)
+                residual_max = np.max(np.abs(residual))
+                print(residual_rms, residual_99p, residual_max)
 
-                if max_residual < PERIODIC_FIXED_POINT_TOLERANCE_K:
+                if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
                     return [advanced_states[(i - 2) % 12] for i in range(12)] # convert from March start to January start
+
+                states = advanced_states
+                state = advanced_states[-1]
 
                 residual_flat = residual.ravel()
                 advanced_flat = advanced.temperature.ravel()
@@ -561,8 +569,6 @@ def find_periodic_temperature(
                         if not np.all(np.isfinite(T_next)):
                             residual_history = residual_history[-1:]
                             advanced_history = advanced_history[-1:]
-
-                state.temperature = np.maximum(T_next, temperature_floor)
 
         raise RuntimeError(
             "Failed to converge to a periodic solution after "
