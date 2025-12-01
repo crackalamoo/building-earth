@@ -140,7 +140,6 @@ def _select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
             return temperature[1]
     raise ValueError("Unsupported temperature field shape for wind calculation")
 
-
 def _select_humidity_temperature(temperature: np.ndarray) -> np.ndarray:
     """Return the temperature field to use when computing humidity diagnostics.
     """
@@ -150,30 +149,6 @@ def _select_humidity_temperature(temperature: np.ndarray) -> np.ndarray:
         # Always use surface temperature (layer 0) for humidity
         return temperature[0]
     raise ValueError("Unsupported temperature field shape for humidity calculation")
-
-def _winds_equal(
-    winds_a: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
-    winds_b: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray] | None] | None,
-) -> bool:
-    if winds_a is winds_b:
-        return True
-    if winds_a is None or winds_b is None:
-        return winds_a is winds_b
-    if len(winds_a) != len(winds_b):
-        return False
-    for wa, wb in zip(winds_a, winds_b, strict=True):
-        if wa is None and wb is None:
-            continue
-        if (wa is None) != (wb is None):
-            return False
-        assert wa is not None and wb is not None
-        if not (
-            np.array_equal(wa[0], wb[0])
-            and np.array_equal(wa[1], wb[1])
-            and np.array_equal(wa[2], wb[2])
-        ):
-            return False
-    return True
 
 RhsFunc = Callable[[ModelState, np.ndarray], np.ndarray]
 RhsDerivative = Linearization
@@ -293,7 +268,7 @@ def monthly_step(
                         correction_flat = solve_linear(residual_flat)
                     correction = correction_flat.reshape(temp_capped.shape)
                 else:
-                    if temp_capped.ndim < 1 or temp_capped.shape[0] != 2:
+                    if temp_capped.ndim < 3 or temp_capped.shape[0] != 2:
                         raise ValueError("Layered derivative requires a two-layer temperature field")
 
                     diag = linearization.diag
@@ -378,17 +353,15 @@ def monthly_step(
                     state_candidate = _init_state(temp_candidate)
                     with time_block("backtrack_rhs"):
                         rhs_candidate = rhs_fn(state_candidate, insolation_W_m2)
+                    base_capacity_candidate = base_capacity
+                    ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                     if temp_candidate.ndim == 2:
-                        base_capacity_candidate = base_capacity
-                        ceff_candidate = _effective_surface_capacity(temp_candidate)
                         residual_candidate = ceff_candidate * (
                             temp_candidate - start_temp
                         ) - dt_seconds * (base_capacity_candidate * rhs_candidate)
                     else:
-                        if temp_candidate.ndim < 1 or temp_candidate.shape[0] != 2:
+                        if temp_candidate.ndim < 3 or temp_candidate.shape[0] != 2:
                             raise ValueError("Layered derivative requires a two-layer temperature field")
-                        base_capacity_candidate = base_capacity
-                        ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                         residual_surface_candidate = ceff_candidate * (
                             temp_candidate[0] - start_temp[0]
                         ) - dt_seconds * (base_capacity_candidate * rhs_candidate[0])
@@ -810,6 +783,7 @@ def compute_periodic_cycle_kelvin(
                     wind_temperature = _select_wind_temperature(month_state.temperature)
                     wind_field = month_state.wind_field or advection_model.wind_field(wind_temperature)
                     wind_components, _, _ = wind_field
+
                     new_wind_fields.append(wind_components)
                     monthly[idx] = ModelState(
                         temperature=month_state.temperature,
