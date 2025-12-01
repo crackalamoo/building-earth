@@ -203,7 +203,7 @@ def monthly_step(
         def _init_state(temp: np.ndarray) -> ModelState:
             with time_block("_init_state"):
                 lat2d = surface_context.advection_model._lat2d
-                albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, temp_next[0])
+                albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, temp[0])
                 wind_field = surface_context.advection_model.wind_field(temp[1])
                 humidity_field = compute_humidity_q(lat2d, temp[0], declination)
                 return ModelState(
