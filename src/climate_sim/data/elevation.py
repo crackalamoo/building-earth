@@ -14,6 +14,7 @@ import xarray as xr
 VON_KARMAN_CONSTANT = 0.4
 REFERENCE_HEIGHT_M = 10.0
 WATER_ROUGHNESS_LENGTH_M = 2.0e-4
+from climate_sim.data.constants import R_EARTH_METERS
 
 def download_etopo(dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -205,7 +206,6 @@ def compute_cell_roughness_length(
         cache=cache,
     )
 
-    earth_radius_m = 6.371e6
     lat_centers = lat_array[:, 0]
     lon_centers = lon_array[0, :]
 
@@ -219,7 +219,7 @@ def compute_cell_roughness_length(
         if not np.allclose(lon_diff, lon_diff[0]):
             raise ValueError("Longitude grid must have constant spacing for roughness calculation")
         dlon_rad = np.deg2rad(lon_diff[0])
-        delta_x = earth_radius_m * np.cos(np.deg2rad(lat_centers)) * dlon_rad
+        delta_x = R_EARTH_METERS * np.cos(np.deg2rad(lat_centers)) * dlon_rad
         inv_two_delta_x = np.zeros_like(delta_x)
         valid_dx = np.abs(delta_x) > 0.0
         inv_two_delta_x[valid_dx] = 1.0 / (2.0 * delta_x[valid_dx])
@@ -231,7 +231,7 @@ def compute_cell_roughness_length(
         if not np.allclose(lat_diff, lat_diff[0]):
             raise ValueError("Latitude grid must have constant spacing for roughness calculation")
         dlat_rad = np.deg2rad(lat_diff[0])
-        delta_y = earth_radius_m * dlat_rad
+        delta_y = R_EARTH_METERS * dlat_rad
         inv_two_delta_y = 0.0
         if delta_y != 0.0:
             inv_two_delta_y = 1.0 / (2.0 * delta_y)

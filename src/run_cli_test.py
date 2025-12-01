@@ -11,6 +11,7 @@ load_dotenv()
 import numpy as np
 
 from climate_sim.runtime.cli import add_common_model_arguments
+from climate_sim.data.constants import R_EARTH_METERS
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ def main() -> None:
     surface_cycle = layers["surface"]
 
     cell_areas = spherical_cell_area(
-        lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
+        lon2d, lat2d, earth_radius_m=R_EARTH_METERS
     )
     surface_area_mean = area_weighted_mean(surface_cycle.mean(axis=0), cell_areas)
     unit = _temperature_unit(args.fahrenheit)

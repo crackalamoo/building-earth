@@ -39,7 +39,7 @@ def _grid_latitude_and_diffusion(shape: tuple[int, int]) -> tuple[np.ndarray, Di
 
 def _smooth_temperature_field(
     field: np.ndarray,
-    diffusion_operator: "DiffusionOperator",
+    diffusion_operator: DiffusionOperator,
     *,
     passes: int = 10,
 ) -> np.ndarray:
@@ -118,3 +118,4 @@ def compute_pressure(
     p_surface = p_surface * (mean_p / area_weighted_mean(p_surface, weights))
 
     return p_surface
+

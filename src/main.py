@@ -118,7 +118,7 @@ def main() -> None:
     albedo_field = layers.get("albedo")
 
     cell_areas = spherical_cell_area(
-        lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m
+        lon2d, lat2d, earth_radius_m=R_EARTH_METERS
     )
     surface_area_mean = float(
         area_weighted_mean(surface_cycle.mean(axis=0), cell_areas)

@@ -13,6 +13,7 @@ from climate_sim.core.math_core import (
     regular_longitude_edges,
     spherical_cell_area,
 )
+from climate_sim.data.constants import R_EARTH_METERS
 
 
 def _infer_spacing_deg(coordinates: np.ndarray, fallback: float) -> float:
@@ -96,7 +97,6 @@ def _assemble_sparse_matrix(
 
 @dataclass(frozen=True)
 class DiffusionConfig:
-    earth_radius_m: float = 6.371e6
     surface_kappa_ref_m2_s: float = 1.0e3
     surface_resolution_ref_deg: float = 1.0
     atmosphere_kappa_ref_m2_s: float = 5.0e3
@@ -247,7 +247,7 @@ def _build_single_layer_operator(
     elif active_mask.shape != heat_capacity_field.shape:
         raise ValueError("Active mask must match the grid shape")
 
-    earth_radius = config.earth_radius_m
+    earth_radius = R_EARTH_METERS
 
     total_capacity = np.zeros_like(heat_capacity_field)
     total_capacity[active_mask] = (
@@ -390,7 +390,7 @@ def create_diffusion_operator(
     cell_area_field = spherical_cell_area(
         lon2d,
         lat2d,
-        earth_radius_m=config.earth_radius_m,
+        earth_radius_m=R_EARTH_METERS,
     )
 
     surface_operator = _build_single_layer_operator(

@@ -32,6 +32,7 @@ from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.data.calendar import MONTH_NAMES
+from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import spherical_cell_area
@@ -609,7 +610,7 @@ def main() -> None:
         sim_t2m = temperature_2m
 
     land_mask = compute_land_mask(lon2d, lat2d)
-    cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=diffusion_config.earth_radius_m)
+    cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=R_EARTH_METERS)
 
     # Aggregate NOAA reference data onto the simulation grid using cell-mean values.
     aggregated_obs = aggregate_reference_to_sim_grid(reference, lon2d, lat2d)

@@ -122,7 +122,6 @@ def compute_surface_roughness(
 class AdvectionConfig:
     """Configuration for advection model."""
     enabled: bool = True
-    earth_radius_m: float = 6.371e6
     earth_rotation_rate_rad_s: float = 7.2921e-5
     gravity_m_s2: float = 9.81
     troposphere_scale_height_m: float = 8000.0
@@ -158,14 +157,14 @@ class AdvectionModel:
         lat_spacing = np.diff(lat_centers)
         if not np.allclose(lat_spacing, lat_spacing[0]):
             raise ValueError("Latitude grid must have constant spacing for gradients")
-        self._delta_y = config.earth_radius_m * np.deg2rad(float(lat_spacing[0]))
+        self._delta_y = R_EARTH_METERS * np.deg2rad(float(lat_spacing[0]))
 
         lon_spacing = np.diff(lon_centers)
         if not np.allclose(lon_spacing, lon_spacing[0]):
             raise ValueError("Longitude grid must have constant spacing for gradients")
         delta_lon_rad = np.deg2rad(float(lon_spacing[0]))
         cos_lat = np.cos(np.deg2rad(lat_centers))[:, np.newaxis]
-        delta_x = config.earth_radius_m * cos_lat * delta_lon_rad
+        delta_x = R_EARTH_METERS * cos_lat * delta_lon_rad
         with np.errstate(divide="ignore", invalid="ignore"):
             self._inv_two_delta_x = np.zeros_like(delta_x)
             valid = np.abs(delta_x) > 0.0
@@ -216,7 +215,7 @@ class AdvectionModel:
 
     def wind_field(
         self, temperature: np.ndarray
-    ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute the geostrophic wind field (u, v, speed) for the given temperatures."""
 
         if temperature.shape != self._lon2d.shape:
@@ -229,10 +228,7 @@ class AdvectionModel:
             return (zeros, zeros, zeros), zeros, zeros
 
         pressure = compute_pressure(temperature)
-        grad_x, grad_y = self._horizontal_gradient(pressure)
         geostrophic = self._compute_geostrophic_wind_components(
-            grad_x,
-            grad_y,
             temperature,
             config=self._config,
             pressure=pressure,
@@ -241,18 +237,17 @@ class AdvectionModel:
         u_geo, v_geo, speed_geo = geostrophic
         u_final, v_final, speed_final = self._apply_surface_drag(u_geo, v_geo, speed_geo)
 
-        return (u_final, v_final, speed_final), grad_x, grad_y
+        return u_final, v_final, speed_final
 
     def _compute_geostrophic_wind_components(
         self,
-        grad_x: np.ndarray,
-        grad_y: np.ndarray,
         temperature: np.ndarray,
         *,
         config: AdvectionConfig,
         pressure: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return the geostrophic wind given horizontal temperature gradients."""
+        grad_x, grad_y = self._horizontal_gradient(pressure)
 
         # Apply a Coriolis floor while preserving hemisphere sign, including exactly
         # at the equator where the raw Coriolis parameter is zero.

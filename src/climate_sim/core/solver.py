@@ -125,7 +125,7 @@ class ModelState:
     """State variables for the climate model."""
     temperature: np.ndarray
     albedo_field: np.ndarray
-    wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    wind_field: np.ndarray | None = None
     humidity_field: np.ndarray | None = None
 
 
@@ -782,13 +782,12 @@ def compute_periodic_cycle_kelvin(
                 for idx, month_state in enumerate(monthly):
                     wind_temperature = _select_wind_temperature(month_state.temperature)
                     wind_field = month_state.wind_field or advection_model.wind_field(wind_temperature)
-                    wind_components, _, _ = wind_field
 
-                    new_wind_fields.append(wind_components)
+                    new_wind_fields.append(wind_field)
                     monthly[idx] = ModelState(
                         temperature=month_state.temperature,
                         albedo_field=base_albedo_field,
-                        wind_field=wind_components,
+                        wind_field=wind_field,
                         humidity_field=month_state.humidity_field,
                     )
 
