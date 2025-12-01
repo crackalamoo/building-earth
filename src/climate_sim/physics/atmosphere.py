@@ -34,31 +34,24 @@ def adjust_temperature_by_elevation(
 
 
 def compute_two_meter_temperature(
-    atmosphere_c: np.ndarray | None,
-    surface_c: np.ndarray,
+    atmosphere_K: np.ndarray | None,
+    surface_K: np.ndarray,
 ) -> np.ndarray:
     """Compute 2 m air temperature from available layers.
 
-    Behavior matches the solver's previous inline logic:
-    - If an atmosphere layer exists, start from it (in °C) and adjust from the
-      reference atmosphere height down to 2 m using a fixed lapse rate. If
-      ``include_lapse_rate_elevation`` is True, add topographic elevation to the
-      vertical delta (moving further downward to the local surface).
-    - If no atmosphere layer is provided, fall back to the surface temperature.
-
     Parameters
     ----------
-    atmosphere_c:
-        Monthly cycle of atmosphere temperature in °C, or None if unavailable.
-    surface_c:
-        Monthly cycle of surface temperature in °C.
+    atmosphere_K:
+        Atmosphere temperature in K, or None if unavailable.
+    surface_K:
+        Surface temperature in K.
 
     Returns
     -------
     numpy.ndarray
-        Monthly cycle of 2 m temperature in °C.
+        2 m temperature in K.
     """
-    return surface_c.copy()
+    return surface_K.copy()
 
 def log_law_map_wind_speed(
     wind_speed_ref_m_s: np.ndarray,

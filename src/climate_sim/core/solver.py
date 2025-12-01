@@ -1018,14 +1018,13 @@ def compute_periodic_cycle_results(
     else:
         monthly_surface_K = monthly_T[:, 0]
         monthly_atmosphere_K = monthly_T[:, 1]
-        atmosphere_c = monthly_atmosphere_K - 273.15
         temperature_2m_c = compute_two_meter_temperature(
-            atmosphere_c,
-            monthly_surface_K - 273.15,
-        )
+            monthly_atmosphere_K,
+            monthly_surface_K,
+        ) - 273.15
         layers_map = {
             "surface": monthly_surface_K - 273.15,
-            "atmosphere": atmosphere_c,
+            "atmosphere": monthly_atmosphere_K - 273.15,
         }
 
     if temperature_2m_c is None:

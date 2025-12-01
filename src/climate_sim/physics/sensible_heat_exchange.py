@@ -106,12 +106,10 @@ class SensibleHeatExchangeModel:
             return zeros, zeros
 
         # Compute near-surface air temperature
-        atmosphere_temperature_c = atmosphere_temperature - 273.15
-        near_surface_air_c = compute_two_meter_temperature(
-            atmosphere_temperature_c,
-            surface_temperature - 273.15,
+        near_surface_air_K = compute_two_meter_temperature(
+            atmosphere_temperature,
+            surface_temperature,
         )
-        near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 10.0)
 
         wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
 

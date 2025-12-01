@@ -388,12 +388,10 @@ class AdvectionModel:
             )
 
         # Compute near-surface air temperature for density calculation
-        atmosphere_temperature_c = atmosphere_temperature_K - 273.15
-        near_surface_air_c = compute_two_meter_temperature(
-            atmosphere_temperature_c,
-            surface_temperature_K - 273.15,
+        near_surface_air_K = compute_two_meter_temperature(
+            atmosphere_temperature_K,
+            surface_temperature_K,
         )
-        near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 10.0)
 
         # Air density
         air_density = pressure / (GAS_CONSTANT_J_KG_K * near_surface_air_K)
