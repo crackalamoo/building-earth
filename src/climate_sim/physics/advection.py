@@ -118,40 +118,6 @@ def compute_surface_roughness(
     return neutral_drag_from_roughness_length(roughness_map)
 
 
-def _compute_geostrophic_wind_components(
-    grad_x: np.ndarray,
-    grad_y: np.ndarray,
-    temperature: np.ndarray,
-    *,
-    coriolis: np.ndarray,
-    config: "AdvectionConfig",
-    pressure: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return the geostrophic wind given horizontal temperature gradients."""
-
-    # Apply a Coriolis floor while preserving hemisphere sign, including exactly
-    # at the equator where the raw Coriolis parameter is zero.
-    sign = np.sign(coriolis)
-    sign[sign == 0.0] = 1.0
-    coriolis_safe = sign * np.maximum(np.abs(coriolis), config.coriolis_floor_s)
-    if pressure is not None:
-        pressure_safe = np.maximum(pressure, 100.0)
-        scale = GAS_CONSTANT_J_KG_K * temperature / (coriolis_safe * pressure_safe + 1e-8)
-        velocity_x = -grad_y * scale
-        velocity_y = grad_x * scale
-        speed = np.hypot(velocity_x, velocity_y)
-        return velocity_x, velocity_y, speed
-
-    temp_safe = np.maximum(temperature, config.minimum_temperature_K)
-    scale = config.gravity_m_s2 * config.troposphere_scale_height_m
-
-    velocity_x = -scale * grad_y / (coriolis_safe * temp_safe + 1e-8)
-    velocity_y = scale * grad_x / (coriolis_safe * temp_safe + 1e-8)
-    speed = np.hypot(velocity_x, velocity_y)
-
-    return velocity_x, velocity_y, speed
-
-
 @dataclass(frozen=True)
 class AdvectionConfig:
     """Configuration for advection model."""
@@ -221,17 +187,17 @@ class AdvectionModel:
             self._lon2d, self._lat2d, data=elevation_data, sample_method="center"
         )
         self.elevation_m = np.maximum(self.elevation_m, 0.0)
-        
+
         # Store roughness length for wind speed calculations
         self._roughness_length = compute_cell_roughness_length(
             self._lon2d, self._lat2d, data=elevation_data, land_mask=self._land_mask
         )
-        
+
         # Pre-compute bulk transfer coefficient (constant for the grid)
         log_height_surface = 10.0
         roughness_momentum = self._roughness_length
         roughness_heat = np.maximum(roughness_momentum / 10.0, 1.0e-9)
-        
+
         lm = np.log(
             np.maximum(log_height_surface / roughness_momentum, 1.0 + 1.0e-9)
         )
@@ -239,7 +205,7 @@ class AdvectionModel:
             np.maximum(log_height_surface / roughness_heat, 1.0 + 1.0e-9)
         )
         ch_raw = (VON_KARMAN_CONSTANT**2) / (lm * lh)
-        
+
         ch_land = np.clip(ch_raw, 1e-4, 2.0e-3)
         ch_ocean = np.clip(ch_raw, 3e-4, 3.0e-3)
         self._bulk_transfer_coefficient = np.where(self._land_mask, ch_land, ch_ocean)
@@ -264,11 +230,10 @@ class AdvectionModel:
 
         pressure = compute_pressure(temperature)
         grad_x, grad_y = self._horizontal_gradient(pressure)
-        geostrophic = _compute_geostrophic_wind_components(
+        geostrophic = self._compute_geostrophic_wind_components(
             grad_x,
             grad_y,
             temperature,
-            coriolis=self._coriolis,
             config=self._config,
             pressure=pressure,
         )
@@ -277,6 +242,30 @@ class AdvectionModel:
         u_final, v_final, speed_final = self._apply_surface_drag(u_geo, v_geo, speed_geo)
 
         return (u_final, v_final, speed_final), grad_x, grad_y
+
+    def _compute_geostrophic_wind_components(
+        self,
+        grad_x: np.ndarray,
+        grad_y: np.ndarray,
+        temperature: np.ndarray,
+        *,
+        config: AdvectionConfig,
+        pressure: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the geostrophic wind given horizontal temperature gradients."""
+
+        # Apply a Coriolis floor while preserving hemisphere sign, including exactly
+        # at the equator where the raw Coriolis parameter is zero.
+        sign = np.sign(self._coriolis)
+        sign[sign == 0.0] = 1.0
+        coriolis_safe = sign * np.maximum(np.abs(self._coriolis), config.coriolis_floor_s)
+
+        pressure_safe = np.maximum(pressure, 100.0)
+        scale = GAS_CONSTANT_J_KG_K * temperature / (coriolis_safe * pressure_safe + 1e-8)
+        velocity_x = -grad_y * scale
+        velocity_y = grad_x * scale
+        speed = np.hypot(velocity_x, velocity_y)
+        return velocity_x, velocity_y, speed
 
     def _horizontal_gradient(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if field.shape != self._lon2d.shape:
@@ -362,7 +351,7 @@ class AdvectionModel:
             speed_final[zero_geo] = 0.0
 
         return u_final, v_final, speed_final
-    
+
     def compute_atmospheric_properties(
         self,
         surface_temperature_K: np.ndarray,
@@ -370,7 +359,7 @@ class AdvectionModel:
         wind_speed_reference_m_s: np.ndarray | None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Compute atmospheric properties needed for heat exchange calculations.
-        
+
         Returns
         -------
         tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
@@ -383,10 +372,10 @@ class AdvectionModel:
             raise ValueError("Surface temperature must match grid shape")
         if atmosphere_temperature_K.shape != self._lon2d.shape:
             raise ValueError("Atmosphere temperature must match grid shape")
-        
+
         # Compute pressure from atmosphere temperature
         pressure = compute_pressure(atmosphere_temperature_K)
-        
+
         # Map wind speed to 10 m height
         if wind_speed_reference_m_s is None:
             wind_speed_10m = np.zeros_like(surface_temperature_K)
@@ -397,7 +386,7 @@ class AdvectionModel:
                 height_target_m=10,
                 roughness_length_m=self._roughness_length,
             )
-        
+
         # Compute near-surface air temperature for density calculation
         atmosphere_temperature_c = atmosphere_temperature_K - 273.15
         near_surface_air_c = compute_two_meter_temperature(
@@ -405,9 +394,10 @@ class AdvectionModel:
             surface_temperature_K - 273.15,
         )
         near_surface_air_K = np.maximum(near_surface_air_c + 273.15, 10.0)
-        
+
         # Air density
         air_density = pressure / (GAS_CONSTANT_J_KG_K * near_surface_air_K)
-        
+
         # Return pre-computed bulk transfer coefficient
         return pressure, air_density, wind_speed_10m, self._bulk_transfer_coefficient
+
