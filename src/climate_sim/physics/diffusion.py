@@ -92,7 +92,12 @@ def _assemble_sparse_matrix(
     if not rows:
         return sparse.csr_matrix((size, size))
 
-    return sparse.csr_matrix((data, (rows, cols)), shape=(size, size))
+    rows_arr = np.asarray(rows, dtype=np.int64)
+    cols_arr = np.asarray(cols, dtype=np.int64)
+    data_arr = np.asarray(data, dtype=np.float64)
+
+    coo = sparse.coo_matrix((data_arr, (rows_arr, cols_arr)), shape=(size, size))
+    return coo.tocsr()
 
 
 @dataclass(frozen=True)
@@ -191,6 +196,7 @@ class DiffusionOperator:
                 self.west_coeff,
                 self.diagonal,
             )
+            assert isinstance(self.matrix, sparse.csr_matrix)
 
         if self.off_diagonal_matrix is None:
             base_matrix = self.matrix

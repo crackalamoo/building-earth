@@ -16,12 +16,11 @@ from pathlib import Path
 from typing import Iterable
 
 from dotenv import load_dotenv
-load_dotenv()
 
 import numpy as np
 import pooch
 import xarray as xr
-from matplotlib import cm
+from matplotlib import colormaps
 from matplotlib.colors import Normalize
 
 from climate_sim.physics.diffusion import DiffusionConfig
@@ -38,6 +37,8 @@ from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import spherical_cell_area
 from climate_sim.core.solver import compute_periodic_cycle_results
 from climate_sim.core.units import convert_temperature, temperature_unit
+
+load_dotenv()
 
 # ----------------------------
 # Configuration
@@ -533,7 +534,7 @@ def plot_baseline_and_anomaly(
         display_max = 0.5
     display_max = np.minimum(display_max, 10.0)
 
-    cmap = cm.get_cmap("RdBu_r")
+    cmap = colormaps["RdBu_r"]
     norm = Normalize(vmin=-display_max, vmax=display_max)
     unit = temperature_unit(use_fahrenheit)
     anomaly = np.concatenate([anomaly, np.mean(anomaly, axis=0, keepdims=True)], axis=0)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field, replace
-from typing import Callable, Dict, Sequence, Tuple
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 from scipy import sparse
@@ -63,8 +63,8 @@ ATMOSPHERE_REFERENCE_HEIGHT_M = 5000.0
 class Linearization:
     diag: np.ndarray
     cross: np.ndarray | None = None
-    surface_diffusion_matrix: sparse.csr_matrix | None = None
-    atmosphere_diffusion_matrix: sparse.csr_matrix | None = None
+    surface_diffusion_matrix: sparse.csc_matrix | None = None
+    atmosphere_diffusion_matrix: sparse.csc_matrix | None = None
     solver_fingerprint: str | None = None
 
 
@@ -81,8 +81,10 @@ DEFAULT_LINEAR_SOLVE_CACHE = LinearSolveCache()
 class SurfaceHeatCapacityContext:
     """Container for surface-layer heat-capacity metadata."""
 
+    lon2d: np.ndarray
+    lat2d: np.ndarray
     albedo_model: AlbedoModel
-    advection_model: AdvectionModel
+    advection_model: AdvectionModel | None
     base_albedo: np.ndarray
     land_mask: np.ndarray
     base_C_land: float
@@ -125,7 +127,7 @@ class ModelState:
     """State variables for the climate model."""
     temperature: np.ndarray
     albedo_field: np.ndarray
-    wind_field: np.ndarray | None = None
+    wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     humidity_field: np.ndarray | None = None
 
 
@@ -202,9 +204,9 @@ def monthly_step(
         
         def _init_state(temp: np.ndarray) -> ModelState:
             with time_block("_init_state"):
-                lat2d = surface_context.advection_model._lat2d
+                lat2d = surface_context.lat2d
                 albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, temp[0])
-                wind_field = surface_context.advection_model.wind_field(temp[1])
+                wind_field = surface_context.advection_model.wind_field(temp[1]) if surface_context.advection_model else np.zeros_like(temp[0])
                 humidity_field = compute_humidity_q(lat2d, temp[0], declination)
                 return ModelState(
                     temperature=temp,
@@ -479,6 +481,7 @@ def find_periodic_temperature(
         residual_history: list[np.ndarray] = []
         advanced_history: list[np.ndarray] = []
         history_limit = 5
+        residual_max = 0
 
         for iter_idx in range(FIXED_POINT_MAX_ITERS):
             with time_block("periodic_iteration"):
@@ -545,13 +548,13 @@ def find_periodic_temperature(
 
         raise RuntimeError(
             "Failed to converge to a periodic solution after "
-            f"{FIXED_POINT_MAX_ITERS} iterations (last residual {max_residual:.3e} K)"
+            f"{FIXED_POINT_MAX_ITERS} iterations (last residual {residual_max:.3e} K)"
         )
 
 def solve_periodic_cycle_for_albedo(
     *,
     initial_state: ModelState | None,
-    base_albedo_field: np.ndarray,
+    surface_context: SurfaceHeatCapacityContext,
     heat_capacity_field: np.ndarray,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
@@ -567,11 +570,13 @@ def solve_periodic_cycle_for_albedo(
     topographic_elevation: np.ndarray,
     sensible_heat_cfg: SensibleHeatExchangeConfig,
     latent_heat_cfg: LatentHeatExchangeConfig,
-    albedo_model: AlbedoModel,
 ) -> list[ModelState]:
     """Compute the periodic solution and monthly mean temperatures for a given albedo field."""
 
     with time_block("solve_periodic_cycle_for_albedo"):
+        base_albedo_field = surface_context.base_albedo
+        advection_model = surface_context.advection_model
+
         if initial_state is None:
             with time_block("initial_guess"):
                 guess = initial_guess_fn(
@@ -603,29 +608,7 @@ def solve_periodic_cycle_for_albedo(
                 advection_model,
             )
 
-    land_values = heat_capacity_field[land_mask]
-    if land_values.size == 0:
-        base_C_land = float(np.mean(heat_capacity_field))
-    else:
-        base_C_land = float(np.mean(land_values))
-    ocean_mask = ~land_mask
-    ocean_values = heat_capacity_field[ocean_mask]
-    if ocean_values.size == 0:
-        base_C_ocean = base_C_land
-    else:
-        base_C_ocean = float(np.mean(ocean_values))
-
-    baseline_capacity = np.where(land_mask, base_C_land, base_C_ocean).astype(float)
-
-    surface_context = SurfaceHeatCapacityContext(
-        albedo_model=albedo_model,
-        advection_model=advection_model,
-        base_albedo=base_albedo_field,
-        land_mask=land_mask,
-        base_C_land=base_C_land,
-        base_C_ocean=base_C_ocean,
-        baseline_capacity=baseline_capacity,
-    )
+    
 
     annual_periodic_states = find_periodic_temperature(
         state_init,
@@ -755,9 +738,35 @@ def compute_periodic_cycle_kelvin(
                 )
                 current_humidity_fields.append(humidity)
 
+        land_values = heat_capacity_field[land_mask]
+        if land_values.size == 0:
+            base_C_land = float(np.mean(heat_capacity_field))
+        else:
+            base_C_land = float(np.mean(land_values))
+        ocean_mask = ~land_mask
+        ocean_values = heat_capacity_field[ocean_mask]
+        if ocean_values.size == 0:
+            base_C_ocean = base_C_land
+        else:
+            base_C_ocean = float(np.mean(ocean_values))
+
+        baseline_capacity = np.where(land_mask, base_C_land, base_C_ocean).astype(float)
+
+        surface_context = SurfaceHeatCapacityContext(
+            lat2d=lat2d,
+            lon2d=lon2d,
+            albedo_model=albedo_model,
+            advection_model=advection_model,
+            base_albedo=base_albedo_field,
+            land_mask=land_mask,
+            base_C_land=base_C_land,
+            base_C_ocean=base_C_ocean,
+            baseline_capacity=baseline_capacity,
+        )
+
         monthly = solve_periodic_cycle_for_albedo(
             initial_state=previous_periodic,
-            base_albedo_field=base_albedo_field,
+            surface_context=surface_context,
             heat_capacity_field=heat_capacity_field,
             monthly_insolation=monthly_insolation,
             month_durations=month_durations,
@@ -773,7 +782,6 @@ def compute_periodic_cycle_kelvin(
             topographic_elevation=topographic_elevation,
             sensible_heat_cfg=sensible_heat_cfg,
             latent_heat_cfg=latent_heat_cfg,
-            albedo_model=albedo_model,
         )
 
         if advection_model is not None and advection_model.enabled:
@@ -952,14 +960,15 @@ def compute_periodic_cycle_results(
 
         def rhs_derivative(state: ModelState, insolation: np.ndarray) -> RhsDerivative:
             del insolation
-            radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
-                state.temperature,
-                heat_capacity_field=heat_capacity_field,
-                config=config,
-                land_mask=land_mask,
-                humidity_q=state.humidity_field,
-            )
             if config.include_atmosphere:
+                radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
+                    state.temperature,
+                    heat_capacity_field=heat_capacity_field,
+                    config=config,
+                    land_mask=land_mask,
+                    humidity_q=state.humidity_field,
+                )
+                assert isinstance(radiative_derivative, tuple)
                 radiative_diag, cross = radiative_derivative
                 diag = radiative_diag.copy()
                 if surface_diffusion_diag is not None:
@@ -972,6 +981,14 @@ def compute_periodic_cycle_results(
                     surface_diffusion_matrix=surface_matrix,
                     atmosphere_diffusion_matrix=atmosphere_matrix,
                 )
+            radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
+                state.temperature,
+                heat_capacity_field=heat_capacity_field,
+                config=config,
+                land_mask=land_mask,
+                humidity_q=state.humidity_field,
+            )
+            assert isinstance(radiative_derivative, np.ndarray)
             diag = radiative_derivative.copy()
             if surface_diffusion_diag is not None:
                 diag = diag + surface_diffusion_diag

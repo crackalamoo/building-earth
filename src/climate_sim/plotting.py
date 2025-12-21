@@ -1,3 +1,4 @@
+# type: ignore[attr-defined]
 """Visualization helpers for rendering climate model outputs."""
 
 import io

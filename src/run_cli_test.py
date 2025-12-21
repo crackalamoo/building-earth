@@ -6,12 +6,13 @@ import argparse
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
-load_dotenv()
 
 import numpy as np
 
 from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.data.constants import R_EARTH_METERS
+
+load_dotenv()
 
 
 @dataclass(frozen=True)

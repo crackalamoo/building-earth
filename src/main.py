@@ -1,3 +1,4 @@
+# type: ignore[attr-defined]
 """CLI entry point for running and visualizing the climate simulator."""
 
 import argparse

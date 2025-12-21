@@ -99,7 +99,7 @@ def orbital_distance_correction(day_of_year: np.ndarray) -> np.ndarray:
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
-    from grid import create_lat_lon_grid, expand_latitude_field
+    from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
     lon2d, lat2d = create_lat_lon_grid(1.0)
     insolation = compute_monthly_insolation_field(lat2d)
     print(insolation.shape)

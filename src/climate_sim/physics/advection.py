@@ -225,7 +225,7 @@ class AdvectionModel:
 
         if not self.enabled:
             zeros = np.zeros_like(temperature)
-            return (zeros, zeros, zeros), zeros, zeros
+            return zeros, zeros, zeros
 
         pressure = compute_pressure(temperature)
         geostrophic = self._compute_geostrophic_wind_components(
