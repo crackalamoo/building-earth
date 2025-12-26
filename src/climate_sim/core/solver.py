@@ -11,7 +11,7 @@ from scipy import sparse
 from scipy.sparse import linalg as splinalg
 
 import climate_sim.physics.radiation as radiation
-from climate_sim.physics.wind.wind import (
+from climate_sim.physics.atmosphere.wind import (
     WindConfig,
     WindModel,
 )
@@ -30,7 +30,7 @@ from climate_sim.physics.latent_heat_exchange import (
     LatentHeatExchangeConfig,
     LatentHeatExchangeModel,
 )
-from climate_sim.physics.atmosphere import compute_two_meter_temperature
+from climate_sim.physics.atmosphere.atmosphere import compute_two_meter_temperature
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.physics.solar import (

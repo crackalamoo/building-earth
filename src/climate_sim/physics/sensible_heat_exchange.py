@@ -6,14 +6,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.physics.atmosphere import (
+from climate_sim.physics.atmosphere.atmosphere import (
     compute_two_meter_temperature,
     STANDARD_LAPSE_RATE_K_PER_M
 )
 from climate_sim.data.constants import GAS_CONSTANT_J_KG_K, HEAT_CAPACITY_AIR_J_KG_K
 from climate_sim.data.elevation import VON_KARMAN_CONSTANT
 
-from climate_sim.physics.wind.wind import WindModel
+from climate_sim.physics.atmosphere.wind import WindModel
 
 
 @dataclass(frozen=True)

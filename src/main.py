@@ -27,14 +27,14 @@ from climate_sim.plotting import (
 )
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.runtime.cli import add_common_model_arguments
-from climate_sim.physics.atmosphere import (
+from climate_sim.physics.atmosphere.atmosphere import (
     log_law_map_wind_speed,
 )
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.data.elevation import (
     compute_cell_roughness_length,
 )
-from climate_sim.physics.pressure import compute_pressure
+from climate_sim.physics.atmosphere.pressure import compute_pressure
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.solver import compute_periodic_cycle_results

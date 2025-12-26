@@ -10,7 +10,7 @@ from climate_sim.physics.humidity import (
     compute_cloud_cover,
     specific_humidity_to_relative_humidity,
 )
-from climate_sim.physics.atmosphere import STANDARD_LAPSE_RATE_K_PER_M
+from climate_sim.physics.atmosphere.atmosphere import STANDARD_LAPSE_RATE_K_PER_M
 
 
 @dataclass(frozen=True)

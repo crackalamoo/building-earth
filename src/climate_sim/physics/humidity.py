@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.interpolate import PchipInterpolator
 
-from climate_sim.physics.pressure import compute_pressure
+from climate_sim.physics.atmosphere.pressure import compute_pressure
 
 RH_POLES = 0.85
 RH_SUBTROPICS= 0.35

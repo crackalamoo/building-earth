@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.physics.wind.wind import WindModel
+from climate_sim.physics.atmosphere.wind import WindModel
 
 
 @dataclass(frozen=True)

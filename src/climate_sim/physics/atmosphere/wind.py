@@ -13,8 +13,8 @@ from climate_sim.data.elevation import (
     neutral_drag_from_roughness_length,
     WATER_ROUGHNESS_LENGTH_M,
 )
-from climate_sim.physics.pressure import compute_pressure
-from climate_sim.physics.atmosphere import (
+from climate_sim.physics.atmosphere.pressure import compute_pressure
+from climate_sim.physics.atmosphere.atmosphere import (
     compute_two_meter_temperature,
     log_law_map_wind_speed,
 )
