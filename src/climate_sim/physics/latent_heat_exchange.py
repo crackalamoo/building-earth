@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.physics.advection import AdvectionModel
+from climate_sim.physics.wind.wind import WindModel
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ class LatentHeatExchangeModel:
         land_mask: np.ndarray,
         surface_heat_capacity_J_m2_K: np.ndarray,
         atmosphere_heat_capacity_J_m2_K: np.ndarray | float,
-        advection_model: AdvectionModel | None = None,
+        wind_model: WindModel | None = None,
         config: LatentHeatExchangeConfig | None = None,
     ) -> None:
         self._config = config or LatentHeatExchangeConfig()
@@ -50,7 +50,7 @@ class LatentHeatExchangeModel:
         self._land_mask = land_mask_bool
         self._surface_heat_capacity = np.maximum(heat_capacity_surface, 1.0e-9)
         self._atmosphere_heat_capacity = np.maximum(heat_capacity_atmosphere, 1.0e-9)
-        self._advection_model = advection_model
+        self._wind_model = wind_model
 
 
     @property
@@ -84,8 +84,8 @@ class LatentHeatExchangeModel:
             )
 
         # Use advection model for atmospheric properties if available
-        if self._advection_model is not None:
-            pressure, rho, wind_speed_10m, ch = self._advection_model.compute_atmospheric_properties(
+        if self._wind_model is not None:
+            pressure, rho, wind_speed_10m, ch = self._wind_model.compute_atmospheric_properties(
                 surface_temperature,
                 atmosphere_temperature,
                 wind_speed_reference_m_s,

@@ -11,9 +11,9 @@ from scipy import sparse
 from scipy.sparse import linalg as splinalg
 
 import climate_sim.physics.radiation as radiation
-from climate_sim.physics.advection import (
-    AdvectionConfig,
-    AdvectionModel,
+from climate_sim.physics.wind.wind import (
+    WindConfig,
+    WindModel,
 )
 from climate_sim.physics.diffusion import (
     DiffusionConfig,
@@ -84,7 +84,7 @@ class SurfaceHeatCapacityContext:
     lon2d: np.ndarray
     lat2d: np.ndarray
     albedo_model: AlbedoModel
-    advection_model: AdvectionModel | None
+    wind_model: WindModel | None
     base_albedo: np.ndarray
     land_mask: np.ndarray
     base_C_land: float
@@ -165,7 +165,7 @@ RhsFactory = Callable[
         np.ndarray,
         SensibleHeatExchangeConfig,
         LatentHeatExchangeConfig,
-        AdvectionModel | None,
+        WindModel | None,
     ],
     Tuple[RhsFunc, RhsDerivativeFunc],
 ]
@@ -206,7 +206,7 @@ def monthly_step(
             with time_block("_init_state"):
                 lat2d = surface_context.lat2d
                 albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, temp[0])
-                wind_field = surface_context.advection_model.wind_field(temp[1]) if surface_context.advection_model else np.zeros_like(temp[0])
+                wind_field = surface_context.wind_model.wind_field(temp[1]) if surface_context.wind_model else np.zeros_like(temp[0])
                 humidity_field = compute_humidity_q(lat2d, temp[0], declination)
                 return ModelState(
                     temperature=temp,
@@ -560,7 +560,7 @@ def solve_periodic_cycle_for_albedo(
     month_durations: np.ndarray,
     diffusion_operator: LayeredDiffusionOperator,
     radiation_config: RadiationConfig,
-    advection_model: AdvectionModel | None,
+    wind_model: WindModel | None,
     rhs_factory: RhsFactory,
     initial_guess_fn: InitialGuessFunc,
     temperature_floor: float,
@@ -575,7 +575,7 @@ def solve_periodic_cycle_for_albedo(
 
     with time_block("solve_periodic_cycle_for_albedo"):
         base_albedo_field = surface_context.base_albedo
-        advection_model = surface_context.advection_model
+        wind_model = surface_context.wind_model
 
         if initial_state is None:
             with time_block("initial_guess"):
@@ -605,7 +605,7 @@ def solve_periodic_cycle_for_albedo(
                 topographic_elevation,
                 sensible_heat_cfg,
                 latent_heat_cfg,
-                advection_model,
+                wind_model,
             )
 
     
@@ -632,7 +632,7 @@ def compute_periodic_cycle_kelvin(
     initial_guess_fn: InitialGuessFunc,
     radiation_config: RadiationConfig,
     diffusion_config: DiffusionConfig,
-    advection_config: AdvectionConfig | None = None,
+    wind_config: WindConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     sensible_heat_config: SensibleHeatExchangeConfig | None = None,
     latent_heat_config: LatentHeatExchangeConfig | None = None,
@@ -690,16 +690,16 @@ def compute_periodic_cycle_kelvin(
                 atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
                 config=diffusion_config,
             )
-            advection_model: AdvectionModel | None = None
+            wind_model: WindModel | None = None
             if (
-                advection_config is not None
-                and advection_config.enabled
+                wind_config is not None
+                and wind_config.enabled
                 and radiation_config.include_atmosphere
             ):
-                advection_model = AdvectionModel(
+                wind_model = WindModel(
                     lon2d,
                     lat2d,
-                    config=advection_config,
+                    config=wind_config,
                 )
             month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
             solver_cache = LinearSolveCache()
@@ -756,7 +756,7 @@ def compute_periodic_cycle_kelvin(
             lat2d=lat2d,
             lon2d=lon2d,
             albedo_model=albedo_model,
-            advection_model=advection_model,
+            wind_model=wind_model,
             base_albedo=base_albedo_field,
             land_mask=land_mask,
             base_C_land=base_C_land,
@@ -772,7 +772,7 @@ def compute_periodic_cycle_kelvin(
             month_durations=month_durations,
             diffusion_operator=diffusion_operator,
             radiation_config=radiation_config,
-            advection_model=advection_model,
+            wind_model=wind_model,
             rhs_factory=rhs_factory,
             initial_guess_fn=initial_guess_fn,
             temperature_floor=radiation_config.temperature_floor,
@@ -784,12 +784,12 @@ def compute_periodic_cycle_kelvin(
             latent_heat_cfg=latent_heat_cfg,
         )
 
-        if advection_model is not None and advection_model.enabled:
+        if wind_model is not None and wind_model.enabled:
             with time_block("update_wind_fields"):
                 new_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
                 for idx, month_state in enumerate(monthly):
                     wind_temperature = _select_wind_temperature(month_state.temperature)
-                    wind_field = month_state.wind_field or advection_model.wind_field(wind_temperature)
+                    wind_field = month_state.wind_field or wind_model.wind_field(wind_temperature)
 
                     new_wind_fields.append(wind_field)
                     monthly[idx] = ModelState(
@@ -811,7 +811,7 @@ def compute_periodic_cycle_results(
     land_heat_capacity: float | None = None,
     radiation_config: RadiationConfig | None = None,
     diffusion_config: DiffusionConfig | None = None,
-    advection_config: AdvectionConfig | None = None,
+    wind_config: WindConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     sensible_heat_config: SensibleHeatExchangeConfig | None = None,
     latent_heat_config: LatentHeatExchangeConfig | None = None,
@@ -840,13 +840,13 @@ def compute_periodic_cycle_results(
 
     resolved_radiation = radiation_config or RadiationConfig()
     resolved_diffusion = diffusion_config or DiffusionConfig()
-    resolved_advection = advection_config or AdvectionConfig()
+    resolved_wind = wind_config or WindConfig()
     resolved_snow = snow_config or SnowAlbedoConfig()
     sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
     latent_heat_cfg = latent_heat_config or LatentHeatExchangeConfig()
 
-    if not sensible_heat_cfg.enabled and resolved_advection.enabled:
-        resolved_advection = replace(resolved_advection, enabled=False)
+    if not sensible_heat_cfg.enabled and resolved_wind.enabled:
+        resolved_wind = replace(resolved_wind, enabled=False)
 
     def rhs_factory(
         heat_capacity_field: np.ndarray,
@@ -857,7 +857,7 @@ def compute_periodic_cycle_results(
         topographic_elevation: np.ndarray,
         sensible_heat_cfg_local: SensibleHeatExchangeConfig,
         latent_heat_cfg_local: LatentHeatExchangeConfig,
-        advection_model_local: AdvectionModel | None,
+        wind_model_local: WindModel | None,
     ):
         surface_diffusion_diag: np.ndarray | None = None
         surface_matrix = None
@@ -891,7 +891,7 @@ def compute_periodic_cycle_results(
                 land_mask=land_mask,
                 surface_heat_capacity_J_m2_K=heat_capacity_field,
                 atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
-                advection_model=advection_model_local,
+                wind_model=wind_model_local,
                 config=sensible_heat_cfg_local,
             )
 
@@ -901,7 +901,7 @@ def compute_periodic_cycle_results(
                 land_mask=land_mask,
                 surface_heat_capacity_J_m2_K=heat_capacity_field,
                 atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
-                advection_model=advection_model_local,
+                wind_model=wind_model_local,
                 config=latent_heat_cfg_local,
             )
 
@@ -1019,7 +1019,7 @@ def compute_periodic_cycle_results(
         initial_guess_fn=initial_guess_fn,
         radiation_config=resolved_radiation,
         diffusion_config=resolved_diffusion,
-        advection_config=resolved_advection,
+        wind_config=resolved_wind,
         snow_config=resolved_snow,
         sensible_heat_config=sensible_heat_cfg,
         latent_heat_config=latent_heat_cfg,

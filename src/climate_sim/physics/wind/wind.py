@@ -119,8 +119,8 @@ def compute_surface_roughness(
 
 
 @dataclass(frozen=True)
-class AdvectionConfig:
-    """Configuration for advection model."""
+class WindConfig:
+    """Configuration for wind model."""
     enabled: bool = True
     earth_rotation_rate_rad_s: float = 7.2921e-5
     gravity_m_s2: float = 9.81
@@ -128,7 +128,7 @@ class AdvectionConfig:
     coriolis_floor_s: float = 1e-5
     minimum_temperature_K: float = 150.0
 
-class AdvectionModel:
+class WindModel:
     """Evaluate advection on a fixed longitude/latitude grid."""
 
     def __init__(
@@ -136,7 +136,7 @@ class AdvectionModel:
         lon2d: np.ndarray,
         lat2d: np.ndarray,
         *,
-        config: AdvectionConfig,
+        config: WindConfig,
     ) -> None:
         if lon2d.shape != lat2d.shape:
             raise ValueError("Longitude and latitude grids must share the same shape")
@@ -243,7 +243,7 @@ class AdvectionModel:
         self,
         temperature: np.ndarray,
         *,
-        config: AdvectionConfig,
+        config: WindConfig,
         pressure: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return the geostrophic wind given horizontal temperature gradients."""
