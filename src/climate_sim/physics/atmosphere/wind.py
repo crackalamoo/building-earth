@@ -341,8 +341,8 @@ class WindModel:
         ux = np.where(Ug_safe > 0.0, u_geo / Ug_safe, 0.0)
         vy = np.where(Ug_safe > 0.0, v_geo / Ug_safe, 0.0)
 
-        ux_rot = ux * cos_a - vy * sin_a
-        vy_rot = ux * sin_a + vy * cos_a
+        ux_rot = ux * cos_a + vy * sin_a
+        vy_rot = -ux * sin_a + vy * cos_a
 
         u_final = u_mag * ux_rot
         v_final = u_mag * vy_rot

@@ -336,7 +336,7 @@ def main() -> None:
                 extent=pressure_extent,
                 origin="lower",
                 transform=projection,
-                cmap=plt.cm.cividis,
+                cmap=plt.cm.magma,
                 norm=slp_norm,
                 alpha=0.65,
                 zorder=0.1,
