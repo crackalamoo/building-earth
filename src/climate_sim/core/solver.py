@@ -152,7 +152,7 @@ def _select_humidity_temperature(temperature: np.ndarray) -> np.ndarray:
         return temperature[0]
     raise ValueError("Unsupported temperature field shape for humidity calculation")
 
-RhsFunc = Callable[[ModelState, np.ndarray], np.ndarray]
+RhsFunc = Callable[[ModelState, np.ndarray, float], np.ndarray]
 RhsDerivative = Linearization
 RhsDerivativeFunc = Callable[[ModelState, np.ndarray], RhsDerivative]
 RhsFactory = Callable[
@@ -206,7 +206,7 @@ def monthly_step(
             with time_block("_init_state"):
                 lat2d = surface_context.lat2d
                 albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, temp[0])
-                wind_field = surface_context.wind_model.wind_field(temp[1]) if surface_context.wind_model else np.zeros_like(temp[0])
+                wind_field = surface_context.wind_model.wind_field(temp[1], declination_rad=declination) if surface_context.wind_model else np.zeros_like(temp[0])
                 humidity_field = compute_humidity_q(lat2d, temp[0], declination)
                 return ModelState(
                     temperature=temp,
@@ -234,7 +234,7 @@ def monthly_step(
                 temp_capped = np.maximum(temp_next, temperature_floor)
                 state_capped = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
-                    rhs_value = rhs_fn(state_capped, insolation_W_m2)
+                    rhs_value = rhs_fn(state_capped, insolation_W_m2, declination)
                 if linearization is None:
                     with time_block("rhs_derivative"):
                         linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
@@ -354,7 +354,7 @@ def monthly_step(
                     temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
                     state_candidate = _init_state(temp_candidate)
                     with time_block("backtrack_rhs"):
-                        rhs_candidate = rhs_fn(state_candidate, insolation_W_m2)
+                        rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, declination)
                     base_capacity_candidate = base_capacity
                     ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                     if temp_candidate.ndim == 2:
@@ -787,11 +787,14 @@ def compute_periodic_cycle_kelvin(
         if wind_model is not None and wind_model.enabled:
             with time_block("update_wind_fields"):
                 new_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+                new_geostrophic_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
                 for idx, month_state in enumerate(monthly):
                     wind_temperature = _select_wind_temperature(month_state.temperature)
-                    wind_field = month_state.wind_field or wind_model.wind_field(wind_temperature)
+                    wind_field = month_state.wind_field or wind_model.wind_field(wind_temperature, declination_rad=monthly_declinations[idx])
+                    geostrophic_field = wind_model.wind_field(wind_temperature, declination_rad=monthly_declinations[idx], ekman_drag=False)
 
                     new_wind_fields.append(wind_field)
+                    new_geostrophic_fields.append(geostrophic_field)
                     monthly[idx] = ModelState(
                         temperature=month_state.temperature,
                         albedo_field=base_albedo_field,
@@ -906,7 +909,7 @@ def compute_periodic_cycle_results(
             )
 
 
-        def rhs(state: ModelState, insolation: np.ndarray) -> np.ndarray:
+        def rhs(state: ModelState, insolation: np.ndarray, declination_rad: float) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
                 state.temperature,
                 insolation,
@@ -935,6 +938,7 @@ def compute_periodic_cycle_results(
                         surface_temperature_K=surface_temperature,
                         atmosphere_temperature_K=atmosphere_temperature,
                         wind_speed_reference_m_s=wind_speed_ref,
+                        declination_rad=declination_rad,
                     )
                     radiative[0] += surface_tendency
                     radiative[1] += atmosphere_tendency
@@ -948,6 +952,7 @@ def compute_periodic_cycle_results(
                         atmosphere_temperature_K=atmosphere_temperature,
                         humidity_q=humidity_field,
                         wind_speed_reference_m_s=wind_speed_ref,
+                        declination_rad=declination_rad,
                     )
 
                     radiative[0] += surface_tendency
@@ -1058,6 +1063,27 @@ def compute_periodic_cycle_results(
         layers_map["wind_u"] = wind_u
         layers_map["wind_v"] = wind_v
         layers_map["wind_speed"] = wind_speed
+        
+        # Compute geostrophic wind fields
+        if resolved_wind is not None and resolved_wind.enabled and resolved_radiation.include_atmosphere:
+            geostrophic_fields = []
+            monthly_declinations = compute_monthly_declinations()
+            wind_model_temp = WindModel(lon2d, lat2d, config=resolved_wind)
+            for idx, state in enumerate(monthly_states):
+                wind_temperature = _select_wind_temperature(state.temperature)
+                geo_field = wind_model_temp.wind_field(
+                    wind_temperature, 
+                    declination_rad=monthly_declinations[idx], 
+                    ekman_drag=False
+                )
+                geostrophic_fields.append(geo_field)
+            
+            geostrophic_u = np.stack([geo[0] for geo in geostrophic_fields], axis=0)
+            geostrophic_v = np.stack([geo[1] for geo in geostrophic_fields], axis=0)
+            geostrophic_speed = np.stack([geo[2] for geo in geostrophic_fields], axis=0)
+            layers_map["wind_u_geostrophic"] = geostrophic_u
+            layers_map["wind_v_geostrophic"] = geostrophic_v
+            layers_map["wind_speed_geostrophic"] = geostrophic_speed
 
     humidity_fields = [state.humidity_field for state in monthly_states]
     if all(humidity is not None for humidity in humidity_fields):

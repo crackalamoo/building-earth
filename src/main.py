@@ -40,6 +40,7 @@ from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.solver import compute_periodic_cycle_results
 from climate_sim.core.units import convert_temperature, temperature_unit
 from climate_sim.physics.humidity import compute_cloud_cover, specific_humidity_to_relative_humidity
+from climate_sim.physics.solar import compute_monthly_declinations
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -171,6 +172,9 @@ def main() -> None:
     wind_u = layers.get("wind_u")
     wind_v = layers.get("wind_v")
     wind_speed = layers.get("wind_speed")
+    wind_u_geo = layers.get("wind_u_geostrophic")
+    wind_v_geo = layers.get("wind_v_geostrophic")
+    wind_speed_geo = layers.get("wind_speed_geostrophic")
 
     Tatm_field = layers.get("Tatm")
     Tatm_cycle_K: np.ndarray | None = None
@@ -185,12 +189,15 @@ def main() -> None:
     elif atmosphere_cycle is not None:
         Tatm_cycle_K = atmosphere_cycle + 273.15
 
+    monthly_declinations = compute_monthly_declinations()
+    
     slp_cycle_hpa: np.ndarray | None = None
     if Tatm_cycle_K is not None:
         pressure_monthly = np.empty_like(Tatm_cycle_K, dtype=float)
         for idx in range(Tatm_cycle_K.shape[0]):
             pressure_monthly[idx] = compute_pressure(
                 Tatm_cycle_K[idx],
+                declination_rad=monthly_declinations[idx],
             )
         slp_cycle_hpa = pressure_monthly * 0.01
 
@@ -243,12 +250,18 @@ def main() -> None:
         wind_u_10_sorted = wind_u_10[:, :, lon_sort_idx]
         wind_v_10_sorted = wind_v_10[:, :, lon_sort_idx]
         wind_speed_10_sorted = wind_speed_10[:, :, lon_sort_idx]
+        wind_u_geo_sorted = wind_u_geo[:, :, lon_sort_idx]
+        wind_v_geo_sorted = wind_v_geo[:, :, lon_sort_idx]
+        wind_speed_geo_sorted = wind_speed_geo[:, :, lon_sort_idx]
 
         slp_sorted = None
         if slp_cycle_hpa is not None:
             slp_sorted = slp_cycle_hpa[:, :, lon_sort_idx]
 
-        max_speed = float(np.max(np.maximum(wind_speed_sorted, wind_speed_10_sorted)))
+        max_speed = float(np.max(np.maximum(
+            np.maximum(wind_speed_sorted, wind_speed_10_sorted),
+            wind_speed_geo_sorted
+        )))
         if not np.isfinite(max_speed) or max_speed <= 0.0:
             max_speed = 1.0
 
@@ -271,6 +284,11 @@ def main() -> None:
         norm = Normalize(vmin=0.0, vmax=max_speed)
 
         wind_levels = {
+            "geostrophic": {
+                "u": wind_u_geo_sorted,
+                "v": wind_v_geo_sorted,
+                "speed": wind_speed_geo_sorted,
+            },
             "100 m": {
                 "u": wind_u_sorted,
                 "v": wind_v_sorted,

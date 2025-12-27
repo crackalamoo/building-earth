@@ -214,7 +214,10 @@ class WindModel:
         return self._config.enabled
 
     def wind_field(
-        self, temperature: np.ndarray
+        self, 
+        temperature: np.ndarray, 
+        declination_rad: float | None = None,
+        ekman_drag: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute the geostrophic wind field (u, v, speed) for the given temperatures."""
 
@@ -227,7 +230,7 @@ class WindModel:
             zeros = np.zeros_like(temperature)
             return zeros, zeros, zeros
 
-        pressure = compute_pressure(temperature)
+        pressure = compute_pressure(temperature, declination_rad=declination_rad)
         geostrophic = self._compute_geostrophic_wind_components(
             temperature,
             config=self._config,
@@ -235,9 +238,12 @@ class WindModel:
         )
 
         u_geo, v_geo, speed_geo = geostrophic
-        u_final, v_final, speed_final = self._apply_surface_drag(u_geo, v_geo, speed_geo)
-
-        return u_final, v_final, speed_final
+        
+        if ekman_drag:
+            u_final, v_final, speed_final = self._apply_surface_drag(u_geo, v_geo, speed_geo)
+            return u_final, v_final, speed_final
+        else:
+            return u_geo, v_geo, speed_geo
 
     def _compute_geostrophic_wind_components(
         self,
@@ -352,6 +358,8 @@ class WindModel:
         surface_temperature_K: np.ndarray,
         atmosphere_temperature_K: np.ndarray,
         wind_speed_reference_m_s: np.ndarray | None,
+        *,
+        declination_rad: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Compute atmospheric properties needed for heat exchange calculations.
 
@@ -369,7 +377,7 @@ class WindModel:
             raise ValueError("Atmosphere temperature must match grid shape")
 
         # Compute pressure from atmosphere temperature
-        pressure = compute_pressure(atmosphere_temperature_K)
+        pressure = compute_pressure(atmosphere_temperature_K, declination_rad=declination_rad)
 
         # Map wind speed to 10 m height
         if wind_speed_reference_m_s is None:

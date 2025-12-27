@@ -21,16 +21,19 @@ LAT_POLES = np.deg2rad(70)
 def specific_humidity_to_relative_humidity(
     q: np.ndarray,
     temperature_K: np.ndarray,
+    declination_rad: float | None = None,
 ) -> np.ndarray:
     """Convert specific humidity to relative humidity.
-    
+
     Parameters
     ----------
     q : np.ndarray
         Specific humidity (kg/kg).
     temperature_K : np.ndarray
         Temperature field in Kelvin.
-    
+    declination_rad : float | None
+        Solar declination angle in radians (optional).
+
     Returns
     -------
     np.ndarray
@@ -39,10 +42,10 @@ def specific_humidity_to_relative_humidity(
     # Compute saturation vapor pressure (Magnus formula)
     # Magnus formula requires temperature in Celsius
     temperature_C = temperature_K - 273.15
-    p = compute_pressure(temperature_K)
+    p = compute_pressure(temperature_K, declination_rad=declination_rad)
     e_sat = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
     q_sat = (0.622 * e_sat) / (p - (1 - 0.622) * e_sat)
-    
+
     # Compute RH = q / q_sat, clamped to valid range
     rh = q / np.maximum(q_sat, 1e-10)
     return np.clip(rh, 0.0, 1.0)
@@ -102,7 +105,7 @@ def compute_humidity_q(
     """
     # Convert latitude to radians for internal computation
     lat_2d_rad = np.deg2rad(lat_2d)
-    
+
     itcz = declination_rad * 0.65
     rh_function = _guess_humidity_rh_function(itcz)
     rh = rh_function(lat_2d_rad)
@@ -131,7 +134,7 @@ def compute_humidity_q(
 
     # Magnus formula requires temperature in Celsius
     temperature_C = temperature - 273.15
-    p_guess = compute_pressure(temperature)
+    p_guess = compute_pressure(temperature, declination_rad=declination_rad)
     e_sat = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
     q_sat = (0.622 * e_sat)/(p_guess - (1-0.622)*e_sat)
 

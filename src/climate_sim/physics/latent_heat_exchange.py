@@ -64,6 +64,7 @@ class LatentHeatExchangeModel:
         humidity_q: np.ndarray,
         *,
         wind_speed_reference_m_s: np.ndarray | None,
+        declination_rad: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return surface and atmospheric tendencies from latent heat exchange."""
 
@@ -89,6 +90,7 @@ class LatentHeatExchangeModel:
                 surface_temperature,
                 atmosphere_temperature,
                 wind_speed_reference_m_s,
+                declination_rad=declination_rad,
             )
         else:
             # Fallback: no wind, no exchange
