@@ -284,11 +284,6 @@ def main() -> None:
         norm = Normalize(vmin=0.0, vmax=max_speed)
 
         wind_levels = {
-            "geostrophic": {
-                "u": wind_u_geo_sorted,
-                "v": wind_v_geo_sorted,
-                "speed": wind_speed_geo_sorted,
-            },
             "100 m": {
                 "u": wind_u_sorted,
                 "v": wind_v_sorted,
@@ -298,6 +293,11 @@ def main() -> None:
                 "u": wind_u_10_sorted,
                 "v": wind_v_10_sorted,
                 "speed": wind_speed_10_sorted,
+            },
+            "geostrophic": {
+                "u": wind_u_geo_sorted,
+                "v": wind_v_geo_sorted,
+                "speed": wind_speed_geo_sorted,
             },
         }
 
