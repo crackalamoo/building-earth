@@ -15,11 +15,16 @@ from climate_sim.physics.atmosphere.wind import (
     WindConfig,
     WindModel,
 )
+from climate_sim.physics.atmosphere.advection import (
+    AdvectionConfig,
+    AdvectionOperator,
+)
 from climate_sim.physics.diffusion import (
     DiffusionConfig,
     LayeredDiffusionOperator,
     create_diffusion_operator,
 )
+from climate_sim.data.constants import HEAT_CAPACITY_AIR_J_M2_K
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig, AlbedoModel
 from climate_sim.physics.sensible_heat_exchange import (
@@ -65,6 +70,7 @@ class Linearization:
     cross: np.ndarray | None = None
     surface_diffusion_matrix: sparse.csc_matrix | None = None
     atmosphere_diffusion_matrix: sparse.csc_matrix | None = None
+    atmosphere_advection_matrix: sparse.csc_matrix | None = None
     solver_fingerprint: str | None = None
 
 
@@ -85,6 +91,7 @@ class SurfaceHeatCapacityContext:
     lat2d: np.ndarray
     albedo_model: AlbedoModel
     wind_model: WindModel | None
+    advection_operator: AdvectionOperator | None
     base_albedo: np.ndarray
     land_mask: np.ndarray
     base_C_land: float
@@ -152,7 +159,7 @@ def _select_humidity_temperature(temperature: np.ndarray) -> np.ndarray:
         return temperature[0]
     raise ValueError("Unsupported temperature field shape for humidity calculation")
 
-RhsFunc = Callable[[ModelState, np.ndarray, float], np.ndarray]
+RhsFunc = Callable[[ModelState, np.ndarray, float | np.ndarray], np.ndarray]
 RhsDerivative = Linearization
 RhsDerivativeFunc = Callable[[ModelState, np.ndarray], RhsDerivative]
 RhsFactory = Callable[
@@ -166,6 +173,7 @@ RhsFactory = Callable[
         SensibleHeatExchangeConfig,
         LatentHeatExchangeConfig,
         WindModel | None,
+        AdvectionOperator | None,
     ],
     Tuple[RhsFunc, RhsDerivativeFunc],
 ]
@@ -282,6 +290,7 @@ def monthly_step(
                     atmosphere_diag = diag[1]
                     surface_matrix = linearization.surface_diffusion_matrix
                     atmosphere_matrix = linearization.atmosphere_diffusion_matrix
+                    advection_matrix = linearization.atmosphere_advection_matrix
 
                     ceff_surface = _effective_surface_capacity(temp_capped[0])
                     flux_surface = base_capacity * rhs_value[0]
@@ -313,6 +322,8 @@ def monthly_step(
                             surface_block = surface_block - dt_seconds * capacity_diag @ surface_matrix
                         if atmosphere_matrix is not None and atmosphere_matrix.nnz > 0:
                             atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
+                        if advection_matrix is not None and advection_matrix.nnz > 0:
+                            atmosphere_block = atmosphere_block - dt_seconds * advection_matrix
 
                         coupling_surface_atm = -dt_seconds * sparse.diags(
                             (base_capacity * cross[0, 1]).ravel(), format="csc"
@@ -576,7 +587,8 @@ def solve_periodic_cycle_for_albedo(
     with time_block("solve_periodic_cycle_for_albedo"):
         base_albedo_field = surface_context.base_albedo
         wind_model = surface_context.wind_model
-
+        advection_operator = surface_context.advection_operator
+        
         if initial_state is None:
             with time_block("initial_guess"):
                 guess = initial_guess_fn(
@@ -606,8 +618,9 @@ def solve_periodic_cycle_for_albedo(
                 sensible_heat_cfg,
                 latent_heat_cfg,
                 wind_model,
+                advection_operator,
             )
-
+            
     
 
     annual_periodic_states = find_periodic_temperature(
@@ -633,6 +646,7 @@ def compute_periodic_cycle_kelvin(
     radiation_config: RadiationConfig,
     diffusion_config: DiffusionConfig,
     wind_config: WindConfig | None = None,
+    advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     sensible_heat_config: SensibleHeatExchangeConfig | None = None,
     latent_heat_config: LatentHeatExchangeConfig | None = None,
@@ -701,6 +715,19 @@ def compute_periodic_cycle_kelvin(
                     lat2d,
                     config=wind_config,
                 )
+
+            advection_operator: AdvectionOperator | None = None
+            if (
+                advection_config is not None
+                and advection_config.enabled
+                and radiation_config.include_atmosphere
+            ):
+                advection_operator = AdvectionOperator(
+                    lon2d,
+                    lat2d,
+                    config=advection_config,
+                )
+                
             month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
             solver_cache = LinearSolveCache()
 
@@ -757,13 +784,14 @@ def compute_periodic_cycle_kelvin(
             lon2d=lon2d,
             albedo_model=albedo_model,
             wind_model=wind_model,
+            advection_operator=advection_operator,
             base_albedo=base_albedo_field,
             land_mask=land_mask,
             base_C_land=base_C_land,
             base_C_ocean=base_C_ocean,
             baseline_capacity=baseline_capacity,
         )
-
+        
         monthly = solve_periodic_cycle_for_albedo(
             initial_state=previous_periodic,
             surface_context=surface_context,
@@ -815,6 +843,7 @@ def compute_periodic_cycle_results(
     radiation_config: RadiationConfig | None = None,
     diffusion_config: DiffusionConfig | None = None,
     wind_config: WindConfig | None = None,
+    advection_config: AdvectionConfig | None = None,
     snow_config: SnowAlbedoConfig | None = None,
     sensible_heat_config: SensibleHeatExchangeConfig | None = None,
     latent_heat_config: LatentHeatExchangeConfig | None = None,
@@ -844,6 +873,7 @@ def compute_periodic_cycle_results(
     resolved_radiation = radiation_config or RadiationConfig()
     resolved_diffusion = diffusion_config or DiffusionConfig()
     resolved_wind = wind_config or WindConfig()
+    resolved_advection = advection_config or AdvectionConfig()
     resolved_snow = snow_config or SnowAlbedoConfig()
     sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
     latent_heat_cfg = latent_heat_config or LatentHeatExchangeConfig()
@@ -861,6 +891,7 @@ def compute_periodic_cycle_results(
         sensible_heat_cfg_local: SensibleHeatExchangeConfig,
         latent_heat_cfg_local: LatentHeatExchangeConfig,
         wind_model_local: WindModel | None,
+        advection_operator_local: AdvectionOperator | None,
     ):
         surface_diffusion_diag: np.ndarray | None = None
         surface_matrix = None
@@ -909,7 +940,7 @@ def compute_periodic_cycle_results(
             )
 
 
-        def rhs(state: ModelState, insolation: np.ndarray, declination_rad: float) -> np.ndarray:
+        def rhs(state: ModelState, insolation: np.ndarray, declination_rad: float | np.ndarray) -> np.ndarray:
             radiative = radiation.radiative_balance_rhs(
                 state.temperature,
                 insolation,
@@ -929,6 +960,13 @@ def compute_periodic_cycle_results(
                     radiative[0] += diffusion_operator.surface.tendency(surface_temperature)
                 if diffusion_operator.atmosphere.enabled:
                     radiative[1] += diffusion_operator.atmosphere.tendency(atmosphere_temperature)
+
+                if advection_operator_local is not None and state.wind_field is not None:
+                    wind_u, wind_v, _ = state.wind_field
+                    advection_tendency = advection_operator_local.tendency(
+                        atmosphere_temperature, wind_u, wind_v
+                    )
+                    radiative[1] += advection_tendency
 
                 if sensible_heat_model is not None:
                     (
@@ -980,11 +1018,25 @@ def compute_periodic_cycle_results(
                     diag[0] = diag[0] + surface_diffusion_diag
                 if atmosphere_diffusion_diag is not None:
                     diag[1] = diag[1] + atmosphere_diffusion_diag
+
+                # Compute advection Jacobian if enabled
+                advection_matrix = None
+                if advection_operator_local is not None and state.wind_field is not None:
+                    wind_u, wind_v, _ = state.wind_field
+                    _, advection_matrix_csr = advection_operator_local.linearised_tendency(wind_u, wind_v)
+                    if advection_matrix_csr is not None:
+                        advection_matrix = (
+                            advection_matrix_csr
+                            if sparse.isspmatrix_csc(advection_matrix_csr)
+                            else advection_matrix_csr.tocsc()
+                        )
+
                 return Linearization(
                     diag=diag,
                     cross=cross,
                     surface_diffusion_matrix=surface_matrix,
                     atmosphere_diffusion_matrix=atmosphere_matrix,
+                    atmosphere_advection_matrix=advection_matrix,
                 )
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 state.temperature,
@@ -1025,6 +1077,7 @@ def compute_periodic_cycle_results(
         radiation_config=resolved_radiation,
         diffusion_config=resolved_diffusion,
         wind_config=resolved_wind,
+        advection_config=resolved_advection,
         snow_config=resolved_snow,
         sensible_heat_config=sensible_heat_cfg,
         latent_heat_config=latent_heat_cfg,

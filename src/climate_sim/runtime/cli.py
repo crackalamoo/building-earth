@@ -153,6 +153,15 @@ def add_common_model_arguments(
     )
     add_boolean_flag(
         parser,
+        dest="advection",
+        default=True,
+        enable_option="--advection",
+        disable_option="--no-advection",
+        help_enable="Enable atmospheric advection by wind (default)",
+        help_disable="Disable atmospheric advection",
+    )
+    add_boolean_flag(
+        parser,
         dest="elliptical_orbit",
         default=True,
         enable_option="--elliptical-orbit",

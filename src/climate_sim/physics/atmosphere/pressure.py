@@ -28,7 +28,7 @@ def _get_latitude_centers(nlat: int) -> np.ndarray:
     return lat_centers
 
 
-def _hadley_cell_pressure_function(itcz_lat_rad: float) -> PchipInterpolator:
+def _hadley_cell_pressure_function(itcz_lat_rad: float | np.ndarray) -> PchipInterpolator:
     """Create pressure anomaly interpolator for Hadley cell circulation.
 
     Parameters
@@ -131,7 +131,7 @@ def compute_pressure(
     elevation_m: np.ndarray | None = None,
     humidity_q: np.ndarray | None = None,
     gravity_m_s2: float = 9.81,
-    declination_rad: float | None = None,
+    declination_rad: float | np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute surface pressure (Pa) from temperature and elevation using hydrostatic balance.
 

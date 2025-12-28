@@ -11,6 +11,7 @@ from climate_sim.physics.humidity import (
     specific_humidity_to_relative_humidity,
 )
 from climate_sim.physics.atmosphere.atmosphere import STANDARD_LAPSE_RATE_K_PER_M
+from climate_sim.data.constants import HEAT_CAPACITY_AIR_J_M2_K
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,7 @@ class RadiationConfig:
     emissivity_surface: float = 1.0
     emissivity_atmosphere: float = 0.88
     include_atmosphere: bool = True
-    atmosphere_heat_capacity: float = 1.0e7  # J m-2 K-1, ~2-3 km troposphere column
+    atmosphere_heat_capacity: float = HEAT_CAPACITY_AIR_J_M2_K
     temperature_floor: float = 10.0  # K
 
 

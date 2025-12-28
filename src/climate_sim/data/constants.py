@@ -5,3 +5,4 @@ ATMOSPHERE_MASS = 5.1480e18  # kg
 EARTH_SURFACE_AREA_M2 = 4.0 * 3.141592653589793 * R_EARTH_METERS**2
 GAS_CONSTANT_J_KG_K = 287.0  # J kg-1 K-1
 HEAT_CAPACITY_AIR_J_KG_K = 1005.0  # J kg-1 K-1 (dry air, ~constant cp)
+HEAT_CAPACITY_AIR_J_M2_K = 1.0e7  # J m-2 K-1, ~2-3 km troposphere column

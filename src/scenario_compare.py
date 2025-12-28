@@ -14,6 +14,7 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.runtime.cli import (
     add_boolean_flag,
@@ -193,6 +194,24 @@ def main() -> None:
         help_enable="Enable latent heat exchange in the experiment case (default)",
         help_disable="Disable latent heat exchange in the experiment case",
     )
+    add_boolean_flag(
+        parser,
+        dest="base_advection",
+        default=True,
+        enable_option="--base-advection",
+        disable_option="--no-base-advection",
+        help_enable="Enable atmospheric advection in the baseline case",
+        help_disable="Disable atmospheric advection in the baseline case (default)",
+    )
+    add_boolean_flag(
+        parser,
+        dest="experiment_advection",
+        default=True,
+        enable_option="--exp-advection",
+        disable_option="--no-exp-advection",
+        help_enable="Enable atmospheric advection in the experiment case",
+        help_disable="Disable atmospheric advection in the experiment case (default)",
+    )
     add_temperature_unit_argument(
         parser,
         help_text="Display anomalies in degrees Fahrenheit instead of Celsius",
@@ -233,6 +252,13 @@ def main() -> None:
         enabled=args.experiment_latent_heat_exchange,
     )
 
+    base_advection = AdvectionConfig(
+        enabled=args.base_advection,
+    )
+    exp_advection = AdvectionConfig(
+        enabled=args.experiment_advection,
+    )
+
     lon2d, lat2d, base_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
         solar_constant=args.solar_constant,
@@ -242,6 +268,7 @@ def main() -> None:
         snow_config=base_snow,
         sensible_heat_config=base_sensible_heat,
         latent_heat_config=base_latent_heat,
+        advection_config=base_advection,
         return_layer_map=True,
     )
     _, _, exp_layers = compute_periodic_cycle_results(
@@ -253,6 +280,7 @@ def main() -> None:
         snow_config=exp_snow,
         sensible_heat_config=exp_sensible_heat,
         latent_heat_config=exp_latent_heat,
+        advection_config=exp_advection,
         return_layer_map=True,
     )
 
@@ -279,6 +307,7 @@ def main() -> None:
         "bulk_exchange": args.base_bulk_exchange,
         "latent_heat_exchange": args.base_latent_heat_exchange,
         "lapse_rate_elevation": args.base_lapse_rate_elevation,
+        "advection": args.base_advection,
     }
     exp_summary = {
         "elliptical_orbit": args.experiment_elliptical_orbit,
@@ -289,6 +318,7 @@ def main() -> None:
         "bulk_exchange": args.experiment_bulk_exchange,
         "latent_heat_exchange": args.experiment_latent_heat_exchange,
         "lapse_rate_elevation": args.experiment_lapse_rate_elevation,
+        "advection": args.experiment_advection,
     }
 
     print("Baseline configuration:", _summarize(base_summary))

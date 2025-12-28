@@ -74,7 +74,7 @@ class SensibleHeatExchangeModel:
         atmosphere_temperature_K: np.ndarray,
         *,
         wind_speed_reference_m_s: np.ndarray | None,
-        declination_rad: float | None = None,
+        declination_rad: float | np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return surface and atmospheric tendencies from sensible heat exchange."""
 

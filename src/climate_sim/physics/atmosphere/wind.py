@@ -216,7 +216,7 @@ class WindModel:
     def wind_field(
         self, 
         temperature: np.ndarray, 
-        declination_rad: float | None = None,
+        declination_rad: float | np.ndarray | None = None,
         ekman_drag: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute the geostrophic wind field (u, v, speed) for the given temperatures."""
@@ -359,7 +359,7 @@ class WindModel:
         atmosphere_temperature_K: np.ndarray,
         wind_speed_reference_m_s: np.ndarray | None,
         *,
-        declination_rad: float | None = None,
+        declination_rad: float | np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Compute atmospheric properties needed for heat exchange calculations.
 
