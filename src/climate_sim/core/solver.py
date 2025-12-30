@@ -53,6 +53,7 @@ from climate_sim.data.elevation import (
     compute_cell_roughness_length,
 )
 from climate_sim.core.timing import time_block, get_profiler, reset_profiler
+from climate_sim.runtime.config import ModelConfig
 
 NEWTON_STEP_TOLERANCE_K = 1.0
 PERIODIC_FIXED_POINT_TOLERANCE_K = 0.5
@@ -836,20 +837,14 @@ def compute_periodic_cycle_kelvin(
 def compute_periodic_cycle_results(
     resolution_deg: float = 1.0,
     *,
-    solar_constant: float | None = None,
-    use_elliptical_orbit: bool = True,
-    ocean_heat_capacity: float | None = None,
-    land_heat_capacity: float | None = None,
-    radiation_config: RadiationConfig | None = None,
-    diffusion_config: DiffusionConfig | None = None,
-    wind_config: WindConfig | None = None,
-    advection_config: AdvectionConfig | None = None,
-    snow_config: SnowAlbedoConfig | None = None,
-    sensible_heat_config: SensibleHeatExchangeConfig | None = None,
-    latent_heat_config: LatentHeatExchangeConfig | None = None,
+    model_config: ModelConfig,
     return_layer_map: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Produce the periodic cycle fields in Celsius along with the converged albedo layer.
+
+    The solver consumes a fully-specified :class:`~climate_sim.runtime.config.ModelConfig`
+    so that each feature toggle lives inside its own dataclass instead of being encoded
+    as ``None`` versus instantiated configs.
 
     Returns the lon/lat grids and either the surface temperature field (default) or a
     dictionary of layer outputs when ``return_layer_map`` is True.
@@ -858,25 +853,25 @@ def compute_periodic_cycle_results(
     def monthly_insolation_lat_fn(lat2d: np.ndarray) -> np.ndarray:
         return compute_monthly_insolation_field(
             lat2d,
-            solar_constant=solar_constant,
-            use_elliptical_orbit=use_elliptical_orbit,
+            solar_constant=model_config.solar_constant,
+            use_elliptical_orbit=model_config.use_elliptical_orbit,
         )
 
     def heat_capacity_field_fn(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
         return compute_heat_capacity_field(
             lon2d,
             lat2d,
-            ocean_heat_capacity=ocean_heat_capacity,
-            land_heat_capacity=land_heat_capacity,
+            ocean_heat_capacity=model_config.ocean_heat_capacity,
+            land_heat_capacity=model_config.land_heat_capacity,
         )
 
-    resolved_radiation = radiation_config or RadiationConfig()
-    resolved_diffusion = diffusion_config or DiffusionConfig()
-    resolved_wind = wind_config or WindConfig()
-    resolved_advection = advection_config or AdvectionConfig()
-    resolved_snow = snow_config or SnowAlbedoConfig()
-    sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
-    latent_heat_cfg = latent_heat_config or LatentHeatExchangeConfig()
+    resolved_radiation = model_config.radiation
+    resolved_diffusion = model_config.diffusion
+    resolved_wind = model_config.wind
+    resolved_advection = model_config.advection
+    resolved_snow = model_config.snow
+    sensible_heat_cfg = model_config.sensible_heat
+    latent_heat_cfg = model_config.latent_heat
 
     if not sensible_heat_cfg.enabled and resolved_wind.enabled:
         resolved_wind = replace(resolved_wind, enabled=False)
