@@ -27,9 +27,12 @@ from climate_sim.plotting import (
 )
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.runtime.cli import add_common_model_arguments
+from climate_sim.runtime.config import ModelConfig
 from climate_sim.physics.atmosphere.atmosphere import (
     log_law_map_wind_speed,
 )
+from climate_sim.physics.atmosphere.advection import AdvectionConfig
+from climate_sim.physics.atmosphere.wind import WindConfig
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.data.elevation import (
     compute_cell_roughness_length,
@@ -90,6 +93,20 @@ def main() -> None:
     latent_heat_config = LatentHeatExchangeConfig(
         enabled=args.latent_heat_exchange,
     )
+    advection_config = AdvectionConfig(enabled=args.advection)
+    wind_config = WindConfig()
+
+    model_config = ModelConfig(
+        radiation=radiation_config,
+        diffusion=diffusion_config,
+        wind=wind_config,
+        advection=advection_config,
+        snow=snow_config,
+        sensible_heat=sensible_heat_config,
+        latent_heat=latent_heat_config,
+        solar_constant=args.solar_constant,
+        use_elliptical_orbit=args.elliptical_orbit,
+    )
     print(f"Configuration setup took {time.time() - start:.2f} seconds")
 
     start = time.time()
@@ -104,13 +121,7 @@ def main() -> None:
     else:
         lon2d, lat2d, layers = compute_periodic_cycle_results(
             resolution_deg=args.resolution,
-            solar_constant=args.solar_constant,
-            use_elliptical_orbit=args.elliptical_orbit,
-            radiation_config=radiation_config,
-            diffusion_config=diffusion_config,
-            snow_config=snow_config,
-            sensible_heat_config=sensible_heat_config,
-            latent_heat_config=latent_heat_config,
+            model_config=model_config,
             return_layer_map=True,
         )
         np.savez_compressed(cache_path, **layers)

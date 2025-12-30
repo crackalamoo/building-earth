@@ -22,6 +22,7 @@ from climate_sim.runtime.cli import (
     add_solar_constant_argument,
     add_temperature_unit_argument,
 )
+from climate_sim.runtime.config import ModelConfig
 from climate_sim.core.solver import compute_periodic_cycle_results
 from climate_sim.core.units import convert_temperature, temperature_unit
 
@@ -259,28 +260,35 @@ def main() -> None:
         enabled=args.experiment_advection,
     )
 
-    lon2d, lat2d, base_layers = compute_periodic_cycle_results(
-        resolution_deg=args.resolution,
+    base_model_config = ModelConfig(
+        radiation=base_rad,
+        diffusion=base_diff,
+        advection=base_advection,
+        snow=base_snow,
+        sensible_heat=base_sensible_heat,
+        latent_heat=base_latent_heat,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.base_elliptical_orbit,
-        radiation_config=base_rad,
-        diffusion_config=base_diff,
-        snow_config=base_snow,
-        sensible_heat_config=base_sensible_heat,
-        latent_heat_config=base_latent_heat,
-        advection_config=base_advection,
+    )
+    exp_model_config = ModelConfig(
+        radiation=exp_rad,
+        diffusion=exp_diff,
+        advection=exp_advection,
+        snow=exp_snow,
+        sensible_heat=exp_sensible_heat,
+        latent_heat=exp_latent_heat,
+        solar_constant=args.solar_constant,
+        use_elliptical_orbit=args.experiment_elliptical_orbit,
+    )
+
+    lon2d, lat2d, base_layers = compute_periodic_cycle_results(
+        resolution_deg=args.resolution,
+        model_config=base_model_config,
         return_layer_map=True,
     )
     _, _, exp_layers = compute_periodic_cycle_results(
         resolution_deg=args.resolution,
-        solar_constant=args.solar_constant,
-        use_elliptical_orbit=args.experiment_elliptical_orbit,
-        radiation_config=exp_rad,
-        diffusion_config=exp_diff,
-        snow_config=exp_snow,
-        sensible_heat_config=exp_sensible_heat,
-        latent_heat_config=exp_latent_heat,
-        advection_config=exp_advection,
+        model_config=exp_model_config,
         return_layer_map=True,
     )
 

@@ -38,6 +38,7 @@ from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import spherical_cell_area
 from climate_sim.core.solver import compute_periodic_cycle_results
 from climate_sim.core.units import convert_temperature, temperature_unit
+from climate_sim.runtime.config import ModelConfig
 
 load_dotenv()
 
@@ -577,6 +578,16 @@ def main() -> None:
         enabled=args.latent_heat_exchange,
     )
     advection_config = AdvectionConfig(enabled=args.advection)
+    model_config = ModelConfig(
+        radiation=radiation_config,
+        diffusion=diffusion_config,
+        advection=advection_config,
+        snow=snow_config,
+        sensible_heat=sensible_heat_config,
+        latent_heat=latent_heat_config,
+        solar_constant=args.solar_constant,
+        use_elliptical_orbit=args.elliptical_orbit,
+    )
 
     data_dir = os.getenv("DATA_DIR")
     assert data_dir is not None, "Please set the DATA_DIR environment variable to enable caching."
@@ -589,14 +600,7 @@ def main() -> None:
     else:
         lon2d, lat2d, layers = compute_periodic_cycle_results(
             resolution_deg=args.resolution,
-            solar_constant=args.solar_constant,
-            use_elliptical_orbit=args.elliptical_orbit,
-            radiation_config=radiation_config,
-            diffusion_config=diffusion_config,
-            advection_config=advection_config,
-            snow_config=snow_config,
-            sensible_heat_config=sensible_heat_config,
-            latent_heat_config=latent_heat_config,
+            model_config=model_config,
             return_layer_map=True,
         )
         np.savez_compressed(cache_path, **layers)

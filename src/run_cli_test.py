@@ -100,8 +100,11 @@ def main() -> None:
     from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
     from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
     from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+    from climate_sim.physics.atmosphere.advection import AdvectionConfig
+    from climate_sim.physics.atmosphere.wind import WindConfig
     from climate_sim.core.solver import compute_periodic_cycle_results
     from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
+    from climate_sim.runtime.config import ModelConfig
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
@@ -116,15 +119,22 @@ def main() -> None:
     latent_heat_config = LatentHeatExchangeConfig(
         enabled=args.latent_heat_exchange,
     )
-    lon2d, lat2d, layers = compute_periodic_cycle_results(
-        resolution_deg=args.resolution,
+    advection_config = AdvectionConfig(enabled=args.advection)
+    wind_config = WindConfig()
+    model_config = ModelConfig(
+        radiation=radiation_config,
+        diffusion=diffusion_config,
+        wind=wind_config,
+        advection=advection_config,
+        snow=snow_config,
+        sensible_heat=sensible_heat_config,
+        latent_heat=latent_heat_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
-        radiation_config=radiation_config,
-        diffusion_config=diffusion_config,
-        snow_config=snow_config,
-        sensible_heat_config=sensible_heat_config,
-        latent_heat_config=latent_heat_config,
+    )
+    lon2d, lat2d, layers = compute_periodic_cycle_results(
+        resolution_deg=args.resolution,
+        model_config=model_config,
         return_layer_map=True,
     )
     surface_cycle = layers["surface"]
