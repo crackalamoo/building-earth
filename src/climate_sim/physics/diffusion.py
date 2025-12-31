@@ -102,7 +102,7 @@ def _assemble_sparse_matrix(
 
 @dataclass(frozen=True)
 class DiffusionConfig:
-    surface_kappa_ref_m2_s: float = 1.0e3
+    surface_kappa_ref_m2_s: float = 2.0e3
     surface_resolution_ref_deg: float = 1.0
     atmosphere_kappa_ref_m2_s: float = 5.0e3
     atmosphere_resolution_ref_deg: float = 1.0

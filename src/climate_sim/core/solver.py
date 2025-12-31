@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Callable, Dict, Tuple
 
 import numpy as np
 from scipy import sparse
-from scipy.sparse import linalg as splinalg
 
 import climate_sim.physics.radiation as radiation
 from climate_sim.physics.atmosphere.wind import (
@@ -24,7 +22,6 @@ from climate_sim.physics.diffusion import (
     LayeredDiffusionOperator,
     create_diffusion_operator,
 )
-from climate_sim.data.constants import HEAT_CAPACITY_AIR_J_M2_K
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig, AlbedoModel
 from climate_sim.physics.sensible_heat_exchange import (
@@ -35,7 +32,6 @@ from climate_sim.physics.latent_heat_exchange import (
     LatentHeatExchangeConfig,
     LatentHeatExchangeModel,
 )
-from climate_sim.physics.atmosphere.atmosphere import compute_two_meter_temperature
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.physics.solar import (
@@ -53,6 +49,18 @@ from climate_sim.data.elevation import (
     compute_cell_roughness_length,
 )
 from climate_sim.core.timing import time_block, get_profiler, reset_profiler
+from climate_sim.core.math_core import (
+    LinearSolveCache,
+    DEFAULT_LINEAR_SOLVE_CACHE,
+    get_identity_matrix,
+    fingerprint_csc_matrix,
+    get_factorized_solver,
+)
+from climate_sim.core.state import (
+    ModelState,
+    select_wind_temperature,
+)
+from climate_sim.core.postprocess import postprocess_periodic_cycle_results
 from climate_sim.runtime.config import ModelConfig
 
 NEWTON_STEP_TOLERANCE_K = 1.0
@@ -75,15 +83,6 @@ class Linearization:
     solver_fingerprint: str | None = None
 
 
-@dataclass
-class LinearSolveCache:
-    identity_matrices: Dict[int, sparse.csc_matrix] = field(default_factory=dict)
-    factorized_solvers: Dict[str, Callable[[np.ndarray], np.ndarray]] = field(default_factory=dict)
-
-
-DEFAULT_LINEAR_SOLVE_CACHE = LinearSolveCache()
-
-
 @dataclass(frozen=True)
 class SurfaceHeatCapacityContext:
     """Container for surface-layer heat-capacity metadata."""
@@ -99,66 +98,6 @@ class SurfaceHeatCapacityContext:
     base_C_ocean: float
     baseline_capacity: np.ndarray
 
-
-def _get_identity_matrix(size: int, *, cache: LinearSolveCache) -> sparse.csc_matrix:
-    identity = cache.identity_matrices.get(size)
-    if identity is None:
-        identity = sparse.eye(size, format="csc")
-        cache.identity_matrices[size] = identity
-    return identity
-
-
-def _fingerprint_csc_matrix(matrix: sparse.csc_matrix) -> str:
-    if not sparse.isspmatrix_csc(matrix):
-        matrix = matrix.tocsc()
-    hasher = hashlib.sha1()
-    hasher.update(matrix.shape[0].to_bytes(4, byteorder="little", signed=False))
-    hasher.update(matrix.shape[1].to_bytes(4, byteorder="little", signed=False))
-    hasher.update(matrix.indptr.tobytes())
-    hasher.update(matrix.indices.tobytes())
-    hasher.update(matrix.data.tobytes())
-    return hasher.hexdigest()
-
-def _get_factorized_solver(
-    matrix: sparse.csc_matrix, *, cache: LinearSolveCache, fingerprint: str | None = None
-) -> Callable[[np.ndarray], np.ndarray]:
-    key = fingerprint or _fingerprint_csc_matrix(matrix)
-    solver = cache.factorized_solvers.get(key)
-    if solver is None:
-        solver = splinalg.factorized(matrix)
-        cache.factorized_solvers[key] = solver
-    return solver
-
-
-@dataclass
-class ModelState:
-    """State variables for the climate model."""
-    temperature: np.ndarray
-    albedo_field: np.ndarray
-    wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-    humidity_field: np.ndarray | None = None
-
-
-def _select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
-    """Return the temperature field to use when computing wind diagnostics."""
-    if temperature.ndim == 2:
-        return temperature
-    if temperature.ndim == 3:
-        if temperature.shape[0] == 1:
-            return temperature[0]
-        if temperature.shape[0] >= 2:
-            return temperature[1]
-    raise ValueError("Unsupported temperature field shape for wind calculation")
-
-def _select_humidity_temperature(temperature: np.ndarray) -> np.ndarray:
-    """Return the temperature field to use when computing humidity diagnostics.
-    """
-    if temperature.ndim == 2:
-        return temperature
-    if temperature.ndim == 3:
-        # Always use surface temperature (layer 0) for humidity
-        return temperature[0]
-    raise ValueError("Unsupported temperature field shape for humidity calculation")
 
 RhsFunc = Callable[[ModelState, np.ndarray, float | np.ndarray], np.ndarray]
 RhsDerivative = Linearization
@@ -227,9 +166,9 @@ def monthly_step(
         base_albedo_field = surface_context.base_albedo
 
         if start_temp.ndim == 2:
-            identity_single_layer = _get_identity_matrix(start_temp.size, cache=cache)
+            identity_single_layer = get_identity_matrix(start_temp.size, cache=cache)
         elif start_temp.ndim == 3 and start_temp.shape[0] == 2:
-            identity_single_layer = _get_identity_matrix(
+            identity_single_layer = get_identity_matrix(
                 start_temp.shape[1] * start_temp.shape[2], cache=cache
             )
         else:
@@ -270,12 +209,12 @@ def monthly_step(
                             )
                             jacobian = jacobian - dt_seconds * capacity_diag @ diffusion_matrix
 
-                    fingerprint = linearization.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
+                    fingerprint = linearization.solver_fingerprint or fingerprint_csc_matrix(jacobian)
                     linearization.solver_fingerprint = fingerprint
                     with time_block("linear_solve"):
                         if solve_linear is None:
                             with time_block("factorize_solver"):
-                                solve_linear = _get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
+                                solve_linear = get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
                         correction_flat = solve_linear(residual_flat)
                     correction = correction_flat.reshape(temp_capped.shape)
                 else:
@@ -306,7 +245,7 @@ def monthly_step(
 
                     identity = identity_single_layer
                     if identity is None or identity.shape[0] != size or identity.shape[1] != size:
-                        identity = _get_identity_matrix(size, cache=cache)
+                        identity = get_identity_matrix(size, cache=cache)
                     
                     with time_block("jacobian_assembly"):
                         surface_block = sparse.diags(ceff_surface.ravel(), format="csc")
@@ -344,12 +283,12 @@ def monthly_step(
                     )
 
                     assert isinstance(jacobian, sparse.csc_matrix)
-                    fingerprint = linearization.solver_fingerprint or _fingerprint_csc_matrix(jacobian)
+                    fingerprint = linearization.solver_fingerprint or fingerprint_csc_matrix(jacobian)
                     linearization.solver_fingerprint = fingerprint
                     with time_block("linear_solve"):
                         if solve_linear is None:
                             with time_block("factorize_solver"):
-                                solve_linear = _get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
+                                solve_linear = get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
                         correction_flat = solve_linear(residual_flat)
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
@@ -818,7 +757,7 @@ def compute_periodic_cycle_kelvin(
                 new_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
                 new_geostrophic_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
                 for idx, month_state in enumerate(monthly):
-                    wind_temperature = _select_wind_temperature(month_state.temperature)
+                    wind_temperature = select_wind_temperature(month_state.temperature)
                     wind_field = month_state.wind_field or wind_model.wind_field(wind_temperature, declination_rad=monthly_declinations[idx])
                     geostrophic_field = wind_model.wind_field(wind_temperature, declination_rad=monthly_declinations[idx], ekman_drag=False)
 
@@ -1079,66 +1018,12 @@ def compute_periodic_cycle_results(
     )
     
     get_profiler().print_summary()
-    monthly_T = np.array([state.temperature for state in monthly_states])
-    temperature_2m_c: np.ndarray | None = None
-    if monthly_T.ndim == 3:
-        monthly_surface_K = monthly_T
-        layers_map = {"surface": monthly_surface_K - 273.15}
-    else:
-        monthly_surface_K = monthly_T[:, 0]
-        monthly_atmosphere_K = monthly_T[:, 1]
-        temperature_2m_c = compute_two_meter_temperature(
-            monthly_atmosphere_K,
-            monthly_surface_K,
-        ) - 273.15
-        layers_map = {
-            "surface": monthly_surface_K - 273.15,
-            "atmosphere": monthly_atmosphere_K - 273.15,
-        }
-
-    if temperature_2m_c is None:
-        temperature_2m_c = layers_map["surface"].copy()
-
-    layers_map["temperature_2m"] = temperature_2m_c
-
-    layers_map["albedo"] = np.array([state.albedo_field for state in monthly_states])
-
-    wind_fields = [state.wind_field for state in monthly_states]
-    if all(wind is not None for wind in wind_fields):
-        wind_u = np.stack([wind[0] for wind in wind_fields if wind is not None], axis=0)
-        wind_v = np.stack([wind[1] for wind in wind_fields if wind is not None], axis=0)
-        wind_speed = np.stack([wind[2] for wind in wind_fields if wind is not None], axis=0)
-        layers_map["wind_u"] = wind_u
-        layers_map["wind_v"] = wind_v
-        layers_map["wind_speed"] = wind_speed
-        
-        # Compute geostrophic wind fields
-        if resolved_wind is not None and resolved_wind.enabled and resolved_radiation.include_atmosphere:
-            geostrophic_fields = []
-            monthly_declinations = compute_monthly_declinations()
-            wind_model_temp = WindModel(lon2d, lat2d, config=resolved_wind)
-            for idx, state in enumerate(monthly_states):
-                wind_temperature = _select_wind_temperature(state.temperature)
-                geo_field = wind_model_temp.wind_field(
-                    wind_temperature, 
-                    declination_rad=monthly_declinations[idx], 
-                    ekman_drag=False
-                )
-                geostrophic_fields.append(geo_field)
-            
-            geostrophic_u = np.stack([geo[0] for geo in geostrophic_fields], axis=0)
-            geostrophic_v = np.stack([geo[1] for geo in geostrophic_fields], axis=0)
-            geostrophic_speed = np.stack([geo[2] for geo in geostrophic_fields], axis=0)
-            layers_map["wind_u_geostrophic"] = geostrophic_u
-            layers_map["wind_v_geostrophic"] = geostrophic_v
-            layers_map["wind_speed_geostrophic"] = geostrophic_speed
-
-    humidity_fields = [state.humidity_field for state in monthly_states]
-    if all(humidity is not None for humidity in humidity_fields):
-        humidity_q = np.stack([humidity for humidity in humidity_fields if humidity is not None], axis=0)
-        layers_map["humidity"] = humidity_q
-
-    if return_layer_map:
-        return lon2d, lat2d, layers_map
-
-    return lon2d, lat2d, layers_map["surface"]
+    
+    return postprocess_periodic_cycle_results(
+        lon2d,
+        lat2d,
+        monthly_states,
+        resolved_wind=resolved_wind,
+        resolved_radiation=resolved_radiation,
+        return_layer_map=return_layer_map,
+    )

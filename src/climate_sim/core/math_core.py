@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass, field
+from typing import Callable, Dict
+
 import numpy as np
+from scipy import sparse
+from scipy.sparse import linalg as splinalg
 
 
 def harmonic_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -136,3 +142,45 @@ def area_weighted_mean(
         result = numerator / weight_sum
     return result
 
+
+@dataclass
+class LinearSolveCache:
+    """Cache for factorized linear solvers and identity matrices."""
+    identity_matrices: Dict[int, sparse.csc_matrix] = field(default_factory=dict)
+    factorized_solvers: Dict[str, Callable[[np.ndarray], np.ndarray]] = field(default_factory=dict)
+
+DEFAULT_LINEAR_SOLVE_CACHE = LinearSolveCache()
+
+
+def get_identity_matrix(size: int, *, cache: LinearSolveCache) -> sparse.csc_matrix:
+    """Get or create a cached identity matrix of the specified size."""
+    identity = cache.identity_matrices.get(size)
+    if identity is None:
+        identity = sparse.eye(size, format="csc")
+        cache.identity_matrices[size] = identity
+    return identity
+
+
+def fingerprint_csc_matrix(matrix: sparse.csc_matrix) -> str:
+    """Compute a SHA-1 hash fingerprint of a sparse CSC matrix for caching purposes."""
+    if not sparse.isspmatrix_csc(matrix):
+        matrix = matrix.tocsc()
+    hasher = hashlib.sha1()
+    hasher.update(matrix.shape[0].to_bytes(4, byteorder="little", signed=False))
+    hasher.update(matrix.shape[1].to_bytes(4, byteorder="little", signed=False))
+    hasher.update(matrix.indptr.tobytes())
+    hasher.update(matrix.indices.tobytes())
+    hasher.update(matrix.data.tobytes())
+    return hasher.hexdigest()
+
+
+def get_factorized_solver(
+    matrix: sparse.csc_matrix, *, cache: LinearSolveCache, fingerprint: str | None = None
+) -> Callable[[np.ndarray], np.ndarray]:
+    """Get or create a cached factorized linear solver for the given matrix."""
+    key = fingerprint or fingerprint_csc_matrix(matrix)
+    solver = cache.factorized_solvers.get(key)
+    if solver is None:
+        solver = splinalg.factorized(matrix)
+        cache.factorized_solvers[key] = solver
+    return solver
