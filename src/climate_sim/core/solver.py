@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy import sparse
 
 import climate_sim.physics.radiation as radiation
@@ -99,27 +100,29 @@ class SurfaceHeatCapacityContext:
     baseline_capacity: np.ndarray
 
 
-RhsFunc = Callable[[ModelState, np.ndarray, float | np.ndarray], np.ndarray]
-RhsDerivative = Linearization
-RhsDerivativeFunc = Callable[[ModelState, np.ndarray], RhsDerivative]
-RhsFactory = Callable[
-    [
-        np.ndarray,
-        LayeredDiffusionOperator,
-        RadiationConfig,
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
-        SensibleHeatExchangeConfig,
-        LatentHeatExchangeConfig,
-        WindModel | None,
-        AdvectionOperator | None,
-    ],
-    Tuple[RhsFunc, RhsDerivativeFunc],
-]
-InitialGuessFunc = Callable[[np.ndarray, np.ndarray, RadiationConfig, np.ndarray], np.ndarray]
-MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
-HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
+type FloatArray = NDArray[np.floating]
+
+type RhsFn = Callable[[ModelState, FloatArray, float | FloatArray], FloatArray]
+type RhsDerivativeFn = Callable[[ModelState, FloatArray], Linearization]
+
+@dataclass(frozen=True, slots=True)
+class RhsBuildInputs:
+    """Structured inputs for RHS factory functions."""
+    heat_capacity_field: FloatArray
+    diffusion_operator: LayeredDiffusionOperator
+    radiation_config: RadiationConfig
+    land_mask: FloatArray
+    roughness_length: FloatArray
+    topographic_elevation: FloatArray
+    sensible_heat_cfg: SensibleHeatExchangeConfig
+    latent_heat_cfg: LatentHeatExchangeConfig
+    wind_model: WindModel | None
+    advection_operator: AdvectionOperator | None
+
+type RhsFactory = Callable[[RhsBuildInputs], tuple[RhsFn, RhsDerivativeFn]]
+type InitialGuessFn = Callable[[FloatArray, FloatArray, RadiationConfig, FloatArray], FloatArray]
+type MonthlyInsolationLatFn = Callable[[FloatArray], FloatArray]
+type HeatCapacityFieldFn = Callable[[FloatArray, FloatArray], FloatArray]
 
 
 def _build_surface_jacobian_block(
@@ -143,8 +146,8 @@ def monthly_step(
     declination: np.ndarray,
     dt_seconds: float,
     *,
-    rhs_fn: RhsFunc,
-    rhs_temperature_derivative_fn: RhsDerivativeFunc,
+    rhs_fn: RhsFn,
+    rhs_temperature_derivative_fn: RhsDerivativeFn,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext,
@@ -314,8 +317,8 @@ def evolve_year(
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     *,
-    rhs_fn: RhsFunc,
-    rhs_temperature_derivative_fn: RhsDerivativeFunc,
+    rhs_fn: RhsFn,
+    rhs_temperature_derivative_fn: RhsDerivativeFn,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext,
@@ -381,8 +384,8 @@ def find_periodic_temperature(
     initial_state: ModelState,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
-    rhs_fn: RhsFunc,
-    rhs_temperature_derivative_fn: RhsDerivativeFunc,
+    rhs_fn: RhsFn,
+    rhs_temperature_derivative_fn: RhsDerivativeFn,
     surface_context: SurfaceHeatCapacityContext,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
@@ -478,7 +481,7 @@ def solve_periodic_cycle_for_albedo(
     radiation_config: RadiationConfig,
     wind_model: WindModel | None,
     rhs_factory: RhsFactory,
-    initial_guess_fn: InitialGuessFunc,
+    initial_guess_fn: InitialGuessFn,
     temperature_floor: float,
     solver_cache: LinearSolveCache,
     land_mask: np.ndarray,
@@ -513,18 +516,19 @@ def solve_periodic_cycle_for_albedo(
             state_init = initial_state
 
         with time_block("rhs_factory"):
-            rhs_fn, rhs_temperature_derivative_fn = rhs_factory(
-                heat_capacity_field,
-                diffusion_operator,
-                radiation_config,
-                land_mask,
-                roughness_length,
-                topographic_elevation,
-                sensible_heat_cfg,
-                latent_heat_cfg,
-                wind_model,
-                advection_operator,
+            inputs = RhsBuildInputs(
+                heat_capacity_field=heat_capacity_field,
+                diffusion_operator=diffusion_operator,
+                radiation_config=radiation_config,
+                land_mask=land_mask,
+                roughness_length=roughness_length,
+                topographic_elevation=topographic_elevation,
+                sensible_heat_cfg=sensible_heat_cfg,
+                latent_heat_cfg=latent_heat_cfg,
+                wind_model=wind_model,
+                advection_operator=advection_operator,
             )
+            rhs_fn, rhs_temperature_derivative_fn = rhs_factory(inputs)
             
     
 
@@ -544,10 +548,10 @@ def solve_periodic_cycle_for_albedo(
 def compute_periodic_cycle_kelvin(
     *,
     resolution_deg: float,
-    monthly_insolation_lat_fn: MonthlyInsolationLatFunc,
-    heat_capacity_field_fn: HeatCapacityFieldFunc,
+    monthly_insolation_lat_fn: MonthlyInsolationLatFn,
+    heat_capacity_field_fn: HeatCapacityFieldFn,
     rhs_factory: RhsFactory,
-    initial_guess_fn: InitialGuessFunc,
+    initial_guess_fn: InitialGuessFn,
     radiation_config: RadiationConfig,
     diffusion_config: DiffusionConfig,
     wind_config: WindConfig,
@@ -760,23 +764,12 @@ def compute_periodic_cycle_results(
     if not sensible_heat_cfg.enabled and resolved_wind.enabled:
         resolved_wind = replace(resolved_wind, enabled=False)
 
-    def rhs_factory(
-        heat_capacity_field: np.ndarray,
-        diffusion_operator: LayeredDiffusionOperator,
-        config: RadiationConfig,
-        land_mask: np.ndarray,
-        roughness_length: np.ndarray,
-        topographic_elevation: np.ndarray,
-        sensible_heat_cfg_local: SensibleHeatExchangeConfig,
-        latent_heat_cfg_local: LatentHeatExchangeConfig,
-        wind_model_local: WindModel | None,
-        advection_operator_local: AdvectionOperator | None,
-    ):
+    def rhs_factory(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
         surface_diffusion_diag: np.ndarray | None = None
         surface_matrix = None
-        if diffusion_operator.surface.enabled:
+        if inputs.diffusion_operator.surface.enabled:
             surface_diffusion_diag, surface_offdiag = (
-                diffusion_operator.surface.linearised_tendency()
+                inputs.diffusion_operator.surface.linearised_tendency()
             )
             if surface_offdiag is not None and surface_offdiag.nnz > 0:
                 surface_matrix = (
@@ -787,9 +780,9 @@ def compute_periodic_cycle_results(
 
         atmosphere_diffusion_diag: np.ndarray | None = None
         atmosphere_matrix = None
-        if config.include_atmosphere and diffusion_operator.atmosphere.enabled:
+        if inputs.radiation_config.include_atmosphere and inputs.diffusion_operator.atmosphere.enabled:
             atmosphere_diffusion_diag, atmosphere_offdiag = (
-                diffusion_operator.atmosphere.linearised_tendency()
+                inputs.diffusion_operator.atmosphere.linearised_tendency()
             )
             if atmosphere_offdiag is not None and atmosphere_offdiag.nnz > 0:
                 atmosphere_matrix = (
@@ -799,23 +792,23 @@ def compute_periodic_cycle_results(
                 )
 
         sensible_heat_model: SensibleHeatExchangeModel | None = None
-        if config.include_atmosphere and sensible_heat_cfg_local.enabled:
+        if inputs.radiation_config.include_atmosphere and inputs.sensible_heat_cfg.enabled:
             sensible_heat_model = SensibleHeatExchangeModel(
-                land_mask=land_mask,
-                surface_heat_capacity_J_m2_K=heat_capacity_field,
-                atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
-                wind_model=wind_model_local,
-                config=sensible_heat_cfg_local,
+                land_mask=inputs.land_mask,
+                surface_heat_capacity_J_m2_K=inputs.heat_capacity_field,
+                atmosphere_heat_capacity_J_m2_K=inputs.radiation_config.atmosphere_heat_capacity,
+                wind_model=inputs.wind_model,
+                config=inputs.sensible_heat_cfg,
             )
 
         latent_heat_model: LatentHeatExchangeModel | None = None
-        if config.include_atmosphere and latent_heat_cfg_local.enabled:
+        if inputs.radiation_config.include_atmosphere and inputs.latent_heat_cfg.enabled:
             latent_heat_model = LatentHeatExchangeModel(
-                land_mask=land_mask,
-                surface_heat_capacity_J_m2_K=heat_capacity_field,
-                atmosphere_heat_capacity_J_m2_K=config.atmosphere_heat_capacity,
-                wind_model=wind_model_local,
-                config=latent_heat_cfg_local,
+                land_mask=inputs.land_mask,
+                surface_heat_capacity_J_m2_K=inputs.heat_capacity_field,
+                atmosphere_heat_capacity_J_m2_K=inputs.radiation_config.atmosphere_heat_capacity,
+                wind_model=inputs.wind_model,
+                config=inputs.latent_heat_cfg,
             )
 
 
@@ -823,26 +816,26 @@ def compute_periodic_cycle_results(
             radiative = radiation.radiative_balance_rhs(
                 state.temperature,
                 insolation,
-                heat_capacity_field=heat_capacity_field,
+                heat_capacity_field=inputs.heat_capacity_field,
                 albedo_field=state.albedo_field,
-                config=config,
-                land_mask=land_mask,
+                config=inputs.radiation_config,
+                land_mask=inputs.land_mask,
                 humidity_q=state.humidity_field,
             )
-            if config.include_atmosphere:
+            if inputs.radiation_config.include_atmosphere:
                 radiative = radiative.copy()
                 surface_temperature = state.temperature[0]
                 atmosphere_temperature = state.temperature[1]
                 wind_speed_ref = state.wind_field[2] if state.wind_field is not None else None
                 humidity_field = state.humidity_field
-                if diffusion_operator.surface.enabled:
-                    radiative[0] += diffusion_operator.surface.tendency(surface_temperature)
-                if diffusion_operator.atmosphere.enabled:
-                    radiative[1] += diffusion_operator.atmosphere.tendency(atmosphere_temperature)
+                if inputs.diffusion_operator.surface.enabled:
+                    radiative[0] += inputs.diffusion_operator.surface.tendency(surface_temperature)
+                if inputs.diffusion_operator.atmosphere.enabled:
+                    radiative[1] += inputs.diffusion_operator.atmosphere.tendency(atmosphere_temperature)
 
-                if advection_operator_local is not None and state.wind_field is not None:
+                if inputs.advection_operator is not None and state.wind_field is not None:
                     wind_u, wind_v, _ = state.wind_field
-                    advection_tendency = advection_operator_local.tendency(
+                    advection_tendency = inputs.advection_operator.tendency(
                         atmosphere_temperature, wind_u, wind_v
                     )
                     radiative[1] += advection_tendency
@@ -876,18 +869,18 @@ def compute_periodic_cycle_results(
                     radiative[1] += atmosphere_tendency
 
                 return radiative
-            if diffusion_operator.surface.enabled:
-                radiative = radiative + diffusion_operator.surface.tendency(state.temperature)
+            if inputs.diffusion_operator.surface.enabled:
+                radiative = radiative + inputs.diffusion_operator.surface.tendency(state.temperature)
             return radiative
 
-        def rhs_derivative(state: ModelState, insolation: np.ndarray) -> RhsDerivative:
+        def rhs_derivative(state: ModelState, insolation: np.ndarray) -> Linearization:
             del insolation
-            if config.include_atmosphere:
+            if inputs.radiation_config.include_atmosphere:
                 radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                     state.temperature,
-                    heat_capacity_field=heat_capacity_field,
-                    config=config,
-                    land_mask=land_mask,
+                    heat_capacity_field=inputs.heat_capacity_field,
+                    config=inputs.radiation_config,
+                    land_mask=inputs.land_mask,
                     humidity_q=state.humidity_field,
                 )
                 assert isinstance(radiative_derivative, tuple)
@@ -900,9 +893,9 @@ def compute_periodic_cycle_results(
 
                 # Compute advection Jacobian if enabled
                 advection_matrix = None
-                if advection_operator_local is not None and state.wind_field is not None:
+                if inputs.advection_operator is not None and state.wind_field is not None:
                     wind_u, wind_v, _ = state.wind_field
-                    _, advection_matrix_csr = advection_operator_local.linearised_tendency(wind_u, wind_v)
+                    _, advection_matrix_csr = inputs.advection_operator.linearised_tendency(wind_u, wind_v)
                     if advection_matrix_csr is not None:
                         advection_matrix = (
                             advection_matrix_csr
@@ -919,9 +912,9 @@ def compute_periodic_cycle_results(
                 )
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 state.temperature,
-                heat_capacity_field=heat_capacity_field,
-                config=config,
-                land_mask=land_mask,
+                heat_capacity_field=inputs.heat_capacity_field,
+                config=inputs.radiation_config,
+                land_mask=inputs.land_mask,
                 humidity_q=state.humidity_field,
             )
             assert isinstance(radiative_derivative, np.ndarray)
