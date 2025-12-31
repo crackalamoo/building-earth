@@ -190,15 +190,7 @@ def _compute_cloud_cover_latitude_fallback(
     Uses a simple parameterization based on latitude only:
         C = 0.65 - 2.59 * sin²(lat) + 3.55 * sin⁴(lat)
     """
-    # Extract the spatial shape from the temperature field
-    if temperature.ndim == 2:
-        nlat, nlon = temperature.shape
-    elif temperature.ndim == 3:
-        nlat, nlon = temperature.shape[1], temperature.shape[2]
-    else:
-        raise ValueError(
-            f"Temperature field must be 2D or 3D, got shape {temperature.shape}"
-        )
+    nlat, nlon = temperature.shape[1], temperature.shape[2]
 
     # Reconstruct the latitude grid (cell centers)
     lat_spacing = 180.0 / float(nlat)

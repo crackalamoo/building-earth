@@ -122,6 +122,21 @@ MonthlyInsolationLatFunc = Callable[[np.ndarray], np.ndarray]
 HeatCapacityFieldFunc = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
 
+def _build_surface_jacobian_block(
+    ceff: np.ndarray,
+    diag: np.ndarray,
+    base_capacity: np.ndarray,
+    diffusion_matrix: sparse.csc_matrix | None,
+    dt_seconds: float,
+) -> sparse.csc_matrix:
+    """Build the surface layer jacobian block (shared between single and multi-layer)."""
+    block = sparse.diags(ceff.ravel(), format="csc")
+    block -= dt_seconds * sparse.diags((base_capacity * diag).ravel(), format="csc")
+    if diffusion_matrix is not None and diffusion_matrix.nnz > 0:
+        block -= dt_seconds * sparse.diags(base_capacity.ravel(), format="csc") @ diffusion_matrix
+    return block
+
+
 def monthly_step(
     state: ModelState,
     insolation_W_m2: np.ndarray,
@@ -154,7 +169,9 @@ def monthly_step(
             with time_block("_init_state"):
                 lat2d = surface_context.lat2d
                 albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, temp[0])
-                wind_field = surface_context.wind_model.wind_field(temp[1], declination_rad=declination) if surface_context.wind_model else np.zeros_like(temp[0])
+                # Wind field uses atmosphere temperature (layer 1) if available, otherwise surface (layer 0)
+                wind_temp = temp[1] if temp.shape[0] >= 2 else temp[0]
+                wind_field = surface_context.wind_model.wind_field(wind_temp, declination_rad=declination) if surface_context.wind_model else np.zeros_like(temp[0])
                 humidity_field = compute_humidity_q(lat2d, temp[0], declination)
                 return ModelState(
                     temperature=temp,
@@ -164,15 +181,6 @@ def monthly_step(
                 )
 
         base_albedo_field = surface_context.base_albedo
-
-        if start_temp.ndim == 2:
-            identity_single_layer = get_identity_matrix(start_temp.size, cache=cache)
-        elif start_temp.ndim == 3 and start_temp.shape[0] == 2:
-            identity_single_layer = get_identity_matrix(
-                start_temp.shape[1] * start_temp.shape[2], cache=cache
-            )
-        else:
-            identity_single_layer = None
 
         # implicit solver loop
         solve_linear = None
@@ -187,28 +195,25 @@ def monthly_step(
                     with time_block("rhs_derivative"):
                         linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
 
-                if temp_capped.ndim == 2:
-                    ceff = _effective_surface_capacity(temp_capped)
-                    diag = linearization.diag
-                    diffusion_matrix = linearization.surface_diffusion_matrix
-
-                    flux_term = base_capacity * rhs_value
-                    residual = ceff * (temp_capped - start_temp) - dt_seconds * flux_term
-                    size = temp_capped.size
-                    residual_flat = residual.ravel()
-
+                nlayers = temp_capped.shape[0]
+                surface_diag = linearization.diag[0]
+                ceff_surface = _effective_surface_capacity(temp_capped[0])
+                flux_surface = base_capacity * rhs_value[0]
+                residual_surface = ceff_surface * (temp_capped[0] - start_temp[0]) - dt_seconds * flux_surface
+                
+                nlat, nlon = surface_diag.shape
+                size = nlat * nlon
+                
+                if nlayers == 1:
+                    # Single-layer: only surface residual and jacobian
+                    residual = residual_surface[np.newaxis, :, :]
+                    residual_flat = residual_surface.ravel()
+                    
                     with time_block("jacobian_assembly"):
-                        jacobian = sparse.diags(ceff.ravel(), format="csc")
-                        jacobian -= dt_seconds * sparse.diags(
-                            (base_capacity * diag).ravel(), format="csc"
+                        jacobian = _build_surface_jacobian_block(
+                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
                         )
-
-                        if diffusion_matrix is not None and diffusion_matrix.nnz > 0:
-                            capacity_diag = sparse.diags(
-                                base_capacity.ravel(), format="csc"
-                            )
-                            jacobian = jacobian - dt_seconds * capacity_diag @ diffusion_matrix
-
+                    
                     fingerprint = linearization.solver_fingerprint or fingerprint_csc_matrix(jacobian)
                     linearization.solver_fingerprint = fingerprint
                     with time_block("linear_solve"):
@@ -216,73 +221,36 @@ def monthly_step(
                             with time_block("factorize_solver"):
                                 solve_linear = get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
                         correction_flat = solve_linear(residual_flat)
-                    correction = correction_flat.reshape(temp_capped.shape)
-                else:
-                    if temp_capped.ndim < 3 or temp_capped.shape[0] != 2:
-                        raise ValueError("Layered derivative requires a two-layer temperature field")
-
-                    diag = linearization.diag
-                    cross = linearization.cross
-                    if cross is None:
-                        raise ValueError("Missing cross-layer coupling for layered system")
-
-                    surface_diag = diag[0]
-                    atmosphere_diag = diag[1]
-                    surface_matrix = linearization.surface_diffusion_matrix
-                    atmosphere_matrix = linearization.atmosphere_diffusion_matrix
-                    advection_matrix = linearization.atmosphere_advection_matrix
-
-                    ceff_surface = _effective_surface_capacity(temp_capped[0])
-                    flux_surface = base_capacity * rhs_value[0]
-                    residual_surface = ceff_surface * (temp_capped[0] - start_temp[0]) - dt_seconds * (
-                        flux_surface
-                    )
+                    correction = correction_flat.reshape((nlat, nlon))[np.newaxis, :, :]
+                elif nlayers == 2:
+                    # Two-layer: surface + atmosphere with coupling
+                    atmosphere_diag = linearization.diag[1]
                     residual_atmosphere = temp_capped[1] - start_temp[1] - dt_seconds * rhs_value[1]
                     residual = np.stack([residual_surface, residual_atmosphere])
-
-                    nlat, nlon = surface_diag.shape
-                    size = nlat * nlon
-
-                    identity = identity_single_layer
-                    if identity is None or identity.shape[0] != size or identity.shape[1] != size:
-                        identity = get_identity_matrix(size, cache=cache)
+                    
+                    identity = get_identity_matrix(size, cache=cache)
                     
                     with time_block("jacobian_assembly"):
-                        surface_block = sparse.diags(ceff_surface.ravel(), format="csc")
-                        surface_block -= dt_seconds * sparse.diags(
-                            (base_capacity * surface_diag).ravel(), format="csc"
+                        surface_block = _build_surface_jacobian_block(
+                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
                         )
                         atmosphere_block = identity.copy()
                         atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
+                        if linearization.atmosphere_diffusion_matrix is not None and linearization.atmosphere_diffusion_matrix.nnz > 0:
+                            atmosphere_block -= dt_seconds * linearization.atmosphere_diffusion_matrix
+                        if linearization.atmosphere_advection_matrix is not None and linearization.atmosphere_advection_matrix.nnz > 0:
+                            atmosphere_block -= dt_seconds * linearization.atmosphere_advection_matrix
 
-                        if surface_matrix is not None and surface_matrix.nnz > 0:
-                            capacity_diag = sparse.diags(
-                                base_capacity.ravel(), format="csc"
-                            )
-                            surface_block = surface_block - dt_seconds * capacity_diag @ surface_matrix
-                        if atmosphere_matrix is not None and atmosphere_matrix.nnz > 0:
-                            atmosphere_block = atmosphere_block - dt_seconds * atmosphere_matrix
-                        if advection_matrix is not None and advection_matrix.nnz > 0:
-                            atmosphere_block = atmosphere_block - dt_seconds * advection_matrix
+                        if linearization.cross is not None:
+                            coupling_surface_atm = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 1]).ravel(), format="csc")
+                            coupling_atm_surface = -dt_seconds * sparse.diags(linearization.cross[1, 0].ravel(), format="csc")
+                        else:
+                            coupling_surface_atm = coupling_atm_surface = sparse.csc_matrix((size, size))
 
-                        coupling_surface_atm = -dt_seconds * sparse.diags(
-                            (base_capacity * cross[0, 1]).ravel(), format="csc"
-                        )
-                        coupling_atm_surface = -dt_seconds * sparse.diags(
-                            cross[1, 0].ravel(), format="csc"
-                        )
+                        jacobian = sparse.bmat([[surface_block, coupling_surface_atm], [coupling_atm_surface, atmosphere_block]], format="csc")
+                        assert isinstance(jacobian, sparse.csc_matrix)
 
-                        jacobian = sparse.bmat(
-                            [[surface_block, coupling_surface_atm], [coupling_atm_surface, atmosphere_block]],
-                            format="csc",
-                        )
-
-                    residual_flat = np.concatenate(
-                        [residual_surface.ravel(), residual_atmosphere.ravel()],
-                        axis=0,
-                    )
-
-                    assert isinstance(jacobian, sparse.csc_matrix)
+                    residual_flat = np.concatenate([residual_surface.ravel(), residual_atmosphere.ravel()], axis=0)
                     fingerprint = linearization.solver_fingerprint or fingerprint_csc_matrix(jacobian)
                     linearization.solver_fingerprint = fingerprint
                     with time_block("linear_solve"):
@@ -293,7 +261,11 @@ def monthly_step(
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
                     correction = np.stack([correction_surface, correction_atmosphere])
+                else:
+                    raise ValueError(f"Unsupported number of layers: {nlayers}")
 
+                damping = 1.0
+                max_residual = float(np.max(np.abs(residual)))
                 damping = 1.0
                 max_residual = float(np.max(np.abs(residual)))
                 accepted = False
@@ -306,24 +278,18 @@ def monthly_step(
                     state_candidate = _init_state(temp_candidate)
                     with time_block("backtrack_rhs"):
                         rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, declination)
-                    base_capacity_candidate = base_capacity
+                    
                     ceff_candidate = _effective_surface_capacity(temp_candidate[0])
-                    if temp_candidate.ndim == 2:
-                        residual_candidate = ceff_candidate * (
-                            temp_candidate - start_temp
-                        ) - dt_seconds * (base_capacity_candidate * rhs_candidate)
+                    nlayers = temp_candidate.shape[0]
+                    residual_surface_candidate = ceff_candidate * (temp_candidate[0] - start_temp[0]) - dt_seconds * (base_capacity * rhs_candidate[0])
+                    
+                    if nlayers == 1:
+                        residual_candidate = residual_surface_candidate[np.newaxis, :, :]
+                    elif nlayers == 2:
+                        residual_atmosphere_candidate = temp_candidate[1] - start_temp[1] - dt_seconds * rhs_candidate[1]
+                        residual_candidate = np.stack([residual_surface_candidate, residual_atmosphere_candidate])
                     else:
-                        if temp_candidate.ndim < 3 or temp_candidate.shape[0] != 2:
-                            raise ValueError("Layered derivative requires a two-layer temperature field")
-                        residual_surface_candidate = ceff_candidate * (
-                            temp_candidate[0] - start_temp[0]
-                        ) - dt_seconds * (base_capacity_candidate * rhs_candidate[0])
-                        residual_atmosphere_candidate = (
-                            temp_candidate[1] - start_temp[1] - dt_seconds * rhs_candidate[1]
-                        )
-                        residual_candidate = np.stack(
-                            [residual_surface_candidate, residual_atmosphere_candidate]
-                        )
+                        raise ValueError(f"Unsupported number of layers: {nlayers}")
                     candidate_norm = float(np.max(np.abs(residual_candidate)))
 
                     if candidate_norm <= (1.0 - 1e-4 * damping) * max_residual:
@@ -427,7 +393,8 @@ def find_periodic_temperature(
 
     with time_block("find_periodic_temperature"):
         state = initial_state
-        state.temperature = np.maximum(initial_state.temperature, temperature_floor)
+        temp = initial_state.temperature
+        state.temperature = np.maximum(temp, temperature_floor)
         states = [initial_state] * 12
         residual_history: list[np.ndarray] = []
         advanced_history: list[np.ndarray] = []
@@ -686,15 +653,8 @@ def compute_periodic_cycle_kelvin(
 
             current_humidity_fields: list[np.ndarray] = []
             for month_idx in range(12):
-                # Extract temperature for this month
-                if initial_guess_temp.ndim == 2:
-                    # Single-layer model: use the temperature directly
-                    temp_for_month = initial_guess_temp
-                elif initial_guess_temp.ndim == 3:
-                    # Two-layer model: use surface temperature (layer 0)
-                    temp_for_month = initial_guess_temp[0]
-                else:
-                    raise ValueError(f"Unexpected initial guess temperature shape: {initial_guess_temp.shape}")
+                # Extract surface temperature for this month (always use layer 0)
+                temp_for_month = initial_guess_temp[0]
                 
                 # Compute humidity for this month
                 humidity = compute_humidity_q(
