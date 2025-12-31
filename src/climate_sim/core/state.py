@@ -18,21 +18,15 @@ class ModelState:
 
 def select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
     """Return the temperature field to use when computing wind diagnostics."""
-    if temperature.ndim == 2:
-        return temperature
-    if temperature.ndim == 3:
-        if temperature.shape[0] == 1:
-            return temperature[0]
-        if temperature.shape[0] >= 2:
-            return temperature[1]
-    raise ValueError("Unsupported temperature field shape for wind calculation")
+    nlayers = temperature.shape[0]
+    if nlayers == 1:
+        return temperature[0]
+    if nlayers >= 2:
+        return temperature[1]
+    raise ValueError(f"Unsupported number of layers: {nlayers}")
 
 
 def select_humidity_temperature(temperature: np.ndarray) -> np.ndarray:
     """Return the temperature field to use when computing humidity diagnostics."""
-    if temperature.ndim == 2:
-        return temperature
-    if temperature.ndim == 3:
-        # Always use surface temperature (layer 0) for humidity
-        return temperature[0]
-    raise ValueError("Unsupported temperature field shape for humidity calculation")
+    # Always use surface temperature (layer 0) for humidity
+    return temperature[0]

@@ -45,10 +45,10 @@ def radiative_balance_rhs(
     floor = config.temperature_floor
 
     if not config.include_atmosphere:
-        temperature = _with_floor(temperature_K, floor)
-        emitted = config.emissivity_surface * config.stefan_boltzmann * np.power(temperature, 4)
+        surface = _with_floor(temperature_K[0], floor)
+        emitted = config.emissivity_surface * config.stefan_boltzmann * np.power(surface, 4)
         absorbed = insolation_W_m2 * (1.0 - albedo_field)
-        return (absorbed - emitted) / heat_capacity_field
+        return ((absorbed - emitted) / heat_capacity_field)[np.newaxis, :, :]
 
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
@@ -118,9 +118,9 @@ def radiative_balance_rhs_temperature_derivative(
     sigma = config.stefan_boltzmann
 
     if not config.include_atmosphere:
-        temperature = _with_floor(temperature_K, floor)
-        coeff = -4.0 * config.emissivity_surface * sigma * np.power(temperature, 3)
-        return coeff / heat_capacity_field
+        surface = _with_floor(temperature_K[0], floor)
+        coeff = -4.0 * config.emissivity_surface * sigma * np.power(surface, 3)
+        return (coeff / heat_capacity_field)[np.newaxis, :, :]
 
     surface = _with_floor(temperature_K[0], floor)
     atmosphere = _with_floor(temperature_K[1], floor)
@@ -184,7 +184,9 @@ def radiative_equilibrium_initial_guess(
 
     if not config.include_atmosphere:
         surface = np.power(absorbed / (config.emissivity_surface * sigma), 0.25)
-        return np.maximum(surface, config.temperature_floor)
+        surface = np.maximum(surface, config.temperature_floor)
+        # Normalize to always return 3D: (1, lat, lon) for single-layer
+        return surface[np.newaxis, :, :]
 
     # Use latitude-based fallback for initial guess since we don't have actual humidity yet
     dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
