@@ -103,7 +103,7 @@ def compute_cell_elevation(
     lon_flat = lon_wrapped.ravel()
     lat_flat = lat_clamped.ravel()
 
-    # Sample the dataset at the cell centre using bilinear interpolation when possible.
+    # Sample the dataset at the cell center using bilinear interpolation when possible.
     coords = {
         "x": ("points", lon_flat),
         "y": ("points", lat_flat),

@@ -1,4 +1,4 @@
-"""Geostrophic advection utilities for wind and atmospheric heat transport."""
+"""Advection utilities for atmospheric heat transport via wind."""
 
 from __future__ import annotations
 

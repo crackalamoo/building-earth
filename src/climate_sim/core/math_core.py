@@ -30,17 +30,17 @@ def _ensure_strictly_increasing(values: np.ndarray, name: str) -> None:
 
 
 def regular_latitude_edges(lat_centers_deg: np.ndarray) -> np.ndarray:
-    """Infer latitude edges for a regularly spaced grid of cell centres."""
+    """Infer latitude edges for a regularly spaced grid of cell centers."""
 
     if lat_centers_deg.ndim != 1:
-        raise ValueError("Latitude centres must be a one-dimensional array")
+        raise ValueError("Latitude centers must be a one-dimensional array")
 
     nlat = lat_centers_deg.size
     if nlat == 0:
-        raise ValueError("Latitude centres array must be non-empty")
+        raise ValueError("Latitude centers array must be non-empty")
 
     if nlat > 1:
-        _ensure_strictly_increasing(lat_centers_deg, "Latitude centres")
+        _ensure_strictly_increasing(lat_centers_deg, "Latitude centers")
         spacing = np.diff(lat_centers_deg)
         if not np.allclose(spacing, spacing[0]):
             raise ValueError("Latitude grid must have constant spacing")
@@ -62,11 +62,11 @@ def regular_longitude_edges(lon_centers_deg: np.ndarray) -> np.ndarray:
     """Infer longitude edges for a regularly spaced, wrapped grid."""
 
     if lon_centers_deg.ndim != 1:
-        raise ValueError("Longitude centres must be a one-dimensional array")
+        raise ValueError("Longitude centers must be a one-dimensional array")
 
     nlon = lon_centers_deg.size
     if nlon == 0:
-        raise ValueError("Longitude centres array must be non-empty")
+        raise ValueError("Longitude centers array must be non-empty")
 
     if nlon > 1:
         spacing = np.diff(lon_centers_deg)

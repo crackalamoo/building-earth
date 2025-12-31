@@ -53,7 +53,7 @@ def _grid_signature(lon2d: np.ndarray, lat2d: np.ndarray) -> tuple[int, int, flo
 def _compute_land_and_lake_masks(
     lon2d: np.ndarray, lat2d: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Determine the land/sea classification and highlight lakes for each grid centre."""
+    """Determine the land/sea classification and highlight lakes for each grid center."""
     prepared_land = _prepared_land_geometry()
     prepared_lakes = _prepared_lake_geometry()
     flat_lon = lon2d.ravel()
@@ -73,7 +73,7 @@ def _compute_land_and_lake_masks(
 
 
 def compute_land_mask(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
-    """Return True where the grid cell centre lies on land, with caching."""
+    """Return True where the grid cell center lies on land, with caching."""
     key = _grid_signature(lon2d, lat2d)
     if key not in _MASK_CACHE:
         _MASK_CACHE[key] = _compute_land_and_lake_masks(lon2d, lat2d)
@@ -82,7 +82,7 @@ def compute_land_mask(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
 
 
 def compute_lake_mask(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
-    """Return True where the grid cell centre lies on a lake surface, with caching."""
+    """Return True where the grid cell center lies on a lake surface, with caching."""
     key = _grid_signature(lon2d, lat2d)
     if key not in _MASK_CACHE:
         _MASK_CACHE[key] = _compute_land_and_lake_masks(lon2d, lat2d)

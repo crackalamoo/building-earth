@@ -194,10 +194,10 @@ def _compute_cloud_cover_latitude_fallback(
 
     # Reconstruct the latitude grid (cell centers)
     lat_spacing = 180.0 / float(nlat)
-    lat_centres = -90.0 + (np.arange(nlat, dtype=float) + 0.5) * lat_spacing
+    lat_centers = -90.0 + (np.arange(nlat, dtype=float) + 0.5) * lat_spacing
 
     # Create 2D latitude field matching the grid
-    lat2d = lat_centres[:, np.newaxis]  # Shape: (nlat, 1)
+    lat2d = lat_centers[:, np.newaxis]  # Shape: (nlat, 1)
     lat2d = np.broadcast_to(lat2d, (nlat, nlon))  # Shape: (nlat, nlon)
 
     # Convert to radians for trigonometric functions

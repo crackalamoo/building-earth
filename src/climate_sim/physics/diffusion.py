@@ -287,7 +287,7 @@ def _build_single_layer_operator(
     if nlat > 1:
         delta_lat_centers = np.diff(lat_centers)
         if np.any(delta_lat_centers <= 0.0):
-            raise ValueError("Latitude centres must be strictly increasing")
+            raise ValueError("Latitude centers must be strictly increasing")
 
         delta_lat_centers_rad = np.deg2rad(delta_lat_centers)
         delta_y = earth_radius * delta_lat_centers_rad
@@ -314,7 +314,7 @@ def _build_single_layer_operator(
 
     # Zonal diffusion (periodic in longitude)
     if nlon > 1:
-        # Horizontal distance between centres: R cos(phi) * d(lambda)
+        # Horizontal distance between centers: R cos(phi) * d(lambda)
         delta_x = (
             earth_radius
             * np.cos(np.deg2rad(lat_centers))[:, np.newaxis]

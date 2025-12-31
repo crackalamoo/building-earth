@@ -225,33 +225,33 @@ def aggregate_reference_to_sim_grid(
 
     Each simulation grid cell is classified as land or ocean by the model's own
     land mask (not here), but the observational fields are averaged over all 1°
-    NOAA cell centres that fall within the simulation cell's lat/lon bounds.
+    NOAA cell centers that fall within the simulation cell's lat/lon bounds.
     """
 
     lat_noaa = np.asarray(ds["lat"].values, dtype=float)
     lon_noaa = np.asarray(ds["lon"].values, dtype=float)
 
-    # Assume lon2d_sim/lat2d_sim come from a regular grid centred on cell middles.
-    lat_centres_sim = lat2d_sim[:, 0]
-    lon_centres_sim = lon2d_sim[0, :]
+    # Assume lon2d_sim/lat2d_sim come from a regular grid centered on cell middles.
+    lat_centers_sim = lat2d_sim[:, 0]
+    lon_centers_sim = lon2d_sim[0, :]
 
-    if lat_centres_sim.size > 1:
-        dlat_sim = float(lat_centres_sim[1] - lat_centres_sim[0])
+    if lat_centers_sim.size > 1:
+        dlat_sim = float(lat_centers_sim[1] - lat_centers_sim[0])
     else:
         dlat_sim = 180.0
-    if lon_centres_sim.size > 1:
-        dlon_sim = float(lon_centres_sim[1] - lon_centres_sim[0])
+    if lon_centers_sim.size > 1:
+        dlon_sim = float(lon_centers_sim[1] - lon_centers_sim[0])
     else:
         dlon_sim = 360.0
 
-    lat_edges_min = lat_centres_sim - 0.5 * dlat_sim
-    lat_edges_max = lat_centres_sim + 0.5 * dlat_sim
-    lon_edges_min = lon_centres_sim - 0.5 * dlon_sim
-    lon_edges_max = lon_centres_sim + 0.5 * dlon_sim
+    lat_edges_min = lat_centers_sim - 0.5 * dlat_sim
+    lat_edges_max = lat_centers_sim + 0.5 * dlat_sim
+    lon_edges_min = lon_centers_sim - 0.5 * dlon_sim
+    lon_edges_max = lon_centers_sim + 0.5 * dlon_sim
 
     # Ensure longitudes are in 0–360 for comparison, matching LAT_T/LON_T convention.
     lon_noaa_wrapped = lon_noaa % 360.0
-    lon_centres_sim_wrapped = lon_centres_sim % 360.0
+    lon_centers_sim_wrapped = lon_centers_sim % 360.0
     lon_edges_min_wrapped = lon_edges_min % 360.0
     lon_edges_max_wrapped = lon_edges_max % 360.0
 
@@ -259,8 +259,8 @@ def aggregate_reference_to_sim_grid(
     t_sst_src = np.asarray(ds["t_sst_clim"].values, dtype=float)
 
     nmonth = t_land_src.shape[0]
-    nlat_sim = lat_centres_sim.size
-    nlon_sim = lon_centres_sim.size
+    nlat_sim = lat_centers_sim.size
+    nlon_sim = lon_centers_sim.size
 
     t_land_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
     t_sst_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
@@ -312,8 +312,8 @@ def aggregate_reference_to_sim_grid(
         ),
         coords=dict(
             month=("month", np.arange(1, nmonth + 1, dtype=int)),
-            lat=("lat", lat_centres_sim),
-            lon=("lon", lon_centres_sim_wrapped),
+            lat=("lat", lat_centers_sim),
+            lon=("lon", lon_centers_sim_wrapped),
         ),
     )
 
