@@ -266,8 +266,6 @@ def monthly_step(
 
                 damping = 1.0
                 max_residual = float(np.max(np.abs(residual)))
-                damping = 1.0
-                max_residual = float(np.max(np.abs(residual)))
                 accepted = False
                 prev_temp = temp_next
                 temp_candidate = temp_next
@@ -552,11 +550,11 @@ def compute_periodic_cycle_kelvin(
     initial_guess_fn: InitialGuessFunc,
     radiation_config: RadiationConfig,
     diffusion_config: DiffusionConfig,
-    wind_config: WindConfig | None = None,
-    advection_config: AdvectionConfig | None = None,
-    snow_config: SnowAlbedoConfig | None = None,
-    sensible_heat_config: SensibleHeatExchangeConfig | None = None,
-    latent_heat_config: LatentHeatExchangeConfig | None = None,
+    wind_config: WindConfig,
+    advection_config: AdvectionConfig,
+    snow_config: SnowAlbedoConfig,
+    sensible_heat_config: SensibleHeatExchangeConfig,
+    latent_heat_config: LatentHeatExchangeConfig,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[ModelState]]:
     """Solve for the periodic temperature cycle and return diagnostics.
 
@@ -574,9 +572,9 @@ def compute_periodic_cycle_kelvin(
             monthly_insolation = expand_latitude_field(monthly_insolation_lat, lon2d.shape[1])
 
             heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
-            snow_cfg = snow_config or SnowAlbedoConfig()
-            sensible_heat_cfg = sensible_heat_config or SensibleHeatExchangeConfig()
-            latent_heat_cfg = latent_heat_config or LatentHeatExchangeConfig()
+            snow_cfg = snow_config
+            sensible_heat_cfg = sensible_heat_config
+            latent_heat_cfg = latent_heat_config
             albedo_kwargs: dict[str, float] = {}
             land_mask = compute_land_mask(lon2d, lat2d)
 
@@ -611,30 +609,17 @@ def compute_periodic_cycle_kelvin(
                 atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
                 config=diffusion_config,
             )
-            wind_model: WindModel | None = None
-            if (
-                wind_config is not None
-                and wind_config.enabled
-                and radiation_config.include_atmosphere
-            ):
-                wind_model = WindModel(
-                    lon2d,
-                    lat2d,
-                    config=wind_config,
-                )
+            wind_model: WindModel = WindModel(
+                lon2d,
+                lat2d,
+                config=wind_config,
+            )
 
-            advection_operator: AdvectionOperator | None = None
-            if (
-                advection_config is not None
-                and advection_config.enabled
-                and radiation_config.include_atmosphere
-            ):
-                advection_operator = AdvectionOperator(
-                    lon2d,
-                    lat2d,
-                    config=advection_config,
-                )
-                
+            advection_operator: AdvectionOperator = AdvectionOperator(
+                lon2d,
+                lat2d,
+                config=advection_config,
+            )
             month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
             solver_cache = LinearSolveCache()
 
