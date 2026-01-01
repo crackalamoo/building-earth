@@ -14,20 +14,11 @@ The goal is an app that’s physically honest, first-principles, and emotionally
 ## Repository tour
 - `src/climate_sim/core/`: grid generation, solver infrastructure, and shared numerical utilities.
 - `src/climate_sim/data/`: static datasets, constants, and loaders for elevation and calendar information.
-- `src/climate_sim/physics/`: parameterization modules for radiation, diffusion, advection, sensible heat, and related processes.
+- `src/climate_sim/physics/`: parameterization modules for radiation, diffusion, advection, heat exchange, and related processes.
 - `src/climate_sim/runtime/`: command-line plumbing shared across entry points.
 - `src/climate_sim/plotting.py`: rendering helpers for global temperature and diagnostic plots.
 - `src/main.py`: interactive visualization driver for a single model configuration.
 - `src/scenario_compare.py`: CLI for contrasting physics toggles and producing anomaly outputs.
-- `tests/`: `pytest` suite focused on smoke-testing the plotting pipeline.
-
-## Models Implemented
-The following models have already been implemented:
-
-- `src/climate_sim/physics/advection.py`: Coriolis force.
-- `src/climate_sim/physics/diffusion.py`: Atmospheric and oceanic diffusion.
-- `src/climate_sim/physics/radiation.py`: Radiation with a solar constant and a single-layer atmosphere.
-- `src/climate_sim/physics/snow_albedo.py`: Increase albedo of land for freezing temperatures.
 
 All models are tied together in the main solver: `src/climate_sim/core/solver.py`.
 
@@ -55,14 +46,13 @@ uv run python -m scenario_compare --no-base-diffusion
 uv run pytest
 ```
 
-In general, when iterating, use a larger resolution (like 5 or 10 degrees) for local tests to keep runtime fast.
+In general, when iterating, use a larger resolution (like 5 degrees) for local tests to keep runtime fast.
 
 ## Coding guidelines
-- **Type hints everywhere**: all public functions and methods include precise type annotations. Prefer `numpy.typing.NDArray` when returning arrays.
+- **Type hints everywhere**: all public functions and methods include precise type annotations.
 - **Dataclass configs**: keep model configuration inputs grouped into frozen dataclasses (`RadiationConfig`, `DiffusionConfig`, etc.) and thread them through the solver. Extend these objects instead of proliferating kwargs.
 - **Vectorized math**: the solver assumes array-oriented operations. Avoid Python loops over grid points; leverage broadcasting and `numpy` utilities.
 
 ## Testing philosophy
-- Fast unit tests belong under `tests/` and must run headless (`matplotlib.use("Agg")`).
 - Expensive experiment scripts (`main.py`, `scenario_compare.py`) are exercised manually; keep them thin wrappers around tested utilities.
 - For now, focus on improving the core functionality rather than writing tests unless specifically instructed. The code is in an early stage, and still iterating too quickly for tests to be very useful.
