@@ -15,6 +15,7 @@ from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfi
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
+from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.runtime.cli import (
     add_boolean_flag,
@@ -213,6 +214,24 @@ def main() -> None:
         help_enable="Enable atmospheric advection in the experiment case",
         help_disable="Disable atmospheric advection in the experiment case (default)",
     )
+    add_boolean_flag(
+        parser,
+        dest="base_boundary_layer",
+        default=True,
+        enable_option="--base-boundary-layer",
+        disable_option="--no-base-boundary-layer",
+        help_enable="Enable boundary layer in the baseline case (default)",
+        help_disable="Disable boundary layer in the baseline case",
+    )
+    add_boolean_flag(
+        parser,
+        dest="experiment_boundary_layer",
+        default=True,
+        enable_option="--exp-boundary-layer",
+        disable_option="--no-exp-boundary-layer",
+        help_enable="Enable boundary layer in the experiment case (default)",
+        help_disable="Disable boundary layer in the experiment case",
+    )
     add_temperature_unit_argument(
         parser,
         help_text="Display anomalies in degrees Fahrenheit instead of Celsius",
@@ -260,6 +279,13 @@ def main() -> None:
         enabled=args.experiment_advection,
     )
 
+    base_boundary_layer = BoundaryLayerConfig(
+        enabled=args.base_boundary_layer,
+    )
+    exp_boundary_layer = BoundaryLayerConfig(
+        enabled=args.experiment_boundary_layer,
+    )
+
     base_model_config = ModelConfig(
         radiation=base_rad,
         diffusion=base_diff,
@@ -267,6 +293,7 @@ def main() -> None:
         snow=base_snow,
         sensible_heat=base_sensible_heat,
         latent_heat=base_latent_heat,
+        boundary_layer=base_boundary_layer,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.base_elliptical_orbit,
     )
@@ -277,6 +304,7 @@ def main() -> None:
         snow=exp_snow,
         sensible_heat=exp_sensible_heat,
         latent_heat=exp_latent_heat,
+        boundary_layer=exp_boundary_layer,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.experiment_elliptical_orbit,
     )

@@ -220,11 +220,12 @@ class LayeredDiffusionOperator:
 
     surface: DiffusionOperator
     atmosphere: DiffusionOperator
+    boundary_layer: DiffusionOperator | None = None
 
     @classmethod
     def disabled(cls, shape: tuple[int, int]) -> LayeredDiffusionOperator:
         disabled = DiffusionOperator.disabled(shape)
-        return cls(surface=disabled, atmosphere=disabled)
+        return cls(surface=disabled, atmosphere=disabled, boundary_layer=disabled)
 
 
 def _build_single_layer_operator(
@@ -365,6 +366,7 @@ def create_diffusion_operator(
     *,
     land_mask: np.ndarray | None = None,
     atmosphere_heat_capacity: float | None = None,
+    boundary_layer_heat_capacity: float | None = None,
     config: DiffusionConfig | None = None,
 ) -> LayeredDiffusionOperator:
     """Create diffusion operators for the surface ocean and atmosphere layers."""
@@ -417,7 +419,23 @@ def create_diffusion_operator(
         diffusivity_m2_s=atmosphere_diffusivity_m2_s,
     )
 
+    # Optionally build boundary layer operator with its own heat capacity
+    boundary_layer_operator = None
+    if boundary_layer_heat_capacity is not None:
+        boundary_layer_heat_capacity_field = np.full_like(
+            heat_capacity_field, boundary_layer_heat_capacity, dtype=float
+        )
+        boundary_layer_operator = _build_single_layer_operator(
+            lon2d,
+            lat2d,
+            boundary_layer_heat_capacity_field,
+            cell_area_field,
+            config=config,
+            diffusivity_m2_s=atmosphere_diffusivity_m2_s,
+        )
+
     return LayeredDiffusionOperator(
         surface=surface_operator,
         atmosphere=atmosphere_operator,
+        boundary_layer=boundary_layer_operator,
     )

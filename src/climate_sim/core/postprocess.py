@@ -46,19 +46,36 @@ def postprocess_periodic_cycle_results(
     monthly_T = np.array([state.temperature for state in monthly_states])
     temperature_2m_c: np.ndarray | None = None
     if monthly_T.ndim == 3:
+        # Single-layer (no atmosphere)
         monthly_surface_K = monthly_T
         layers_map = {"surface": monthly_surface_K - 273.15}
-    else:
+    elif monthly_T.shape[1] == 2:
+        # Two-layer (surface + atmosphere)
         monthly_surface_K = monthly_T[:, 0]
         monthly_atmosphere_K = monthly_T[:, 1]
         temperature_2m_c = compute_two_meter_temperature(
-            monthly_atmosphere_K,
+            None,
             monthly_surface_K,
         ) - 273.15
         layers_map = {
             "surface": monthly_surface_K - 273.15,
             "atmosphere": monthly_atmosphere_K - 273.15,
         }
+    elif monthly_T.shape[1] == 3:
+        # Three-layer (surface + boundary layer + atmosphere)
+        monthly_surface_K = monthly_T[:, 0]
+        monthly_boundary_K = monthly_T[:, 1]
+        monthly_atmosphere_K = monthly_T[:, 2]
+        # Compute 2m temperature using the standard function with lapse rate correction
+        temperature_2m_K = compute_two_meter_temperature(monthly_boundary_K, monthly_surface_K)
+        temperature_2m_c = temperature_2m_K - 273.15
+        layers_map = {
+            "surface": monthly_surface_K - 273.15,
+            "boundary_layer": monthly_boundary_K - 273.15,
+            "atmosphere": monthly_atmosphere_K - 273.15,
+        }
+    else:
+        raise ValueError(f"Unexpected temperature shape: {monthly_T.shape}")
 
     if temperature_2m_c is None:
         temperature_2m_c = layers_map["surface"].copy()

@@ -20,6 +20,7 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.plotting import (
     plot_layered_monthly_temperature_cycle,
@@ -95,6 +96,7 @@ def main() -> None:
     )
     advection_config = AdvectionConfig(enabled=args.advection)
     wind_config = WindConfig()
+    boundary_layer_config = BoundaryLayerConfig(enabled=args.boundary_layer)
 
     model_config = ModelConfig(
         radiation=radiation_config,
@@ -104,6 +106,7 @@ def main() -> None:
         snow=snow_config,
         sensible_heat=sensible_heat_config,
         latent_heat=latent_heat_config,
+        boundary_layer=boundary_layer_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )
@@ -630,15 +633,11 @@ def main() -> None:
             two_m_land = area_weighted_mean(atmosphere_2m_cycle[idx], land_weights)
             two_m_ocean = area_weighted_mean(atmosphere_2m_cycle[idx], ocean_weights)
             print(f"  2 m mean (land/ocean) [°C]: {two_m_land:.2f} / {two_m_ocean:.2f}")
-        else:
-            print("  2 m mean (land/ocean) [°C]: N/A (no atmosphere layer)")
 
         if atmosphere_cycle is not None:
             atm_land = area_weighted_mean(atmosphere_cycle[idx], land_weights)
             atm_ocean = area_weighted_mean(atmosphere_cycle[idx], ocean_weights)
             print(f"  Atmosphere mean (land/ocean) [°C]: {atm_land:.2f} / {atm_ocean:.2f}")
-        else:
-            print("  Atmosphere mean (land/ocean) [°C]: N/A (no atmosphere layer)")
 
         if wind_speed is not None:
             wind_land = area_weighted_mean(wind_speed[idx], land_weights)

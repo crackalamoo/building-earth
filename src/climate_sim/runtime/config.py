@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
+from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.physics.atmosphere.wind import WindConfig
 from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
@@ -28,6 +29,7 @@ class ModelConfig:
     latent_heat: LatentHeatExchangeConfig = field(
         default_factory=LatentHeatExchangeConfig
     )
+    boundary_layer: BoundaryLayerConfig = field(default_factory=BoundaryLayerConfig)
     solar_constant: float | None = None
     use_elliptical_orbit: bool = True
     ocean_heat_capacity: float | None = None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from climate_sim.data.constants import BOUNDARY_LAYER_HEIGHT_M
 STANDARD_LAPSE_RATE_K_PER_M = 6.5 / 1000.0
 
 
@@ -34,15 +35,15 @@ def adjust_temperature_by_elevation(
 
 
 def compute_two_meter_temperature(
-    atmosphere_K: np.ndarray | None,
+    boundary_layer_K: np.ndarray | None,
     surface_K: np.ndarray,
 ) -> np.ndarray:
     """Compute 2 m air temperature from available layers.
 
     Parameters
     ----------
-    atmosphere_K:
-        Atmosphere temperature in K, or None if unavailable.
+    boundary_layer_K:
+        Boundary layer temperature in K (represents mid-layer ~375m), or None if unavailable.
     surface_K:
         Surface temperature in K.
 
@@ -51,7 +52,14 @@ def compute_two_meter_temperature(
     numpy.ndarray
         2 m temperature in K.
     """
-    return surface_K.copy()
+    if boundary_layer_K is not None:
+        mid_layer_height_m = BOUNDARY_LAYER_HEIGHT_M / 2.0  # 375m
+        height_difference_m = mid_layer_height_m - 2.0  # 373m
+        lapse_correction_K = STANDARD_LAPSE_RATE_K_PER_M * height_difference_m
+        # Going down in altitude warms the air
+        return boundary_layer_K + lapse_correction_K
+    else:
+        return surface_K.copy()
 
 def log_law_map_wind_speed(
     wind_speed_ref_m_s: np.ndarray,

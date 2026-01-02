@@ -64,7 +64,6 @@ LAT_T = np.arange(-89.5, 90.5, 1.0)
 LON_T = np.arange(0.5, 360.5, 1.0)
 
 OUTFILE = PROC_DIR / "ref_climatology_1deg_1981-2010.nc"
-ATMOSPHERE_REFERENCE_HEIGHT_M = 5000.0
 
 
 # ----------------------------
