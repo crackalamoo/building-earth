@@ -102,7 +102,7 @@ def main() -> None:
     from climate_sim.physics.snow_albedo import SnowAlbedoConfig
     from climate_sim.physics.atmosphere.advection import AdvectionConfig
     from climate_sim.physics.atmosphere.wind import WindConfig
-    from climate_sim.core.solver import compute_periodic_cycle_results
+    from climate_sim.core.solver import solve_periodic_climate
     from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
     from climate_sim.runtime.config import ModelConfig
 
@@ -132,7 +132,7 @@ def main() -> None:
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )
-    lon2d, lat2d, layers = compute_periodic_cycle_results(
+    lon2d, lat2d, layers = solve_periodic_climate(
         resolution_deg=args.resolution,
         model_config=model_config,
         return_layer_map=True,

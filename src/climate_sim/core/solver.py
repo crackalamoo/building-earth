@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 from typing import Callable, Dict
 
 import numpy as np
@@ -10,46 +9,11 @@ from numpy.typing import NDArray
 from scipy import sparse
 
 import climate_sim.physics.radiation as radiation
-from climate_sim.physics.atmosphere.wind import (
-    WindConfig,
-    WindModel,
-)
-from climate_sim.physics.atmosphere.advection import (
-    AdvectionConfig,
-    AdvectionOperator,
-)
-from climate_sim.physics.diffusion import (
-    DiffusionConfig,
-    LayeredDiffusionOperator,
-    create_diffusion_operator,
-)
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.physics.snow_albedo import SnowAlbedoConfig, AlbedoModel
-from climate_sim.physics.sensible_heat_exchange import (
-    SensibleHeatExchangeConfig,
-    SensibleHeatExchangeModel,
-)
-from climate_sim.physics.latent_heat_exchange import (
-    LatentHeatExchangeConfig,
-    LatentHeatExchangeModel,
-)
-from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
-from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
-from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.physics.solar import (
-    compute_monthly_insolation_field,
     compute_monthly_declinations,
 )
 from climate_sim.physics.humidity import compute_humidity_q
-from climate_sim.data.landmask import (
-    compute_albedo_field,
-    compute_heat_capacity_field,
-    compute_land_mask,
-)
-from climate_sim.data.elevation import (
-    compute_cell_elevation,
-    compute_cell_roughness_length,
-)
 from climate_sim.core.timing import time_block, get_profiler, reset_profiler
 from climate_sim.core.math_core import (
     LinearSolveCache,
@@ -57,16 +21,15 @@ from climate_sim.core.math_core import (
     get_identity_matrix,
     fingerprint_csc_matrix,
     get_factorized_solver,
-    spherical_cell_area
 )
 from climate_sim.core.state import (
     ModelState,
     select_wind_temperature,
 )
 from climate_sim.core.postprocess import postprocess_periodic_cycle_results
+from climate_sim.core.rhs_builder import create_rhs_functions, RhsFn, RhsDerivativeFn, RhsBuildInputs
+from climate_sim.core.operators import SurfaceHeatCapacityContext
 from climate_sim.runtime.config import ModelConfig
-from climate_sim.data.constants import ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K, R_EARTH_METERS
-import os
 
 NEWTON_STEP_TOLERANCE_K = 1.0
 PERIODIC_FIXED_POINT_TOLERANCE_K = 0.5
@@ -77,55 +40,7 @@ NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
 
 
-@dataclass
-class Linearization:
-    diag: np.ndarray
-    cross: np.ndarray | None = None
-    surface_diffusion_matrix: sparse.csc_matrix | None = None
-    atmosphere_diffusion_matrix: sparse.csc_matrix | None = None
-    atmosphere_advection_matrix: sparse.csc_matrix | None = None
-    boundary_layer_diffusion_matrix: sparse.csc_matrix | None = None
-    boundary_layer_advection_matrix: sparse.csc_matrix | None = None
-    solver_fingerprint: str | None = None
-
-
-@dataclass(frozen=True)
-class SurfaceHeatCapacityContext:
-    """Container for surface-layer heat-capacity metadata."""
-
-    lon2d: np.ndarray
-    lat2d: np.ndarray
-    albedo_model: AlbedoModel
-    wind_model: WindModel | None
-    advection_operator: AdvectionOperator | None
-    base_albedo: np.ndarray
-    land_mask: np.ndarray
-    base_C_land: float
-    base_C_ocean: float
-    baseline_capacity: np.ndarray
-
-
 type FloatArray = NDArray[np.floating]
-
-type RhsFn = Callable[[ModelState, FloatArray, float | FloatArray], FloatArray]
-type RhsDerivativeFn = Callable[[ModelState, FloatArray], Linearization]
-
-@dataclass(frozen=True, slots=True)
-class RhsBuildInputs:
-    """Structured inputs for RHS factory functions."""
-    heat_capacity_field: FloatArray
-    diffusion_operator: LayeredDiffusionOperator
-    radiation_config: RadiationConfig
-    land_mask: FloatArray
-    roughness_length: FloatArray
-    topographic_elevation: FloatArray
-    sensible_heat_cfg: SensibleHeatExchangeConfig
-    latent_heat_cfg: LatentHeatExchangeConfig
-    boundary_layer_cfg: BoundaryLayerConfig
-    wind_model: WindModel | None
-    advection_operator: AdvectionOperator | None
-    lon2d: FloatArray
-    lat2d: FloatArray
 
 type RhsFactory = Callable[[RhsBuildInputs], tuple[RhsFn, RhsDerivativeFn]]
 type InitialGuessFn = Callable[[FloatArray, FloatArray, RadiationConfig, FloatArray], FloatArray]
@@ -463,19 +378,23 @@ def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | No
     return alpha
 
 
-def find_periodic_temperature(
+def find_periodic_climate_cycle(
     initial_state: ModelState,
     monthly_insolation: np.ndarray,
     month_durations: np.ndarray,
     rhs_fn: RhsFn,
-    rhs_temperature_derivative_fn: RhsDerivativeFn,
+    rhs_derivative_fn: RhsDerivativeFn,
     surface_context: SurfaceHeatCapacityContext,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
 ) -> list[ModelState]:
-    """Solve P(T) = T for the annual map using Anderson acceleration."""
+    """Solve for the periodic annual climate cycle using Anderson acceleration.
 
-    with time_block("find_periodic_temperature"):
+    Finds the fixed point P(state) = state where P is the year-forward
+    evolution operator, using Anderson acceleration for faster convergence.
+    """
+
+    with time_block("find_periodic_climate_cycle"):
         state = initial_state
         temp = initial_state.temperature
         state.temperature = np.maximum(temp, temperature_floor)
@@ -492,7 +411,7 @@ def find_periodic_temperature(
                     monthly_insolation,
                     month_durations,
                     rhs_fn=rhs_fn,
-                    rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
+                    rhs_temperature_derivative_fn=rhs_derivative_fn,
                     temperature_floor=temperature_floor,
                     solver_cache=solver_cache,
                     surface_context=surface_context,
@@ -553,661 +472,113 @@ def find_periodic_temperature(
             f"{FIXED_POINT_MAX_ITERS} iterations (last residual {residual_max:.3e} K)"
         )
 
-def solve_periodic_cycle_for_albedo(
-    *,
-    initial_state: ModelState | None,
-    surface_context: SurfaceHeatCapacityContext,
-    heat_capacity_field: np.ndarray,
-    monthly_insolation: np.ndarray,
-    month_durations: np.ndarray,
-    diffusion_operator: LayeredDiffusionOperator,
-    radiation_config: RadiationConfig,
-    wind_model: WindModel | None,
-    rhs_factory: RhsFactory,
-    initial_guess_fn: InitialGuessFn,
-    temperature_floor: float,
-    solver_cache: LinearSolveCache,
-    land_mask: np.ndarray,
-    roughness_length: np.ndarray,
-    topographic_elevation: np.ndarray,
-    sensible_heat_cfg: SensibleHeatExchangeConfig,
-    latent_heat_cfg: LatentHeatExchangeConfig,
-    boundary_layer_cfg: BoundaryLayerConfig,
-) -> list[ModelState]:
-    """Compute the periodic solution and monthly mean temperatures for a given albedo field."""
-
-    with time_block("solve_periodic_cycle_for_albedo"):
-        base_albedo_field = surface_context.base_albedo
-        wind_model = surface_context.wind_model
-        advection_operator = surface_context.advection_operator
-        
-        if initial_state is None:
-            with time_block("initial_guess"):
-                guess = initial_guess_fn(
-                    monthly_insolation,
-                    base_albedo_field,
-                    radiation_config,
-                    land_mask,
-                )
-
-            state_init = ModelState(
-                temperature=guess,
-                albedo_field=base_albedo_field,
-                wind_field=None,
-                humidity_field=None,
-            )
-        else:
-            state_init = initial_state
-
-        with time_block("rhs_factory"):
-            inputs = RhsBuildInputs(
-                heat_capacity_field=heat_capacity_field,
-                diffusion_operator=diffusion_operator,
-                radiation_config=radiation_config,
-                land_mask=land_mask,
-                roughness_length=roughness_length,
-                topographic_elevation=topographic_elevation,
-                sensible_heat_cfg=sensible_heat_cfg,
-                latent_heat_cfg=latent_heat_cfg,
-                boundary_layer_cfg=boundary_layer_cfg,
-                wind_model=wind_model,
-                advection_operator=advection_operator,
-                lon2d=surface_context.lon2d,
-                lat2d=surface_context.lat2d,
-            )
-            rhs_fn, rhs_temperature_derivative_fn = rhs_factory(inputs)
-            
-    
-
-    annual_periodic_states = find_periodic_temperature(
-        state_init,
-        monthly_insolation,
-        month_durations,
-        rhs_fn=rhs_fn,
-        rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
-        surface_context=surface_context,
-        temperature_floor=temperature_floor,
-        solver_cache=solver_cache,
-    )
-
-    return annual_periodic_states
-
-def compute_periodic_cycle_kelvin(
-    *,
-    resolution_deg: float,
-    monthly_insolation_lat_fn: MonthlyInsolationLatFn,
-    heat_capacity_field_fn: HeatCapacityFieldFn,
-    rhs_factory: RhsFactory,
-    initial_guess_fn: InitialGuessFn,
-    radiation_config: RadiationConfig,
-    diffusion_config: DiffusionConfig,
-    wind_config: WindConfig,
-    advection_config: AdvectionConfig,
-    snow_config: SnowAlbedoConfig,
-    sensible_heat_config: SensibleHeatExchangeConfig,
-    latent_heat_config: LatentHeatExchangeConfig,
-    boundary_layer_config: BoundaryLayerConfig,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[ModelState]]:
-    """Solve for the periodic temperature cycle and return diagnostics.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray, np.ndarray, list[ModelState]]
-        Longitude grid, latitude grid, topographic elevation (m), and the
-        monthly model states expressed in Kelvin.
-    """
-    with time_block("compute_periodic_cycle_kelvin"):
-        with time_block("setup_grids_and_fields"):
-            lon2d, lat2d = create_lat_lon_grid(resolution_deg)
-
-            monthly_insolation_lat = monthly_insolation_lat_fn(lat2d)
-            monthly_insolation = expand_latitude_field(monthly_insolation_lat, lon2d.shape[1])
-
-            heat_capacity_field = heat_capacity_field_fn(lon2d, lat2d)
-            snow_cfg = snow_config
-            sensible_heat_cfg = sensible_heat_config
-            latent_heat_cfg = latent_heat_config
-            boundary_layer_cfg = boundary_layer_config
-            albedo_kwargs: dict[str, float] = {}
-            land_mask = compute_land_mask(lon2d, lat2d)
-
-            albedo_model = AlbedoModel(
-                lat2d,
-                lon2d,
-                config=snow_cfg,
-                land_mask=land_mask,
-            )
-            if snow_cfg.enabled:
-                albedo_kwargs = {"land_albedo": 0.18, "ocean_albedo": 0.06}
-
-            base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
-
-            roughness_length = compute_cell_roughness_length(
-                lon2d,
-                lat2d,
-                land_mask=land_mask,
-            )
-
-            if sensible_heat_cfg.include_lapse_rate_elevation:
-                topographic_elevation = compute_cell_elevation(lon2d, lat2d)
-                topographic_elevation = np.maximum(topographic_elevation, 0.0)
-            else:
-                topographic_elevation = np.zeros_like(lon2d, dtype=float)
-
-            # Pass boundary layer heat capacity if boundary layer is enabled
-            bl_heat_cap = None
-            if boundary_layer_config.enabled:
-                bl_heat_cap = radiation_config.boundary_layer_heat_capacity
-
-            diffusion_operator = create_diffusion_operator(
-                lon2d,
-                lat2d,
-                heat_capacity_field,
-                land_mask=land_mask,
-                atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
-                boundary_layer_heat_capacity=bl_heat_cap,
-                config=diffusion_config,
-            )
-            wind_model: WindModel = WindModel(
-                lon2d,
-                lat2d,
-                config=wind_config,
-            )
-
-            advection_operator: AdvectionOperator = AdvectionOperator(
-                lon2d,
-                lat2d,
-                config=advection_config,
-            )
-            month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
-            solver_cache = LinearSolveCache()
-
-        previous_periodic: ModelState | None = None
-        monthly: list[ModelState] | None = None
-
-        # Initialize humidity fields from radiative equilibrium temperature guess
-        with time_block("initialize_humidity_fields"):
-            monthly_declinations = compute_monthly_declinations()
-            initial_guess_temp = initial_guess_fn(
-                monthly_insolation,
-                base_albedo_field,
-                radiation_config,
-                land_mask,
-            )
-
-            current_humidity_fields: list[np.ndarray] = []
-            for month_idx in range(12):
-                # Extract surface temperature for this month (always use layer 0)
-                temp_for_month = initial_guess_temp[0]
-                
-                # Compute humidity for this month
-                humidity = compute_humidity_q(
-                    lat2d,
-                    temp_for_month,
-                    monthly_declinations[month_idx],
-                    land_mask=land_mask,
-                )
-                current_humidity_fields.append(humidity)
-
-        land_values = heat_capacity_field[land_mask]
-        if land_values.size == 0:
-            base_C_land = float(np.mean(heat_capacity_field))
-        else:
-            base_C_land = float(np.mean(land_values))
-        ocean_mask = ~land_mask
-        ocean_values = heat_capacity_field[ocean_mask]
-        if ocean_values.size == 0:
-            base_C_ocean = base_C_land
-        else:
-            base_C_ocean = float(np.mean(ocean_values))
-
-        baseline_capacity = np.where(land_mask, base_C_land, base_C_ocean).astype(float)
-
-        surface_context = SurfaceHeatCapacityContext(
-            lat2d=lat2d,
-            lon2d=lon2d,
-            albedo_model=albedo_model,
-            wind_model=wind_model,
-            advection_operator=advection_operator,
-            base_albedo=base_albedo_field,
-            land_mask=land_mask,
-            base_C_land=base_C_land,
-            base_C_ocean=base_C_ocean,
-            baseline_capacity=baseline_capacity,
-        )
-        
-        monthly = solve_periodic_cycle_for_albedo(
-            initial_state=previous_periodic,
-            surface_context=surface_context,
-            heat_capacity_field=heat_capacity_field,
-            monthly_insolation=monthly_insolation,
-            month_durations=month_durations,
-            diffusion_operator=diffusion_operator,
-            radiation_config=radiation_config,
-            wind_model=wind_model,
-            rhs_factory=rhs_factory,
-            initial_guess_fn=initial_guess_fn,
-            temperature_floor=radiation_config.temperature_floor,
-            solver_cache=solver_cache,
-            land_mask=land_mask,
-            roughness_length=roughness_length,
-            topographic_elevation=topographic_elevation,
-            sensible_heat_cfg=sensible_heat_cfg,
-            latent_heat_cfg=latent_heat_cfg,
-            boundary_layer_cfg=boundary_layer_cfg,
-        )
-
-        if wind_model is not None and wind_model.enabled:
-            with time_block("update_wind_fields"):
-                new_wind_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-                new_geostrophic_fields: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-                for idx, month_state in enumerate(monthly):
-                    wind_temperature = select_wind_temperature(month_state.temperature)
-                    wind_field = month_state.wind_field or wind_model.wind_field(wind_temperature, declination_rad=monthly_declinations[idx])
-                    geostrophic_field = wind_model.wind_field(wind_temperature, declination_rad=monthly_declinations[idx], ekman_drag=False)
-
-                    new_wind_fields.append(wind_field)
-                    new_geostrophic_fields.append(geostrophic_field)
-                    monthly[idx] = ModelState(
-                        temperature=month_state.temperature,
-                        albedo_field=base_albedo_field,
-                        wind_field=wind_field,
-                        humidity_field=month_state.humidity_field,
-                    )
-
-        return lon2d, lat2d, topographic_elevation, monthly
-
-
-def compute_periodic_cycle_results(
+def solve_periodic_climate(
     resolution_deg: float = 1.0,
     *,
     model_config: ModelConfig,
     return_layer_map: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
-    """Produce the periodic cycle fields in Celsius along with the converged albedo layer.
+    """Solve for the annual periodic climate cycle.
 
-    The solver consumes a fully-specified :class:`~climate_sim.runtime.config.ModelConfig`
-    so that each feature toggle lives inside its own dataclass instead of being encoded
-    as ``None`` versus instantiated configs.
+    This is the main entry point for running the climate model. It handles
+    the complete workflow: building operators from configuration, solving
+    for the periodic state, and post-processing results.
 
-    Returns the lon/lat grids and either the surface temperature field (default) or a
-    dictionary of layer outputs when ``return_layer_map`` is True.
+    Parameters
+    ----------
+    resolution_deg : float, default=1.0
+        Grid resolution in degrees.
+    model_config : ModelConfig
+        Complete model configuration.
+    return_layer_map : bool, default=False
+        If True, return temperature fields for all layers. If False, return
+        only surface temperature.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray] or tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]
+        Longitude grid, latitude grid, and either:
+        - Surface temperature field in Celsius (if return_layer_map=False)
+        - Dictionary mapping layer names to temperature fields (if return_layer_map=True)
     """
-
-    def monthly_insolation_lat_fn(lat2d: np.ndarray) -> np.ndarray:
-        return compute_monthly_insolation_field(
-            lat2d,
-            solar_constant=model_config.solar_constant,
-            use_elliptical_orbit=model_config.use_elliptical_orbit,
-        )
-
-    def heat_capacity_field_fn(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
-        return compute_heat_capacity_field(
-            lon2d,
-            lat2d,
-            ocean_heat_capacity=model_config.ocean_heat_capacity,
-            land_heat_capacity=model_config.land_heat_capacity,
-        )
-
-    resolved_radiation = model_config.radiation
-    resolved_diffusion = model_config.diffusion
-    resolved_wind = model_config.wind
-    resolved_advection = model_config.advection
-    resolved_snow = model_config.snow
-    sensible_heat_cfg = model_config.sensible_heat
-    latent_heat_cfg = model_config.latent_heat
-    boundary_layer_cfg = model_config.boundary_layer
-
-    # Update radiation config with boundary layer heat capacities if enabled
-    if boundary_layer_cfg.enabled:
-        if not resolved_radiation.include_atmosphere:
-            raise ValueError("Boundary layer requires include_atmosphere=True in radiation config")
-        resolved_radiation = replace(
-            resolved_radiation,
-            atmosphere_heat_capacity=ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,  # Use 6km atmosphere
-            boundary_layer_heat_capacity=boundary_layer_cfg.heat_capacity,
-            boundary_layer_emissivity=boundary_layer_cfg.emissivity,
-        )
-    # else: keep default values (use legacy atmosphere heat capacity for 2-layer mode)
-
-    def rhs_factory(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
-        surface_diffusion_diag: np.ndarray | None = None
-        surface_matrix = None
-        if inputs.diffusion_operator.surface.enabled:
-            surface_diffusion_diag, surface_offdiag = (
-                inputs.diffusion_operator.surface.linearised_tendency()
-            )
-            if surface_offdiag is not None and surface_offdiag.nnz > 0:
-                surface_matrix = (
-                    surface_offdiag
-                    if sparse.isspmatrix_csc(surface_offdiag)
-                    else surface_offdiag.tocsc()
-                )
-
-        atmosphere_diffusion_diag: np.ndarray | None = None
-        atmosphere_matrix = None
-        if inputs.radiation_config.include_atmosphere and inputs.diffusion_operator.atmosphere.enabled:
-            atmosphere_diffusion_diag, atmosphere_offdiag = (
-                inputs.diffusion_operator.atmosphere.linearised_tendency()
-            )
-            if atmosphere_offdiag is not None and atmosphere_offdiag.nnz > 0:
-                atmosphere_matrix = (
-                    atmosphere_offdiag
-                    if sparse.isspmatrix_csc(atmosphere_offdiag)
-                    else atmosphere_offdiag.tocsc()
-                )
-
-        boundary_layer_diffusion_diag: np.ndarray | None = None
-        boundary_layer_matrix = None
-        if inputs.diffusion_operator.boundary_layer is not None and inputs.diffusion_operator.boundary_layer.enabled:
-            boundary_layer_diffusion_diag, boundary_layer_offdiag = (
-                inputs.diffusion_operator.boundary_layer.linearised_tendency()
-            )
-            if boundary_layer_offdiag is not None and boundary_layer_offdiag.nnz > 0:
-                boundary_layer_matrix = (
-                    boundary_layer_offdiag
-                    if sparse.isspmatrix_csc(boundary_layer_offdiag)
-                    else boundary_layer_offdiag.tocsc()
-                )
-
-        sensible_heat_model: SensibleHeatExchangeModel | None = None
-        if inputs.radiation_config.include_atmosphere and inputs.sensible_heat_cfg.enabled:
-            sensible_heat_model = SensibleHeatExchangeModel(
-                land_mask=inputs.land_mask,
-                surface_heat_capacity_J_m2_K=inputs.heat_capacity_field,
-                atmosphere_heat_capacity_J_m2_K=inputs.radiation_config.atmosphere_heat_capacity,
-                wind_model=inputs.wind_model,
-                config=inputs.sensible_heat_cfg,
-                boundary_layer_heat_capacity_J_m2_K=(
-                    inputs.radiation_config.boundary_layer_heat_capacity if inputs.boundary_layer_cfg.enabled else None
-                ),
-            )
-
-        latent_heat_model: LatentHeatExchangeModel | None = None
-        if inputs.radiation_config.include_atmosphere and inputs.latent_heat_cfg.enabled:
-            latent_heat_model = LatentHeatExchangeModel(
-                land_mask=inputs.land_mask,
-                surface_heat_capacity_J_m2_K=inputs.heat_capacity_field,
-                atmosphere_heat_capacity_J_m2_K=inputs.radiation_config.atmosphere_heat_capacity,
-                wind_model=inputs.wind_model,
-                config=inputs.latent_heat_cfg,
-                boundary_layer_heat_capacity_J_m2_K=(
-                    inputs.radiation_config.boundary_layer_heat_capacity if inputs.boundary_layer_cfg.enabled else None
-                ),
-            )
-
-
-        def rhs(state: ModelState, insolation: np.ndarray, declination_rad: float | np.ndarray) -> np.ndarray:
-            log_radiation = os.environ.get("LOG_RADIATION", "0") == "1"
-
-            # Compute cell areas for area-weighted diagnostics
-            cell_areas = None
-            if log_radiation:
-                cell_areas = spherical_cell_area(
-                    inputs.lon2d,
-                    inputs.lat2d,
-                    earth_radius_m=R_EARTH_METERS,
-                )
-
-            radiative = radiation.radiative_balance_rhs(
-                state.temperature,
-                insolation,
-                heat_capacity_field=inputs.heat_capacity_field,
-                albedo_field=state.albedo_field,
-                config=inputs.radiation_config,
-                land_mask=inputs.land_mask,
-                humidity_q=state.humidity_field,
-                log_diagnostics=log_radiation,
-                cell_area_m2=cell_areas,
-            )
-            if inputs.radiation_config.include_atmosphere:
-                radiative = radiative.copy()
-                nlayers = state.temperature.shape[0]
-                surface_temperature = state.temperature[0]
-                wind_speed_ref = state.wind_field[2] if state.wind_field is not None else None
-                humidity_field = state.humidity_field
-
-                if inputs.diffusion_operator.surface.enabled:
-                    radiative[0] += inputs.diffusion_operator.surface.tendency(surface_temperature)
-
-                if nlayers == 2:
-                    # Two-layer system
-                    atmosphere_temperature = state.temperature[1]
-
-                    if inputs.diffusion_operator.atmosphere.enabled:
-                        radiative[1] += inputs.diffusion_operator.atmosphere.tendency(atmosphere_temperature)
-
-                    if inputs.advection_operator is not None and state.wind_field is not None:
-                        wind_u, wind_v, _ = state.wind_field
-                        advection_tendency = inputs.advection_operator.tendency(
-                            atmosphere_temperature, wind_u, wind_v
-                        )
-                        radiative[1] += advection_tendency
-
-                    if sensible_heat_model is not None:
-                        tendencies = sensible_heat_model.compute_tendencies(
-                            surface_temperature_K=surface_temperature,
-                            atmosphere_temperature_K=atmosphere_temperature,
-                            wind_speed_reference_m_s=wind_speed_ref,
-                            declination_rad=declination_rad,
-                        )
-                        assert isinstance(tendencies, tuple)
-                        assert len(tendencies) == 2
-                        surface_tendency, atmosphere_tendency = tendencies
-                        radiative[0] += surface_tendency
-                        radiative[1] += atmosphere_tendency
-
-                    if humidity_field is not None and latent_heat_model is not None:
-                        tendencies = latent_heat_model.compute_tendencies(
-                            surface_temperature_K=surface_temperature,
-                            atmosphere_temperature_K=atmosphere_temperature,
-                            humidity_q=humidity_field,
-                            wind_speed_reference_m_s=wind_speed_ref,
-                            declination_rad=declination_rad,
-                        )
-                        assert isinstance(tendencies, tuple)
-                        assert len(tendencies) == 2
-                        surface_tendency, atmosphere_tendency = tendencies
-                        radiative[0] += surface_tendency
-                        radiative[1] += atmosphere_tendency
-
-                elif nlayers == 3:
-                    # Three-layer system
-                    boundary_temperature = state.temperature[1]
-                    atmosphere_temperature = state.temperature[2]
-
-                    if inputs.diffusion_operator.boundary_layer is not None and inputs.diffusion_operator.boundary_layer.enabled:
-                        radiative[1] += inputs.diffusion_operator.boundary_layer.tendency(boundary_temperature)
-                    if inputs.diffusion_operator.atmosphere.enabled:
-                        radiative[2] += inputs.diffusion_operator.atmosphere.tendency(atmosphere_temperature)
-
-                    # Apply advection to both layers
-                    if inputs.advection_operator is not None and state.wind_field is not None:
-                        wind_u, wind_v, _ = state.wind_field
-                        advection_boundary = inputs.advection_operator.tendency(
-                            boundary_temperature, wind_u, wind_v
-                        )
-                        advection_atmosphere = inputs.advection_operator.tendency(
-                            atmosphere_temperature, wind_u, wind_v
-                        )
-                        radiative[1] += advection_boundary
-                        radiative[2] += advection_atmosphere
-
-                    if sensible_heat_model is not None:
-                        tendencies = sensible_heat_model.compute_tendencies(
-                            surface_temperature_K=surface_temperature,
-                            atmosphere_temperature_K=atmosphere_temperature,
-                            wind_speed_reference_m_s=wind_speed_ref,
-                            declination_rad=declination_rad,
-                            boundary_layer_temperature_K=boundary_temperature,
-                            log_diagnostics=log_radiation,
-                            cell_area_m2=cell_areas,
-                        )
-                        assert isinstance(tendencies, tuple)
-                        assert len(tendencies) == 3
-                        surface_tendency, boundary_tendency, atmosphere_tendency = tendencies
-                        radiative[0] += surface_tendency
-                        radiative[1] += boundary_tendency
-                        radiative[2] += atmosphere_tendency
-
-                    if humidity_field is not None and latent_heat_model is not None:
-                        tendencies = latent_heat_model.compute_tendencies(
-                            surface_temperature_K=surface_temperature,
-                            atmosphere_temperature_K=atmosphere_temperature,
-                            humidity_q=humidity_field,
-                            wind_speed_reference_m_s=wind_speed_ref,
-                            declination_rad=declination_rad,
-                            boundary_layer_temperature_K=boundary_temperature,
-                        )
-                        assert isinstance(tendencies, tuple)
-                        assert len(tendencies) == 3
-                        surface_tendency, boundary_tendency, atmosphere_tendency = tendencies
-                        radiative[0] += surface_tendency
-                        radiative[1] += boundary_tendency
-                        radiative[2] += atmosphere_tendency
-
-                return radiative
-            if inputs.diffusion_operator.surface.enabled:
-                radiative = radiative + inputs.diffusion_operator.surface.tendency(state.temperature)
-            return radiative
-
-        def rhs_derivative(state: ModelState, insolation: np.ndarray) -> Linearization:
-            del insolation
-            if inputs.radiation_config.include_atmosphere:
-                radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
-                    state.temperature,
-                    heat_capacity_field=inputs.heat_capacity_field,
-                    config=inputs.radiation_config,
-                    land_mask=inputs.land_mask,
-                    humidity_q=state.humidity_field,
-                )
-                assert isinstance(radiative_derivative, tuple)
-                radiative_diag, cross = radiative_derivative
-                diag = radiative_diag.copy()
-                nlayers = state.temperature.shape[0]
-
-                if surface_diffusion_diag is not None:
-                    diag[0] = diag[0] + surface_diffusion_diag
-
-                if nlayers == 2:
-                    # 2-layer: atmosphere is layer 1
-                    if atmosphere_diffusion_diag is not None:
-                        diag[1] = diag[1] + atmosphere_diffusion_diag
-                elif nlayers == 3:
-                    # 3-layer: boundary is layer 1, atmosphere is layer 2
-                    if boundary_layer_diffusion_diag is not None:
-                        diag[1] = diag[1] + boundary_layer_diffusion_diag
-                    if atmosphere_diffusion_diag is not None:
-                        diag[2] = diag[2] + atmosphere_diffusion_diag
-
-                # Compute advection Jacobians if enabled
-                atmosphere_advection_matrix = None
-                boundary_layer_advection_matrix = None
-                if inputs.advection_operator is not None and state.wind_field is not None:
-                    wind_u, wind_v, _ = state.wind_field
-                    _, advection_matrix_csr = inputs.advection_operator.linearised_tendency(wind_u, wind_v)
-                    if advection_matrix_csr is not None:
-                        advection_matrix_converted = (
-                            advection_matrix_csr
-                            if sparse.isspmatrix_csc(advection_matrix_csr)
-                            else advection_matrix_csr.tocsc()
-                        )
-                        if nlayers == 3:
-                            # Both boundary and atmosphere get advection
-                            boundary_layer_advection_matrix = advection_matrix_converted
-                            atmosphere_advection_matrix = advection_matrix_converted
-                        else:
-                            # 2-layer: only atmosphere gets advection
-                            atmosphere_advection_matrix = advection_matrix_converted
-
-                # Compute sensible heat exchange Jacobian if enabled
-                if sensible_heat_model is not None:
-                    if nlayers == 3:
-                        sh_diag, sh_cross = sensible_heat_model.compute_jacobian(
-                            state.temperature[0],
-                            state.temperature[2],
-                            wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                            declination_rad=None,
-                            boundary_layer_temperature_K=state.temperature[1],
-                        )
-                    elif nlayers == 2:
-                        sh_diag, sh_cross = sensible_heat_model.compute_jacobian(
-                            state.temperature[0],
-                            state.temperature[1],
-                            wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                            declination_rad=None,
-                        )
-                    else:
-                        assert False, "Must have atmosphere for sensible heat exchange"
-                    # Add sensible heat directly to diagonal and cross terms
-                    diag = diag + sh_diag
-                    if cross is not None:
-                        cross = cross + sh_cross
-                    else:
-                        cross = sh_cross
-
-                return Linearization(
-                    diag=diag,
-                    cross=cross,
-                    surface_diffusion_matrix=surface_matrix,
-                    atmosphere_diffusion_matrix=atmosphere_matrix,
-                    atmosphere_advection_matrix=atmosphere_advection_matrix,
-                    boundary_layer_diffusion_matrix=boundary_layer_matrix,
-                    boundary_layer_advection_matrix=boundary_layer_advection_matrix,
-                )
-            radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
-                state.temperature,
-                heat_capacity_field=inputs.heat_capacity_field,
-                config=inputs.radiation_config,
-                land_mask=inputs.land_mask,
-                humidity_q=state.humidity_field,
-            )
-            assert isinstance(radiative_derivative, np.ndarray)
-            diag = radiative_derivative.copy()
-            if surface_diffusion_diag is not None:
-                diag = diag + surface_diffusion_diag
-            return Linearization(diag=diag, surface_diffusion_matrix=surface_matrix)
-
-        return rhs, rhs_derivative
-
-    def initial_guess_fn(
-        monthly_insolation: np.ndarray,
-        albedo_field: np.ndarray,
-        config: RadiationConfig,
-        land_mask: np.ndarray,
-    ) -> np.ndarray:
-        return radiation.radiative_equilibrium_initial_guess(
-            monthly_insolation,
-            albedo_field=albedo_field,
-            config=config,
-            land_mask=land_mask,
-        )
+    from climate_sim.core.operators import build_model_operators
 
     reset_profiler()
-    
-    lon2d, lat2d, topographic_elevation, monthly_states = compute_periodic_cycle_kelvin(
-        resolution_deg=resolution_deg,
-        monthly_insolation_lat_fn=monthly_insolation_lat_fn,
-        heat_capacity_field_fn=heat_capacity_field_fn,
-        rhs_factory=rhs_factory,
-        initial_guess_fn=initial_guess_fn,
-        radiation_config=resolved_radiation,
-        diffusion_config=resolved_diffusion,
-        wind_config=resolved_wind,
-        advection_config=resolved_advection,
-        snow_config=resolved_snow,
-        sensible_heat_config=sensible_heat_cfg,
-        latent_heat_config=latent_heat_cfg,
-        boundary_layer_config=boundary_layer_cfg,
+
+    # Build all operators and grids from configuration
+    with time_block("build_operators"):
+        operators = build_model_operators(resolution_deg, model_config)
+
+    # Build RHS functions from operators
+    with time_block("build_rhs"):
+        rhs_inputs = RhsBuildInputs(
+            heat_capacity_field=operators.heat_capacity_field,
+            diffusion_operator=operators.diffusion_operator,
+            radiation_config=operators.radiation_config,
+            land_mask=operators.land_mask,
+            roughness_length=operators.roughness_length,
+            topographic_elevation=operators.topographic_elevation,
+            sensible_heat_cfg=operators.sensible_heat_cfg,
+            latent_heat_cfg=operators.latent_heat_cfg,
+            boundary_layer_cfg=operators.boundary_layer_cfg,
+            wind_model=operators.wind_model,
+            advection_operator=operators.advection_operator,
+            lon2d=operators.lon2d,
+            lat2d=operators.lat2d,
+        )
+        rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
+
+    # Create initial guess using radiative equilibrium
+    with time_block("initial_guess"):
+        initial_temp_guess = radiation.radiative_equilibrium_initial_guess(
+            operators.monthly_insolation,
+            albedo_field=operators.base_albedo_field,
+            config=operators.radiation_config,
+            land_mask=operators.land_mask,
+        )
+        initial_state = ModelState(
+            temperature=initial_temp_guess,
+            albedo_field=operators.base_albedo_field,
+            wind_field=None,
+            humidity_field=None,
+        )
+
+    # Solve for periodic cycle
+    monthly_states = find_periodic_climate_cycle(
+        initial_state=initial_state,
+        monthly_insolation=operators.monthly_insolation,
+        month_durations=operators.month_durations,
+        rhs_fn=rhs_fn,
+        rhs_derivative_fn=rhs_derivative_fn,
+        surface_context=operators.surface_context,
+        temperature_floor=operators.radiation_config.temperature_floor,
+        solver_cache=operators.solver_cache,
     )
-    
+
+    # Update wind fields if wind model is enabled
+    if operators.wind_model is not None and operators.wind_model.enabled:
+        with time_block("update_wind_fields"):
+            monthly_declinations = compute_monthly_declinations()
+            for idx, month_state in enumerate(monthly_states):
+                wind_temperature = select_wind_temperature(month_state.temperature)
+                wind_field = month_state.wind_field or operators.wind_model.wind_field(
+                    wind_temperature, declination_rad=monthly_declinations[idx]
+                )
+                monthly_states[idx] = ModelState(
+                    temperature=month_state.temperature,
+                    albedo_field=operators.base_albedo_field,
+                    wind_field=wind_field,
+                    humidity_field=month_state.humidity_field,
+                )
+
+    # Post-process results (convert to Celsius, reshape layers)
     get_profiler().print_summary()
-    
+
     return postprocess_periodic_cycle_results(
-        lon2d,
-        lat2d,
+        operators.lon2d,
+        operators.lat2d,
         monthly_states,
-        resolved_wind=resolved_wind,
-        resolved_radiation=resolved_radiation,
+        resolved_wind=model_config.wind,
+        resolved_radiation=operators.radiation_config,
         return_layer_map=return_layer_map,
     )

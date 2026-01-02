@@ -24,7 +24,7 @@ from climate_sim.runtime.cli import (
     add_temperature_unit_argument,
 )
 from climate_sim.runtime.config import ModelConfig
-from climate_sim.core.solver import compute_periodic_cycle_results
+from climate_sim.core.solver import solve_periodic_climate
 from climate_sim.core.units import convert_temperature, temperature_unit
 
 from dotenv import load_dotenv
@@ -309,12 +309,12 @@ def main() -> None:
         use_elliptical_orbit=args.experiment_elliptical_orbit,
     )
 
-    lon2d, lat2d, base_layers = compute_periodic_cycle_results(
+    lon2d, lat2d, base_layers = solve_periodic_climate(
         resolution_deg=args.resolution,
         model_config=base_model_config,
         return_layer_map=True,
     )
-    _, _, exp_layers = compute_periodic_cycle_results(
+    _, _, exp_layers = solve_periodic_climate(
         resolution_deg=args.resolution,
         model_config=exp_model_config,
         return_layer_map=True,

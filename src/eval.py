@@ -36,7 +36,7 @@ from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import spherical_cell_area
-from climate_sim.core.solver import compute_periodic_cycle_results
+from climate_sim.core.solver import solve_periodic_climate
 from climate_sim.core.units import convert_temperature, temperature_unit
 from climate_sim.runtime.config import ModelConfig
 
@@ -597,7 +597,7 @@ def main() -> None:
         with np.load(cache_path) as cached:
             layers = {k: cached[k] for k in cached}
     else:
-        lon2d, lat2d, layers = compute_periodic_cycle_results(
+        lon2d, lat2d, layers = solve_periodic_climate(
             resolution_deg=args.resolution,
             model_config=model_config,
             return_layer_map=True,

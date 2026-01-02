@@ -41,7 +41,7 @@ from climate_sim.data.elevation import (
 from climate_sim.physics.atmosphere.pressure import compute_pressure
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
-from climate_sim.core.solver import compute_periodic_cycle_results
+from climate_sim.core.solver import solve_periodic_climate
 from climate_sim.core.units import convert_temperature, temperature_unit
 from climate_sim.physics.humidity import compute_cloud_cover, specific_humidity_to_relative_humidity
 from climate_sim.physics.solar import compute_monthly_declinations
@@ -122,7 +122,7 @@ def main() -> None:
         with np.load(cache_path) as cached:
             layers = {k: cached[k] for k in cached}
     else:
-        lon2d, lat2d, layers = compute_periodic_cycle_results(
+        lon2d, lat2d, layers = solve_periodic_climate(
             resolution_deg=args.resolution,
             model_config=model_config,
             return_layer_map=True,
