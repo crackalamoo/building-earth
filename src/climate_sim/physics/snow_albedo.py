@@ -75,9 +75,9 @@ class AlbedoModel:
         denom = self.config.melt_temperature_c - self.config.freeze_temperature_c
         u = (self.config.melt_temperature_c - temperatures_c) / denom
         u_clamped = np.clip(u, 0.0, 1.0)
-        snow_fraction = u_clamped * u_clamped * (3.0 - 2.0 * u_clamped)
+        mean_snow_fraction = u_clamped * u_clamped * (3.0 - 2.0 * u_clamped)
 
-        mean_snow_fraction = snow_fraction.mean(axis=0)
+        # mean_snow_fraction = snow_fraction.mean(axis=0)
         mean_snow_fraction = np.clip(mean_snow_fraction, 0.0, 1.0)
 
         land_snow_fraction = np.where(self.land_mask, mean_snow_fraction, 0.0)

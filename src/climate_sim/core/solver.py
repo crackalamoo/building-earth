@@ -82,6 +82,38 @@ def monthly_step(
         cache = solver_cache or DEFAULT_LINEAR_SOLVE_CACHE
 
         base_capacity = surface_context.baseline_capacity
+        base_albedo_field = surface_context.base_albedo
+
+        # Lag diagnostic fields during the Newton solve.
+        #
+        # The Newton Jacobian does not include derivatives of diagnostic closures
+        # (snow albedo, humidity, winds) with respect to temperature. If we update
+        # these fields on every residual evaluation, the solve becomes inconsistent
+        # and can stall with a persistent residual. We therefore compute them once
+        # from the previous (start-of-step) state and keep them fixed across
+        # Newton/backtracking iterations.
+        start_temp_capped = np.maximum(start_temp, temperature_floor)
+        lagged_albedo_field = surface_context.albedo_model.apply_snow_albedo(
+            base_albedo_field,
+            start_temp_capped[0],
+        )
+        if start_temp_capped.shape[0] == 3:
+            wind_temp_start = start_temp_capped[2]
+        elif start_temp_capped.shape[0] == 2:
+            wind_temp_start = start_temp_capped[1]
+        else:
+            wind_temp_start = start_temp_capped[0]
+        lagged_wind_field = (
+            surface_context.wind_model.wind_field(wind_temp_start, declination_rad=declination)
+            if surface_context.wind_model
+            else None
+        )
+        lagged_humidity_field = compute_humidity_q(
+            surface_context.lat2d,
+            start_temp_capped[0],
+            declination,
+            land_mask=surface_context.land_mask,
+        )
 
         def _effective_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
             return surface_context.albedo_model.effective_heat_capacity_surface(
@@ -93,17 +125,9 @@ def monthly_step(
         
         def _init_state(temp: np.ndarray) -> ModelState:
             with time_block("_init_state"):
-                lat2d = surface_context.lat2d
-                albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, temp[0])
-                # Wind field uses free atmosphere temperature (layer 2 in 3-layer, layer 1 in 2-layer, layer 0 in 1-layer)
-                if temp.shape[0] == 3:
-                    wind_temp = temp[2]  # Free atmosphere in 3-layer mode
-                elif temp.shape[0] == 2:
-                    wind_temp = temp[1]  # Atmosphere in 2-layer mode
-                else:
-                    wind_temp = temp[0]  # Surface in 1-layer mode
-                wind_field = surface_context.wind_model.wind_field(wind_temp, declination_rad=declination) if surface_context.wind_model else np.zeros_like(temp[0])
-                humidity_field = compute_humidity_q(lat2d, temp[0], declination)
+                albedo_field = lagged_albedo_field
+                wind_field = lagged_wind_field
+                humidity_field = lagged_humidity_field
                 return ModelState(
                     temperature=temp,
                     albedo_field=albedo_field,
@@ -111,10 +135,9 @@ def monthly_step(
                     humidity_field=humidity_field,
                 )
 
-        base_albedo_field = surface_context.base_albedo
-
         # implicit solver loop
         solve_linear = None
+        cached_fingerprint = None
         linearization = None
         for newton_iter in range(NEWTON_MAX_ITERS):
             with time_block("newton_iteration"):
@@ -145,12 +168,12 @@ def monthly_step(
                             ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
                         )
                     
-                    fingerprint = linearization.solver_fingerprint or fingerprint_csc_matrix(jacobian)
-                    linearization.solver_fingerprint = fingerprint
+                    fingerprint = fingerprint_csc_matrix(jacobian)
                     with time_block("linear_solve"):
                         if solve_linear is None:
                             with time_block("factorize_solver"):
                                 solve_linear = get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
+                            cached_fingerprint = fingerprint
                         correction_flat = solve_linear(residual_flat)
                     correction = correction_flat.reshape((nlat, nlon))[np.newaxis, :, :]
                 elif nlayers == 2:
@@ -182,12 +205,12 @@ def monthly_step(
                         assert isinstance(jacobian, sparse.csc_matrix)
 
                     residual_flat = np.concatenate([residual_surface.ravel(), residual_atmosphere.ravel()], axis=0)
-                    fingerprint = linearization.solver_fingerprint or fingerprint_csc_matrix(jacobian)
-                    linearization.solver_fingerprint = fingerprint
+                    fingerprint = fingerprint_csc_matrix(jacobian)
                     with time_block("linear_solve"):
-                        if solve_linear is None:
+                        if solve_linear is None or cached_fingerprint != fingerprint:
                             with time_block("factorize_solver"):
                                 solve_linear = get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
+                            cached_fingerprint = fingerprint
                         correction_flat = solve_linear(residual_flat)
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
@@ -247,12 +270,12 @@ def monthly_step(
                         residual_boundary.ravel(),
                         residual_atmosphere.ravel()
                     ], axis=0)
-                    fingerprint = linearization.solver_fingerprint or fingerprint_csc_matrix(jacobian)
-                    linearization.solver_fingerprint = fingerprint
+                    fingerprint = fingerprint_csc_matrix(jacobian)
                     with time_block("linear_solve"):
-                        if solve_linear is None:
+                        if solve_linear is None or cached_fingerprint != fingerprint:
                             with time_block("factorize_solver"):
                                 solve_linear = get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
+                            cached_fingerprint = fingerprint
                         correction_flat = solve_linear(residual_flat)
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_boundary = correction_flat[size:2*size].reshape(boundary_diag.shape)
@@ -308,7 +331,29 @@ def monthly_step(
                     break
 
 
-        return _init_state(temp_next)
+        # Return a state that is internally consistent with the converged temperature.
+        # (Still lagged within the step, but updated for the returned diagnostic state.)
+        final_temp = np.maximum(temp_next, temperature_floor)
+        final_state = _init_state(final_temp)
+        final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, final_temp[0])
+        # Update diagnostics for output.
+        if final_temp.shape[0] == 3:
+            wind_temp_final = final_temp[2]
+        elif final_temp.shape[0] == 2:
+            wind_temp_final = final_temp[1]
+        else:
+            wind_temp_final = final_temp[0]
+        if surface_context.wind_model:
+            final_state.wind_field = surface_context.wind_model.wind_field(
+                wind_temp_final, declination_rad=declination
+            )
+        final_state.humidity_field = compute_humidity_q(
+            surface_context.lat2d,
+            final_temp[0],
+            declination,
+            land_mask=surface_context.land_mask,
+        )
+        return final_state
 
 def evolve_year(
     state: ModelState,
@@ -566,7 +611,7 @@ def solve_periodic_climate(
                 )
                 monthly_states[idx] = ModelState(
                     temperature=month_state.temperature,
-                    albedo_field=operators.base_albedo_field,
+                    albedo_field=month_state.albedo_field,
                     wind_field=wind_field,
                     humidity_field=month_state.humidity_field,
                 )
