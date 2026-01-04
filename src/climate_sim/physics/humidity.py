@@ -15,7 +15,7 @@ RH_SUBTROPICS_WATER = 0.63
 RH_ITCZ_WATER = 0.88
 STORM_BAND = np.deg2rad([30, 60])
 DELTA_SUBTROPICS = np.deg2rad(20)
-LAT_POLES = np.deg2rad(70)
+LAT_POLES = np.deg2rad(80)
 
 
 def specific_humidity_to_relative_humidity(
@@ -214,4 +214,3 @@ def _compute_cloud_cover_latitude_fallback(
     cloud_cover = np.minimum(cloud_cover, 0.9)
 
     return cloud_cover
-

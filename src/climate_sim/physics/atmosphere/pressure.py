@@ -14,7 +14,7 @@ DP_SUBPOLAR = -500.0  # Low pressure at subpolar lows (~60°)
 DP_POLES = 300.0  # Weak high pressure at polar highs
 
 # Key latitude bands (radians)
-LAT_SUBTROPICS = np.deg2rad(30.0)
+LAT_SUBTROPICS = np.deg2rad(20.0)
 LAT_SUBPOLAR = np.deg2rad(60.0)
 LAT_POLES = np.deg2rad(80.0)
 

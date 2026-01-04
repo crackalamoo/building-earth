@@ -13,6 +13,9 @@ from climate_sim.physics.humidity import (
 from climate_sim.data.constants import (
     HEAT_CAPACITY_AIR_J_M2_K,
     BOUNDARY_LAYER_EMISSIVITY,
+    SHORTWAVE_ABSORPTANCE_ATMOSPHERE,
+    STANDARD_LAPSE_RATE_K_PER_M,
+    ATMOSPHERE_LAYER_HEIGHT_M,
 )
 
 
@@ -22,12 +25,14 @@ class RadiationConfig:
 
     stefan_boltzmann: float = 5.670374419e-8  # W m-2 K-4
     emissivity_surface: float = 1.0
-    emissivity_atmosphere: float = 0.88
+    emissivity_atmosphere: float = 0.78
     include_atmosphere: bool = True
     atmosphere_heat_capacity: float = HEAT_CAPACITY_AIR_J_M2_K
     temperature_floor: float = 10.0  # K
     boundary_layer_heat_capacity: float = HEAT_CAPACITY_AIR_J_M2_K
     boundary_layer_emissivity: float = BOUNDARY_LAYER_EMISSIVITY
+    shortwave_absorptance_atmosphere: float = SHORTWAVE_ABSORPTANCE_ATMOSPHERE
+    cloud_top_delta_z_m: float = ATMOSPHERE_LAYER_HEIGHT_M / 2.0
 
 
 def _with_floor(values: np.ndarray, floor: float) -> np.ndarray:
@@ -84,15 +89,26 @@ def radiative_balance_rhs(
 
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
-    eps_atm = 0.78 + 0.10 * cloud_cover
-    eps_toa = eps_atm
+    eps_clear = config.emissivity_atmosphere
+    eps_cloud = 0.20 * cloud_cover
+    eps_atm = eps_clear + eps_cloud
 
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
     emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
-    emitted_toa = eps_toa * sigma * np.power(atmosphere, 4)
+
+    # Cloud-top correction for TOA longwave emission:
+    # compute clear-sky and cloud contributions separately and add them.
+    cloud_top_K = _with_floor(
+        atmosphere - STANDARD_LAPSE_RATE_K_PER_M * float(config.cloud_top_delta_z_m),
+        floor,
+    )
+    emitted_toa = (
+        eps_clear * sigma * np.power(atmosphere, 4)
+        + eps_cloud * sigma * np.power(cloud_top_K, 4)
+    )
     # Shortwave partitioning
     alpha_atm = atm_albedo_field
-    beta_atm = getattr(config, "shortwave_absorptance_atmosphere", 0.2)
+    beta_atm = config.shortwave_absorptance_atmosphere + 0.05 * cloud_cover
 
     # SW absorbed in atmosphere
     absorbed_shortwave_atm = beta_atm * insolation_W_m2
@@ -124,7 +140,11 @@ def radiative_balance_rhs(
         eps_bl = config.boundary_layer_emissivity
         emitted_boundary = eps_bl * sigma * np.power(boundary, 4)
 
-        downward_longwave_to_surface = emitted_boundary + (1.0 - eps_bl) * emitted_atmosphere
+        # Longwave transmissivities (grey, no-scattering assumption)
+        tau_bl = 1.0 - eps_bl
+        tau_atm = 1.0 - eps_atm
+
+        downward_longwave_to_surface = emitted_boundary + tau_bl * emitted_atmosphere
         surface_tendency = (
             absorbed_shortwave_sfc + downward_longwave_to_surface - emitted_surface
         ) / heat_capacity_field
@@ -135,10 +155,11 @@ def radiative_balance_rhs(
             absorbed_from_surface_bl + absorbed_from_atm_bl - 2.0 * emitted_boundary
         ) / config.boundary_layer_heat_capacity
 
-        transmitted_surface_to_atm = (1.0 - eps_bl) * emitted_surface
-        absorbed_from_boundary = eps_bl * emitted_boundary
+        transmitted_surface_to_atm = tau_bl * emitted_surface
+        absorbed_from_surface_atm = eps_atm * transmitted_surface_to_atm
+        absorbed_from_boundary_atm = eps_atm * emitted_boundary
         atmosphere_tendency = (
-            absorbed_shortwave_atm + transmitted_surface_to_atm + absorbed_from_boundary
+            absorbed_shortwave_atm + absorbed_from_surface_atm + absorbed_from_boundary_atm
             - emitted_atmosphere - emitted_toa
         ) / config.atmosphere_heat_capacity
 
@@ -151,7 +172,7 @@ def radiative_balance_rhs(
             reflected_by_surface = albedo_field * sw_down_surface
 
             # Total outgoing longwave radiation (OLR) at TOA
-            olr_total = emitted_toa + eps_bl * emitted_boundary + (1.0 - eps_atm) * (1.0 - eps_bl) * emitted_surface
+            olr_total = emitted_toa + tau_atm * emitted_boundary + tau_atm * tau_bl * emitted_surface
 
             print("\n=== Radiation Diagnostics (W/m²) ===")
             print("\nLayer Temperatures (K):")
@@ -169,21 +190,21 @@ def radiative_balance_rhs(
             print(f"Surface emission:                  {area_weighted_mean(emitted_surface, cell_area_m2):7.2f}")
             print(f"Boundary layer emission (total):   {area_weighted_mean(2.0 * emitted_boundary, cell_area_m2):7.2f}")
             print(f"  - absorbed by surface:           {area_weighted_mean(emitted_boundary, cell_area_m2):7.2f}")
-            print(f"  - absorbed by atmosphere:        {area_weighted_mean(emitted_boundary, cell_area_m2):7.2f}")
+            print(f"  - absorbed by atmosphere:        {area_weighted_mean(absorbed_from_boundary_atm, cell_area_m2):7.2f}")
             print(f"Atmosphere emission (total):       {area_weighted_mean(2.0 * emitted_atmosphere, cell_area_m2):7.2f}")
-            print(f"  - downward to surface:           {area_weighted_mean((1.0 - eps_bl) * emitted_atmosphere, cell_area_m2):7.2f}")
+            print(f"  - downward to surface:           {area_weighted_mean(tau_bl * emitted_atmosphere, cell_area_m2):7.2f}")
             print(f"  - downward to boundary:          {area_weighted_mean(emitted_atmosphere, cell_area_m2):7.2f}")
             print(f"OLR (to space):                    {area_weighted_mean(olr_total, cell_area_m2):7.2f}")
             print("\nBoundary layer absorbs from:")
             print(f"  - surface:                       {area_weighted_mean(absorbed_from_surface_bl, cell_area_m2):7.2f}")
             print(f"  - atmosphere:                    {area_weighted_mean(absorbed_from_atm_bl, cell_area_m2):7.2f}")
             print("Atmosphere absorbs from:")
-            print(f"  - transmitted surface emission:  {area_weighted_mean(transmitted_surface_to_atm, cell_area_m2):7.2f}")
-            print(f"  - boundary layer emission:       {area_weighted_mean(absorbed_from_boundary, cell_area_m2):7.2f}")
+            print(f"  - surface emission (absorbed):   {area_weighted_mean(absorbed_from_surface_atm, cell_area_m2):7.2f}")
+            print(f"  - boundary layer emission:       {area_weighted_mean(absorbed_from_boundary_atm, weights=cell_area_m2):7.2f}")
             print("\nNet Radiation Balances:")
             print(f"Net surface radiation balance:     {area_weighted_mean(absorbed_shortwave_sfc + downward_longwave_to_surface - emitted_surface, cell_area_m2):7.2f}")
             print(f"Net boundary layer balance:        {area_weighted_mean(absorbed_from_surface_bl + absorbed_from_atm_bl - 2.0 * emitted_boundary, cell_area_m2):7.2f}")
-            print(f"Net atmosphere balance:            {area_weighted_mean(absorbed_shortwave_atm + transmitted_surface_to_atm + absorbed_from_boundary - emitted_atmosphere - emitted_toa, cell_area_m2):7.2f}")
+            print(f"Net atmosphere balance:            {area_weighted_mean(absorbed_shortwave_atm + absorbed_from_surface_atm + absorbed_from_boundary_atm - emitted_atmosphere - emitted_toa, cell_area_m2):7.2f}")
             print("\nGlobal Energy Balance:")
             print(f"Net TOA balance (SW_in - OLR):     {area_weighted_mean(insolation_W_m2 - reflected_by_atm - reflected_by_surface - olr_total, cell_area_m2):7.2f}")
             print("=" * 40)
@@ -234,15 +255,29 @@ def radiative_balance_rhs_temperature_derivative(
             temperature=temperature_K,
             land_mask=land_mask,
         )
-    eps_atm = 0.78 + 0.10 * cloud_cover
+    eps_clear = config.emissivity_atmosphere
+    eps_cloud = 0.20 * cloud_cover
+    eps_atm = eps_clear + eps_cloud
+
+    cloud_top_K = _with_floor(
+        atmosphere - STANDARD_LAPSE_RATE_K_PER_M * float(config.cloud_top_delta_z_m),
+        floor,
+    )
 
     surface_diag = (
         -4.0 * config.emissivity_surface * sigma * np.power(surface, 3)
     ) / heat_capacity_field
 
 
+    # Atmosphere loses LW by emitting up and down, but TOA emission is corrected
+    # to include a colder cloud-top contribution.
+    d_emitted_atmosphere_dT = 4.0 * eps_atm * sigma * np.power(atmosphere, 3)
+    d_emitted_toa_dT = (
+        4.0 * eps_clear * sigma * np.power(atmosphere, 3)
+        + 4.0 * eps_cloud * sigma * np.power(cloud_top_K, 3)
+    )
     atmosphere_diag = (
-        -8.0 * eps_atm * sigma * np.power(atmosphere, 3)
+        -(d_emitted_atmosphere_dT + d_emitted_toa_dT)
     ) / config.atmosphere_heat_capacity
 
     if nlayers == 2:
@@ -274,11 +309,19 @@ def radiative_balance_rhs_temperature_derivative(
         cross[0, 1] = 4.0 * eps_bl * sigma * np.power(boundary, 3) / heat_capacity_field
         cross[1, 0] = 4.0 * eps_bl * config.emissivity_surface * sigma * np.power(surface, 3) / config.boundary_layer_heat_capacity
 
-        cross[1, 2] = 4.0 * eps_bl * sigma * np.power(atmosphere, 3) / config.boundary_layer_heat_capacity
-        cross[2, 1] = 4.0 * eps_bl * sigma * np.power(boundary, 3) / config.atmosphere_heat_capacity
+        # Boundary absorbs eps_bl of downwelling LW from atmosphere: eps_bl * (eps_atm * sigma T_atm^4)
+        cross[1, 2] = 4.0 * eps_bl * eps_atm * sigma * np.power(atmosphere, 3) / config.boundary_layer_heat_capacity
 
-        cross[0, 2] = 4.0 * (1.0 - eps_bl) * sigma * np.power(atmosphere, 3) / heat_capacity_field
-        cross[2, 0] = 4.0 * (1.0 - eps_bl) * config.emissivity_surface * sigma * np.power(surface, 3) / config.atmosphere_heat_capacity
+        # Atmosphere absorbs eps_atm of upwelling LW from boundary: eps_atm * (eps_bl * sigma T_bl^4)
+        cross[2, 1] = 4.0 * eps_atm * eps_bl * sigma * np.power(boundary, 3) / config.atmosphere_heat_capacity
+
+        # Surface receives the transmitted fraction of downwelling atmosphere LW:
+        # (1 - eps_bl) * (eps_atm * sigma T_atm^4)
+        cross[0, 2] = 4.0 * (1.0 - eps_bl) * eps_atm * sigma * np.power(atmosphere, 3) / heat_capacity_field
+
+        # Atmosphere absorbs eps_atm of the surface LW transmitted through boundary:
+        # eps_atm * (1 - eps_bl) * (eps_sfc * sigma T_s^4)
+        cross[2, 0] = 4.0 * eps_atm * (1.0 - eps_bl) * config.emissivity_surface * sigma * np.power(surface, 3) / config.atmosphere_heat_capacity
 
         return diag, cross
 
@@ -308,7 +351,7 @@ def radiative_equilibrium_initial_guess(
     # Use latitude-based fallback for initial guess since we don't have actual humidity yet
     dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
     cloud_cover = compute_cloud_cover(temperature=dummy_temp, land_mask=land_mask)
-    eps_atm = 0.78 + 0.10 * cloud_cover
+    eps_atm = config.emissivity_atmosphere + 0.20 * cloud_cover
 
     denom = np.maximum(2.0 - eps_atm, 1e-6)
     atmosphere = np.power(absorbed / (denom * sigma), 0.25)

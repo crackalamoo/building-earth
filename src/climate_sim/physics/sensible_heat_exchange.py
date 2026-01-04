@@ -8,7 +8,6 @@ import numpy as np
 
 from climate_sim.physics.atmosphere.atmosphere import (
     compute_two_meter_temperature,
-    STANDARD_LAPSE_RATE_K_PER_M
 )
 from climate_sim.data.constants import (
     GAS_CONSTANT_J_KG_K,
@@ -26,7 +25,6 @@ class SensibleHeatExchangeConfig:
     enabled: bool = True
     von_karman: float = VON_KARMAN_CONSTANT
     gas_constant_dry_air_J_kg_K: float = GAS_CONSTANT_J_KG_K
-    lapse_rate_K_per_m: float = STANDARD_LAPSE_RATE_K_PER_M
     minimum_wind_speed_m_s: float = 3
     reference_height_surface_m: float = 2.0
     include_lapse_rate_elevation: bool = False

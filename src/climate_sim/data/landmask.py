@@ -12,10 +12,10 @@ from shapely.geometry import Point
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
-OCEAN_HEAT_CAPACITY_M2 = 4.0e8  # J m-2 K-1, ~40 m mixed-layer ocean
-LAND_HEAT_CAPACITY_M2 = 6.0e6  # J m-2 K-1, ~3 m soil skin depth
-OCEAN_ALBEDO = 0.3
-LAND_ALBEDO = 0.3
+OCEAN_HEAT_CAPACITY_M2 = 2.94e8  # J m-2 K-1, 70 m mixed-layer ocean
+LAND_HEAT_CAPACITY_M2 = 3.0e6  # J m-2 K-1, 1.5 m soil skin depth
+OCEAN_ALBEDO = 0.06
+LAND_ALBEDO = 0.18
 
 _MASK_CACHE: dict[
     tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]

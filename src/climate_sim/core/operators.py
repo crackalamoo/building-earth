@@ -11,6 +11,8 @@ from climate_sim.core.math_core import LinearSolveCache
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.data.elevation import compute_cell_elevation, compute_cell_roughness_length
 from climate_sim.data.landmask import (
+    LAND_ALBEDO,
+    OCEAN_ALBEDO,
     compute_albedo_field,
     compute_heat_capacity_field,
     compute_land_mask,
@@ -150,7 +152,7 @@ def build_model_operators(
 
     albedo_kwargs: dict[str, float] = {}
     if snow_cfg.enabled:
-        albedo_kwargs = {"land_albedo": 0.18, "ocean_albedo": 0.06}
+        albedo_kwargs = {"land_albedo": LAND_ALBEDO, "ocean_albedo": OCEAN_ALBEDO}
 
     base_albedo_field = compute_albedo_field(lon2d, lat2d, **albedo_kwargs)
 
