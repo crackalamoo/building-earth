@@ -373,6 +373,80 @@ def weighted_mean(diff: np.ndarray, weights: np.ndarray) -> float:
     return float(mean_val)
 
 
+def weighted_min_max(
+    data: np.ndarray, weights: np.ndarray
+) -> tuple[float, float]:
+    """Compute min and max over valid (finite, weighted) cells, ignoring NaNs."""
+
+    data_array = np.asarray(data, dtype=float)
+    weights_2d = np.asarray(weights, dtype=float)
+
+    if data_array.ndim == 2:
+        weights_b = weights_2d
+    elif data_array.ndim == 3:
+        weights_b = np.broadcast_to(weights_2d, data_array.shape)
+    else:
+        raise ValueError("data must be 2-D or 3-D")
+
+    valid = np.isfinite(data_array) & np.isfinite(weights_b) & (weights_b > 0)
+    if not np.any(valid):
+        return float("nan"), float("nan")
+
+    data_valid = data_array[valid]
+    min_val = float(np.nanmin(data_valid))
+    max_val = float(np.nanmax(data_valid))
+    return min_val, max_val
+
+
+def compute_temperature_statistics(
+    temperature: np.ndarray,
+    weights: np.ndarray,
+) -> dict[str, float]:
+    """Compute area-weighted mean, min, and max temperatures."""
+
+    mean_val = weighted_mean(temperature, weights)
+    min_val, max_val = weighted_min_max(temperature, weights)
+
+    return {
+        "mean": mean_val,
+        "min": min_val,
+        "max": max_val,
+    }
+
+
+def log_temperature_statistics(
+    sim_t2m: np.ndarray,
+    sim_sst: np.ndarray,
+    obs_t2m: np.ndarray,
+    obs_sst: np.ndarray,
+    weights_land: np.ndarray,
+    weights_ocean: np.ndarray,
+    use_fahrenheit: bool,
+) -> None:
+    """Log area-weighted mean, min, max temperatures for simulation and observation."""
+
+    unit = temperature_unit(use_fahrenheit)
+
+    def convert(value: float) -> float:
+        if not np.isfinite(value):
+            return value
+        return float(convert_temperature(value, use_fahrenheit, is_delta=False))
+
+    # Compute statistics for simulation
+    sim_land_stats = compute_temperature_statistics(sim_t2m, weights_land)
+    sim_ocean_stats = compute_temperature_statistics(sim_sst, weights_ocean)
+
+    # Compute statistics for observation
+    obs_land_stats = compute_temperature_statistics(obs_t2m, weights_land)
+    obs_ocean_stats = compute_temperature_statistics(obs_sst, weights_ocean)
+
+    print(f"\nTemperature Statistics ({unit}):")
+    print(f"  Sim Land T2m:  mean={convert(sim_land_stats['mean']):.2f}, min={convert(sim_land_stats['min']):.2f}, max={convert(sim_land_stats['max']):.2f}")
+    print(f"  Sim Ocean SST: mean={convert(sim_ocean_stats['mean']):.2f}, min={convert(sim_ocean_stats['min']):.2f}, max={convert(sim_ocean_stats['max']):.2f}")
+    print(f"  Obs Land T2m:  mean={convert(obs_land_stats['mean']):.2f}, min={convert(obs_land_stats['min']):.2f}, max={convert(obs_land_stats['max']):.2f}")
+    print(f"  Obs Ocean SST: mean={convert(obs_ocean_stats['mean']):.2f}, min={convert(obs_ocean_stats['min']):.2f}, max={convert(obs_ocean_stats['max']):.2f}")
+
+
 def compute_rmse_statistics(
     sim_surface: np.ndarray,
     sim_t2m: np.ndarray,
@@ -640,12 +714,26 @@ def main() -> None:
         ),
     )
 
+    weights_land = cell_areas * land_mask
+    weights_ocean = cell_areas * (~land_mask)
+
     monthly_rmse, annual_rmse, monthly_bias, annual_bias, anomaly = compute_rmse_statistics(
         surface_cycle,
         sim_t2m,
         obs_for_stats,
         land_mask,
         cell_areas,
+    )
+
+    # Log temperature statistics
+    log_temperature_statistics(
+        sim_t2m,
+        surface_cycle,
+        obs_land,
+        obs_sst,
+        weights_land,
+        weights_ocean,
+        args.fahrenheit,
     )
 
     format_rmse_table(monthly_rmse, annual_rmse, args.fahrenheit)
