@@ -7,6 +7,7 @@ from typing import Callable, Dict
 import numpy as np
 from numpy.typing import NDArray
 from scipy import sparse
+from scipy.sparse import linalg as splinalg
 
 import climate_sim.physics.radiation as radiation
 from climate_sim.physics.radiation import RadiationConfig
@@ -19,8 +20,6 @@ from climate_sim.core.math_core import (
     LinearSolveCache,
     DEFAULT_LINEAR_SOLVE_CACHE,
     get_identity_matrix,
-    fingerprint_csc_matrix,
-    get_factorized_solver,
 )
 from climate_sim.core.state import (
     ModelState,
@@ -38,6 +37,14 @@ NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
+
+# Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
+INEXACT_NEWTON_REFACTORIZE_EVERY = 4
+# GMRES tolerance for inexact Newton linear solves.
+INEXACT_NEWTON_GMRES_RTOL = 1e-4
+INEXACT_NEWTON_GMRES_ATOL = 0.0
+INEXACT_NEWTON_GMRES_RESTART = 50
+INEXACT_NEWTON_GMRES_MAXITER = 50
 
 
 type FloatArray = NDArray[np.floating]
@@ -136,18 +143,67 @@ def monthly_step(
                 )
 
         # implicit solver loop
-        solve_linear = None
-        cached_fingerprint = None
-        linearization = None
+        preconditioner_solve: Callable[[np.ndarray], np.ndarray] | None = None
+        preconditioner_age = 10**9
+
+        def _solve_linear_system(
+            jacobian: sparse.csc_matrix,
+            rhs: np.ndarray,
+            *,
+            newton_iter: int,
+        ) -> np.ndarray:
+            """Inexact Newton linear solve: GMRES with a reused LU preconditioner.
+
+            Notes
+            -----
+            - We refresh the LU preconditioner occasionally (and on GMRES failure).
+            - We do NOT cache factorisations across iterations in the global cache,
+              because Jacobian values change each iteration.
+            """
+            nonlocal preconditioner_solve, preconditioner_age
+
+            if (preconditioner_solve is None) or (preconditioner_age >= INEXACT_NEWTON_REFACTORIZE_EVERY):
+                with time_block("factorize_solver"):
+                    preconditioner_solve = splinalg.factorized(jacobian)
+                preconditioner_age = 0
+
+            assert preconditioner_solve is not None
+
+            preconditioner = splinalg.LinearOperator(
+                shape=jacobian.shape,
+                matvec=preconditioner_solve,
+                dtype=float,
+            )
+            with time_block("gmres_solve"):
+                sol, info = splinalg.gmres(
+                    jacobian,
+                    rhs,
+                    M=preconditioner,
+                    rtol=INEXACT_NEWTON_GMRES_RTOL,
+                    atol=INEXACT_NEWTON_GMRES_ATOL,
+                    restart=INEXACT_NEWTON_GMRES_RESTART,
+                    maxiter=INEXACT_NEWTON_GMRES_MAXITER,
+                )
+
+            if info != 0:
+                # GMRES did not converge: refresh preconditioner and fall back to direct solve.
+                with time_block("factorize_solver"):
+                    preconditioner_solve = splinalg.factorized(jacobian)
+                preconditioner_age = 0
+                return preconditioner_solve(rhs)
+
+            return sol
+
         for newton_iter in range(NEWTON_MAX_ITERS):
             with time_block("newton_iteration"):
                 temp_capped = np.maximum(temp_next, temperature_floor)
                 state_capped = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
                     rhs_value = rhs_fn(state_capped, insolation_W_m2, declination)
-                if linearization is None:
-                    with time_block("rhs_derivative"):
-                        linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
+                # Recompute Jacobian every iteration for true Newton solve
+                with time_block("rhs_derivative"):
+                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
+                preconditioner_age += 1
 
                 nlayers = temp_capped.shape[0]
                 surface_diag = linearization.diag[0]
@@ -167,14 +223,8 @@ def monthly_step(
                         jacobian = _build_surface_jacobian_block(
                             ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
                         )
-                    
-                    fingerprint = fingerprint_csc_matrix(jacobian)
                     with time_block("linear_solve"):
-                        if solve_linear is None:
-                            with time_block("factorize_solver"):
-                                solve_linear = get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
-                            cached_fingerprint = fingerprint
-                        correction_flat = solve_linear(residual_flat)
+                        correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
                     correction = correction_flat.reshape((nlat, nlon))[np.newaxis, :, :]
                 elif nlayers == 2:
                     # Two-layer: surface + atmosphere with coupling
@@ -205,13 +255,8 @@ def monthly_step(
                         assert isinstance(jacobian, sparse.csc_matrix)
 
                     residual_flat = np.concatenate([residual_surface.ravel(), residual_atmosphere.ravel()], axis=0)
-                    fingerprint = fingerprint_csc_matrix(jacobian)
                     with time_block("linear_solve"):
-                        if solve_linear is None or cached_fingerprint != fingerprint:
-                            with time_block("factorize_solver"):
-                                solve_linear = get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
-                            cached_fingerprint = fingerprint
-                        correction_flat = solve_linear(residual_flat)
+                        correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
                     correction = np.stack([correction_surface, correction_atmosphere])
@@ -270,13 +315,8 @@ def monthly_step(
                         residual_boundary.ravel(),
                         residual_atmosphere.ravel()
                     ], axis=0)
-                    fingerprint = fingerprint_csc_matrix(jacobian)
                     with time_block("linear_solve"):
-                        if solve_linear is None or cached_fingerprint != fingerprint:
-                            with time_block("factorize_solver"):
-                                solve_linear = get_factorized_solver(jacobian, cache=cache, fingerprint=fingerprint)
-                            cached_fingerprint = fingerprint
-                        correction_flat = solve_linear(residual_flat)
+                        correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_boundary = correction_flat[size:2*size].reshape(boundary_diag.shape)
                     correction_atmosphere = correction_flat[2*size:].reshape(atmosphere_diag.shape)

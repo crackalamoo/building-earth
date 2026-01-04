@@ -349,6 +349,34 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 else:
                     cross = sh_cross
 
+            # Compute latent heat exchange Jacobian if enabled
+            if latent_heat_model is not None and state.humidity_field is not None:
+                if nlayers == 3:
+                    lh_diag, lh_cross = latent_heat_model.compute_jacobian(
+                        state.temperature[0],
+                        state.temperature[2],
+                        state.humidity_field,
+                        wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
+                        declination_rad=None,
+                        boundary_layer_temperature_K=state.temperature[1],
+                    )
+                elif nlayers == 2:
+                    lh_diag, lh_cross = latent_heat_model.compute_jacobian(
+                        state.temperature[0],
+                        state.temperature[1],
+                        state.humidity_field,
+                        wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
+                        declination_rad=None,
+                    )
+                else:
+                    assert False, "Must have atmosphere for latent heat exchange"
+                # Add latent heat directly to diagonal and cross terms
+                diag = diag + lh_diag
+                if cross is not None:
+                    cross = cross + lh_cross
+                else:
+                    cross = lh_cross
+
             return Linearization(
                 diag=diag,
                 cross=cross,

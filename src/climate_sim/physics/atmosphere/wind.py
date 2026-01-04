@@ -401,4 +401,3 @@ class WindModel:
 
         # Return pre-computed bulk transfer coefficient
         return pressure, air_density, wind_speed_10m, self._bulk_transfer_coefficient
-
