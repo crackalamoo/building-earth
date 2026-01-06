@@ -581,6 +581,40 @@ def format_bias_table(
     print(f"{'Annual':<12}{land_avg:>10}{ocean_avg:>10}{global_avg:>10}")
 
 
+def compute_bias_corrected_anomaly(
+    sim_surface: np.ndarray,
+    sim_t2m: np.ndarray,
+    obs_land: np.ndarray,
+    obs_sst: np.ndarray,
+    obs_surface: np.ndarray,
+    land_mask: np.ndarray,
+    annual_bias: dict[str, float],
+) -> np.ndarray:
+    """Compute anomaly with area-specific biases removed.
+
+    Subtracts the annual mean bias over land from land cells and the annual
+    mean bias over ocean from ocean cells before computing the final anomaly.
+    """
+
+    # Compute raw differences
+    sim_combined = np.where(land_mask[None, ...], sim_t2m, sim_surface)
+    land_diff = sim_t2m - obs_land
+    ocean_diff = sim_surface - obs_sst
+
+    # Subtract area-specific biases
+    land_diff_corrected = land_diff - annual_bias["land"]
+    ocean_diff_corrected = ocean_diff - annual_bias["ocean"]
+
+    # Combine using land mask
+    bias_corrected_anomaly = np.where(
+        land_mask[None, ...],
+        land_diff_corrected,
+        ocean_diff_corrected
+    )
+
+    return bias_corrected_anomaly
+
+
 def plot_baseline_and_anomaly(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
@@ -619,6 +653,45 @@ def plot_baseline_and_anomaly(
         lat2d,
         anomaly,
         title="Simulation − NOAA Surface Anomaly",
+        cmap=cmap,
+        norm=norm,
+        colorbar_label=f"Temperature anomaly ({unit})",
+        use_fahrenheit=use_fahrenheit,
+        value_is_delta=True,
+    )
+
+
+def plot_bias_corrected_anomaly(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    bias_corrected_anomaly: np.ndarray,
+    use_fahrenheit: bool,
+) -> None:
+    """Generate bias-corrected anomaly plot."""
+
+    max_abs = float(np.nanmax(np.abs(bias_corrected_anomaly))) if bias_corrected_anomaly.size else 0.0
+    if not np.isfinite(max_abs) or max_abs <= 0:
+        max_abs = 0.5
+    display_max = float(convert_temperature(max_abs, use_fahrenheit, is_delta=True))
+    if display_max <= 0:
+        display_max = 0.5
+    display_max = np.minimum(display_max, 10.0)
+
+    cmap = colormaps["RdBu_r"]
+    norm = Normalize(vmin=-display_max, vmax=display_max)
+    unit = temperature_unit(use_fahrenheit)
+
+    # Add annual mean
+    anomaly_with_annual = np.concatenate(
+        [bias_corrected_anomaly, np.mean(bias_corrected_anomaly, axis=0, keepdims=True)],
+        axis=0
+    )
+
+    plot_monthly_temperature_cycle(
+        lon2d,
+        lat2d,
+        anomaly_with_annual,
+        title="Bias-Corrected Anomaly (land/ocean biases removed)",
         cmap=cmap,
         norm=norm,
         colorbar_label=f"Temperature anomaly ({unit})",
@@ -744,6 +817,24 @@ def main() -> None:
         lat2d,
         obs_surface,
         anomaly,
+        args.fahrenheit,
+    )
+
+    # Compute and plot bias-corrected anomaly
+    bias_corrected_anomaly = compute_bias_corrected_anomaly(
+        surface_cycle,
+        sim_t2m,
+        obs_land,
+        obs_sst,
+        obs_surface,
+        land_mask,
+        annual_bias,
+    )
+
+    plot_bias_corrected_anomaly(
+        lon2d,
+        lat2d,
+        bias_corrected_anomaly,
         args.fahrenheit,
     )
 
