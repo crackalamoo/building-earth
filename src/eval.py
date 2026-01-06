@@ -621,44 +621,46 @@ def plot_baseline_and_anomaly(
     obs_surface: np.ndarray,
     anomaly: np.ndarray,
     use_fahrenheit: bool,
+    headless: bool = False,
 ) -> None:
     """Generate baseline and anomaly plots."""
 
-    obs_with_annual = np.concatenate(
-        [obs_surface, np.mean(obs_surface, axis=0, keepdims=True)], axis=0
-    )
-    plot_monthly_temperature_cycle(
-        lon2d,
-        lat2d,
-        obs_with_annual,
-        title="NOAA 1981–2010 Monthly Climatology (incl. annual mean)",
-        use_fahrenheit=use_fahrenheit,
-    )
+    if not headless:
+        obs_with_annual = np.concatenate(
+            [obs_surface, np.mean(obs_surface, axis=0, keepdims=True)], axis=0
+        )
+        plot_monthly_temperature_cycle(
+            lon2d,
+            lat2d,
+            obs_with_annual,
+            title="NOAA 1981–2010 Monthly Climatology (incl. annual mean)",
+            use_fahrenheit=use_fahrenheit,
+        )
 
-    max_abs = float(np.nanmax(np.abs(anomaly))) if anomaly.size else 0.0
-    if not np.isfinite(max_abs) or max_abs <= 0:
-        max_abs = 0.5
-    display_max = float(convert_temperature(max_abs, use_fahrenheit, is_delta=True))
-    if display_max <= 0:
-        display_max = 0.5
-    display_max = np.minimum(display_max, 10.0)
+        max_abs = float(np.nanmax(np.abs(anomaly))) if anomaly.size else 0.0
+        if not np.isfinite(max_abs) or max_abs <= 0:
+            max_abs = 0.5
+        display_max = float(convert_temperature(max_abs, use_fahrenheit, is_delta=True))
+        if display_max <= 0:
+            display_max = 0.5
+        display_max = np.minimum(display_max, 10.0)
 
-    cmap = colormaps["RdBu_r"]
-    norm = Normalize(vmin=-display_max, vmax=display_max)
-    unit = temperature_unit(use_fahrenheit)
-    anomaly = np.concatenate([anomaly, np.mean(anomaly, axis=0, keepdims=True)], axis=0)
+        cmap = colormaps["RdBu_r"]
+        norm = Normalize(vmin=-display_max, vmax=display_max)
+        unit = temperature_unit(use_fahrenheit)
+        anomaly = np.concatenate([anomaly, np.mean(anomaly, axis=0, keepdims=True)], axis=0)
 
-    plot_monthly_temperature_cycle(
-        lon2d,
-        lat2d,
-        anomaly,
-        title="Simulation − NOAA Surface Anomaly",
-        cmap=cmap,
-        norm=norm,
-        colorbar_label=f"Temperature anomaly ({unit})",
-        use_fahrenheit=use_fahrenheit,
-        value_is_delta=True,
-    )
+        plot_monthly_temperature_cycle(
+            lon2d,
+            lat2d,
+            anomaly,
+            title="Simulation − NOAA Surface Anomaly",
+            cmap=cmap,
+            norm=norm,
+            colorbar_label=f"Temperature anomaly ({unit})",
+            use_fahrenheit=use_fahrenheit,
+            value_is_delta=True,
+        )
 
 
 def plot_bias_corrected_anomaly(
@@ -666,38 +668,40 @@ def plot_bias_corrected_anomaly(
     lat2d: np.ndarray,
     bias_corrected_anomaly: np.ndarray,
     use_fahrenheit: bool,
+    headless: bool = False,
 ) -> None:
     """Generate bias-corrected anomaly plot."""
 
-    max_abs = float(np.nanmax(np.abs(bias_corrected_anomaly))) if bias_corrected_anomaly.size else 0.0
-    if not np.isfinite(max_abs) or max_abs <= 0:
-        max_abs = 0.5
-    display_max = float(convert_temperature(max_abs, use_fahrenheit, is_delta=True))
-    if display_max <= 0:
-        display_max = 0.5
-    display_max = np.minimum(display_max, 10.0)
+    if not headless:
+        max_abs = float(np.nanmax(np.abs(bias_corrected_anomaly))) if bias_corrected_anomaly.size else 0.0
+        if not np.isfinite(max_abs) or max_abs <= 0:
+            max_abs = 0.5
+        display_max = float(convert_temperature(max_abs, use_fahrenheit, is_delta=True))
+        if display_max <= 0:
+            display_max = 0.5
+        display_max = np.minimum(display_max, 10.0)
 
-    cmap = colormaps["RdBu_r"]
-    norm = Normalize(vmin=-display_max, vmax=display_max)
-    unit = temperature_unit(use_fahrenheit)
+        cmap = colormaps["RdBu_r"]
+        norm = Normalize(vmin=-display_max, vmax=display_max)
+        unit = temperature_unit(use_fahrenheit)
 
-    # Add annual mean
-    anomaly_with_annual = np.concatenate(
-        [bias_corrected_anomaly, np.mean(bias_corrected_anomaly, axis=0, keepdims=True)],
-        axis=0
-    )
+        # Add annual mean
+        anomaly_with_annual = np.concatenate(
+            [bias_corrected_anomaly, np.mean(bias_corrected_anomaly, axis=0, keepdims=True)],
+            axis=0
+        )
 
-    plot_monthly_temperature_cycle(
-        lon2d,
-        lat2d,
-        anomaly_with_annual,
-        title="Bias-Corrected Anomaly (land/ocean biases removed)",
-        cmap=cmap,
-        norm=norm,
-        colorbar_label=f"Temperature anomaly ({unit})",
-        use_fahrenheit=use_fahrenheit,
-        value_is_delta=True,
-    )
+        plot_monthly_temperature_cycle(
+            lon2d,
+            lat2d,
+            anomaly_with_annual,
+            title="Bias-Corrected Anomaly (land/ocean biases removed)",
+            cmap=cmap,
+            norm=norm,
+            colorbar_label=f"Temperature anomaly ({unit})",
+            use_fahrenheit=use_fahrenheit,
+            value_is_delta=True,
+        )
 
 
 # ----------------------------
@@ -818,6 +822,7 @@ def main() -> None:
         obs_surface,
         anomaly,
         args.fahrenheit,
+        args.headless,
     )
 
     # Compute and plot bias-corrected anomaly
@@ -836,6 +841,7 @@ def main() -> None:
         lat2d,
         bias_corrected_anomaly,
         args.fahrenheit,
+        args.headless,
     )
 
 

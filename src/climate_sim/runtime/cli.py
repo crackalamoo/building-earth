@@ -76,6 +76,16 @@ def add_temperature_unit_argument(
     parser.add_argument(*options, dest=dest, action="store_true", help=help_text)
 
 
+def add_headless_argument(
+    parser: argparse.ArgumentParser,
+    *,
+    help_text: str = "Disable plotting (headless mode for non-interactive execution)",
+) -> None:
+    """Add a headless mode toggle."""
+
+    parser.add_argument("--headless", dest="headless", action="store_true", help=help_text)
+
+
 def add_common_model_arguments(
     parser: argparse.ArgumentParser,
     *,
@@ -188,3 +198,4 @@ def add_common_model_arguments(
             ),
             options=fahrenheit_options,
         )
+    add_headless_argument(parser)

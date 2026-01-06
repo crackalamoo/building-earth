@@ -236,390 +236,392 @@ def main() -> None:
         wind_u_10 = wind_u * scale_factor
         wind_v_10 = wind_v * scale_factor
 
-        projection = ccrs.PlateCarree()
-        fig_wind, ax_wind = plt.subplots(
-            figsize=(12, 6), subplot_kw=dict(projection=projection)
-        )
-        ax_wind.set_global()
-        ax_wind.coastlines(linewidth=0.4)
-        ax_wind.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
-        ax_wind.add_feature(
-            cfeature.NaturalEarthFeature(
-                "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
-            ),
-            linewidth=0.2,
-        )
-        ax_wind.add_feature(
-            cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0
-        )
-
-        lon_full = lon2d[0]
-        lon_wrapped = ((lon_full + 180.0) % 360.0) - 180.0
-        lon_sort_idx = np.argsort(lon_wrapped)
-        lon_sorted = lon_wrapped[lon_sort_idx]
-
-        wind_u_sorted = wind_u[:, :, lon_sort_idx]
-        wind_v_sorted = wind_v[:, :, lon_sort_idx]
-        wind_speed_sorted = wind_speed[:, :, lon_sort_idx]
-        wind_u_10_sorted = wind_u_10[:, :, lon_sort_idx]
-        wind_v_10_sorted = wind_v_10[:, :, lon_sort_idx]
-        wind_speed_10_sorted = wind_speed_10[:, :, lon_sort_idx]
-        wind_u_geo_sorted = wind_u_geo[:, :, lon_sort_idx]
-        wind_v_geo_sorted = wind_v_geo[:, :, lon_sort_idx]
-        wind_speed_geo_sorted = wind_speed_geo[:, :, lon_sort_idx]
-
-        slp_sorted = None
-        if slp_cycle_hpa is not None:
-            slp_sorted = slp_cycle_hpa[:, :, lon_sort_idx]
-
-        max_speed = float(np.max(np.maximum(
-            np.maximum(wind_speed_sorted, wind_speed_10_sorted),
-            wind_speed_geo_sorted
-        )))
-        if not np.isfinite(max_speed) or max_speed <= 0.0:
-            max_speed = 1.0
-
-        stride = max(1, int(round(1.0 / args.resolution)))
-        lat_coords = lat2d[::stride, 0]
-        lon_coords = lon_sorted[::stride]
-
-        meters_per_deg_lat = np.pi / 180.0 * R_EARTH_METERS
-        cosphi = np.cos(np.deg2rad(lat_coords))
-        meters_per_deg_lon_vec = meters_per_deg_lat * np.clip(cosphi, 1e-6, None)
-
-        def _to_deg_per_sec(
-            u_slice: np.ndarray, v_slice: np.ndarray
-        ) -> tuple[np.ndarray, np.ndarray]:
-            u_deg = u_slice / meters_per_deg_lon_vec[:, None]
-            v_deg = v_slice / meters_per_deg_lat
-            return u_deg, v_deg
-
-        cmap = cmocean.cm.speed
-        norm = Normalize(vmin=0.0, vmax=max_speed)
-
-        wind_levels = {
-            "100 m": {
-                "u": wind_u_sorted,
-                "v": wind_v_sorted,
-                "speed": wind_speed_sorted,
-            },
-            "10 m": {
-                "u": wind_u_10_sorted,
-                "v": wind_v_10_sorted,
-                "speed": wind_speed_10_sorted,
-            },
-            "geostrophic": {
-                "u": wind_u_geo_sorted,
-                "v": wind_v_geo_sorted,
-                "speed": wind_speed_geo_sorted,
-            },
-        }
-
-        level_names = list(wind_levels.keys())
-        current_state = {"level": level_names[0], "month": 0}
-        stream_container: dict[str, object | None] = {"obj": None}
-        scalar_mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-        cbar = fig_wind.colorbar(
-            scalar_mappable,
-            ax=ax_wind,
-            orientation="vertical",
-            pad=0.04,
-            fraction=0.046,
-        )
-        cbar.set_label("Wind speed (m/s)")
-
-        pressure_container: dict[str, object | None] = {"artist": None, "data": None}
-        if slp_sorted is not None:
-            slp_min = float(np.nanmin(slp_sorted))
-            slp_max = float(np.nanmax(slp_sorted))
-            if not np.isfinite(slp_min) or not np.isfinite(slp_max):
-                slp_min, slp_max = 980.0, 1030.0
-            elif slp_max - slp_min < 1.0e-3:
-                slp_min -= 1.0
-                slp_max += 1.0
-
-            slp_norm = Normalize(vmin=slp_min, vmax=slp_max)
-            pressure_extent = (
-                float(lon_sorted[0]),
-                float(lon_sorted[-1]),
-                float(np.min(lat2d[:, 0])),
-                float(np.max(lat2d[:, 0])),
+        if not args.headless:
+            projection = ccrs.PlateCarree()
+            fig_wind, ax_wind = plt.subplots(
+                figsize=(12, 6), subplot_kw=dict(projection=projection)
             )
-            pressure_artist = ax_wind.imshow(
-                slp_sorted[0],
-                extent=pressure_extent,
-                origin="lower",
-                transform=projection,
-                cmap=plt.cm.magma,
-                norm=slp_norm,
-                alpha=0.65,
-                zorder=0.1,
-                interpolation="nearest",
+            ax_wind.set_global()
+            ax_wind.coastlines(linewidth=0.4)
+            ax_wind.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+            ax_wind.add_feature(
+                cfeature.NaturalEarthFeature(
+                    "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+                ),
+                linewidth=0.2,
             )
-            pressure_container["artist"] = pressure_artist
-            pressure_container["data"] = slp_sorted
-
-            pressure_cax = fig_wind.add_axes([0.2, 0.02, 0.6, 0.02])
-            pressure_cbar = fig_wind.colorbar(
-                pressure_artist,
-                cax=pressure_cax,
-                orientation="horizontal",
-            )
-            pressure_cbar.set_label("Sea-level pressure (hPa)")
-
-        def _clear_streamplot(stream_set) -> None:
-            if stream_set is None:
-                return
-            stream_set.lines.set_segments([])
-            stream_set.lines.set_array(np.array([]))
-            stream_set.lines.set_visible(False)
-            for art in list(ax_wind.get_children()):
-                if isinstance(art, mpatches.FancyArrowPatch):
-                    art.remove()
-
-        def _draw_streamplot() -> None:
-            level_data = wind_levels[current_state["level"]]
-            idx = current_state["month"]
-            u_slice = level_data["u"][idx, ::stride, ::stride]
-            v_slice = level_data["v"][idx, ::stride, ::stride]
-            speed_slice = level_data["speed"][idx, ::stride, ::stride]
-            u_deg_slice, v_deg_slice = _to_deg_per_sec(u_slice, v_slice)
-
-            current_stream = stream_container["obj"]
-            _clear_streamplot(current_stream)
-
-            new_stream = ax_wind.streamplot(
-                lon_coords,
-                lat_coords,
-                u_deg_slice,
-                v_deg_slice,
-                color=speed_slice,
-                cmap=cmap,
-                norm=norm,
-                transform=projection,
-                density=1.8,
-                linewidth=1.2,
-                arrowsize=1.4,
+            ax_wind.add_feature(
+                cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0
             )
 
-            stream_container["obj"] = new_stream
-            pressure_artist = pressure_container.get("artist")
-            slp_data = pressure_container.get("data")
-            if pressure_artist is not None and slp_data is not None:
-                pressure_artist.set_data(slp_data[idx])
-            ax_wind.set_title(
-                f"Geostrophic Wind ({current_state['level']}) – {month_names[idx]}"
+            lon_full = lon2d[0]
+            lon_wrapped = ((lon_full + 180.0) % 360.0) - 180.0
+            lon_sort_idx = np.argsort(lon_wrapped)
+            lon_sorted = lon_wrapped[lon_sort_idx]
+
+            wind_u_sorted = wind_u[:, :, lon_sort_idx]
+            wind_v_sorted = wind_v[:, :, lon_sort_idx]
+            wind_speed_sorted = wind_speed[:, :, lon_sort_idx]
+            wind_u_10_sorted = wind_u_10[:, :, lon_sort_idx]
+            wind_v_10_sorted = wind_v_10[:, :, lon_sort_idx]
+            wind_speed_10_sorted = wind_speed_10[:, :, lon_sort_idx]
+            wind_u_geo_sorted = wind_u_geo[:, :, lon_sort_idx]
+            wind_v_geo_sorted = wind_v_geo[:, :, lon_sort_idx]
+            wind_speed_geo_sorted = wind_speed_geo[:, :, lon_sort_idx]
+
+            slp_sorted = None
+            if slp_cycle_hpa is not None:
+                slp_sorted = slp_cycle_hpa[:, :, lon_sort_idx]
+
+            max_speed = float(np.max(np.maximum(
+                np.maximum(wind_speed_sorted, wind_speed_10_sorted),
+                wind_speed_geo_sorted
+            )))
+            if not np.isfinite(max_speed) or max_speed <= 0.0:
+                max_speed = 1.0
+
+            stride = max(1, int(round(1.0 / args.resolution)))
+            lat_coords = lat2d[::stride, 0]
+            lon_coords = lon_sorted[::stride]
+
+            meters_per_deg_lat = np.pi / 180.0 * R_EARTH_METERS
+            cosphi = np.cos(np.deg2rad(lat_coords))
+            meters_per_deg_lon_vec = meters_per_deg_lat * np.clip(cosphi, 1e-6, None)
+
+            def _to_deg_per_sec(
+                u_slice: np.ndarray, v_slice: np.ndarray
+            ) -> tuple[np.ndarray, np.ndarray]:
+                u_deg = u_slice / meters_per_deg_lon_vec[:, None]
+                v_deg = v_slice / meters_per_deg_lat
+                return u_deg, v_deg
+
+            cmap = cmocean.cm.speed
+            norm = Normalize(vmin=0.0, vmax=max_speed)
+
+            wind_levels = {
+                "100 m": {
+                    "u": wind_u_sorted,
+                    "v": wind_v_sorted,
+                    "speed": wind_speed_sorted,
+                },
+                "10 m": {
+                    "u": wind_u_10_sorted,
+                    "v": wind_v_10_sorted,
+                    "speed": wind_speed_10_sorted,
+                },
+                "geostrophic": {
+                    "u": wind_u_geo_sorted,
+                    "v": wind_v_geo_sorted,
+                    "speed": wind_speed_geo_sorted,
+                },
+            }
+
+            level_names = list(wind_levels.keys())
+            current_state = {"level": level_names[0], "month": 0}
+            stream_container: dict[str, object | None] = {"obj": None}
+            scalar_mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+            cbar = fig_wind.colorbar(
+                scalar_mappable,
+                ax=ax_wind,
+                orientation="vertical",
+                pad=0.04,
+                fraction=0.046,
             )
-            fig_wind.canvas.draw_idle()
+            cbar.set_label("Wind speed (m/s)")
 
-        slider_ax = fig_wind.add_axes([0.2, 0.08, 0.6, 0.03])
-        month_slider = Slider(
-            slider_ax,
-            label="Month",
-            valmin=0,
-            valmax=11,
-            valinit=0,
-            valstep=1,
-            valfmt="%0.0f",
-        )
+            pressure_container: dict[str, object | None] = {"artist": None, "data": None}
+            if slp_sorted is not None:
+                slp_min = float(np.nanmin(slp_sorted))
+                slp_max = float(np.nanmax(slp_sorted))
+                if not np.isfinite(slp_min) or not np.isfinite(slp_max):
+                    slp_min, slp_max = 980.0, 1030.0
+                elif slp_max - slp_min < 1.0e-3:
+                    slp_min -= 1.0
+                    slp_max += 1.0
 
-        def _on_month_change(val: float) -> None:
-            current_state["month"] = int(val)
+                slp_norm = Normalize(vmin=slp_min, vmax=slp_max)
+                pressure_extent = (
+                    float(lon_sorted[0]),
+                    float(lon_sorted[-1]),
+                    float(np.min(lat2d[:, 0])),
+                    float(np.max(lat2d[:, 0])),
+                )
+                pressure_artist = ax_wind.imshow(
+                    slp_sorted[0],
+                    extent=pressure_extent,
+                    origin="lower",
+                    transform=projection,
+                    cmap=plt.cm.magma,
+                    norm=slp_norm,
+                    alpha=0.65,
+                    zorder=0.1,
+                    interpolation="nearest",
+                )
+                pressure_container["artist"] = pressure_artist
+                pressure_container["data"] = slp_sorted
+
+                pressure_cax = fig_wind.add_axes([0.2, 0.02, 0.6, 0.02])
+                pressure_cbar = fig_wind.colorbar(
+                    pressure_artist,
+                    cax=pressure_cax,
+                    orientation="horizontal",
+                )
+                pressure_cbar.set_label("Sea-level pressure (hPa)")
+
+            def _clear_streamplot(stream_set) -> None:
+                if stream_set is None:
+                    return
+                stream_set.lines.set_segments([])
+                stream_set.lines.set_array(np.array([]))
+                stream_set.lines.set_visible(False)
+                for art in list(ax_wind.get_children()):
+                    if isinstance(art, mpatches.FancyArrowPatch):
+                        art.remove()
+
+            def _draw_streamplot() -> None:
+                level_data = wind_levels[current_state["level"]]
+                idx = current_state["month"]
+                u_slice = level_data["u"][idx, ::stride, ::stride]
+                v_slice = level_data["v"][idx, ::stride, ::stride]
+                speed_slice = level_data["speed"][idx, ::stride, ::stride]
+                u_deg_slice, v_deg_slice = _to_deg_per_sec(u_slice, v_slice)
+
+                current_stream = stream_container["obj"]
+                _clear_streamplot(current_stream)
+
+                new_stream = ax_wind.streamplot(
+                    lon_coords,
+                    lat_coords,
+                    u_deg_slice,
+                    v_deg_slice,
+                    color=speed_slice,
+                    cmap=cmap,
+                    norm=norm,
+                    transform=projection,
+                    density=1.8,
+                    linewidth=1.2,
+                    arrowsize=1.4,
+                )
+
+                stream_container["obj"] = new_stream
+                pressure_artist = pressure_container.get("artist")
+                slp_data = pressure_container.get("data")
+                if pressure_artist is not None and slp_data is not None:
+                    pressure_artist.set_data(slp_data[idx])
+                ax_wind.set_title(
+                    f"Geostrophic Wind ({current_state['level']}) – {month_names[idx]}"
+                )
+                fig_wind.canvas.draw_idle()
+
+            slider_ax = fig_wind.add_axes([0.2, 0.08, 0.6, 0.03])
+            month_slider = Slider(
+                slider_ax,
+                label="Month",
+                valmin=0,
+                valmax=11,
+                valinit=0,
+                valstep=1,
+                valfmt="%0.0f",
+            )
+
+            def _on_month_change(val: float) -> None:
+                current_state["month"] = int(val)
+                _draw_streamplot()
+
+            month_slider.on_changed(_on_month_change)
+
+            radio_ax = fig_wind.add_axes([0.02, 0.55, 0.12, 0.18])
+            radio_ax.set_title("Wind Level", fontsize=9)
+            level_selector = RadioButtons(radio_ax, level_names, active=0)
+
+            def _on_level_change(label: str) -> None:
+                current_state["level"] = label
+                _draw_streamplot()
+
+            level_selector.on_clicked(_on_level_change)
             _draw_streamplot()
-
-        month_slider.on_changed(_on_month_change)
-
-        radio_ax = fig_wind.add_axes([0.02, 0.55, 0.12, 0.18])
-        radio_ax.set_title("Wind Level", fontsize=9)
-        level_selector = RadioButtons(radio_ax, level_names, active=0)
-
-        def _on_level_change(label: str) -> None:
-            current_state["level"] = label
-            _draw_streamplot()
-
-        level_selector.on_clicked(_on_level_change)
-        _draw_streamplot()
 
     # Humidity plot
-    if humidity_q_cycle is not None:
-        # Use stored humidity from solver state
-        # Compute relative humidity from stored specific humidity
-        # Use surface temperature (matching solver's _select_humidity_temperature behavior)
-        temp_for_humidity = surface_cycle + 273.15  # Convert to Kelvin
+    if humidity_q_cycle is not None and not args.headless:
+            # Use stored humidity from solver state
+            # Compute relative humidity from stored specific humidity
+            # Use surface temperature (matching solver's _select_humidity_temperature behavior)
+            temp_for_humidity = surface_cycle + 273.15  # Convert to Kelvin
         
-        # Compute RH from q: rh = q / q_sat
-        # where q_sat is computed from temperature and pressure
-        monthly_humidity_rh = []
-        for month_idx in range(12):
-            temp_K = temp_for_humidity[month_idx]
-            q = humidity_q_cycle[month_idx]
-            rh = specific_humidity_to_relative_humidity(q, temp_K)
-            monthly_humidity_rh.append(rh)
+            # Compute RH from q: rh = q / q_sat
+            # where q_sat is computed from temperature and pressure
+            monthly_humidity_rh = []
+            for month_idx in range(12):
+                temp_K = temp_for_humidity[month_idx]
+                q = humidity_q_cycle[month_idx]
+                rh = specific_humidity_to_relative_humidity(q, temp_K)
+                monthly_humidity_rh.append(rh)
         
-        humidity_rh_cycle = np.stack(monthly_humidity_rh, axis=0)
+            humidity_rh_cycle = np.stack(monthly_humidity_rh, axis=0)
         
-        # Compute cloud cover for each month from relative humidity
-        monthly_cloud_cover = []
-        for month_idx in range(12):
-            rh = humidity_rh_cycle[month_idx]
-            cloud_cover = compute_cloud_cover(
-                relative_humidity=rh,
-                land_mask=land_mask_bool,
+            # Compute cloud cover for each month from relative humidity
+            monthly_cloud_cover = []
+            for month_idx in range(12):
+                rh = humidity_rh_cycle[month_idx]
+                cloud_cover = compute_cloud_cover(
+                    relative_humidity=rh,
+                    land_mask=land_mask_bool,
+                )
+                monthly_cloud_cover.append(cloud_cover)
+        
+            cloud_cover_cycle = np.stack(monthly_cloud_cover, axis=0)
+        
+            # Setup humidity plot
+            projection = ccrs.PlateCarree()
+            fig_humidity, ax_humidity = plt.subplots(
+                figsize=(12, 6), subplot_kw=dict(projection=projection)
             )
-            monthly_cloud_cover.append(cloud_cover)
+            ax_humidity.set_global()
+            ax_humidity.coastlines(linewidth=0.4)
+            ax_humidity.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+            ax_humidity.add_feature(
+                cfeature.NaturalEarthFeature(
+                    "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+                ),
+                linewidth=0.2,
+            )
+            ax_humidity.add_feature(
+                cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0
+            )
         
-        cloud_cover_cycle = np.stack(monthly_cloud_cover, axis=0)
+            # Wrap longitude for proper display
+            lon_full = lon2d[0]
+            lon_wrapped = ((lon_full + 180.0) % 360.0) - 180.0
+            lon_sort_idx = np.argsort(lon_wrapped)
+            lon_sorted = lon_wrapped[lon_sort_idx]
         
-        # Setup humidity plot
-        projection = ccrs.PlateCarree()
-        fig_humidity, ax_humidity = plt.subplots(
-            figsize=(12, 6), subplot_kw=dict(projection=projection)
-        )
-        ax_humidity.set_global()
-        ax_humidity.coastlines(linewidth=0.4)
-        ax_humidity.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
-        ax_humidity.add_feature(
-            cfeature.NaturalEarthFeature(
-                "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
-            ),
-            linewidth=0.2,
-        )
-        ax_humidity.add_feature(
-            cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0
-        )
+            humidity_q_sorted = humidity_q_cycle[:, :, lon_sort_idx]
+            humidity_rh_sorted = humidity_rh_cycle[:, :, lon_sort_idx]
+            cloud_cover_sorted = cloud_cover_cycle[:, :, lon_sort_idx]
         
-        # Wrap longitude for proper display
-        lon_full = lon2d[0]
-        lon_wrapped = ((lon_full + 180.0) % 360.0) - 180.0
-        lon_sort_idx = np.argsort(lon_wrapped)
-        lon_sorted = lon_wrapped[lon_sort_idx]
+            humidity_data = {
+                "Specific Humidity (q)": humidity_q_sorted,
+                "Relative Humidity (RH)": humidity_rh_sorted,
+                "Cloud Cover": cloud_cover_sorted,
+            }
         
-        humidity_q_sorted = humidity_q_cycle[:, :, lon_sort_idx]
-        humidity_rh_sorted = humidity_rh_cycle[:, :, lon_sort_idx]
-        cloud_cover_sorted = cloud_cover_cycle[:, :, lon_sort_idx]
+            # Initial state
+            current_state_humidity = {"month": 0, "type": "Specific Humidity (q)"}
         
-        humidity_data = {
-            "Specific Humidity (q)": humidity_q_sorted,
-            "Relative Humidity (RH)": humidity_rh_sorted,
-            "Cloud Cover": cloud_cover_sorted,
-        }
+            def get_norm_and_label(humidity_type: str) -> tuple[Normalize, str]:
+                if humidity_type == "Specific Humidity (q)":
+                    vmin = 0
+                    vmax = float(humidity_q_cycle.max())
+                    label = "Specific Humidity (kg/kg)"
+                elif humidity_type == "Relative Humidity (RH)":
+                    vmin = 0
+                    vmax = 1
+                    label = "Relative Humidity"
+                else:  # Cloud Cover
+                    vmin = 0
+                    vmax = 1
+                    label = "Cloud Cover Fraction"
+                return Normalize(vmin=vmin, vmax=vmax), label
         
-        # Initial state
-        current_state_humidity = {"month": 0, "type": "Specific Humidity (q)"}
-        
-        def get_norm_and_label(humidity_type: str) -> tuple[Normalize, str]:
-            if humidity_type == "Specific Humidity (q)":
-                vmin = 0
-                vmax = float(humidity_q_cycle.max())
-                label = "Specific Humidity (kg/kg)"
-            elif humidity_type == "Relative Humidity (RH)":
-                vmin = 0
-                vmax = 1
-                label = "Relative Humidity"
-            else:  # Cloud Cover
-                vmin = 0
-                vmax = 1
-                label = "Cloud Cover Fraction"
-            return Normalize(vmin=vmin, vmax=vmax), label
-        
-        norm_humidity, colorbar_label_humidity = get_norm_and_label(current_state_humidity["type"])
-        cmap_humidity = cmocean.cm.rain
-        
-        # Create sorted lat/lon grids for pcolormesh
-        lat_sorted = lat2d[:, 0]
-        lon_sorted_2d, lat_sorted_2d = np.meshgrid(lon_sorted, lat_sorted)
-        
-        humidity_mesh = ax_humidity.pcolormesh(
-            lon_sorted_2d,
-            lat_sorted_2d,
-            humidity_data[current_state_humidity["type"]][current_state_humidity["month"]],
-            cmap=cmap_humidity,
-            norm=norm_humidity,
-            shading="auto",
-            transform=projection,
-        )
-        
-        ax_humidity.set_title(
-            f"{current_state_humidity['type']} – {month_names[current_state_humidity['month']]}"
-        )
-        
-        # Colorbar
-        cbar_humidity = fig_humidity.colorbar(
-            humidity_mesh,
-            ax=ax_humidity,
-            orientation="vertical",
-            pad=0.04,
-            fraction=0.046,
-        )
-        cbar_humidity.set_label(colorbar_label_humidity)
-        
-        def _update_humidity_plot() -> None:
-            data = humidity_data[current_state_humidity["type"]][current_state_humidity["month"]]
             norm_humidity, colorbar_label_humidity = get_norm_and_label(current_state_humidity["type"])
-            humidity_mesh.set_norm(norm_humidity)
-            humidity_mesh.set_array(data.ravel())
-            cbar_humidity.set_label(colorbar_label_humidity)
-            cbar_humidity.update_normal(humidity_mesh)
+            cmap_humidity = cmocean.cm.rain
+        
+            # Create sorted lat/lon grids for pcolormesh
+            lat_sorted = lat2d[:, 0]
+            lon_sorted_2d, lat_sorted_2d = np.meshgrid(lon_sorted, lat_sorted)
+        
+            humidity_mesh = ax_humidity.pcolormesh(
+                lon_sorted_2d,
+                lat_sorted_2d,
+                humidity_data[current_state_humidity["type"]][current_state_humidity["month"]],
+                cmap=cmap_humidity,
+                norm=norm_humidity,
+                shading="auto",
+                transform=projection,
+            )
+        
             ax_humidity.set_title(
                 f"{current_state_humidity['type']} – {month_names[current_state_humidity['month']]}"
             )
-            fig_humidity.canvas.draw_idle()
         
-        slider_humidity_ax = fig_humidity.add_axes([0.2, 0.08, 0.6, 0.03])
-        month_slider_humidity = Slider(
-            slider_humidity_ax,
-            label="Month",
-            valmin=0,
-            valmax=11,
-            valinit=0,
-            valstep=1,
-            valfmt="%0.0f",
-        )
+            # Colorbar
+            cbar_humidity = fig_humidity.colorbar(
+                humidity_mesh,
+                ax=ax_humidity,
+                orientation="vertical",
+                pad=0.04,
+                fraction=0.046,
+            )
+            cbar_humidity.set_label(colorbar_label_humidity)
         
-        def _on_humidity_month_change(val: float) -> None:
-            current_state_humidity["month"] = int(val)
+            def _update_humidity_plot() -> None:
+                data = humidity_data[current_state_humidity["type"]][current_state_humidity["month"]]
+                norm_humidity, colorbar_label_humidity = get_norm_and_label(current_state_humidity["type"])
+                humidity_mesh.set_norm(norm_humidity)
+                humidity_mesh.set_array(data.ravel())
+                cbar_humidity.set_label(colorbar_label_humidity)
+                cbar_humidity.update_normal(humidity_mesh)
+                ax_humidity.set_title(
+                    f"{current_state_humidity['type']} – {month_names[current_state_humidity['month']]}"
+                )
+                fig_humidity.canvas.draw_idle()
+        
+            slider_humidity_ax = fig_humidity.add_axes([0.2, 0.08, 0.6, 0.03])
+            month_slider_humidity = Slider(
+                slider_humidity_ax,
+                label="Month",
+                valmin=0,
+                valmax=11,
+                valinit=0,
+                valstep=1,
+                valfmt="%0.0f",
+            )
+        
+            def _on_humidity_month_change(val: float) -> None:
+                current_state_humidity["month"] = int(val)
+                _update_humidity_plot()
+        
+            month_slider_humidity.on_changed(_on_humidity_month_change)
+        
+            radio_humidity_ax = fig_humidity.add_axes([0.02, 0.55, 0.12, 0.18])
+            radio_humidity_ax.set_title("Variable", fontsize=9)
+            type_names_humidity = list(humidity_data.keys())
+            type_selector_humidity = RadioButtons(radio_humidity_ax, type_names_humidity, active=0)
+        
+            def _on_humidity_type_change(label: str) -> None:
+                current_state_humidity["type"] = label
+                _update_humidity_plot()
+        
+            type_selector_humidity.on_clicked(_on_humidity_type_change)
             _update_humidity_plot()
-        
-        month_slider_humidity.on_changed(_on_humidity_month_change)
-        
-        radio_humidity_ax = fig_humidity.add_axes([0.02, 0.55, 0.12, 0.18])
-        radio_humidity_ax.set_title("Variable", fontsize=9)
-        type_names_humidity = list(humidity_data.keys())
-        type_selector_humidity = RadioButtons(radio_humidity_ax, type_names_humidity, active=0)
-        
-        def _on_humidity_type_change(label: str) -> None:
-            current_state_humidity["type"] = label
-            _update_humidity_plot()
-        
-        type_selector_humidity.on_clicked(_on_humidity_type_change)
-        _update_humidity_plot()
 
     atmosphere_2m_cycle = layer_cycles.get("Atmosphere (2 m)")
 
-    data_dir_value = os.getenv("DATA_DIR")
-    if not data_dir_value:
-        raise ValueError("DATA_DIR environment variable must be set to save GIFs.")
-    data_dir = Path(data_dir_value).expanduser()
-    data_dir.mkdir(parents=True, exist_ok=True)
+    if not args.headless:
+        data_dir_value = os.getenv("DATA_DIR")
+        if not data_dir_value:
+            raise ValueError("DATA_DIR environment variable must be set to save GIFs.")
+        data_dir = Path(data_dir_value).expanduser()
+        data_dir.mkdir(parents=True, exist_ok=True)
 
-    def _save_cycle(name: str, field: np.ndarray, filename: str) -> None:
-        output_path = data_dir / filename
-        save_monthly_temperature_gif(
-            lon2d,
-            lat2d,
-            field,
-            output_path=output_path,
-            title=f"{name} Temperature ({unit})",
-            colorbar_label=f"Temperature ({unit})",
-            use_fahrenheit=args.fahrenheit,
-        )
-        print(f"Saved {name.lower()} temperature animation to {output_path}")
+        def _save_cycle(name: str, field: np.ndarray, filename: str) -> None:
+            output_path = data_dir / filename
+            save_monthly_temperature_gif(
+                lon2d,
+                lat2d,
+                field,
+                output_path=output_path,
+                title=f"{name} Temperature ({unit})",
+                colorbar_label=f"Temperature ({unit})",
+                use_fahrenheit=args.fahrenheit,
+            )
+            print(f"Saved {name.lower()} temperature animation to {output_path}")
 
-    _save_cycle("Surface", surface_cycle, "surface_temperature_cycle.gif")
-    if atmosphere_2m_cycle is not None:
-        _save_cycle("Two-meter", atmosphere_2m_cycle, "two_meter_temperature_cycle.gif")
-    if atmosphere_cycle is not None:
-        _save_cycle("Atmosphere", atmosphere_cycle, "atmosphere_temperature_cycle.gif")
+        _save_cycle("Surface", surface_cycle, "surface_temperature_cycle.gif")
+        if atmosphere_2m_cycle is not None:
+            _save_cycle("Two-meter", atmosphere_2m_cycle, "two_meter_temperature_cycle.gif")
+        if atmosphere_cycle is not None:
+            _save_cycle("Atmosphere", atmosphere_cycle, "atmosphere_temperature_cycle.gif")
 
     for idx in range(12):
         print(f"{month_names[idx]} statistics:")
@@ -702,13 +704,14 @@ def main() -> None:
         )
         print(f"  Wind speed 10 m mean (land/ocean) [m/s]: N/A ({reason})")
 
-    plot_layered_monthly_temperature_cycle(
-        lon2d,
-        lat2d,
-        layer_cycles,
-        title=f"Temperature Cycle ({unit})",
-        use_fahrenheit=args.fahrenheit,
-    )
+    if not args.headless:
+        plot_layered_monthly_temperature_cycle(
+            lon2d,
+            lat2d,
+            layer_cycles,
+            title=f"Temperature Cycle ({unit})",
+            use_fahrenheit=args.fahrenheit,
+        )
 
 
 if __name__ == "__main__":

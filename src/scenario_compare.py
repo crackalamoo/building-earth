@@ -19,6 +19,7 @@ from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.runtime.cli import (
     add_boolean_flag,
+    add_headless_argument,
     add_resolution_argument,
     add_solar_constant_argument,
     add_temperature_unit_argument,
@@ -236,6 +237,7 @@ def main() -> None:
         parser,
         help_text="Display anomalies in degrees Fahrenheit instead of Celsius",
     )
+    add_headless_argument(parser)
 
     args = parser.parse_args()
 
@@ -381,17 +383,18 @@ def main() -> None:
     for anomaly in anomalies:
         anomalies[anomaly] = np.concatenate([anomalies[anomaly], np.mean(anomalies[anomaly], axis=0, keepdims=True)], axis=0)
 
-    plot_layered_monthly_temperature_cycle(
-        lon2d,
-        lat2d,
-        anomalies,
-        title=f"Experiment − Baseline Temperature Anomalies ({unit})",
-        cmap=cmocean.cm.balance,
-        norm=norm,
-        colorbar_label=f"Temperature anomaly ({unit})",
-        use_fahrenheit=args.fahrenheit,
-        value_is_delta=True,
-    )
+    if not args.headless:
+        plot_layered_monthly_temperature_cycle(
+            lon2d,
+            lat2d,
+            anomalies,
+            title=f"Experiment − Baseline Temperature Anomalies ({unit})",
+            cmap=cmocean.cm.balance,
+            norm=norm,
+            colorbar_label=f"Temperature anomaly ({unit})",
+            use_fahrenheit=args.fahrenheit,
+            value_is_delta=True,
+        )
 
 
 if __name__ == "__main__":
