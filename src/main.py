@@ -21,6 +21,7 @@ from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfi
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
+from climate_sim.physics.atmosphere.convection import ConvectionConfig
 from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.plotting import (
     plot_layered_monthly_temperature_cycle,
@@ -97,6 +98,7 @@ def main() -> None:
     advection_config = AdvectionConfig(enabled=args.advection)
     wind_config = WindConfig()
     boundary_layer_config = BoundaryLayerConfig(enabled=args.boundary_layer)
+    convection_config = ConvectionConfig(enabled=args.convection)
 
     model_config = ModelConfig(
         radiation=radiation_config,
@@ -107,6 +109,7 @@ def main() -> None:
         sensible_heat=sensible_heat_config,
         latent_heat=latent_heat_config,
         boundary_layer=boundary_layer_config,
+        convection=convection_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )

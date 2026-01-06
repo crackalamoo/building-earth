@@ -178,6 +178,15 @@ def add_common_model_arguments(
         help_enable="Enable the atmospheric boundary layer (750m, optically thin) (default)",
         help_disable="Disable the boundary layer (use 2-layer model)",
     )
+    add_boolean_flag(
+        parser,
+        dest="convection",
+        default=True,
+        enable_option="--convection",
+        disable_option="--no-convection",
+        help_enable="Enable convective lapse rate adjustment (default)",
+        help_disable="Disable convective adjustment",
+    )
     if include_temperature_unit:
         add_temperature_unit_argument(
             parser,

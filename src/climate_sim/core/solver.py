@@ -606,6 +606,7 @@ def solve_periodic_climate(
             sensible_heat_cfg=operators.sensible_heat_cfg,
             latent_heat_cfg=operators.latent_heat_cfg,
             boundary_layer_cfg=operators.boundary_layer_cfg,
+            convection_cfg=operators.convection_cfg,
             wind_model=operators.wind_model,
             advection_operator=operators.advection_operator,
             lon2d=operators.lon2d,

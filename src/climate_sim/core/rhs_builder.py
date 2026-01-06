@@ -13,6 +13,7 @@ import climate_sim.physics.radiation as radiation
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeModel, SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeModel, LatentHeatExchangeConfig
 from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
+from climate_sim.physics.atmosphere.convection import ConvectionModel, ConvectionConfig
 from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.diffusion import LayeredDiffusionOperator
@@ -50,6 +51,7 @@ class RhsBuildInputs:
     sensible_heat_cfg: SensibleHeatExchangeConfig
     latent_heat_cfg: LatentHeatExchangeConfig
     boundary_layer_cfg: BoundaryLayerConfig
+    convection_cfg: ConvectionConfig
     wind_model: WindModel | None
     advection_operator: AdvectionOperator | None
     lon2d: FloatArray
@@ -136,6 +138,16 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             boundary_layer_heat_capacity_J_m2_K=(
                 inputs.radiation_config.boundary_layer_heat_capacity if inputs.boundary_layer_cfg.enabled else None
             ),
+        )
+
+    convection_model: ConvectionModel | None = None
+    if inputs.radiation_config.include_atmosphere and inputs.convection_cfg.enabled:
+        convection_model = ConvectionModel(
+            atmosphere_heat_capacity_J_m2_K=inputs.radiation_config.atmosphere_heat_capacity,
+            boundary_layer_heat_capacity_J_m2_K=(
+                inputs.radiation_config.boundary_layer_heat_capacity if inputs.boundary_layer_cfg.enabled else None
+            ),
+            config=inputs.convection_cfg,
         )
 
     def rhs(state: ModelState, insolation: np.ndarray, declination_rad: float | np.ndarray) -> np.ndarray:
@@ -268,6 +280,14 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     radiative[1] += boundary_tendency
                     radiative[2] += atmosphere_tendency
 
+                if convection_model is not None:
+                    atmosphere_tendency, boundary_tendency = convection_model.compute_tendencies(
+                        atmosphere_temp_K=atmosphere_temperature,
+                        boundary_layer_temp_K=boundary_temperature,
+                    )
+                    radiative[1] += boundary_tendency
+                    radiative[2] += atmosphere_tendency
+
             return radiative
         if inputs.diffusion_operator.surface.enabled:
             radiative = radiative + inputs.diffusion_operator.surface.tendency(state.temperature)
@@ -376,6 +396,28 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     cross = cross + lh_cross
                 else:
                     cross = lh_cross
+
+            # Compute convection Jacobian if enabled (only for 3-layer system)
+            if convection_model is not None and nlayers == 3:
+                (conv_atm_diag, conv_atm_cross), (conv_boundary_diag, conv_boundary_cross) = (
+                    convection_model.compute_jacobian(
+                        atmosphere_temp_K=state.temperature[2],
+                        boundary_layer_temp_K=state.temperature[1],
+                    )
+                )
+                # Update diagonal terms for atmosphere (layer 2) and boundary (layer 1)
+                diag[2] = diag[2] + conv_atm_diag
+                diag[1] = diag[1] + conv_boundary_diag
+                # Update cross terms
+                if cross is not None:
+                    # Cross terms connect atmosphere (2) and boundary (1)
+                    cross[2, 1] = cross[2, 1] + conv_atm_cross
+                    cross[1, 2] = cross[1, 2] + conv_boundary_cross
+                else:
+                    # Initialize cross if it doesn't exist
+                    cross = np.zeros((nlayers, nlayers) + diag[0].shape)
+                    cross[2, 1] = conv_atm_cross
+                    cross[1, 2] = conv_boundary_cross
 
             return Linearization(
                 diag=diag,

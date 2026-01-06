@@ -19,6 +19,7 @@ from climate_sim.data.landmask import (
 )
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
+from climate_sim.physics.atmosphere.convection import ConvectionConfig
 from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.diffusion import (
     LayeredDiffusionOperator,
@@ -72,6 +73,7 @@ class ModelOperators:
     sensible_heat_cfg: SensibleHeatExchangeConfig
     latent_heat_cfg: LatentHeatExchangeConfig
     boundary_layer_cfg: BoundaryLayerConfig
+    convection_cfg: ConvectionConfig
 
 
 def build_model_operators(
@@ -120,6 +122,7 @@ def build_model_operators(
     sensible_heat_cfg = model_config.sensible_heat
     latent_heat_cfg = model_config.latent_heat
     boundary_layer_cfg = model_config.boundary_layer
+    convection_cfg = model_config.convection
     radiation_config = model_config.radiation
     diffusion_config = model_config.diffusion
     wind_config = model_config.wind
@@ -253,4 +256,5 @@ def build_model_operators(
         sensible_heat_cfg=sensible_heat_cfg,
         latent_heat_cfg=latent_heat_cfg,
         boundary_layer_cfg=boundary_layer_cfg,
+        convection_cfg=convection_cfg,
     )
