@@ -31,6 +31,7 @@ class ConvectionConfig:
     lapse_rate_K_per_m: float = STANDARD_LAPSE_RATE_K_PER_M
     atmosphere_height_m: float = ATMOSPHERE_LAYER_HEIGHT_M
     boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M
+    relaxation_timescale_months: float = 0.1  # Fast but not instantaneous
 
 
 class ConvectionModel:
@@ -120,20 +121,24 @@ class ConvectionModel:
         # Energy conservation: C_atm * dT_atm + C_boundary * dT_boundary = 0
         # Target constraint: (T_boundary + dT_boundary) - (T_atm + dT_atm) = target_diff
         #
-        # Solving:
+        # Solving for instantaneous equilibration:
         # dT_atm = excess_diff / (1 + C_atm / C_boundary)
         # dT_boundary = -(C_atm / C_boundary) * dT_atm
+        #
+        # Apply relaxation timescale to make adjustment gradual rather than instantaneous.
+        # This improves Newton solver convergence and is more physically realistic.
 
         denominator = 1.0 + self._capacity_ratio
+        relaxation_factor = 1.0 / self._config.relaxation_timescale_months
 
         # Atmosphere warms where unstable (smooth transition through zero)
-        dT_atm = active_excess / denominator
+        # Divided by relaxation timescale to make adjustment gradual
+        dT_atm = (active_excess / denominator) * relaxation_factor
 
         # Boundary layer cools where unstable
         dT_boundary = -self._capacity_ratio * dT_atm
 
-        # At monthly timestep, this adjustment happens "instantaneously"
-        # Return as tendency per month (adjustment happens within the month)
+        # Return as tendency per month
         return dT_atm, dT_boundary
 
     def compute_jacobian(
@@ -170,20 +175,22 @@ class ConvectionModel:
 
         # Jacobian coefficients (constant where convection active, zero elsewhere)
         denominator = 1.0 + self._capacity_ratio
-        coeff = 1.0 / denominator
+        relaxation_factor = 1.0 / self._config.relaxation_timescale_months
+        coeff = (1.0 / denominator) * relaxation_factor
 
         # Since we use max(0, excess_diff), the derivatives are:
         # d(active_excess)/dT_atm = -1 where unstable, 0 where stable
         # d(active_excess)/dT_boundary = +1 where unstable, 0 where stable
         #
-        # d(atm_tendency)/dT_atm = -1/denominator (where unstable)
-        # d(atm_tendency)/dT_boundary = +1/denominator (where unstable)
+        # Including relaxation factor:
+        # d(atm_tendency)/dT_atm = -(1/denominator) * relaxation_factor (where unstable)
+        # d(atm_tendency)/dT_boundary = +(1/denominator) * relaxation_factor (where unstable)
         d_atm_d_Tatm = np.where(unstable_mask, -coeff, 0.0)
         d_atm_d_Tboundary = np.where(unstable_mask, coeff, 0.0)
 
-        # d(boundary_tendency)/dT_atm = (C_atm/C_boundary)/denominator (where unstable)
-        # d(boundary_tendency)/dT_boundary = -(C_atm/C_boundary)/denominator (where unstable)
-        coeff_boundary = self._capacity_ratio / denominator
+        # d(boundary_tendency)/dT_atm = (C_atm/C_boundary) * (1/denominator) * relaxation_factor
+        # d(boundary_tendency)/dT_boundary = -(C_atm/C_boundary) * (1/denominator) * relaxation_factor
+        coeff_boundary = self._capacity_ratio * coeff
         d_boundary_d_Tatm = np.where(unstable_mask, coeff_boundary, 0.0)
         d_boundary_d_Tboundary = np.where(unstable_mask, -coeff_boundary, 0.0)
 
