@@ -25,13 +25,15 @@ class ConvectionConfig:
     When the observed lapse rate between atmosphere and boundary layer exceeds
     the standard adiabatic lapse rate, convection redistributes heat to restore
     stability. Only active when boundary layer is enabled.
+
+    Convection is applied as a physical constraint after solver steps, not as
+    a tendency in the equations.
     """
 
     enabled: bool = True
     lapse_rate_K_per_m: float = STANDARD_LAPSE_RATE_K_PER_M
     atmosphere_height_m: float = ATMOSPHERE_LAYER_HEIGHT_M
     boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M
-    relaxation_timescale_months: float = 0.1  # Fast but not instantaneous
 
 
 class ConvectionModel:
@@ -39,7 +41,7 @@ class ConvectionModel:
 
     Applies instantaneous adjustment when the atmospheric temperature gradient
     exceeds the stable lapse rate, representing convective mixing at monthly
-    timescales.
+    timescales. This is applied as a physical constraint, not as a tendency.
     """
 
     def __init__(
@@ -78,123 +80,46 @@ class ConvectionModel:
         """Whether convection is enabled and applicable (requires boundary layer)."""
         return self._config.enabled and self._C_boundary is not None
 
-    def compute_tendencies(
+    def apply_convective_adjustment(
         self,
         atmosphere_temp_K: np.ndarray,
         boundary_layer_temp_K: np.ndarray | None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Compute convective heat tendencies for atmosphere and boundary layer.
+        """Apply convective adjustment as a physical constraint.
 
-        When the observed lapse rate exceeds the standard rate, redistributes heat
-        to restore the stable temperature difference while conserving total energy.
+        Adjusts temperatures to enforce the stable lapse rate constraint when exceeded.
+        This should be called after the solver computes a solution from other physics.
 
         Args:
             atmosphere_temp_K: Temperature of free atmosphere [K]
             boundary_layer_temp_K: Temperature of boundary layer [K] or None
 
         Returns:
-            Tuple of (atmosphere_tendency, boundary_tendency) [K/month]
-            Returns zeros if disabled or boundary layer absent
+            Tuple of (adjusted_atmosphere_temp, adjusted_boundary_temp) [K]
+            Returns unchanged temperatures if disabled or boundary layer absent
         """
         if not self.enabled or boundary_layer_temp_K is None:
-            # Return zero tendencies
-            zeros = np.zeros_like(atmosphere_temp_K)
-            return zeros, zeros
+            return atmosphere_temp_K.copy(), boundary_layer_temp_K.copy()
 
         # Current temperature difference (boundary - atmosphere)
-        # Positive because boundary layer is warmer (at lower altitude)
         current_diff = boundary_layer_temp_K - atmosphere_temp_K
 
         # Target stable temperature difference based on lapse rate
-        # This is how much cooler the atmosphere should be than the boundary
         target_diff = self._config.lapse_rate_K_per_m * self._delta_z
 
-        # Excess lapse rate (positive when unstable)
+        # Only adjust where unstable (current_diff > target_diff)
         excess_diff = current_diff - target_diff
-
-        # Only apply convection when atmosphere is too cold (unstable lapse rate)
-        # Use max(0, excess) to create a smooth transition at the threshold
-        # This avoids discontinuities that hurt Newton convergence
-        active_excess = np.maximum(0.0, excess_diff)
-
-        # Calculate required temperature adjustments to reach target difference
-        # Energy conservation: C_atm * dT_atm + C_boundary * dT_boundary = 0
-        # Target constraint: (T_boundary + dT_boundary) - (T_atm + dT_atm) = target_diff
-        #
-        # Solving for instantaneous equilibration:
-        # dT_atm = excess_diff / (1 + C_atm / C_boundary)
-        # dT_boundary = -(C_atm / C_boundary) * dT_atm
-        #
-        # Apply relaxation timescale to make adjustment gradual rather than instantaneous.
-        # This improves Newton solver convergence and is more physically realistic.
-
-        denominator = 1.0 + self._capacity_ratio
-        relaxation_factor = 1.0 / self._config.relaxation_timescale_months
-
-        # Atmosphere warms where unstable (smooth transition through zero)
-        # Divided by relaxation timescale to make adjustment gradual
-        dT_atm = (active_excess / denominator) * relaxation_factor
-
-        # Boundary layer cools where unstable
-        dT_boundary = -self._capacity_ratio * dT_atm
-
-        # Return as tendency per month
-        return dT_atm, dT_boundary
-
-    def compute_jacobian(
-        self,
-        atmosphere_temp_K: np.ndarray,
-        boundary_layer_temp_K: np.ndarray | None,
-    ) -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
-        """Compute Jacobian of convective tendencies.
-
-        Returns linearization of tendency with respect to temperatures for
-        Newton solver convergence.
-
-        Args:
-            atmosphere_temp_K: Temperature of free atmosphere [K]
-            boundary_layer_temp_K: Temperature of boundary layer [K] or None
-
-        Returns:
-            ((d(atm_tendency)/dT_atm, d(atm_tendency)/dT_boundary),
-             (d(boundary_tendency)/dT_atm, d(boundary_tendency)/dT_boundary))
-            Returns zeros if disabled or boundary layer absent
-        """
-        if not self.enabled or boundary_layer_temp_K is None:
-            zeros = np.zeros_like(atmosphere_temp_K)
-            return (zeros, zeros), (zeros, zeros)
-
-        # Determine where convection is active
-        current_diff = boundary_layer_temp_K - atmosphere_temp_K
-        target_diff = self._config.lapse_rate_K_per_m * self._delta_z
-        excess_diff = current_diff - target_diff
-
-        # Convection is active where excess_diff > 0
-        # Using >= 0 for the mask to match the max(0, excess_diff) behavior
         unstable_mask = excess_diff > 0.0
 
-        # Jacobian coefficients (constant where convection active, zero elsewhere)
+        # Where unstable, redistribute the excess to restore stable lapse rate
+        # Energy conservation: C_atm * dT_atm + C_boundary * dT_boundary = 0
+        # Target: (T_boundary + dT_boundary) - (T_atm + dT_atm) = target_diff
         denominator = 1.0 + self._capacity_ratio
-        relaxation_factor = 1.0 / self._config.relaxation_timescale_months
-        coeff = (1.0 / denominator) * relaxation_factor
 
-        # Since we use max(0, excess_diff), the derivatives are:
-        # d(active_excess)/dT_atm = -1 where unstable, 0 where stable
-        # d(active_excess)/dT_boundary = +1 where unstable, 0 where stable
-        #
-        # Including relaxation factor:
-        # d(atm_tendency)/dT_atm = -(1/denominator) * relaxation_factor (where unstable)
-        # d(atm_tendency)/dT_boundary = +(1/denominator) * relaxation_factor (where unstable)
-        d_atm_d_Tatm = np.where(unstable_mask, -coeff, 0.0)
-        d_atm_d_Tboundary = np.where(unstable_mask, coeff, 0.0)
+        dT_atm = np.where(unstable_mask, excess_diff / denominator, 0.0)
+        dT_boundary = np.where(unstable_mask, -self._capacity_ratio * dT_atm, 0.0)
 
-        # d(boundary_tendency)/dT_atm = (C_atm/C_boundary) * (1/denominator) * relaxation_factor
-        # d(boundary_tendency)/dT_boundary = -(C_atm/C_boundary) * (1/denominator) * relaxation_factor
-        coeff_boundary = self._capacity_ratio * coeff
-        d_boundary_d_Tatm = np.where(unstable_mask, coeff_boundary, 0.0)
-        d_boundary_d_Tboundary = np.where(unstable_mask, -coeff_boundary, 0.0)
+        adjusted_atm = atmosphere_temp_K + dT_atm
+        adjusted_boundary = boundary_layer_temp_K + dT_boundary
 
-        return (d_atm_d_Tatm, d_atm_d_Tboundary), (
-            d_boundary_d_Tboundary,
-            d_boundary_d_Tatm,
-        )
+        return adjusted_atm, adjusted_boundary

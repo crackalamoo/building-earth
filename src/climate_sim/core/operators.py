@@ -19,7 +19,7 @@ from climate_sim.data.landmask import (
 )
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
-from climate_sim.physics.atmosphere.convection import ConvectionConfig
+from climate_sim.physics.atmosphere.convection import ConvectionConfig, ConvectionModel
 from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.diffusion import (
     LayeredDiffusionOperator,
@@ -68,6 +68,7 @@ class ModelOperators:
     topographic_elevation: np.ndarray
     surface_context: SurfaceHeatCapacityContext
     solver_cache: LinearSolveCache
+    convection_model: ConvectionModel | None
     # Configs
     radiation_config: RadiationConfig
     sensible_heat_cfg: SensibleHeatExchangeConfig
@@ -200,6 +201,15 @@ def build_model_operators(
         config=advection_config,
     )
 
+    # Build convection model
+    convection_model = None
+    if convection_cfg.enabled and boundary_layer_cfg.enabled:
+        convection_model = ConvectionModel(
+            atmosphere_heat_capacity_J_m2_K=radiation_config.atmosphere_heat_capacity,
+            boundary_layer_heat_capacity_J_m2_K=radiation_config.boundary_layer_heat_capacity,
+            config=convection_cfg,
+        )
+
     # Compute month durations
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
 
@@ -252,6 +262,7 @@ def build_model_operators(
         topographic_elevation=topographic_elevation,
         surface_context=surface_context,
         solver_cache=solver_cache,
+        convection_model=convection_model,
         radiation_config=radiation_config,
         sensible_heat_cfg=sensible_heat_cfg,
         latent_heat_cfg=latent_heat_cfg,

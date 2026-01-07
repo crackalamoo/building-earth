@@ -81,6 +81,7 @@ def monthly_step(
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext,
+    convection_model=None,
 ) -> ModelState:
     """Advance the column temperature one implicit backward-Euler step."""
     with time_block("monthly_step"):
@@ -374,6 +375,15 @@ def monthly_step(
         # Return a state that is internally consistent with the converged temperature.
         # (Still lagged within the step, but updated for the returned diagnostic state.)
         final_temp = np.maximum(temp_next, temperature_floor)
+
+        # Apply convective adjustment as a physical constraint
+        if convection_model is not None and convection_model.enabled and final_temp.shape[0] == 3:
+            adjusted_atm, adjusted_boundary = convection_model.apply_convective_adjustment(
+                atmosphere_temp_K=final_temp[2],
+                boundary_layer_temp_K=final_temp[1],
+            )
+            final_temp = np.stack([final_temp[0], adjusted_boundary, adjusted_atm])
+
         final_state = _init_state(final_temp)
         final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, final_temp[0])
         # Update diagnostics for output.
@@ -405,6 +415,7 @@ def evolve_year(
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext,
+    convection_model=None,
 ) -> list[ModelState]:
     """Propagate the state through 12 implicit steps"""
     states: list[ModelState] = []
@@ -422,6 +433,7 @@ def evolve_year(
                 temperature_floor=temperature_floor,
                 solver_cache=solver_cache,
                 surface_context=surface_context,
+                convection_model=convection_model,
             )
             states.append(state)
         return states
@@ -472,6 +484,7 @@ def find_periodic_climate_cycle(
     surface_context: SurfaceHeatCapacityContext,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
+    convection_model=None,
 ) -> list[ModelState]:
     """Solve for the periodic annual climate cycle using Anderson acceleration.
 
@@ -500,6 +513,7 @@ def find_periodic_climate_cycle(
                     temperature_floor=temperature_floor,
                     solver_cache=solver_cache,
                     surface_context=surface_context,
+                    convection_model=convection_model,
                 )
 
                 advanced = advanced_states[-1]
@@ -606,7 +620,6 @@ def solve_periodic_climate(
             sensible_heat_cfg=operators.sensible_heat_cfg,
             latent_heat_cfg=operators.latent_heat_cfg,
             boundary_layer_cfg=operators.boundary_layer_cfg,
-            convection_cfg=operators.convection_cfg,
             wind_model=operators.wind_model,
             advection_operator=operators.advection_operator,
             lon2d=operators.lon2d,
@@ -639,6 +652,7 @@ def solve_periodic_climate(
         surface_context=operators.surface_context,
         temperature_floor=operators.radiation_config.temperature_floor,
         solver_cache=operators.solver_cache,
+        convection_model=operators.convection_model,
     )
 
     # Update wind fields if wind model is enabled
