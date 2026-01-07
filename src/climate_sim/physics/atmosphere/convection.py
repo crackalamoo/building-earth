@@ -108,26 +108,29 @@ class ConvectionModel:
         # This is how much cooler the atmosphere should be than the boundary
         target_diff = self._config.lapse_rate_K_per_m * self._delta_z
 
+        # Excess lapse rate (positive when unstable)
+        excess_diff = current_diff - target_diff
+
         # Only apply convection when atmosphere is too cold (unstable lapse rate)
-        # i.e., when the temperature decrease exceeds the stable lapse rate
-        unstable_mask = current_diff > target_diff
+        # Use max(0, excess) to create a smooth transition at the threshold
+        # This avoids discontinuities that hurt Newton convergence
+        active_excess = np.maximum(0.0, excess_diff)
 
         # Calculate required temperature adjustments to reach target difference
         # Energy conservation: C_atm * dT_atm + C_boundary * dT_boundary = 0
         # Target constraint: (T_boundary + dT_boundary) - (T_atm + dT_atm) = target_diff
         #
         # Solving:
-        # dT_atm = (current_diff - target_diff) / (1 + C_atm / C_boundary)
+        # dT_atm = excess_diff / (1 + C_atm / C_boundary)
         # dT_boundary = -(C_atm / C_boundary) * dT_atm
 
-        excess_diff = current_diff - target_diff
         denominator = 1.0 + self._capacity_ratio
 
-        # Atmosphere warms (positive tendency) where unstable
-        dT_atm = np.where(unstable_mask, excess_diff / denominator, 0.0)
+        # Atmosphere warms where unstable (smooth transition through zero)
+        dT_atm = active_excess / denominator
 
-        # Boundary layer cools (negative tendency) where unstable
-        dT_boundary = np.where(unstable_mask, -self._capacity_ratio * dT_atm, 0.0)
+        # Boundary layer cools where unstable
+        dT_boundary = -self._capacity_ratio * dT_atm
 
         # At monthly timestep, this adjustment happens "instantaneously"
         # Return as tendency per month (adjustment happens within the month)
@@ -159,12 +162,20 @@ class ConvectionModel:
         # Determine where convection is active
         current_diff = boundary_layer_temp_K - atmosphere_temp_K
         target_diff = self._config.lapse_rate_K_per_m * self._delta_z
-        unstable_mask = current_diff > target_diff
+        excess_diff = current_diff - target_diff
+
+        # Convection is active where excess_diff > 0
+        # Using >= 0 for the mask to match the max(0, excess_diff) behavior
+        unstable_mask = excess_diff > 0.0
 
         # Jacobian coefficients (constant where convection active, zero elsewhere)
         denominator = 1.0 + self._capacity_ratio
         coeff = 1.0 / denominator
 
+        # Since we use max(0, excess_diff), the derivatives are:
+        # d(active_excess)/dT_atm = -1 where unstable, 0 where stable
+        # d(active_excess)/dT_boundary = +1 where unstable, 0 where stable
+        #
         # d(atm_tendency)/dT_atm = -1/denominator (where unstable)
         # d(atm_tendency)/dT_boundary = +1/denominator (where unstable)
         d_atm_d_Tatm = np.where(unstable_mask, -coeff, 0.0)
