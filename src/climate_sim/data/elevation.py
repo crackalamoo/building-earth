@@ -50,7 +50,11 @@ def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
 
     dataset_path = Path(path)
     if not dataset_path.exists():
-        raise FileNotFoundError(f"Elevation data file not found at {dataset_path}")
+        # Try to download the data
+        data_dir = dataset_path.parent
+        download_etopo(data_dir)
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"Elevation data file not found at {dataset_path} even after download attempt")
 
     data = rioxarray.open_rasterio(dataset_path)
     assert isinstance(data, xr.DataArray)
