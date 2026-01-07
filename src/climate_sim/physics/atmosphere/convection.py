@@ -177,6 +177,6 @@ class ConvectionModel:
         d_boundary_d_Tboundary = np.where(unstable_mask, -coeff_boundary, 0.0)
 
         return (d_atm_d_Tatm, d_atm_d_Tboundary), (
-            d_boundary_d_Tatm,
             d_boundary_d_Tboundary,
+            d_boundary_d_Tatm,
         )
