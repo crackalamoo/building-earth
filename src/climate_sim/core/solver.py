@@ -620,6 +620,7 @@ def solve_periodic_climate(
     *,
     model_config: ModelConfig,
     return_layer_map: bool = False,
+    _coarse_init_depth: int = 2,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Solve for the annual periodic climate cycle.
 
@@ -636,6 +637,9 @@ def solve_periodic_climate(
     return_layer_map : bool, default=False
         If True, return temperature fields for all layers. If False, return
         only surface temperature.
+    _coarse_init_depth : int, default=2
+        Internal parameter controlling recursion depth for coarse initialization.
+        When >0, allows coarse resolution initialization. Decremented on recursion.
 
     Returns
     -------
@@ -674,15 +678,20 @@ def solve_periodic_climate(
     # Create initial guess: use coarse resolution initialization for resolutions <= 20°
     with time_block("initial_guess"):
         coarse_resolution = resolution_deg * 2
-        use_coarse_init = resolution_deg <= 20.0 and coarse_resolution <= 60.0
+        should_use_coarse = (
+            _coarse_init_depth > 0
+            and resolution_deg <= 20.0
+            and coarse_resolution <= 60.0
+        )
 
-        if use_coarse_init:
+        if should_use_coarse:
             print(f"Using coarse resolution initialization: solving at {coarse_resolution}° first")
-            # Solve at coarse resolution
+            # Solve at coarse resolution with decremented depth
             _, _, coarse_layers = solve_periodic_climate(
                 resolution_deg=coarse_resolution,
                 model_config=model_config,
                 return_layer_map=True,
+                _coarse_init_depth=_coarse_init_depth - 1,
             )
 
             # Extract coarse temperature (get the first month as initial state)
