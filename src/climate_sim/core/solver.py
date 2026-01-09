@@ -70,14 +70,6 @@ INEXACT_NEWTON_PRECONDITIONER = os.environ.get("INEXACT_NEWTON_PRECONDITIONER", 
 INEXACT_NEWTON_ILU_DROP_TOL = float(os.environ.get("INEXACT_NEWTON_ILU_DROP_TOL", "1e-4"))
 INEXACT_NEWTON_ILU_FILL_FACTOR = float(os.environ.get("INEXACT_NEWTON_ILU_FILL_FACTOR", "10"))
 
-# Optional: reuse the LU/ILU preconditioner across *monthly steps*.
-# Default off because a stale preconditioner can increase Krylov iterations.
-REUSE_PRECONDITIONER_ACROSS_MONTHS = os.environ.get(
-    "INEXACT_NEWTON_REUSE_PRECONDITIONER_ACROSS_MONTHS", "0"
-).strip() in {"1", "true", "True"}
-# If enabled, refactor immediately when the Krylov solve takes too many iterations.
-MAX_KRYLOV_ITERS_BEFORE_REFACTOR = int(os.environ.get("INEXACT_NEWTON_MAX_KRYLOV_ITERS_BEFORE_REFACTOR", "30"))
-
 
 type FloatArray = NDArray[np.floating]
 
@@ -177,7 +169,6 @@ def monthly_step(
         # implicit solver loop
         preconditioner_solve: Callable[[np.ndarray], np.ndarray] | None = None
         preconditioner_age = 10**9
-        preconditioner_from_cache = False
         # Reuse the last accepted damping factor as a hint for backtracking.
         # We still *always* try the full Newton step first to preserve convergence behavior.
         damping_hint = 1.0
@@ -187,17 +178,6 @@ def monthly_step(
         cached_for_iter: int | None = None
         # LGMRES can reuse a small subspace across solves.
         krylov_outer_v: list[np.ndarray] = []
-
-        # Reuse LU/ILU preconditioner across *monthly steps* on the same grid/layer count.
-        nlayers_key = int(temp_next.shape[0])
-        nlat_key, nlon_key = int(temp_next.shape[1]), int(temp_next.shape[2])
-        precond_key = (nlayers_key, nlat_key * nlon_key)
-        if REUSE_PRECONDITIONER_ACROSS_MONTHS and solver_cache is not None:
-            cached = solver_cache.newton_preconditioners.get(precond_key)
-            if cached is not None:
-                preconditioner_solve = cached
-                preconditioner_age = int(solver_cache.newton_preconditioner_ages.get(precond_key, 10**9))
-                preconditioner_from_cache = True
 
         def _solve_linear_system(
             jacobian: sparse.csc_matrix,
@@ -213,7 +193,7 @@ def monthly_step(
             - We do NOT cache factorisations across iterations in the global cache,
               because Jacobian values change each iteration.
             """
-            nonlocal preconditioner_solve, preconditioner_age, preconditioner_from_cache
+            nonlocal preconditioner_solve, preconditioner_age
 
             if (preconditioner_solve is None) or (preconditioner_age >= INEXACT_NEWTON_REFACTORIZE_EVERY):
                 with time_block("factorize_solver"):
@@ -231,7 +211,6 @@ def monthly_step(
                     else:
                         preconditioner_solve = splinalg.factorized(jacobian)
                 preconditioner_age = 0
-                preconditioner_from_cache = False
 
             assert preconditioner_solve is not None
 
@@ -245,11 +224,6 @@ def monthly_step(
                 matvec=preconditioner_solve,
                 dtype=float,
             )
-            krylov_iters = 0
-            def _count_iters(_residual: np.ndarray) -> None:
-                nonlocal krylov_iters
-                krylov_iters += 1
-
             with time_block("gmres_solve"):
                 if INEXACT_NEWTON_KRYLOV == "lgmres":
                     sol, info = splinalg.lgmres(
@@ -262,7 +236,6 @@ def monthly_step(
                         inner_m=INEXACT_NEWTON_GMRES_RESTART,
                         outer_v=krylov_outer_v,
                         store_outer_Av=True,
-                        callback=_count_iters,
                     )
                 else:
                     sol, info = splinalg.gmres(
@@ -273,18 +246,7 @@ def monthly_step(
                         atol=INEXACT_NEWTON_GMRES_ATOL,
                         restart=INEXACT_NEWTON_GMRES_RESTART,
                         maxiter=INEXACT_NEWTON_GMRES_MAXITER,
-                        callback=_count_iters,
                     )
-
-            if preconditioner_from_cache and krylov_iters > MAX_KRYLOV_ITERS_BEFORE_REFACTOR:
-                # Stale preconditioner is hurting: refactorize the current Jacobian and
-                # return a direct solve for this iteration (fast + accurate).
-                with time_block("factorize_solver"):
-                    direct_solve = splinalg.factorized(jacobian)
-                preconditioner_solve = direct_solve
-                preconditioner_age = 0
-                preconditioner_from_cache = False
-                return direct_solve(rhs)
 
             if info != 0:
                 # GMRES did not converge: refresh preconditioner and fall back to direct solve.
@@ -505,10 +467,7 @@ def monthly_step(
                 if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
                     break
 
-        # Persist the preconditioner across months for the same system size (opt-in).
-        if REUSE_PRECONDITIONER_ACROSS_MONTHS and solver_cache is not None and preconditioner_solve is not None:
-            solver_cache.newton_preconditioners[precond_key] = preconditioner_solve
-            solver_cache.newton_preconditioner_ages[precond_key] = int(preconditioner_age)
+        # (No cross-month preconditioner caching: it proved too stale and changed results.)
 
 
         # Return a state that is internally consistent with the converged temperature.

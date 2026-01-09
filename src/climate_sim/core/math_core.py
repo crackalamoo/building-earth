@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict
 
 import numpy as np
 from scipy import sparse
@@ -148,11 +148,6 @@ class LinearSolveCache:
     """Cache for factorized linear solvers and identity matrices."""
     identity_matrices: Dict[int, sparse.csc_matrix] = field(default_factory=dict)
     factorized_solvers: Dict[str, Callable[[np.ndarray], np.ndarray]] = field(default_factory=dict)
-    # Reusable LU/ILU preconditioners for Newton-Krylov, keyed by (nlayers, nlat*nlon).
-    newton_preconditioners: Dict[Tuple[int, int], Callable[[np.ndarray], np.ndarray]] = field(
-        default_factory=dict
-    )
-    newton_preconditioner_ages: Dict[Tuple[int, int], int] = field(default_factory=dict)
 
 DEFAULT_LINEAR_SOLVE_CACHE = LinearSolveCache()
 
