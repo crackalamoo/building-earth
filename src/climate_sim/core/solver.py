@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, Dict
 
 import os
@@ -95,6 +96,29 @@ PERIODIC_ACCEL_MAX_STEP_FROM_BASE_K = float(os.environ.get("PERIODIC_ACCEL_MAX_S
 PERIODIC_ACCEL_MIN_RESIDUAL_99P_K = float(os.environ.get("PERIODIC_ACCEL_MIN_RESIDUAL_99P_K", "2.0"))
 PERIODIC_ACCEL_ATTEMPT_EVERY = int(os.environ.get("PERIODIC_ACCEL_ATTEMPT_EVERY", "5"))
 
+# Cheap safeguarded mixing (no extra year-advance): apply a small step toward the
+# Anderson proposal, and disable it temporarily if residual grows.
+PERIODIC_SAFE_MIXING = os.environ.get("PERIODIC_SAFE_MIXING", "0").strip() in {"1", "true", "True"}
+PERIODIC_SAFE_MIXING_MAX_STEP_K = float(os.environ.get("PERIODIC_SAFE_MIXING_MAX_STEP_K", "0.5"))
+PERIODIC_SAFE_MIXING_START_99P_K = float(os.environ.get("PERIODIC_SAFE_MIXING_START_99P_K", "3.0"))
+PERIODIC_SAFE_MIXING_REJECT_GROWTH = float(os.environ.get("PERIODIC_SAFE_MIXING_REJECT_GROWTH", "0.10"))
+PERIODIC_SAFE_MIXING_COOLDOWN = int(os.environ.get("PERIODIC_SAFE_MIXING_COOLDOWN", "2"))
+
+# Monolithic 12-month periodic solve (Newton on the whole cycle).
+#
+# Unknowns are the temperature fields at each month boundary (12 states). Residuals enforce:
+#   T_{m+1} - M_m(T_m) = 0  (with wrap-around)
+# where M_m is the implicit monthly step operator.
+#
+# This is opt-in since it changes the outer algorithm.
+PERIODIC_CYCLE_NEWTON_MAX_ITERS = int(os.environ.get("PERIODIC_CYCLE_NEWTON_MAX_ITERS", "6"))
+PERIODIC_CYCLE_NEWTON_MAX_STEP_K = float(os.environ.get("PERIODIC_CYCLE_NEWTON_MAX_STEP_K", "1.0"))
+PERIODIC_CYCLE_NEWTON_LINEAR_RTOL = float(os.environ.get("PERIODIC_CYCLE_NEWTON_LINEAR_RTOL", "1e-2"))
+PERIODIC_CYCLE_NEWTON_LINEAR_MAXITER = int(os.environ.get("PERIODIC_CYCLE_NEWTON_LINEAR_MAXITER", "10"))
+PERIODIC_CYCLE_NEWTON_FALLBACK_TO_ANDERSON = os.environ.get(
+    "PERIODIC_CYCLE_NEWTON_FALLBACK_TO_ANDERSON", "1"
+).strip() in {"1", "true", "True"}
+
 
 type FloatArray = NDArray[np.floating]
 
@@ -102,6 +126,13 @@ type RhsFactory = Callable[[RhsBuildInputs], tuple[RhsFn, RhsDerivativeFn]]
 type InitialGuessFn = Callable[[FloatArray, FloatArray, RadiationConfig, FloatArray], FloatArray]
 type MonthlyInsolationLatFn = Callable[[FloatArray], FloatArray]
 type HeatCapacityFieldFn = Callable[[FloatArray, FloatArray], FloatArray]
+
+
+@dataclass(frozen=True, slots=True)
+class MonthSensitivity:
+    """Linearised month map sensitivity: dT_next = S(dT_start)."""
+
+    apply: Callable[[np.ndarray], np.ndarray]
 
 
 def _build_surface_jacobian_block(
@@ -130,7 +161,8 @@ def monthly_step(
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext,
-) -> ModelState:
+    return_sensitivity: bool = False,
+) -> ModelState | tuple[ModelState, MonthSensitivity]:
     """Advance the column temperature one implicit backward-Euler step."""
     with time_block("monthly_step"):
         start_temp = state.temperature
@@ -203,6 +235,9 @@ def monthly_step(
         cached_for_iter: int | None = None
         # LGMRES can reuse a small subspace across solves.
         krylov_outer_v: list[np.ndarray] = []
+        # For periodic-cycle Newton methods, expose the local month map sensitivity.
+        last_jacobian: sparse.csc_matrix | None = None
+        last_direct_solve: Callable[[np.ndarray], np.ndarray] | None = None
 
         def _solve_linear_system(
             jacobian: sparse.csc_matrix,
@@ -218,7 +253,7 @@ def monthly_step(
             - We do NOT cache factorisations across iterations in the global cache,
               because Jacobian values change each iteration.
             """
-            nonlocal preconditioner_solve, preconditioner_age
+            nonlocal preconditioner_solve, preconditioner_age, last_direct_solve
 
             if (preconditioner_solve is None) or (preconditioner_age >= INEXACT_NEWTON_REFACTORIZE_EVERY):
                 with time_block("factorize_solver"):
@@ -238,6 +273,9 @@ def monthly_step(
                 preconditioner_age = 0
 
             assert preconditioner_solve is not None
+            if return_sensitivity and INEXACT_NEWTON_PRECONDITIONER != "ilu":
+                # With LU preconditioning this is the exact solve for the current Jacobian.
+                last_direct_solve = preconditioner_solve
 
             if INEXACT_NEWTON_LINEAR_SOLVER == "lu":
                 # Modified Newton / quasi-Newton step: apply the cached LU solve directly.
@@ -278,6 +316,8 @@ def monthly_step(
                 with time_block("factorize_solver"):
                     direct_solve = splinalg.factorized(jacobian)
                 preconditioner_solve = direct_solve
+                if return_sensitivity:
+                    last_direct_solve = direct_solve
                 preconditioner_age = 0
                 return direct_solve(rhs)
 
@@ -328,6 +368,7 @@ def monthly_step(
                         cached_jacobian = jacobian
                     else:
                         jacobian = cached_jacobian
+                    last_jacobian = jacobian
                     with time_block("linear_solve"):
                         correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
                     correction = correction_flat.reshape((nlat, nlon))[np.newaxis, :, :]
@@ -364,6 +405,7 @@ def monthly_step(
                         jacobian = cached_jacobian
 
                     residual_flat = np.concatenate([residual_surface.ravel(), residual_atmosphere.ravel()], axis=0)
+                    last_jacobian = jacobian
                     with time_block("linear_solve"):
                         correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
@@ -428,6 +470,7 @@ def monthly_step(
                         residual_boundary.ravel(),
                         residual_atmosphere.ravel()
                     ], axis=0)
+                    last_jacobian = jacobian
                     with time_block("linear_solve"):
                         correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
@@ -517,7 +560,48 @@ def monthly_step(
             declination,
             land_mask=surface_context.land_mask,
         )
-        return final_state
+        if not return_sensitivity:
+            return final_state
+
+        if last_jacobian is None:
+            raise RuntimeError("Missing Jacobian for monthly_step sensitivity")
+
+        ceff_final = _effective_surface_capacity(final_temp[0])
+        nlayers_final = int(final_temp.shape[0])
+        nlat, nlon = int(final_temp.shape[1]), int(final_temp.shape[2])
+        size = nlat * nlon
+
+        direct_solve = last_direct_solve
+        if direct_solve is None:
+            # Fallback: compute a direct solve from the last Jacobian.
+            direct_solve = splinalg.factorized(last_jacobian)
+
+        def _apply_sensitivity(dtemp: np.ndarray) -> np.ndarray:
+            dtemp_arr = np.asarray(dtemp, dtype=float)
+            if dtemp_arr.shape != final_temp.shape:
+                raise ValueError("Sensitivity input must match temperature shape")
+            rhs_blocks: list[np.ndarray] = []
+            rhs_blocks.append((ceff_final * dtemp_arr[0]).ravel())
+            if nlayers_final >= 2:
+                rhs_blocks.append(dtemp_arr[1].ravel())
+            if nlayers_final >= 3:
+                rhs_blocks.append(dtemp_arr[2].ravel())
+            rhs_flat = np.concatenate(rhs_blocks, axis=0)
+            out_flat = direct_solve(rhs_flat)
+            if nlayers_final == 1:
+                out = out_flat.reshape((nlat, nlon))[np.newaxis, :, :]
+            elif nlayers_final == 2:
+                out0 = out_flat[:size].reshape((nlat, nlon))
+                out1 = out_flat[size:].reshape((nlat, nlon))
+                out = np.stack([out0, out1])
+            else:
+                out0 = out_flat[:size].reshape((nlat, nlon))
+                out1 = out_flat[size:2 * size].reshape((nlat, nlon))
+                out2 = out_flat[2 * size:].reshape((nlat, nlon))
+                out = np.stack([out0, out1, out2])
+            return out
+
+        return final_state, MonthSensitivity(apply=_apply_sensitivity)
 
 def evolve_year(
     state: ModelState,
@@ -669,6 +753,8 @@ def find_periodic_climate_cycle(
             advanced_history: list[np.ndarray] = []
             history_limit = 5
             residual_max = 0
+            prev_residual_99p: float | None = None
+            mixing_cooldown = 0
 
             for iter_idx in range(FIXED_POINT_MAX_ITERS):
                 with time_block("periodic_iteration"):
@@ -695,6 +781,11 @@ def find_periodic_climate_cycle(
 
                     if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
                         return [advanced_states[(i - 2) % 12] for i in range(12)]
+
+                    if prev_residual_99p is not None and np.isfinite(prev_residual_99p):
+                        if float(residual_99p) > (1.0 + PERIODIC_SAFE_MIXING_REJECT_GROWTH) * float(prev_residual_99p):
+                            mixing_cooldown = PERIODIC_SAFE_MIXING_COOLDOWN
+                    prev_residual_99p = float(residual_99p)
 
                     # For acceleration, use the *fixed-point* residual f_k = P(x_k) - x_k
                     # (end-of-year only). This matches standard Anderson acceleration.
@@ -737,6 +828,31 @@ def find_periodic_climate_cycle(
                     # Default: advance using the unaccelerated map (stable fixed-point iteration).
                     accepted_states = advanced_states
                     accepted_state = advanced_states[-1]
+
+                    # Cheap safeguarded mixing: small step toward the Anderson proposal (no extra evolve_year).
+                    if (
+                        PERIODIC_SAFE_MIXING
+                        and coefficients is not None
+                        and mixing_cooldown <= 0
+                        and float(residual_99p) >= PERIODIC_SAFE_MIXING_START_99P_K
+                    ):
+                        delta = T_next - accepted_state.temperature
+                        max_abs = float(np.max(np.abs(delta)))
+                        if np.isfinite(max_abs) and max_abs > 0.0:
+                            scale = min(1.0, PERIODIC_SAFE_MIXING_MAX_STEP_K / max_abs)
+                        else:
+                            scale = 0.0
+                        proposal_limited = accepted_state.temperature + scale * delta
+                        proposal_limited = np.maximum(proposal_limited, temperature_floor)
+                        accepted_state = ModelState(
+                            temperature=proposal_limited,
+                            albedo_field=accepted_state.albedo_field,
+                            wind_field=accepted_state.wind_field,
+                            humidity_field=accepted_state.humidity_field,
+                        )
+                    else:
+                        if mixing_cooldown > 0:
+                            mixing_cooldown -= 1
 
                     # Accept/reject accelerated proposal (extra year-advance, so keep it rare).
                     if (
@@ -790,6 +906,156 @@ def find_periodic_climate_cycle(
                 "Failed to converge to a periodic solution after "
                 f"{FIXED_POINT_MAX_ITERS} iterations (last residual {residual_max:.3e} K)"
             )
+
+        if PERIODIC_SOLVER_METHOD == "cycle_newton":
+            # Monolithic solve for the 12-month periodic cycle.
+            #
+            # Unknowns are the month-boundary temperatures for the March-start sequence used
+            # by evolve_year: months = [Mar, Apr, ..., Feb]. Residuals enforce
+            #   T_{k+1} - monthly_step_k(T_k) = 0 with wraparound.
+            #
+            # We use the implicit-step Jacobian at convergence to build a *local* sensitivity
+            # operator S_k ≈ dT_{k+1}/dT_k, and solve the resulting cyclic block system.
+            try:
+                months_seq = [(m + 2) % 12 for m in range(12)]
+                monthly_declinations = compute_monthly_declinations()
+                base_albedo = surface_context.base_albedo
+
+                # Start from one year-forward pass (same warm start as Anderson uses internally).
+                warm_states = evolve_year(
+                    initial_state,
+                    monthly_insolation,
+                    month_durations,
+                    rhs_fn=rhs_fn,
+                    rhs_temperature_derivative_fn=rhs_derivative_fn,
+                    temperature_floor=temperature_floor,
+                    solver_cache=solver_cache,
+                    surface_context=surface_context,
+                )
+                temps = [s.temperature.copy() for s in warm_states]
+                shape = temps[0].shape
+
+                def _state_from_temp(temp: np.ndarray) -> ModelState:
+                    return ModelState(
+                        temperature=np.maximum(np.asarray(temp, dtype=float), temperature_floor),
+                        albedo_field=base_albedo,
+                        wind_field=None,
+                        humidity_field=None,
+                    )
+
+                for iter_idx in range(PERIODIC_CYCLE_NEWTON_MAX_ITERS):
+                    with time_block("periodic_iteration"):
+                        best_99p = float("inf") if iter_idx == 0 else best_99p
+                        preds: list[np.ndarray] = []
+                        sens: list[MonthSensitivity] = []
+
+                        for k in range(12):
+                            month = months_seq[k]
+                            start_state = _state_from_temp(temps[k])
+                            step_out = monthly_step(
+                                start_state,
+                                monthly_insolation[month],
+                                monthly_declinations[month],
+                                month_durations[month],
+                                rhs_fn=rhs_fn,
+                                rhs_temperature_derivative_fn=rhs_derivative_fn,
+                                temperature_floor=temperature_floor,
+                                solver_cache=solver_cache,
+                                surface_context=surface_context,
+                                return_sensitivity=True,
+                            )
+                            next_state, sens_k = step_out
+                            preds.append(next_state.temperature)
+                            sens.append(sens_k)
+
+                        residuals = [temps[(k + 1) % 12] - preds[k] for k in range(12)]
+                        surface_residual = np.stack([r[0] for r in residuals], axis=0)
+                        residual_rms = float(np.sqrt(np.mean(np.square(surface_residual))))
+                        residual_99p = float(np.percentile(np.abs(surface_residual), 99))
+                        residual_max = float(np.max(np.abs(surface_residual)))
+                        print(residual_rms, residual_99p, residual_max)
+
+                        if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
+                            # Recompute a consistent diagnostic cycle for output.
+                            out_states = evolve_year(
+                                _state_from_temp(temps[0]),
+                                monthly_insolation,
+                                month_durations,
+                                rhs_fn=rhs_fn,
+                                rhs_temperature_derivative_fn=rhs_derivative_fn,
+                                temperature_floor=temperature_floor,
+                                solver_cache=solver_cache,
+                                surface_context=surface_context,
+                            )
+                            return [out_states[(i - 2) % 12] for i in range(12)]
+
+                        # If the monolithic iteration isn't improving quickly, stop early and fall back.
+                        if residual_99p >= best_99p * 0.995:
+                            # no meaningful improvement
+                            if iter_idx >= 2:
+                                raise RuntimeError("Cycle-Newton stalled")
+                        best_99p = min(best_99p, residual_99p)
+
+                        # Build the cyclic closure equation for delta_T0:
+                        # (I - S11...S0) d0 = -[R11 + S11(R10 + S10(...(R1 + S1 R0))...)]
+                        acc = residuals[0]
+                        for k in range(1, 12):
+                            acc = residuals[k] + sens[k].apply(acc)
+                        rhs0 = (-acc).ravel()
+
+                        n = rhs0.size
+
+                        def _apply_A(vec_flat: np.ndarray) -> np.ndarray:
+                            vec = vec_flat.reshape(shape)
+                            out = vec
+                            for k in range(12):
+                                out = sens[k].apply(out)
+                            return out.ravel()
+
+                        def _matvec(vec_flat: np.ndarray) -> np.ndarray:
+                            return vec_flat - _apply_A(vec_flat)
+
+                        linop = splinalg.LinearOperator(
+                            shape=(n, n),
+                            matvec=_matvec,
+                            dtype=float,
+                        )
+
+                        with time_block("anderson_acceleration"):
+                            d0_flat, info = splinalg.lgmres(
+                                linop,
+                                rhs0,
+                                rtol=PERIODIC_CYCLE_NEWTON_LINEAR_RTOL,
+                                atol=0.0,
+                                maxiter=PERIODIC_CYCLE_NEWTON_LINEAR_MAXITER,
+                                inner_m=20,
+                            )
+                        if info != 0 and not np.all(np.isfinite(d0_flat)):
+                            raise RuntimeError(f"Cycle-Newton linear solve failed (info={info})")
+
+                        deltas: list[np.ndarray] = [np.zeros_like(temps[0]) for _ in range(12)]
+                        deltas[0] = d0_flat.reshape(shape)
+                        for k in range(0, 11):
+                            deltas[k + 1] = sens[k].apply(deltas[k]) - residuals[k]
+
+                        # Step limiting to stay in the same basin of attraction.
+                        max_step = float(max(np.max(np.abs(d)) for d in deltas))
+                        if not np.isfinite(max_step) or max_step <= 0.0:
+                            step_scale = 0.0
+                        else:
+                            step_scale = min(1.0, PERIODIC_CYCLE_NEWTON_MAX_STEP_K / max_step)
+
+                        for k in range(12):
+                            temps[k] = temps[k] + step_scale * deltas[k]
+                            temps[k] = np.maximum(temps[k], temperature_floor)
+
+                raise RuntimeError(
+                    f"Cycle-Newton did not converge after {PERIODIC_CYCLE_NEWTON_MAX_ITERS} iterations"
+                )
+            except Exception:
+                if PERIODIC_CYCLE_NEWTON_FALLBACK_TO_ANDERSON:
+                    return _solve_anderson(initial_state)
+                raise
 
         if PERIODIC_SOLVER_METHOD == "broyden":
             # Quasi-Newton on the end-of-year fixed point F(T) = P(T) - T.
