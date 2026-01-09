@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict
 
+import os
 import numpy as np
 from numpy.typing import NDArray
 from scipy import sparse
@@ -39,7 +40,8 @@ NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
 
 # Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
-INEXACT_NEWTON_REFACTORIZE_EVERY = 4
+# Keep the default conservative; allow env override for tuning.
+INEXACT_NEWTON_REFACTORIZE_EVERY = int(os.environ.get("INEXACT_NEWTON_REFACTORIZE_EVERY", "4"))
 # GMRES tolerance for inexact Newton linear solves.
 INEXACT_NEWTON_GMRES_RTOL = 1e-4
 INEXACT_NEWTON_GMRES_ATOL = 0.0
@@ -145,6 +147,9 @@ def monthly_step(
         # implicit solver loop
         preconditioner_solve: Callable[[np.ndarray], np.ndarray] | None = None
         preconditioner_age = 10**9
+        # Reuse the last accepted damping factor as a hint for backtracking.
+        # We still *always* try the full Newton step first to preserve convergence behavior.
+        damping_hint = 1.0
 
         def _solve_linear_system(
             jacobian: sparse.csc_matrix,
@@ -331,6 +336,10 @@ def monthly_step(
                 temp_candidate = temp_next
                 residual_candidate = residual
 
+                # Always attempt the full Newton step first. If that fails and we have a
+                # useful hint from a previous accepted step, jump directly to it to avoid
+                # extra RHS evaluations at intermediate damping values.
+                damping = 1.0
                 while damping >= NEWTON_BACKTRACK_CUTOFF:
                     temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
                     state_candidate = _init_state(temp_candidate)
@@ -358,13 +367,18 @@ def monthly_step(
                         temp_next = temp_candidate
                         residual = residual_candidate
                         accepted = True
+                        damping_hint = damping
                         break
 
-                    damping *= NEWTON_BACKTRACK_REDUCTION
+                    if damping == 1.0 and damping_hint < 1.0:
+                        damping = float(max(NEWTON_BACKTRACK_CUTOFF, damping_hint))
+                    else:
+                        damping *= NEWTON_BACKTRACK_REDUCTION
 
                 if not accepted:
                     temp_next = temp_candidate
                     residual = residual_candidate
+                    damping_hint = float(min(1.0, max(NEWTON_BACKTRACK_CUTOFF, damping)))
 
                 step = prev_temp - temp_next
                 if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
