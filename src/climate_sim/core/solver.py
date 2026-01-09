@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy import sparse
 from scipy.sparse import linalg as splinalg
+from scipy.interpolate import RegularGridInterpolator
 
 import climate_sim.physics.radiation as radiation
 from climate_sim.physics.radiation import RadiationConfig
@@ -557,6 +558,63 @@ def find_periodic_climate_cycle(
             f"{FIXED_POINT_MAX_ITERS} iterations (last residual {residual_max:.3e} K)"
         )
 
+
+def _interpolate_temperature_to_fine_grid(
+    temperature_coarse: np.ndarray,
+    lon2d_coarse: np.ndarray,
+    lat2d_coarse: np.ndarray,
+    lon2d_fine: np.ndarray,
+    lat2d_fine: np.ndarray,
+) -> np.ndarray:
+    """Interpolate temperature field from coarse to fine resolution.
+
+    Parameters
+    ----------
+    temperature_coarse : np.ndarray
+        Temperature field at coarse resolution, shape (nlayers, nlat_coarse, nlon_coarse).
+    lon2d_coarse : np.ndarray
+        Longitude grid at coarse resolution.
+    lat2d_coarse : np.ndarray
+        Latitude grid at coarse resolution.
+    lon2d_fine : np.ndarray
+        Longitude grid at fine resolution.
+    lat2d_fine : np.ndarray
+        Latitude grid at fine resolution.
+
+    Returns
+    -------
+    np.ndarray
+        Interpolated temperature field at fine resolution, shape (nlayers, nlat_fine, nlon_fine).
+    """
+    nlayers = temperature_coarse.shape[0]
+    nlat_fine, nlon_fine = lon2d_fine.shape
+
+    # Extract 1D coordinate arrays from the 2D grids
+    lat_coarse = lat2d_coarse[:, 0]
+    lon_coarse = lon2d_coarse[0, :]
+
+    # Create output array
+    temperature_fine = np.zeros((nlayers, nlat_fine, nlon_fine), dtype=temperature_coarse.dtype)
+
+    # Interpolate each layer separately
+    for layer in range(nlayers):
+        interpolator = RegularGridInterpolator(
+            (lat_coarse, lon_coarse),
+            temperature_coarse[layer],
+            method='linear',
+            bounds_error=False,
+            fill_value=None,  # Use extrapolation
+        )
+
+        # Create coordinate pairs for the fine grid
+        coords_fine = np.stack([lat2d_fine.ravel(), lon2d_fine.ravel()], axis=-1)
+
+        # Interpolate and reshape
+        temperature_fine[layer] = interpolator(coords_fine).reshape(nlat_fine, nlon_fine)
+
+    return temperature_fine
+
+
 def solve_periodic_climate(
     resolution_deg: float = 1.0,
     *,
@@ -613,14 +671,56 @@ def solve_periodic_climate(
         )
         rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
 
-    # Create initial guess using radiative equilibrium
+    # Create initial guess: use coarse resolution initialization for resolutions <= 20°
     with time_block("initial_guess"):
-        initial_temp_guess = radiation.radiative_equilibrium_initial_guess(
-            operators.monthly_insolation,
-            albedo_field=operators.base_albedo_field,
-            config=operators.radiation_config,
-            land_mask=operators.land_mask,
-        )
+        coarse_resolution = resolution_deg * 2
+        use_coarse_init = resolution_deg <= 20.0 and coarse_resolution <= 60.0
+
+        if use_coarse_init:
+            print(f"Using coarse resolution initialization: solving at {coarse_resolution}° first")
+            # Solve at coarse resolution
+            _, _, coarse_layers = solve_periodic_climate(
+                resolution_deg=coarse_resolution,
+                model_config=model_config,
+                return_layer_map=True,
+            )
+
+            # Extract coarse temperature (get the first month as initial state)
+            # The coarse solution is in Celsius, convert back to Kelvin
+            from climate_sim.core.grid import create_lat_lon_grid
+            lon2d_coarse, lat2d_coarse = create_lat_lon_grid(coarse_resolution)
+
+            # Stack layers in the expected order: surface, (boundary_layer), (atmosphere)
+            layer_names_ordered = []
+            if "surface" in coarse_layers:
+                layer_names_ordered.append("surface")
+            if "boundary_layer" in coarse_layers:
+                layer_names_ordered.append("boundary_layer")
+            if "atmosphere" in coarse_layers:
+                layer_names_ordered.append("atmosphere")
+
+            # Use the first month (index 0) as the initial guess
+            coarse_temp_celsius = np.array([coarse_layers[name][0] for name in layer_names_ordered])
+            coarse_temp_kelvin = coarse_temp_celsius + 273.15
+
+            # Interpolate to fine resolution
+            initial_temp_guess = _interpolate_temperature_to_fine_grid(
+                coarse_temp_kelvin,
+                lon2d_coarse,
+                lat2d_coarse,
+                operators.lon2d,
+                operators.lat2d,
+            )
+            print(f"Interpolated coarse solution to {resolution_deg}° resolution")
+        else:
+            # Use radiative equilibrium for initial guess
+            initial_temp_guess = radiation.radiative_equilibrium_initial_guess(
+                operators.monthly_insolation,
+                albedo_field=operators.base_albedo_field,
+                config=operators.radiation_config,
+                land_mask=operators.land_mask,
+            )
+
         initial_state = ModelState(
             temperature=initial_temp_guess,
             albedo_field=operators.base_albedo_field,
