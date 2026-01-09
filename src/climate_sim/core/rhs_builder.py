@@ -141,6 +141,13 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
     def rhs(state: ModelState, insolation: np.ndarray, declination_rad: float | np.ndarray) -> np.ndarray:
         """Compute temperature tendencies from all physics."""
         log_radiation = os.environ.get("LOG_RADIATION", "0") == "1"
+        sensible_scale = float(os.environ.get("SENSIBLE_EXCHANGE_SCALE", "1.0"))
+        latent_scale = float(os.environ.get("LATENT_EXCHANGE_SCALE", "1.0"))
+        advection_scale = float(os.environ.get("ADVECTION_SCALE", "1.0"))
+        # Clamp for safety
+        sensible_scale = float(np.clip(sensible_scale, 0.0, 1.0))
+        latent_scale = float(np.clip(latent_scale, 0.0, 1.0))
+        advection_scale = float(np.clip(advection_scale, 0.0, 1.0))
 
         # Compute cell areas for area-weighted diagnostics
         cell_areas = None
@@ -184,7 +191,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     advection_tendency = inputs.advection_operator.tendency(
                         atmosphere_temperature, wind_u, wind_v
                     )
-                    radiative[1] += advection_tendency
+                    radiative[1] += advection_scale * advection_tendency
 
                 if sensible_heat_model is not None:
                     tendencies = sensible_heat_model.compute_tendencies(
@@ -196,8 +203,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 2
                     surface_tendency, atmosphere_tendency = tendencies
-                    radiative[0] += surface_tendency
-                    radiative[1] += atmosphere_tendency
+                    radiative[0] += sensible_scale * surface_tendency
+                    radiative[1] += sensible_scale * atmosphere_tendency
 
                 if humidity_field is not None and latent_heat_model is not None:
                     tendencies = latent_heat_model.compute_tendencies(
@@ -210,8 +217,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 2
                     surface_tendency, atmosphere_tendency = tendencies
-                    radiative[0] += surface_tendency
-                    radiative[1] += atmosphere_tendency
+                    radiative[0] += latent_scale * surface_tendency
+                    radiative[1] += latent_scale * atmosphere_tendency
 
             elif nlayers == 3:
                 # Three-layer system
@@ -232,8 +239,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     advection_atmosphere = inputs.advection_operator.tendency(
                         atmosphere_temperature, wind_u, wind_v
                     )
-                    radiative[1] += advection_boundary
-                    radiative[2] += advection_atmosphere
+                    radiative[1] += advection_scale * advection_boundary
+                    radiative[2] += advection_scale * advection_atmosphere
 
                 if sensible_heat_model is not None:
                     tendencies = sensible_heat_model.compute_tendencies(
@@ -248,9 +255,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 3
                     surface_tendency, boundary_tendency, atmosphere_tendency = tendencies
-                    radiative[0] += surface_tendency
-                    radiative[1] += boundary_tendency
-                    radiative[2] += atmosphere_tendency
+                    radiative[0] += sensible_scale * surface_tendency
+                    radiative[1] += sensible_scale * boundary_tendency
+                    radiative[2] += sensible_scale * atmosphere_tendency
 
                 if humidity_field is not None and latent_heat_model is not None:
                     tendencies = latent_heat_model.compute_tendencies(
@@ -264,9 +271,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 3
                     surface_tendency, boundary_tendency, atmosphere_tendency = tendencies
-                    radiative[0] += surface_tendency
-                    radiative[1] += boundary_tendency
-                    radiative[2] += atmosphere_tendency
+                    radiative[0] += latent_scale * surface_tendency
+                    radiative[1] += latent_scale * boundary_tendency
+                    radiative[2] += latent_scale * atmosphere_tendency
 
             return radiative
         if inputs.diffusion_operator.surface.enabled:
@@ -276,6 +283,12 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
     def rhs_derivative(state: ModelState, insolation: np.ndarray) -> Linearization:
         """Compute Jacobian of RHS with respect to temperature."""
         del insolation
+        sensible_scale = float(os.environ.get("SENSIBLE_EXCHANGE_SCALE", "1.0"))
+        latent_scale = float(os.environ.get("LATENT_EXCHANGE_SCALE", "1.0"))
+        advection_scale = float(os.environ.get("ADVECTION_SCALE", "1.0"))
+        sensible_scale = float(np.clip(sensible_scale, 0.0, 1.0))
+        latent_scale = float(np.clip(latent_scale, 0.0, 1.0))
+        advection_scale = float(np.clip(advection_scale, 0.0, 1.0))
         if inputs.radiation_config.include_atmosphere:
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 state.temperature,
@@ -315,6 +328,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         if sparse.isspmatrix_csc(advection_matrix_csr)
                         else advection_matrix_csr.tocsc()
                     )
+                    if advection_scale != 1.0:
+                        advection_matrix_converted = advection_scale * advection_matrix_converted
                     if nlayers == 3:
                         # Both boundary and atmosphere get advection
                         boundary_layer_advection_matrix = advection_matrix_converted
@@ -342,6 +357,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     )
                 else:
                     assert False, "Must have atmosphere for sensible heat exchange"
+                if sensible_scale != 1.0:
+                    sh_diag = sensible_scale * sh_diag
+                    sh_cross = sensible_scale * sh_cross
                 # Add sensible heat directly to diagonal and cross terms
                 diag = diag + sh_diag
                 if cross is not None:
@@ -370,6 +388,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     )
                 else:
                     assert False, "Must have atmosphere for latent heat exchange"
+                if latent_scale != 1.0:
+                    lh_diag = latent_scale * lh_diag
+                    lh_cross = latent_scale * lh_cross
                 # Add latent heat directly to diagonal and cross terms
                 diag = diag + lh_diag
                 if cross is not None:

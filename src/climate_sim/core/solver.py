@@ -126,6 +126,12 @@ PERIODIC_CYCLE_NEWTON_FALLBACK_TO_ANDERSON = os.environ.get(
 # target grid as the initial guess.
 PERIODIC_WARM_START_COARSE_DEG = float(os.environ.get("PERIODIC_WARM_START_COARSE_DEG", "0"))
 
+# Continuation / homotopy on selected physics strength (opt-in):
+# runs a sequence of periodic solves with scaled tendencies, using the previous
+# stage's solution as the initial guess for the next.
+PERIODIC_CONTINUATION_SCALES = os.environ.get("PERIODIC_CONTINUATION_SCALES", "").strip()
+PERIODIC_CONTINUATION_TARGETS = os.environ.get("PERIODIC_CONTINUATION_TARGETS", "sensible,latent").strip().lower()
+
 
 type FloatArray = NDArray[np.floating]
 
@@ -1318,16 +1324,59 @@ def solve_periodic_climate(
         )
 
     # Solve for periodic cycle
-    monthly_states = find_periodic_climate_cycle(
-        initial_state=initial_state,
-        monthly_insolation=operators.monthly_insolation,
-        month_durations=operators.month_durations,
-        rhs_fn=rhs_fn,
-        rhs_derivative_fn=rhs_derivative_fn,
-        surface_context=operators.surface_context,
-        temperature_floor=operators.radiation_config.temperature_floor,
-        solver_cache=operators.solver_cache,
-    )
+    def _run_periodic(initial: ModelState) -> list[ModelState]:
+        return find_periodic_climate_cycle(
+            initial_state=initial,
+            monthly_insolation=operators.monthly_insolation,
+            month_durations=operators.month_durations,
+            rhs_fn=rhs_fn,
+            rhs_derivative_fn=rhs_derivative_fn,
+            surface_context=operators.surface_context,
+            temperature_floor=operators.radiation_config.temperature_floor,
+            solver_cache=operators.solver_cache,
+        )
+
+    if _enable_warm_start and PERIODIC_CONTINUATION_SCALES:
+        # Parse scales like "0,0.5,1"
+        parts = [p.strip() for p in PERIODIC_CONTINUATION_SCALES.split(",") if p.strip()]
+        stages = [float(p) for p in parts]
+        if stages and abs(stages[-1] - 1.0) > 1e-12:
+            stages.append(1.0)
+        targets = {t.strip() for t in PERIODIC_CONTINUATION_TARGETS.split(",") if t.strip()}
+        env_keys: list[str] = []
+        if "sensible" in targets:
+            env_keys.append("SENSIBLE_EXCHANGE_SCALE")
+        if "latent" in targets:
+            env_keys.append("LATENT_EXCHANGE_SCALE")
+        if "advection" in targets:
+            env_keys.append("ADVECTION_SCALE")
+        saved_env = {k: os.environ.get(k) for k in env_keys}
+        try:
+            stage_initial = initial_state
+            stage_solution: list[ModelState] | None = None
+            for s in stages:
+                s_clamped = float(np.clip(s, 0.0, 1.0))
+                if "SENSIBLE_EXCHANGE_SCALE" in env_keys:
+                    os.environ["SENSIBLE_EXCHANGE_SCALE"] = str(s_clamped)
+                if "LATENT_EXCHANGE_SCALE" in env_keys:
+                    os.environ["LATENT_EXCHANGE_SCALE"] = str(s_clamped)
+                if "ADVECTION_SCALE" in env_keys:
+                    os.environ["ADVECTION_SCALE"] = str(s_clamped)
+
+                stage_solution = _run_periodic(stage_initial)
+                # Warm start the next stage from February (Jan-start index 1), which is
+                # the start-of-March state for the March-start integration order.
+                stage_initial = stage_solution[1]
+            assert stage_solution is not None
+            monthly_states = stage_solution
+        finally:
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    else:
+        monthly_states = _run_periodic(initial_state)
 
     # Update wind fields if wind model is enabled
     if operators.wind_model is not None and operators.wind_model.enabled:
