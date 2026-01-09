@@ -20,8 +20,12 @@ The goal is an app that’s physically honest, first-principles, and emotionally
 - `src/climate_sim/physics/`: parameterization modules for radiation, diffusion, advection, heat exchange, and related processes.
 - `src/climate_sim/runtime/`: command-line plumbing shared across entry points.
 - `src/climate_sim/plotting.py`: rendering helpers for global temperature and diagnostic plots.
-- `src/main.py`: interactive visualization driver for a single model configuration.
-- `src/scenario_compare.py`: CLI for contrasting physics toggles and producing anomaly outputs.
+- **Entry points**
+   - `src/main.py`: interactive visualization driver for a single model configuration.
+   - `src/eval.py`: compares simulation results to ground truth data.
+   - `src/scenario_compare.py`: for contrasting physics toggles and producing anomaly outputs.
+
+When testing, you should run entry points with the `--headless` flag and `--resolution 5` to avoid getting stuck on plotting or taking too long to compute.
 
 ### Core architecture
 
