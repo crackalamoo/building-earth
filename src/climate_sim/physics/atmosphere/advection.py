@@ -46,8 +46,12 @@ class AdvectionOperator:
         self._lat2d = np.asarray(lat2d, dtype=float)
         self._config = config or AdvectionConfig()
 
-        # Cache for linearized advection matrix
-        self._cached_winds: tuple[np.ndarray, np.ndarray] | None = None
+        # Cache for linearized advection matrix.
+        #
+        # NOTE: In the solver, wind fields are treated as *lagged* during Newton iterations,
+        # so the same ndarray objects are passed repeatedly. Using object identity avoids an
+        # O(N) `np.array_equal` check on every Jacobian evaluation.
+        self._cached_wind_ids: tuple[int, int] | None = None
         self._cached_matrix: sparse.csr_matrix | None = None
 
         nlat, nlon = self._lon2d.shape
@@ -223,11 +227,10 @@ class AdvectionOperator:
         nlat, nlon = self._lon2d.shape
         size = nlat * nlon
 
-        # Check if we can reuse cached matrix (winds haven't changed)
-        if self._cached_winds is not None:
-            cached_u, cached_v = self._cached_winds
-            if np.array_equal(cached_u, wind_u) and np.array_equal(cached_v, wind_v):
-                return np.zeros((nlat, nlon)), self._cached_matrix
+        # Check if we can reuse cached matrix (winds haven't changed).
+        wind_ids = (id(wind_u), id(wind_v))
+        if self._cached_wind_ids == wind_ids and self._cached_matrix is not None:
+            return np.zeros((nlat, nlon)), self._cached_matrix
 
         # Build the sparse matrix for -u·∇ operator using upwind differencing
         row_indices = []
@@ -301,8 +304,8 @@ class AdvectionOperator:
         coo = sparse.coo_matrix((data_arr, (rows_arr, cols_arr)), shape=(size, size))
         matrix = coo.tocsr()
 
-        # Cache for reuse
-        self._cached_winds = (wind_u.copy(), wind_v.copy())
+        # Cache for reuse (by object identity).
+        self._cached_wind_ids = wind_ids
         self._cached_matrix = matrix
 
         return np.zeros((nlat, nlon)), matrix

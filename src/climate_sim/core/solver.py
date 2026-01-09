@@ -40,13 +40,35 @@ NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
 
 # Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
-# Keep the default conservative; allow env override for tuning.
-INEXACT_NEWTON_REFACTORIZE_EVERY = int(os.environ.get("INEXACT_NEWTON_REFACTORIZE_EVERY", "4"))
+# Default high so we typically factorize once per monthly step (and rely on GMRES failure
+# to trigger an earlier refresh if needed). Allow env override for tuning.
+INEXACT_NEWTON_REFACTORIZE_EVERY = int(os.environ.get("INEXACT_NEWTON_REFACTORIZE_EVERY", "1000"))
 # GMRES tolerance for inexact Newton linear solves.
-INEXACT_NEWTON_GMRES_RTOL = 1e-4
-INEXACT_NEWTON_GMRES_ATOL = 0.0
-INEXACT_NEWTON_GMRES_RESTART = 50
-INEXACT_NEWTON_GMRES_MAXITER = 50
+INEXACT_NEWTON_GMRES_RTOL = float(os.environ.get("INEXACT_NEWTON_GMRES_RTOL", "5e-4"))
+INEXACT_NEWTON_GMRES_ATOL = float(os.environ.get("INEXACT_NEWTON_GMRES_ATOL", "0.0"))
+INEXACT_NEWTON_GMRES_RESTART = int(os.environ.get("INEXACT_NEWTON_GMRES_RESTART", "50"))
+INEXACT_NEWTON_GMRES_MAXITER = int(os.environ.get("INEXACT_NEWTON_GMRES_MAXITER", "50"))
+
+# Modified Newton option: reuse Jacobian/linearization for a few iterations within a monthly step.
+# Default 1 => exact Newton (rebuild each iteration).
+MODIFIED_NEWTON_JACOBIAN_EVERY = int(os.environ.get("MODIFIED_NEWTON_JACOBIAN_EVERY", "1"))
+
+# Linear solve strategy for the inexact Newton step.
+# - "gmres" (default): GMRES on the current Jacobian with LU-preconditioner reuse.
+# - "lu": use the (possibly stale) LU solve directly as an approximate Newton step.
+INEXACT_NEWTON_LINEAR_SOLVER = os.environ.get("INEXACT_NEWTON_LINEAR_SOLVER", "gmres").strip().lower()
+
+# Krylov method for the Newton linear solve (when INEXACT_NEWTON_LINEAR_SOLVER="gmres").
+# - "lgmres" (default; often faster for sequences of similar systems)
+# - "lgmres" (can be faster for sequences of similar systems)
+INEXACT_NEWTON_KRYLOV = os.environ.get("INEXACT_NEWTON_KRYLOV", "lgmres").strip().lower()
+
+# Preconditioner for GMRES:
+# - "lu" (default): full LU factorization via scipy's SuperLU (`factorized`)
+# - "ilu": incomplete LU (`spilu`) with configurable drop tolerance/fill
+INEXACT_NEWTON_PRECONDITIONER = os.environ.get("INEXACT_NEWTON_PRECONDITIONER", "lu").strip().lower()
+INEXACT_NEWTON_ILU_DROP_TOL = float(os.environ.get("INEXACT_NEWTON_ILU_DROP_TOL", "1e-4"))
+INEXACT_NEWTON_ILU_FILL_FACTOR = float(os.environ.get("INEXACT_NEWTON_ILU_FILL_FACTOR", "10"))
 
 
 type FloatArray = NDArray[np.floating]
@@ -150,6 +172,12 @@ def monthly_step(
         # Reuse the last accepted damping factor as a hint for backtracking.
         # We still *always* try the full Newton step first to preserve convergence behavior.
         damping_hint = 1.0
+        # Cached Jacobian/linearization for modified Newton (within this monthly step).
+        cached_linearization = None
+        cached_jacobian: sparse.csc_matrix | None = None
+        cached_for_iter: int | None = None
+        # LGMRES can reuse a small subspace across solves.
+        krylov_outer_v: list[np.ndarray] = []
 
         def _solve_linear_system(
             jacobian: sparse.csc_matrix,
@@ -169,10 +197,27 @@ def monthly_step(
 
             if (preconditioner_solve is None) or (preconditioner_age >= INEXACT_NEWTON_REFACTORIZE_EVERY):
                 with time_block("factorize_solver"):
-                    preconditioner_solve = splinalg.factorized(jacobian)
+                    if INEXACT_NEWTON_PRECONDITIONER == "ilu":
+                        try:
+                            ilu = splinalg.spilu(
+                                jacobian,
+                                drop_tol=INEXACT_NEWTON_ILU_DROP_TOL,
+                                fill_factor=INEXACT_NEWTON_ILU_FILL_FACTOR,
+                            )
+                            preconditioner_solve = ilu.solve
+                        except RuntimeError:
+                            # ILU can fail on (near-)singular Jacobians; fall back to full LU.
+                            preconditioner_solve = splinalg.factorized(jacobian)
+                    else:
+                        preconditioner_solve = splinalg.factorized(jacobian)
                 preconditioner_age = 0
 
             assert preconditioner_solve is not None
+
+            if INEXACT_NEWTON_LINEAR_SOLVER == "lu":
+                # Modified Newton / quasi-Newton step: apply the cached LU solve directly.
+                # This avoids GMRES iterations at the cost of using a potentially stale Jacobian.
+                return preconditioner_solve(rhs)
 
             preconditioner = splinalg.LinearOperator(
                 shape=jacobian.shape,
@@ -180,22 +225,36 @@ def monthly_step(
                 dtype=float,
             )
             with time_block("gmres_solve"):
-                sol, info = splinalg.gmres(
-                    jacobian,
-                    rhs,
-                    M=preconditioner,
-                    rtol=INEXACT_NEWTON_GMRES_RTOL,
-                    atol=INEXACT_NEWTON_GMRES_ATOL,
-                    restart=INEXACT_NEWTON_GMRES_RESTART,
-                    maxiter=INEXACT_NEWTON_GMRES_MAXITER,
-                )
+                if INEXACT_NEWTON_KRYLOV == "lgmres":
+                    sol, info = splinalg.lgmres(
+                        jacobian,
+                        rhs,
+                        M=preconditioner,
+                        rtol=INEXACT_NEWTON_GMRES_RTOL,
+                        atol=INEXACT_NEWTON_GMRES_ATOL,
+                        maxiter=INEXACT_NEWTON_GMRES_MAXITER,
+                        inner_m=INEXACT_NEWTON_GMRES_RESTART,
+                        outer_v=krylov_outer_v,
+                        store_outer_Av=True,
+                    )
+                else:
+                    sol, info = splinalg.gmres(
+                        jacobian,
+                        rhs,
+                        M=preconditioner,
+                        rtol=INEXACT_NEWTON_GMRES_RTOL,
+                        atol=INEXACT_NEWTON_GMRES_ATOL,
+                        restart=INEXACT_NEWTON_GMRES_RESTART,
+                        maxiter=INEXACT_NEWTON_GMRES_MAXITER,
+                    )
 
             if info != 0:
                 # GMRES did not converge: refresh preconditioner and fall back to direct solve.
                 with time_block("factorize_solver"):
-                    preconditioner_solve = splinalg.factorized(jacobian)
+                    direct_solve = splinalg.factorized(jacobian)
+                preconditioner_solve = direct_solve
                 preconditioner_age = 0
-                return preconditioner_solve(rhs)
+                return direct_solve(rhs)
 
             return sol
 
@@ -205,9 +264,21 @@ def monthly_step(
                 state_capped = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
                     rhs_value = rhs_fn(state_capped, insolation_W_m2, declination)
-                # Recompute Jacobian every iteration for true Newton solve
-                with time_block("rhs_derivative"):
-                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
+                # Jacobian/linearization (optionally reused for modified Newton)
+                needs_relinearize = (
+                    cached_linearization is None
+                    or cached_for_iter is None
+                    or MODIFIED_NEWTON_JACOBIAN_EVERY <= 1
+                    or (newton_iter - cached_for_iter) >= MODIFIED_NEWTON_JACOBIAN_EVERY
+                )
+                if needs_relinearize:
+                    with time_block("rhs_derivative"):
+                        linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
+                    cached_linearization = linearization
+                    cached_for_iter = newton_iter
+                    cached_jacobian = None
+                else:
+                    linearization = cached_linearization
                 preconditioner_age += 1
 
                 nlayers = temp_capped.shape[0]
@@ -224,10 +295,14 @@ def monthly_step(
                     residual = residual_surface[np.newaxis, :, :]
                     residual_flat = residual_surface.ravel()
                     
-                    with time_block("jacobian_assembly"):
-                        jacobian = _build_surface_jacobian_block(
-                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
-                        )
+                    if cached_jacobian is None:
+                        with time_block("jacobian_assembly"):
+                            jacobian = _build_surface_jacobian_block(
+                                ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
+                            )
+                        cached_jacobian = jacobian
+                    else:
+                        jacobian = cached_jacobian
                     with time_block("linear_solve"):
                         correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
                     correction = correction_flat.reshape((nlat, nlon))[np.newaxis, :, :]
@@ -239,25 +314,29 @@ def monthly_step(
 
                     identity = get_identity_matrix(size, cache=cache)
 
-                    with time_block("jacobian_assembly"):
-                        surface_block = _build_surface_jacobian_block(
-                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
-                        )
-                        atmosphere_block = identity.copy()
-                        atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
-                        if linearization.atmosphere_diffusion_matrix is not None and linearization.atmosphere_diffusion_matrix.nnz > 0:
-                            atmosphere_block -= dt_seconds * linearization.atmosphere_diffusion_matrix
-                        if linearization.atmosphere_advection_matrix is not None and linearization.atmosphere_advection_matrix.nnz > 0:
-                            atmosphere_block -= dt_seconds * linearization.atmosphere_advection_matrix
+                    if cached_jacobian is None:
+                        with time_block("jacobian_assembly"):
+                            surface_block = _build_surface_jacobian_block(
+                                ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
+                            )
+                            atmosphere_block = identity.copy()
+                            atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
+                            if linearization.atmosphere_diffusion_matrix is not None and linearization.atmosphere_diffusion_matrix.nnz > 0:
+                                atmosphere_block -= dt_seconds * linearization.atmosphere_diffusion_matrix
+                            if linearization.atmosphere_advection_matrix is not None and linearization.atmosphere_advection_matrix.nnz > 0:
+                                atmosphere_block -= dt_seconds * linearization.atmosphere_advection_matrix
 
-                        if linearization.cross is not None:
-                            coupling_surface_atm = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 1]).ravel(), format="csc")
-                            coupling_atm_surface = -dt_seconds * sparse.diags(linearization.cross[1, 0].ravel(), format="csc")
-                        else:
-                            coupling_surface_atm = coupling_atm_surface = sparse.csc_matrix((size, size))
+                            if linearization.cross is not None:
+                                coupling_surface_atm = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 1]).ravel(), format="csc")
+                                coupling_atm_surface = -dt_seconds * sparse.diags(linearization.cross[1, 0].ravel(), format="csc")
+                            else:
+                                coupling_surface_atm = coupling_atm_surface = sparse.csc_matrix((size, size))
 
-                        jacobian = sparse.bmat([[surface_block, coupling_surface_atm], [coupling_atm_surface, atmosphere_block]], format="csc")
-                        assert isinstance(jacobian, sparse.csc_matrix)
+                            jacobian = sparse.bmat([[surface_block, coupling_surface_atm], [coupling_atm_surface, atmosphere_block]], format="csc")
+                            assert isinstance(jacobian, sparse.csc_matrix)
+                        cached_jacobian = jacobian
+                    else:
+                        jacobian = cached_jacobian
 
                     residual_flat = np.concatenate([residual_surface.ravel(), residual_atmosphere.ravel()], axis=0)
                     with time_block("linear_solve"):
@@ -276,44 +355,48 @@ def monthly_step(
                     identity = get_identity_matrix(size, cache=cache)
                     zero_matrix = sparse.csc_matrix((size, size))
 
-                    with time_block("jacobian_assembly"):
-                        surface_block = _build_surface_jacobian_block(
-                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
-                        )
+                    if cached_jacobian is None:
+                        with time_block("jacobian_assembly"):
+                            surface_block = _build_surface_jacobian_block(
+                                ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
+                            )
 
-                        # Boundary layer block (with diffusion and advection if available)
-                        boundary_block = identity.copy()
-                        boundary_block -= dt_seconds * sparse.diags(boundary_diag.ravel(), format="csc")
-                        if linearization.boundary_layer_diffusion_matrix is not None and linearization.boundary_layer_diffusion_matrix.nnz > 0:
-                            boundary_block -= dt_seconds * linearization.boundary_layer_diffusion_matrix
-                        if linearization.boundary_layer_advection_matrix is not None and linearization.boundary_layer_advection_matrix.nnz > 0:
-                            boundary_block -= dt_seconds * linearization.boundary_layer_advection_matrix
+                            # Boundary layer block (with diffusion and advection if available)
+                            boundary_block = identity.copy()
+                            boundary_block -= dt_seconds * sparse.diags(boundary_diag.ravel(), format="csc")
+                            if linearization.boundary_layer_diffusion_matrix is not None and linearization.boundary_layer_diffusion_matrix.nnz > 0:
+                                boundary_block -= dt_seconds * linearization.boundary_layer_diffusion_matrix
+                            if linearization.boundary_layer_advection_matrix is not None and linearization.boundary_layer_advection_matrix.nnz > 0:
+                                boundary_block -= dt_seconds * linearization.boundary_layer_advection_matrix
 
-                        # Atmosphere block (with diffusion and advection)
-                        atmosphere_block = identity.copy()
-                        atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
-                        if linearization.atmosphere_diffusion_matrix is not None and linearization.atmosphere_diffusion_matrix.nnz > 0:
-                            atmosphere_block -= dt_seconds * linearization.atmosphere_diffusion_matrix
-                        if linearization.atmosphere_advection_matrix is not None and linearization.atmosphere_advection_matrix.nnz > 0:
-                            atmosphere_block -= dt_seconds * linearization.atmosphere_advection_matrix
+                            # Atmosphere block (with diffusion and advection)
+                            atmosphere_block = identity.copy()
+                            atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
+                            if linearization.atmosphere_diffusion_matrix is not None and linearization.atmosphere_diffusion_matrix.nnz > 0:
+                                atmosphere_block -= dt_seconds * linearization.atmosphere_diffusion_matrix
+                            if linearization.atmosphere_advection_matrix is not None and linearization.atmosphere_advection_matrix.nnz > 0:
+                                atmosphere_block -= dt_seconds * linearization.atmosphere_advection_matrix
 
-                        # Cross-coupling: includes surface-atmosphere coupling via transmission
-                        if linearization.cross is not None:
-                            coupling_01 = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 1]).ravel(), format="csc")
-                            coupling_02 = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 2]).ravel(), format="csc")
-                            coupling_10 = -dt_seconds * sparse.diags(linearization.cross[1, 0].ravel(), format="csc")
-                            coupling_12 = -dt_seconds * sparse.diags(linearization.cross[1, 2].ravel(), format="csc")
-                            coupling_20 = -dt_seconds * sparse.diags(linearization.cross[2, 0].ravel(), format="csc")
-                            coupling_21 = -dt_seconds * sparse.diags(linearization.cross[2, 1].ravel(), format="csc")
-                        else:
-                            coupling_01 = coupling_02 = coupling_10 = coupling_12 = coupling_20 = coupling_21 = zero_matrix
+                            # Cross-coupling: includes surface-atmosphere coupling via transmission
+                            if linearization.cross is not None:
+                                coupling_01 = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 1]).ravel(), format="csc")
+                                coupling_02 = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 2]).ravel(), format="csc")
+                                coupling_10 = -dt_seconds * sparse.diags(linearization.cross[1, 0].ravel(), format="csc")
+                                coupling_12 = -dt_seconds * sparse.diags(linearization.cross[1, 2].ravel(), format="csc")
+                                coupling_20 = -dt_seconds * sparse.diags(linearization.cross[2, 0].ravel(), format="csc")
+                                coupling_21 = -dt_seconds * sparse.diags(linearization.cross[2, 1].ravel(), format="csc")
+                            else:
+                                coupling_01 = coupling_02 = coupling_10 = coupling_12 = coupling_20 = coupling_21 = zero_matrix
 
-                        jacobian = sparse.bmat([
-                            [surface_block, coupling_01, coupling_02],
-                            [coupling_10, boundary_block, coupling_12],
-                            [coupling_20, coupling_21, atmosphere_block]
-                        ], format="csc")
-                        assert isinstance(jacobian, sparse.csc_matrix)
+                            jacobian = sparse.bmat([
+                                [surface_block, coupling_01, coupling_02],
+                                [coupling_10, boundary_block, coupling_12],
+                                [coupling_20, coupling_21, atmosphere_block]
+                            ], format="csc")
+                            assert isinstance(jacobian, sparse.csc_matrix)
+                        cached_jacobian = jacobian
+                    else:
+                        jacobian = cached_jacobian
 
                     residual_flat = np.concatenate([
                         residual_surface.ravel(),
