@@ -84,6 +84,17 @@ PERIODIC_BROYDEN_FALLBACK_TO_ANDERSON = os.environ.get(
     "PERIODIC_BROYDEN_FALLBACK_TO_ANDERSON", "1"
 ).strip() in {"1", "true", "True"}
 
+# Periodicity-aware acceleration for Anderson mode (opt-in):
+# propose an accelerated iterate but only accept it if an *extra* year-advance
+# demonstrates that it reduces the cycle-to-cycle residual (same metric you
+# already use for convergence). This avoids basin-jumping without guessing.
+PERIODIC_ACCEPT_REJECT_ACCELERATION = os.environ.get(
+    "PERIODIC_ACCEPT_REJECT_ACCELERATION", "0"
+).strip() in {"1", "true", "True"}
+PERIODIC_ACCEL_MAX_STEP_FROM_BASE_K = float(os.environ.get("PERIODIC_ACCEL_MAX_STEP_FROM_BASE_K", "1.0"))
+PERIODIC_ACCEL_MIN_RESIDUAL_99P_K = float(os.environ.get("PERIODIC_ACCEL_MIN_RESIDUAL_99P_K", "2.0"))
+PERIODIC_ACCEL_ATTEMPT_EVERY = int(os.environ.get("PERIODIC_ACCEL_ATTEMPT_EVERY", "5"))
+
 
 type FloatArray = NDArray[np.floating]
 
@@ -661,6 +672,7 @@ def find_periodic_climate_cycle(
 
             for iter_idx in range(FIXED_POINT_MAX_ITERS):
                 with time_block("periodic_iteration"):
+                    start_temperature = state.temperature
                     advanced_states = evolve_year(
                         state,
                         monthly_insolation,
@@ -684,16 +696,16 @@ def find_periodic_climate_cycle(
                     if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
                         return [advanced_states[(i - 2) % 12] for i in range(12)]
 
-                    states = advanced_states
+                    # For acceleration, use the *fixed-point* residual f_k = P(x_k) - x_k
+                    # (end-of-year only). This matches standard Anderson acceleration.
+                    fixed_point_residual_flat = (advanced.temperature - start_temperature).ravel()
                     advanced_flat = advanced.temperature.ravel()
-
-                    residual_flat = residual.ravel()
 
                     if len(residual_history) == history_limit:
                         residual_history.pop(0)
                         advanced_history.pop(0)
 
-                    residual_history.append(residual_flat)
+                    residual_history.append(fixed_point_residual_flat)
                     advanced_history.append(advanced_flat)
 
                     with time_block("anderson_acceleration"):
@@ -722,11 +734,57 @@ def find_periodic_climate_cycle(
                                 advanced_history = advanced_history[-1:]
                                 T_next = advanced.temperature
 
-                    # Advance the iterate using the unaccelerated map (stable fixed-point iteration).
-                    # Note: Anderson coefficients are still computed (for diagnostics and future
-                    # experimentation) but not applied, because aggressive mixing can converge to a
-                    # different physical fixed point in this model family.
-                    state = advanced_states[-1]
+                    # Default: advance using the unaccelerated map (stable fixed-point iteration).
+                    accepted_states = advanced_states
+                    accepted_state = advanced_states[-1]
+
+                    # Accept/reject accelerated proposal (extra year-advance, so keep it rare).
+                    if (
+                        PERIODIC_ACCEPT_REJECT_ACCELERATION
+                        and coefficients is not None
+                        and residual_99p >= PERIODIC_ACCEL_MIN_RESIDUAL_99P_K
+                        and (PERIODIC_ACCEL_ATTEMPT_EVERY > 0)
+                        and (iter_idx % PERIODIC_ACCEL_ATTEMPT_EVERY == 0)
+                    ):
+                        base_next = advanced.temperature
+                        delta = T_next - base_next
+                        max_abs = float(np.max(np.abs(delta)))
+                        if np.isfinite(max_abs) and max_abs > 0.0:
+                            scale = min(1.0, PERIODIC_ACCEL_MAX_STEP_FROM_BASE_K / max_abs)
+                        else:
+                            scale = 0.0
+                        proposal_limited = base_next + scale * delta
+                        proposal_limited = np.maximum(proposal_limited, temperature_floor)
+
+                        proposal_state = ModelState(
+                            temperature=proposal_limited,
+                            albedo_field=accepted_state.albedo_field,
+                            wind_field=accepted_state.wind_field,
+                            humidity_field=accepted_state.humidity_field,
+                        )
+                        proposal_states = evolve_year(
+                            proposal_state,
+                            monthly_insolation,
+                            month_durations,
+                            rhs_fn=rhs_fn,
+                            rhs_temperature_derivative_fn=rhs_derivative_fn,
+                            temperature_floor=temperature_floor,
+                            solver_cache=solver_cache,
+                            surface_context=surface_context,
+                        )
+                        proposal_residual = np.array(
+                            [proposal_states[i].temperature[0] - states[i].temperature[0] for i in range(12)]
+                        )
+                        proposal_rms = float(np.sqrt(np.mean(np.square(proposal_residual))))
+                        proposal_99p = float(np.percentile(np.abs(proposal_residual), 99))
+
+                        if np.isfinite(proposal_rms) and np.isfinite(proposal_99p):
+                            if (proposal_99p < float(residual_99p)) and (proposal_rms < float(residual_rms)):
+                                accepted_states = proposal_states
+                                accepted_state = proposal_states[-1]
+
+                    states = accepted_states
+                    state = accepted_state
 
             raise RuntimeError(
                 "Failed to converge to a periodic solution after "
