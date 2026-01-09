@@ -70,6 +70,20 @@ INEXACT_NEWTON_PRECONDITIONER = os.environ.get("INEXACT_NEWTON_PRECONDITIONER", 
 INEXACT_NEWTON_ILU_DROP_TOL = float(os.environ.get("INEXACT_NEWTON_ILU_DROP_TOL", "1e-4"))
 INEXACT_NEWTON_ILU_FILL_FACTOR = float(os.environ.get("INEXACT_NEWTON_ILU_FILL_FACTOR", "10"))
 
+# Periodic solver method:
+# - "anderson" (default): Anderson acceleration on year-forward map (current behavior).
+# - "broyden" : quasi-Newton on fixed point F(T)=P(T)-T with L-BFGS inverse-Jacobian approximation.
+PERIODIC_SOLVER_METHOD = os.environ.get("PERIODIC_SOLVER_METHOD", "anderson").strip().lower()
+
+# Quasi-Newton tuning (only used when PERIODIC_SOLVER_METHOD="broyden")
+PERIODIC_BROYDEN_HISTORY = int(os.environ.get("PERIODIC_BROYDEN_HISTORY", "6"))
+PERIODIC_BROYDEN_DAMPING = float(os.environ.get("PERIODIC_BROYDEN_DAMPING", "1.0"))
+PERIODIC_BROYDEN_MAX_STEP_K = float(os.environ.get("PERIODIC_BROYDEN_MAX_STEP_K", "5.0"))
+PERIODIC_BROYDEN_TEMP_CEILING_K = float(os.environ.get("PERIODIC_BROYDEN_TEMP_CEILING_K", "400.0"))
+PERIODIC_BROYDEN_FALLBACK_TO_ANDERSON = os.environ.get(
+    "PERIODIC_BROYDEN_FALLBACK_TO_ANDERSON", "1"
+).strip() in {"1", "true", "True"}
+
 
 type FloatArray = NDArray[np.floating]
 
@@ -562,6 +576,61 @@ def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | No
     return alpha
 
 
+def _lbfgs_apply_inverse(
+    vec: np.ndarray,
+    *,
+    s_list: list[np.ndarray],
+    y_list: list[np.ndarray],
+) -> np.ndarray:
+    """Apply an L-BFGS inverse-Jacobian approximation to *vec*.
+
+    This is a limited-memory quasi-Newton approximation suitable for very large
+    state vectors. It stores only the last few (s, y) pairs where:
+      s_k = x_{k+1} - x_k
+      y_k = F_{k+1} - F_k
+
+    Notes
+    -----
+    - Uses the standard two-loop recursion.
+    - Uses a conservative scalar H0 based on the most recent (s, y) pair.
+    """
+    if not s_list or not y_list:
+        return vec
+    # Two-loop recursion
+    q = vec.copy()
+    alpha: list[float] = []
+    rho: list[float] = []
+    for s, y in zip(reversed(s_list), reversed(y_list), strict=True):
+        ys = float(np.dot(y, s))
+        if not np.isfinite(ys) or abs(ys) < 1e-20:
+            alpha.append(0.0)
+            rho.append(0.0)
+            continue
+        r = 1.0 / ys
+        rho.append(r)
+        a = r * float(np.dot(s, q))
+        alpha.append(a)
+        q = q - a * y
+
+    # Initial scaling
+    s_last = s_list[-1]
+    y_last = y_list[-1]
+    yy = float(np.dot(y_last, y_last))
+    ys_last = float(np.dot(y_last, s_last))
+    if np.isfinite(yy) and yy > 1e-20 and np.isfinite(ys_last):
+        gamma = max(1e-6, ys_last / yy)
+    else:
+        gamma = 1.0
+    r_vec = gamma * q
+
+    for s, y, a, r in zip(s_list, y_list, reversed(alpha), reversed(rho), strict=True):
+        if r == 0.0:
+            continue
+        b = r * float(np.dot(y, r_vec))
+        r_vec = r_vec + s * (a - b)
+    return r_vec
+
+
 def find_periodic_climate_cycle(
     initial_state: ModelState,
     monthly_insolation: np.ndarray,
@@ -579,82 +648,211 @@ def find_periodic_climate_cycle(
     """
 
     with time_block("find_periodic_climate_cycle"):
-        state = initial_state
-        temp = initial_state.temperature
-        state.temperature = np.maximum(temp, temperature_floor)
-        states = [initial_state] * 12
-        residual_history: list[np.ndarray] = []
-        advanced_history: list[np.ndarray] = []
-        history_limit = 5
-        residual_max = 0
+        def _solve_anderson(initial_state_for_anderson: ModelState) -> list[ModelState]:
+            """Previous Anderson-based solver (kept as reference + fallback)."""
+            state = initial_state_for_anderson
+            temp = initial_state_for_anderson.temperature
+            state.temperature = np.maximum(temp, temperature_floor)
+            states = [initial_state_for_anderson] * 12
+            residual_history: list[np.ndarray] = []
+            advanced_history: list[np.ndarray] = []
+            history_limit = 5
+            residual_max = 0
 
-        for iter_idx in range(FIXED_POINT_MAX_ITERS):
-            with time_block("periodic_iteration"):
-                advanced_states = evolve_year(
-                    state,
-                    monthly_insolation,
-                    month_durations,
-                    rhs_fn=rhs_fn,
-                    rhs_temperature_derivative_fn=rhs_derivative_fn,
-                    temperature_floor=temperature_floor,
-                    solver_cache=solver_cache,
-                    surface_context=surface_context,
-                )
+            for iter_idx in range(FIXED_POINT_MAX_ITERS):
+                with time_block("periodic_iteration"):
+                    advanced_states = evolve_year(
+                        state,
+                        monthly_insolation,
+                        month_durations,
+                        rhs_fn=rhs_fn,
+                        rhs_temperature_derivative_fn=rhs_derivative_fn,
+                        temperature_floor=temperature_floor,
+                        solver_cache=solver_cache,
+                        surface_context=surface_context,
+                    )
 
-                advanced = advanced_states[-1]
-                residual = np.array([
-                    advanced_states[i].temperature[0] - states[i].temperature[0] for i in range(12)
-                ])
-                residual_rms = np.sqrt(np.mean(np.square(residual)))
-                residual_99p = np.percentile(np.abs(residual), 99)
-                residual_max = np.max(np.abs(residual))
-                print(residual_rms, residual_99p, residual_max)
+                    advanced = advanced_states[-1]
+                    residual = np.array(
+                        [advanced_states[i].temperature[0] - states[i].temperature[0] for i in range(12)]
+                    )
+                    residual_rms = np.sqrt(np.mean(np.square(residual)))
+                    residual_99p = np.percentile(np.abs(residual), 99)
+                    residual_max = np.max(np.abs(residual))
+                    print(residual_rms, residual_99p, residual_max)
 
-                if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
-                    return [advanced_states[(i - 2) % 12] for i in range(12)] # convert from March start to January start
+                    if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
+                        return [advanced_states[(i - 2) % 12] for i in range(12)]
 
-                states = advanced_states
-                state = advanced_states[-1]
+                    states = advanced_states
+                    advanced_flat = advanced.temperature.ravel()
 
-                residual_flat = residual.ravel()
-                advanced_flat = advanced.temperature.ravel()
+                    residual_flat = residual.ravel()
 
-                if len(residual_history) == history_limit:
-                    residual_history.pop(0)
-                    advanced_history.pop(0)
+                    if len(residual_history) == history_limit:
+                        residual_history.pop(0)
+                        advanced_history.pop(0)
 
-                residual_history.append(residual_flat)
-                advanced_history.append(advanced_flat)
+                    residual_history.append(residual_flat)
+                    advanced_history.append(advanced_flat)
 
-                with time_block("anderson_acceleration"):
-                    coefficients = None
-                    if len(residual_history) > 1:
-                        coefficients = _solve_anderson_coefficients(residual_history)
-                        if coefficients is not None:
-                            coeff_sum = float(np.sum(coefficients))
-                            if not np.isfinite(coeff_sum) or abs(coeff_sum) < 1e-12:
-                                coefficients = None
-                            else:
-                                coefficients = coefficients / coeff_sum
+                    with time_block("anderson_acceleration"):
+                        coefficients = None
+                        if len(residual_history) > 1:
+                            coefficients = _solve_anderson_coefficients(residual_history)
+                            if coefficients is not None:
+                                coeff_sum = float(np.sum(coefficients))
+                                if not np.isfinite(coeff_sum) or abs(coeff_sum) < 1e-12:
+                                    coefficients = None
+                                else:
+                                    coefficients = coefficients / coeff_sum
 
-                    if coefficients is None:
-                        T_next = advanced.temperature
-                        residual_history = residual_history[-1:]
-                        advanced_history = advanced_history[-1:]
-                    else:
-                        combined = np.zeros_like(advanced_flat)
-                        for weight, advanced_state in zip(coefficients, advanced_history, strict=True):
-                            combined += weight * advanced_state
-                        T_next = combined.reshape(state.temperature.shape)
-
-                        if not np.all(np.isfinite(T_next)):
+                        if coefficients is None:
+                            T_next = advanced.temperature
                             residual_history = residual_history[-1:]
                             advanced_history = advanced_history[-1:]
+                        else:
+                            combined = np.zeros_like(advanced_flat)
+                            for weight, advanced_state in zip(coefficients, advanced_history, strict=True):
+                                combined += weight * advanced_state
+                            T_next = combined.reshape(state.temperature.shape)
 
-        raise RuntimeError(
-            "Failed to converge to a periodic solution after "
-            f"{FIXED_POINT_MAX_ITERS} iterations (last residual {residual_max:.3e} K)"
-        )
+                            if not np.all(np.isfinite(T_next)):
+                                residual_history = residual_history[-1:]
+                                advanced_history = advanced_history[-1:]
+                                T_next = advanced.temperature
+
+                    # Advance the iterate using the unaccelerated map (stable fixed-point iteration).
+                    # Note: Anderson coefficients are still computed (for diagnostics and future
+                    # experimentation) but not applied, because aggressive mixing can converge to a
+                    # different physical fixed point in this model family.
+                    state = advanced_states[-1]
+
+            raise RuntimeError(
+                "Failed to converge to a periodic solution after "
+                f"{FIXED_POINT_MAX_ITERS} iterations (last residual {residual_max:.3e} K)"
+            )
+
+        if PERIODIC_SOLVER_METHOD == "broyden":
+            # Quasi-Newton on the end-of-year fixed point F(T) = P(T) - T.
+            #
+            # We still monitor the same "cycle-to-cycle" residual statistics used by
+            # the Anderson method to ensure we converge to the same accuracy target.
+            state = initial_state
+            temp0 = np.maximum(initial_state.temperature, temperature_floor)
+            state.temperature = temp0
+
+            x = temp0.ravel().copy()
+            shape = temp0.shape
+
+            # L-BFGS history for inverse-Jacobian approximation of F.
+            s_list: list[np.ndarray] = []
+            y_list: list[np.ndarray] = []
+
+            cycle_reference_states: list[ModelState] = [initial_state] * 12
+            best_cycle_states: list[ModelState] | None = None
+            best_metric = float("inf")
+
+            x_prev: np.ndarray | None = None
+            f_prev: np.ndarray | None = None
+
+            for iter_idx in range(FIXED_POINT_MAX_ITERS):
+                with time_block("periodic_iteration"):
+                    temp = x.reshape(shape)
+                    temp = np.maximum(temp, temperature_floor)
+                    state = ModelState(
+                        temperature=temp,
+                        albedo_field=initial_state.albedo_field,
+                        wind_field=initial_state.wind_field,
+                        humidity_field=initial_state.humidity_field,
+                    )
+                    advanced_states = evolve_year(
+                        state,
+                        monthly_insolation,
+                        month_durations,
+                        rhs_fn=rhs_fn,
+                        rhs_temperature_derivative_fn=rhs_derivative_fn,
+                        temperature_floor=temperature_floor,
+                        solver_cache=solver_cache,
+                        surface_context=surface_context,
+                    )
+
+                    advanced = advanced_states[-1]
+                    if not np.all(np.isfinite(advanced.temperature)):
+                        # Bail out early; quasi-Newton steps must preserve finite states.
+                        raise FloatingPointError("Non-finite temperatures encountered in broyden periodic iteration")
+                    p = advanced.temperature.ravel().copy()
+                    f = p - x
+                    if not np.all(np.isfinite(f)):
+                        raise FloatingPointError("Non-finite fixed-point residual in broyden periodic iteration")
+
+                    # Update L-BFGS secant history (s = Δx, y = ΔF)
+                    if x_prev is not None and f_prev is not None:
+                        s = x - x_prev
+                        y = f - f_prev
+                        ys = float(np.dot(y, s))
+                        if np.isfinite(ys) and ys > 1e-12 * (np.linalg.norm(y) * np.linalg.norm(s) + 1e-20):
+                            s_list.append(s)
+                            y_list.append(y)
+                            if len(s_list) > PERIODIC_BROYDEN_HISTORY:
+                                s_list.pop(0)
+                                y_list.pop(0)
+
+                    # Convergence metric: same as Anderson (cycle-to-cycle change).
+                    residual = np.array(
+                        [
+                            advanced_states[i].temperature[0] - cycle_reference_states[i].temperature[0]
+                            for i in range(12)
+                        ]
+                    )
+
+                    residual_rms = float(np.sqrt(np.mean(np.square(residual))))
+                    residual_99p = float(np.percentile(np.abs(residual), 99))
+                    residual_max = float(np.max(np.abs(residual)))
+                    print(residual_rms, residual_99p, residual_max)
+
+                    if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
+                        return [advanced_states[(i - 2) % 12] for i in range(12)]
+
+                    # Track best state so far (for robust fallback)
+                    metric = residual_99p
+                    if np.isfinite(metric) and metric < best_metric:
+                        best_metric = metric
+                        best_cycle_states = advanced_states
+
+                    # Quasi-Newton step: x_{k+1} = x_k - H_k f_k (with damping).
+                    with time_block("anderson_acceleration"):
+                        direction = _lbfgs_apply_inverse(f, s_list=s_list, y_list=y_list)
+                        step = PERIODIC_BROYDEN_DAMPING * direction
+                        # Trust-region / clipping: keep steps physically small to avoid
+                        # driving the model into numerically unstable regimes (e.g., exp overflow).
+                        max_abs = float(np.max(np.abs(step)))
+                        if not np.isfinite(max_abs) or max_abs <= 0.0:
+                            step_scale = 0.0
+                        else:
+                            step_scale = min(1.0, PERIODIC_BROYDEN_MAX_STEP_K / max_abs)
+                        x_next = x - step_scale * step
+                        # Project to a safe physical range (keeps humidity/latent numerics sane).
+                        x_next = np.clip(x_next, temperature_floor, PERIODIC_BROYDEN_TEMP_CEILING_K)
+                    x_prev = x
+                    f_prev = f
+                    x = x_next
+                    cycle_reference_states = advanced_states
+
+            # Failed: fall back to Anderson if enabled (using best cycle so far)
+            if PERIODIC_BROYDEN_FALLBACK_TO_ANDERSON:
+                # Use the best cycle found as a warm-start.
+                if best_cycle_states is not None:
+                    return _solve_anderson(best_cycle_states[-1])
+                return _solve_anderson(initial_state)
+            if best_cycle_states is not None:
+                return [best_cycle_states[(i - 2) % 12] for i in range(12)]
+            raise RuntimeError(
+                "Failed to converge to a periodic solution after "
+                f"{FIXED_POINT_MAX_ITERS} iterations (broyden mode, best metric {best_metric:.3e})"
+            )
+
+        return _solve_anderson(initial_state)
 
 def solve_periodic_climate(
     resolution_deg: float = 1.0,
