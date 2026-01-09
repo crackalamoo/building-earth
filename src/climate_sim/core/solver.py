@@ -119,6 +119,13 @@ PERIODIC_CYCLE_NEWTON_FALLBACK_TO_ANDERSON = os.environ.get(
     "PERIODIC_CYCLE_NEWTON_FALLBACK_TO_ANDERSON", "1"
 ).strip() in {"1", "true", "True"}
 
+# Coarse-grid warm start for the periodic solve (reduced-order acceleration).
+#
+# If enabled and resolution_deg > coarse_deg, we solve the periodic cycle on a coarser
+# grid once, then bilinearly interpolate a single-month temperature field onto the
+# target grid as the initial guess.
+PERIODIC_WARM_START_COARSE_DEG = float(os.environ.get("PERIODIC_WARM_START_COARSE_DEG", "0"))
+
 
 type FloatArray = NDArray[np.floating]
 
@@ -1183,6 +1190,8 @@ def solve_periodic_climate(
     *,
     model_config: ModelConfig,
     return_layer_map: bool = False,
+    _enable_warm_start: bool = True,
+    _reset_profiler: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Solve for the annual periodic climate cycle.
 
@@ -1209,7 +1218,8 @@ def solve_periodic_climate(
     """
     from climate_sim.core.operators import build_model_operators
 
-    reset_profiler()
+    if _reset_profiler:
+        reset_profiler()
 
     # Build all operators and grids from configuration
     with time_block("build_operators"):
@@ -1242,6 +1252,64 @@ def solve_periodic_climate(
             config=operators.radiation_config,
             land_mask=operators.land_mask,
         )
+        # Optional reduced-order warm start from a coarser periodic solve.
+        if (
+            _enable_warm_start
+            and PERIODIC_WARM_START_COARSE_DEG
+            and PERIODIC_WARM_START_COARSE_DEG > 0
+            and resolution_deg > PERIODIC_WARM_START_COARSE_DEG
+        ):
+            try:
+                coarse_deg = float(PERIODIC_WARM_START_COARSE_DEG)
+                coarse_lon2d, coarse_lat2d, coarse_layers = solve_periodic_climate(
+                    resolution_deg=coarse_deg,
+                    model_config=model_config,
+                    return_layer_map=True,
+                    _enable_warm_start=False,
+                    _reset_profiler=False,
+                )
+                assert isinstance(coarse_layers, dict)
+
+                # Use March (index 2 in Jan-start) as a stable warm-start month.
+                month_idx = 2
+
+                fine_lon2d, fine_lat2d = operators.lon2d, operators.lat2d
+
+                coarse_lat = np.asarray(coarse_lat2d[:, 0], dtype=float)
+                coarse_lon = np.asarray(coarse_lon2d[0, :], dtype=float)
+                fine_lat = np.asarray(fine_lat2d[:, 0], dtype=float)
+                fine_lon = np.asarray(fine_lon2d[0, :], dtype=float) % 360.0
+
+                def _interp_latlon(field2d: np.ndarray) -> np.ndarray:
+                    # Periodic lon interpolation: extend by one wrap point.
+                    lon_ext = np.concatenate([coarse_lon, [coarse_lon[0] + 360.0]])
+                    field_ext = np.concatenate([field2d, field2d[:, :1]], axis=1)
+                    # Interp along lon
+                    tmp = np.empty((field2d.shape[0], fine_lon.size), dtype=float)
+                    for i in range(field2d.shape[0]):
+                        tmp[i, :] = np.interp(fine_lon, lon_ext, field_ext[i, :])
+                    # Interp along lat
+                    out = np.empty((fine_lat.size, fine_lon.size), dtype=float)
+                    for j in range(fine_lon.size):
+                        out[:, j] = np.interp(fine_lat, coarse_lat, tmp[:, j])
+                    return out
+
+                warm = initial_temp_guess.copy()
+                # Coarse outputs are in Celsius; convert to Kelvin.
+                if "surface" in coarse_layers:
+                    warm[0] = _interp_latlon(coarse_layers["surface"][month_idx]) + 273.15
+                if warm.shape[0] == 2:
+                    if "atmosphere" in coarse_layers:
+                        warm[1] = _interp_latlon(coarse_layers["atmosphere"][month_idx]) + 273.15
+                elif warm.shape[0] == 3:
+                    if "boundary_layer" in coarse_layers:
+                        warm[1] = _interp_latlon(coarse_layers["boundary_layer"][month_idx]) + 273.15
+                    if "atmosphere" in coarse_layers:
+                        warm[2] = _interp_latlon(coarse_layers["atmosphere"][month_idx]) + 273.15
+                initial_temp_guess = warm
+            except Exception:
+                # Warm start is optional; fall back to radiative equilibrium.
+                pass
         initial_state = ModelState(
             temperature=initial_temp_guess,
             albedo_field=operators.base_albedo_field,
