@@ -108,6 +108,15 @@ class DiffusionConfig:
     atmosphere_resolution_ref_deg: float = 1.0
     enabled: bool = True
 
+    # Latitude-dependent atmospheric diffusivity scaling
+    use_latitude_dependent_atmosphere: bool = True
+    atmosphere_meridional_tropical_scale: float = 0.5  # 0-30° latitude
+    atmosphere_meridional_midlat_scale: float = 8.0    # 30-60° latitude (peak)
+    atmosphere_meridional_polar_scale: float = 0.5     # 60-90° latitude
+    atmosphere_zonal_tropical_scale: float = 1.5       # 0-30° latitude
+    atmosphere_zonal_midlat_scale: float = 2.5         # 30-60° latitude
+    atmosphere_zonal_polar_scale: float = 1.0          # 60-90° latitude
+
     @staticmethod
     def _scaled_diffusivity(
         grid_resolution_deg: float, kappa_ref: float, resolution_ref_deg: float
@@ -134,6 +143,58 @@ class DiffusionConfig:
             self.atmosphere_kappa_ref_m2_s,
             self.atmosphere_resolution_ref_deg,
         )
+
+    def compute_latitude_scaling(
+        self,
+        lat_deg: np.ndarray,
+        *,
+        meridional: bool,
+    ) -> np.ndarray:
+        """Compute latitude-dependent scaling factor for atmospheric diffusivity.
+        """
+        if not self.use_latitude_dependent_atmosphere:
+            return np.ones_like(lat_deg)
+
+        lat_abs = np.abs(lat_deg)
+
+        if meridional:
+            tropical_scale = self.atmosphere_meridional_tropical_scale
+            midlat_scale = self.atmosphere_meridional_midlat_scale
+            polar_scale = self.atmosphere_meridional_polar_scale
+        else:
+            tropical_scale = self.atmosphere_zonal_tropical_scale
+            midlat_scale = self.atmosphere_zonal_midlat_scale
+            polar_scale = self.atmosphere_zonal_polar_scale
+
+        # Smooth transitions using piecewise smoothstep interpolation
+        # 0-30°: tropical → midlat
+        # 30-60°: midlat (peak)
+        # 60-90°: midlat → polar
+
+        scaling = np.ones_like(lat_abs, dtype=float)
+
+        # Tropical to mid-latitude transition (0° to 30°)
+        tropical_mask = lat_abs < 30.0
+        if np.any(tropical_mask):
+            t = np.clip(lat_abs[tropical_mask] / 30.0, 0.0, 1.0)
+            # Smoothstep interpolation
+            smooth_t = 3 * t**2 - 2 * t**3
+            scaling[tropical_mask] = tropical_scale + (midlat_scale - tropical_scale) * smooth_t
+
+        # Mid-latitude region (30° to 60°)
+        midlat_mask = (lat_abs >= 30.0) & (lat_abs < 60.0)
+        if np.any(midlat_mask):
+            scaling[midlat_mask] = midlat_scale
+
+        # Mid-latitude to polar transition (60° to 90°)
+        polar_mask = lat_abs >= 60.0
+        if np.any(polar_mask):
+            t = np.clip((lat_abs[polar_mask] - 60.0) / 30.0, 0.0, 1.0)
+            # Smoothstep interpolation
+            smooth_t = 3 * t**2 - 2 * t**3
+            scaling[polar_mask] = midlat_scale + (polar_scale - midlat_scale) * smooth_t
+
+        return scaling
 
 
 @dataclass
@@ -237,6 +298,7 @@ def _build_single_layer_operator(
     config: DiffusionConfig,
     active_mask: np.ndarray | None = None,
     diffusivity_m2_s: float,
+    use_latitude_scaling: bool = False,
 ) -> DiffusionOperator:
     if lon2d.shape != lat2d.shape or lon2d.shape != heat_capacity_field.shape:
         raise ValueError("Grid and heat capacity field must share the same shape")
@@ -263,6 +325,7 @@ def _build_single_layer_operator(
     inv_capacity = np.zeros_like(total_capacity)
     inv_capacity[active_mask] = 1.0 / total_capacity[active_mask]
 
+    # Base diffusivity field (will be scaled by latitude if requested)
     diffusivity_field = np.zeros_like(heat_capacity_field)
     diffusivity_field[active_mask] = (
         diffusivity_m2_s * heat_capacity_field[active_mask]
@@ -294,6 +357,7 @@ def _build_single_layer_operator(
         delta_y = earth_radius * delta_lat_centers_rad
 
         interface_lat_rad = np.deg2rad(0.5 * (lat_centers[:-1] + lat_centers[1:]))
+        interface_lat_deg = 0.5 * (lat_centers[:-1] + lat_centers[1:])
         boundary_length_north = (
             earth_radius
             * np.cos(interface_lat_rad)[:, np.newaxis]
@@ -304,6 +368,14 @@ def _build_single_layer_operator(
         north_diffusivity = harmonic_mean(
             diffusivity_field[:-1], diffusivity_field[1:]
         )
+
+        # Apply latitude-dependent scaling for meridional diffusion
+        if use_latitude_scaling:
+            meridional_scaling = config.compute_latitude_scaling(
+                interface_lat_deg, meridional=True
+            )
+            north_diffusivity = north_diffusivity * meridional_scaling[:, np.newaxis]
+
         with np.errstate(divide="ignore", invalid="ignore"):
             north_conductance = (
                 north_diffusivity * boundary_length_north / delta_y[:, np.newaxis]
@@ -331,6 +403,14 @@ def _build_single_layer_operator(
         east_diffusivity = harmonic_mean(
             diffusivity_field, np.roll(diffusivity_field, -1, axis=1)
         )
+
+        # Apply latitude-dependent scaling for zonal diffusion
+        if use_latitude_scaling:
+            zonal_scaling = config.compute_latitude_scaling(
+                lat_centers, meridional=False
+            )
+            east_diffusivity = east_diffusivity * zonal_scaling[:, np.newaxis]
+
         with np.errstate(divide="ignore", invalid="ignore"):
             east_conductance = east_diffusivity * (boundary_length_east / delta_x)
         east_conductance = np.where(east_mask, east_conductance, 0.0)
@@ -409,6 +489,7 @@ def create_diffusion_operator(
         config=config,
         active_mask=~land_mask,
         diffusivity_m2_s=surface_diffusivity_m2_s,
+        use_latitude_scaling=False,  # Surface ocean uses uniform diffusivity
     )
     atmosphere_operator = _build_single_layer_operator(
         lon2d,
@@ -417,6 +498,7 @@ def create_diffusion_operator(
         cell_area_field,
         config=config,
         diffusivity_m2_s=atmosphere_diffusivity_m2_s,
+        use_latitude_scaling=True,  # Atmosphere uses latitude-dependent diffusivity
     )
 
     # Optionally build boundary layer operator with its own heat capacity
@@ -432,6 +514,7 @@ def create_diffusion_operator(
             cell_area_field,
             config=config,
             diffusivity_m2_s=atmosphere_diffusivity_m2_s,
+            use_latitude_scaling=True,  # Boundary layer also uses latitude-dependent diffusivity
         )
 
     return LayeredDiffusionOperator(
