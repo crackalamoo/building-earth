@@ -9,6 +9,7 @@ import numpy as np
 from climate_sim.physics.humidity import (
     compute_cloud_cover,
     specific_humidity_to_relative_humidity,
+    compute_humidity_q,
 )
 from climate_sim.data.constants import (
     HEAT_CAPACITY_AIR_J_M2_K,
@@ -335,30 +336,70 @@ def radiative_equilibrium_initial_guess(
     albedo_field: np.ndarray,
     config: RadiationConfig,
     land_mask: np.ndarray | None = None,
+    lat2d: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Initial temperature guess via local radiative equilibrium."""
+    """Initial temperature guess via local radiative equilibrium.
 
+    Uses a two-pass approach:
+    1. First pass: compute cloud cover from RH based on simple temperature estimate
+    2. Second pass: recompute with updated cloud cover from first-pass temperatures
+    """
     sigma = config.stefan_boltzmann
-    absorbed = monthly_insolation.mean(axis=0) * (1.0 - albedo_field)
-    absorbed = np.maximum(absorbed, 1e-6)
+    insolation = monthly_insolation.mean(axis=0)
 
     if not config.include_atmosphere:
+        absorbed = insolation * (1.0 - albedo_field)
         surface = np.power(absorbed / (config.emissivity_surface * sigma), 0.25)
-        surface = np.maximum(surface, config.temperature_floor)
-        # Normalize to always return 3D: (1, lat, lon) for single-layer
-        return surface[np.newaxis, :, :]
+        return _with_floor(surface[np.newaxis, :, :], config.temperature_floor)
 
-    # Use latitude-based fallback for initial guess since we don't have actual humidity yet
-    dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
-    cloud_cover = compute_cloud_cover(temperature=dummy_temp, land_mask=land_mask)
-    eps_atm = config.emissivity_atmosphere + 0.20 * cloud_cover
+    def compute_cloud_cover_field(temp_surface: np.ndarray) -> np.ndarray:
+        """Compute cloud cover from surface temperature via RH."""
+        if lat2d is not None:
+            rh = compute_humidity_q(
+                lat2d, temp_surface, np.array(0.0), return_rh=True, land_mask=land_mask
+            )
+            return compute_cloud_cover(relative_humidity=rh, land_mask=land_mask)
+        else:
+            dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
+            return compute_cloud_cover(temperature=dummy_temp, land_mask=land_mask)
 
-    denom = np.maximum(2.0 - eps_atm, 1e-6)
-    atmosphere = np.power(absorbed / (denom * sigma), 0.25)
-    surface = np.power(2.0 * absorbed / (denom * sigma), 0.25)
+    def radiative_equilibrium_temps(cloud_cover: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Solve analytical radiative equilibrium for given cloud cover."""
+        atm_albedo = 0.05 + 0.35 * cloud_cover
+        atm_absorptance = config.shortwave_absorptance_atmosphere + 0.05 * cloud_cover
+
+        absorbed_sw_atm = atm_absorptance * insolation
+        sw_down_surface = (1.0 - atm_albedo - atm_absorptance) * insolation
+        absorbed_sw_surface = sw_down_surface * (1.0 - albedo_field)
+
+        eps_atm = config.emissivity_atmosphere + 0.20 * cloud_cover
+        denom = np.maximum(2.0 - eps_atm, 1e-6)
+
+        surface = np.power((absorbed_sw_surface + 0.5 * absorbed_sw_atm) / (0.5 * denom * sigma), 0.25)
+        atmosphere = np.power((absorbed_sw_atm / (eps_atm * sigma)) + 0.5 * np.power(surface, 4), 0.25)
+        return surface, atmosphere
+
+    # First pass: estimate cloud cover from simple surface temperature
+    absorbed_initial = insolation * (1.0 - albedo_field)
+    temp_guess = np.power(absorbed_initial / (config.emissivity_surface * sigma), 0.25)
+    temp_guess = np.maximum(temp_guess, config.temperature_floor)
+    cloud_cover = compute_cloud_cover_field(temp_guess)
+
+    surface, atmosphere = radiative_equilibrium_temps(cloud_cover)
 
     if config.boundary_layer_heat_capacity != config.atmosphere_heat_capacity:
-        # Three-layer guess: boundary layer interpolated between surface and atmosphere
+        boundary = 0.7 * surface + 0.3 * atmosphere
+        first_pass_temp = np.stack([surface, boundary, atmosphere])
+    else:
+        first_pass_temp = np.stack([surface, atmosphere])
+
+    first_pass_temp = _with_floor(first_pass_temp, config.temperature_floor)
+
+    # Second pass: update cloud cover with first-pass surface temperature
+    cloud_cover = compute_cloud_cover_field(first_pass_temp[0])
+    surface, atmosphere = radiative_equilibrium_temps(cloud_cover)
+
+    if config.boundary_layer_heat_capacity != config.atmosphere_heat_capacity:
         boundary = 0.7 * surface + 0.3 * atmosphere
         stacked = np.stack([surface, boundary, atmosphere])
     else:

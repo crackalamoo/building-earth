@@ -654,6 +654,7 @@ def solve_periodic_climate(
             albedo_field=operators.base_albedo_field,
             config=operators.radiation_config,
             land_mask=operators.land_mask,
+            lat2d=operators.lat2d,
         )
         initial_state = ModelState(
             temperature=initial_temp_guess,
