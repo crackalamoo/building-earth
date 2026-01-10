@@ -248,6 +248,13 @@ def main() -> None:
         default=False,
         help="Load baseline from cache (main.npz) instead of recomputing",
     )
+    parser.add_argument(
+        "--exp-cache",
+        dest="exp_cache",
+        action="store_true",
+        default=False,
+        help="Load experiment from cache (main.npz) instead of recomputing",
+    )
 
     args = parser.parse_args()
 
@@ -337,12 +344,20 @@ def main() -> None:
             return_layer_map=True,
         )
 
-    # Always compute experiment
-    _, _, exp_layers = solve_periodic_climate(
-        resolution_deg=args.resolution,
-        model_config=exp_model_config,
-        return_layer_map=True,
-    )
+    # Load or compute experiment
+    if args.exp_cache:
+        data_dir = os.getenv("DATA_DIR")
+        assert data_dir is not None, "Please set the DATA_DIR environment variable to enable caching."
+        data_dir = Path(data_dir)
+        cache_path = data_dir / "main.npz"
+        with np.load(cache_path) as cached:
+            exp_layers = {k: cached[k] for k in cached}
+    else:
+        _, _, exp_layers = solve_periodic_climate(
+            resolution_deg=args.resolution,
+            model_config=exp_model_config,
+            return_layer_map=True,
+        )
 
     base_surface = base_layers["surface"]
     exp_surface = exp_layers["surface"]
