@@ -38,6 +38,9 @@ NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 100
 
+# Anderson acceleration parameters for periodic cycle solver
+ANDERSON_HISTORY_LIMIT = 3
+
 # Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
 INEXACT_NEWTON_REFACTORIZE_EVERY = 4
 # GMRES tolerance for inexact Newton linear solves.
@@ -465,7 +468,9 @@ def _solve_anderson_coefficients(residuals: list[np.ndarray]) -> np.ndarray | No
     scale = np.linalg.norm(gram, ord=np.inf)
     if not np.isfinite(scale):
         scale = 1.0
-    regularisation = 1e-12 * scale + 1e-14
+    # Adaptive regularization: more history needs more regularization for stability
+    # This prevents ill-conditioning when using many past iterates
+    regularisation = (1e-10 * m * m) * scale + 1e-14
     gram = gram + regularisation * np.eye(m)
 
     ones = np.ones(m)
@@ -512,7 +517,6 @@ def find_periodic_climate_cycle(
         states = [initial_state] * 12
         residual_history: list[np.ndarray] = []
         advanced_history: list[np.ndarray] = []
-        history_limit = 5
         residual_max = 0.0
 
         for iter_idx in range(FIXED_POINT_MAX_ITERS):
@@ -545,7 +549,7 @@ def find_periodic_climate_cycle(
                 residual_flat = residual.ravel()
                 advanced_flat = advanced.temperature.ravel()
 
-                if len(residual_history) == history_limit:
+                if len(residual_history) == ANDERSON_HISTORY_LIMIT:
                     residual_history.pop(0)
                     advanced_history.pop(0)
 
@@ -578,7 +582,7 @@ def find_periodic_climate_cycle(
                             residual_history = residual_history[-1:]
                             advanced_history = advanced_history[-1:]
 
-                # Actually apply Anderson-accelerated state (fixing old bug where this was never used)
+                # Apply Anderson-accelerated state
                 state = ModelState(
                     temperature=T_next,
                     albedo_field=initial_state.albedo_field,
