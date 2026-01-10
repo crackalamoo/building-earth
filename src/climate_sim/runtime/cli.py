@@ -155,7 +155,7 @@ def add_common_model_arguments(
     add_boolean_flag(
         parser,
         dest="lapse_rate_elevation",
-        default=False,
+        default=True,
         enable_option="--lapse-rate-elevation",
         disable_option="--no-lapse-rate-elevation",
         help_enable="Apply lapse-rate adjustments using topographic elevation",

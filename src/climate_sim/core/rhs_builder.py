@@ -123,6 +123,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             boundary_layer_heat_capacity_J_m2_K=(
                 inputs.radiation_config.boundary_layer_heat_capacity if inputs.boundary_layer_cfg.enabled else None
             ),
+            topographic_elevation=inputs.topographic_elevation,
         )
 
     latent_heat_model: LatentHeatExchangeModel | None = None

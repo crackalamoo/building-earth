@@ -21,9 +21,10 @@ def postprocess_periodic_cycle_results(
     resolved_wind: WindConfig | None,
     resolved_radiation: RadiationConfig,
     return_layer_map: bool = False,
+    topographic_elevation: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Post-process solver results: convert units, compute diagnostics, build output dictionaries.
-    
+
     Parameters
     ----------
     lon2d, lat2d
@@ -36,7 +37,9 @@ def postprocess_periodic_cycle_results(
         Radiation configuration (used to check if atmosphere is enabled)
     return_layer_map
         If True, return a dictionary of all layers; if False, return only surface temperature
-        
+    topographic_elevation
+        Elevation of each cell in metres. Used for lapse rate correction in 2m temperature.
+
     Returns
     -------
     tuple
@@ -56,6 +59,7 @@ def postprocess_periodic_cycle_results(
         temperature_2m_c = compute_two_meter_temperature(
             None,
             monthly_surface_K,
+            topographic_elevation=topographic_elevation,
         ) - 273.15
         layers_map = {
             "surface": monthly_surface_K - 273.15,
@@ -67,7 +71,11 @@ def postprocess_periodic_cycle_results(
         monthly_boundary_K = monthly_T[:, 1]
         monthly_atmosphere_K = monthly_T[:, 2]
         # Compute 2m temperature using the standard function with lapse rate correction
-        temperature_2m_K = compute_two_meter_temperature(monthly_boundary_K, monthly_surface_K)
+        temperature_2m_K = compute_two_meter_temperature(
+            monthly_boundary_K,
+            monthly_surface_K,
+            topographic_elevation=topographic_elevation,
+        )
         temperature_2m_c = temperature_2m_K - 273.15
         layers_map = {
             "surface": monthly_surface_K - 273.15,

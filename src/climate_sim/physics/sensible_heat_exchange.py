@@ -42,6 +42,7 @@ class SensibleHeatExchangeModel:
         wind_model: WindModel | None = None,
         config: SensibleHeatExchangeConfig | None = None,
         boundary_layer_heat_capacity_J_m2_K: np.ndarray | float | None = None,
+        topographic_elevation: np.ndarray | None = None,
     ) -> None:
         self._config = config or SensibleHeatExchangeConfig()
 
@@ -65,6 +66,7 @@ class SensibleHeatExchangeModel:
         self._surface_heat_capacity = np.maximum(heat_capacity_surface, 1.0e-9)
         self._atmosphere_heat_capacity = np.maximum(heat_capacity_atmosphere, 1.0e-9)
         self._wind_model = wind_model
+        self._topographic_elevation = topographic_elevation
 
         # Boundary layer heat capacity (optional, for 3-layer system)
         if boundary_layer_heat_capacity_J_m2_K is not None:
@@ -143,6 +145,7 @@ class SensibleHeatExchangeModel:
             near_surface_air_K = compute_two_meter_temperature(
                 boundary_temperature,
                 surface_temperature,
+                topographic_elevation=self._topographic_elevation,
             )
             wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
             cp = HEAT_CAPACITY_AIR_J_KG_K
@@ -265,23 +268,26 @@ class SensibleHeatExchangeModel:
 
             # For the surface-boundary exchange, the heat flux is:
             # heat_flux_surf_bl = g_surf * (T_surf - T_2m)
-            # where T_2m ≈ 0.7*T_surf + 0.3*T_boundary (approximately)
-            # So: ∂(heat_flux)/∂T_surf ≈ g_surf * (1 - 0.7) = g_surf * 0.3
-            #     ∂(heat_flux)/∂T_boundary ≈ -g_surf * 0.3
+            # where T_2m = T_boundary + lapse_correction - LAPSE_RATE * (elevation - 2.0)
+            # The elevation term is constant, so:
+            # ∂T_2m/∂T_surf = 0
+            # ∂T_2m/∂T_boundary = 1
+            # Therefore:
+            # ∂(heat_flux)/∂T_surf = g_surf
+            # ∂(heat_flux)/∂T_boundary = -g_surf
 
             g_surf = rho * cp * ch * wind_abs
-            lapse_factor = 0.3  # Approximate derivative of T_2m wrt T_boundary
 
             # Surface tendency: -heat_flux / C_surf
-            # ∂/∂T_surf = -(1 - lapse_factor) * g_surf / C_surf
-            # ∂/∂T_boundary = lapse_factor * g_surf / C_surf
-            surface_diag = -(1.0 - lapse_factor) * g_surf / self._surface_heat_capacity
-            surface_boundary_coupling = lapse_factor * g_surf / self._surface_heat_capacity
+            # ∂/∂T_surf = -g_surf / C_surf
+            # ∂/∂T_boundary = g_surf / C_surf
+            surface_diag = -g_surf / self._surface_heat_capacity
+            surface_boundary_coupling = g_surf / self._surface_heat_capacity
 
             # Boundary tendency: (heat_flux_surf_bl - heat_flux_bl_atm) / C_bl
             # From surface-boundary flux:
-            #   ∂/∂T_surf = (1 - lapse_factor) * g_surf / C_bl
-            #   ∂/∂T_boundary = -lapse_factor * g_surf / C_bl
+            #   ∂/∂T_surf = g_surf / C_bl
+            #   ∂/∂T_boundary = -g_surf / C_bl
             # From boundary-atmosphere flux: g_mix_bl_atm * (T_bl - T_atm)
             # where g_mix_bl_atm = 1 / r_mix_bl_atm (turbulent mixing conductance)
             Cbl = self._boundary_layer_heat_capacity
@@ -291,8 +297,8 @@ class SensibleHeatExchangeModel:
             r_mix_bl_atm = tau_bl_atm / Cbl
             bl_atm_conductance = 1.0 / np.maximum(r_mix_bl_atm, 1e-9)
 
-            boundary_diag = (-lapse_factor * g_surf - bl_atm_conductance) / self._boundary_layer_heat_capacity
-            boundary_surface_coupling = (1.0 - lapse_factor) * g_surf / self._boundary_layer_heat_capacity
+            boundary_diag = (-g_surf - bl_atm_conductance) / self._boundary_layer_heat_capacity
+            boundary_surface_coupling = g_surf / self._boundary_layer_heat_capacity
             boundary_atm_coupling = bl_atm_conductance / self._boundary_layer_heat_capacity
             boundary_atm_coupling = 0
 

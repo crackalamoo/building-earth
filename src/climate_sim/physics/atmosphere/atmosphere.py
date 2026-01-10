@@ -37,6 +37,7 @@ def adjust_temperature_by_elevation(
 def compute_two_meter_temperature(
     boundary_layer_K: np.ndarray | None,
     surface_K: np.ndarray,
+    topographic_elevation: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute 2 m air temperature from available layers.
 
@@ -46,6 +47,9 @@ def compute_two_meter_temperature(
         Boundary layer temperature in K (represents mid-layer ~375m), or None if unavailable.
     surface_K:
         Surface temperature in K.
+    topographic_elevation:
+        Elevation of each cell in metres. Used for lapse rate correction when
+        boundary_layer_K is not None. Can be a scalar or array broadcastable to surface_K.
 
     Returns
     -------
@@ -56,8 +60,15 @@ def compute_two_meter_temperature(
         mid_layer_height_m = BOUNDARY_LAYER_HEIGHT_M / 2.0  # 375m
         height_difference_m = mid_layer_height_m - 2.0  # 373m
         lapse_correction_K = STANDARD_LAPSE_RATE_K_PER_M * height_difference_m
-        return boundary_layer_K + lapse_correction_K
-    
+        result = boundary_layer_K + lapse_correction_K
+
+        # Apply elevation adjustment if available
+        if topographic_elevation is not None:
+            elevation_delta_m = topographic_elevation - 2.0
+            result = adjust_temperature_by_elevation(result, elevation_delta_m)
+
+        return result
+
     return surface_K.copy()
 
 def log_law_map_wind_speed(

@@ -394,6 +394,7 @@ class WindModel:
         near_surface_air_K = compute_two_meter_temperature(
             atmosphere_temperature_K,
             surface_temperature_K,
+            topographic_elevation=self.elevation_m,
         )
 
         # Air density

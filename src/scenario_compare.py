@@ -158,7 +158,7 @@ def main() -> None:
     add_boolean_flag(
         parser,
         dest="base_lapse_rate_elevation",
-        default=False,
+        default=True,
         enable_option="--base-lapse-rate-elevation",
         disable_option="--no-base-lapse-rate-elevation",
         help_enable="Include lapse-rate elevation corrections in the baseline case",
@@ -185,7 +185,7 @@ def main() -> None:
     add_boolean_flag(
         parser,
         dest="experiment_lapse_rate_elevation",
-        default=False,
+        default=True,
         enable_option="--exp-lapse-rate-elevation",
         disable_option="--no-exp-lapse-rate-elevation",
         help_enable="Include lapse-rate elevation corrections in the experiment case",

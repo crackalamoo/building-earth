@@ -705,4 +705,5 @@ def solve_periodic_climate(
         resolved_wind=model_config.wind,
         resolved_radiation=operators.radiation_config,
         return_layer_map=return_layer_map,
+        topographic_elevation=operators.topographic_elevation,
     )
