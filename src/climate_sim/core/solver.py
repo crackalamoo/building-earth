@@ -150,6 +150,7 @@ def monthly_step(
             jacobian: sparse.csc_matrix,
             rhs: np.ndarray,
             *,
+            preconditioner_matrix: sparse.csc_matrix | None = None,
             newton_iter: int,
         ) -> np.ndarray:
             """Inexact Newton linear solve: GMRES with a reused LU preconditioner.
@@ -164,7 +165,8 @@ def monthly_step(
 
             if (preconditioner_solve is None) or (preconditioner_age >= INEXACT_NEWTON_REFACTORIZE_EVERY):
                 with time_block("factorize_solver"):
-                    preconditioner_solve = splinalg.factorized(jacobian)
+                    matrix = preconditioner_matrix if preconditioner_matrix is not None else jacobian
+                    preconditioner_solve = splinalg.factorized(matrix)
                 preconditioner_age = 0
 
             assert preconditioner_solve is not None
@@ -224,7 +226,12 @@ def monthly_step(
                             ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
                         )
                     with time_block("linear_solve"):
-                        correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
+                        correction_flat = _solve_linear_system(
+                            jacobian,
+                            residual_flat,
+                            preconditioner_matrix=surface_block,
+                            newton_iter=newton_iter,
+                        )
                     correction = correction_flat.reshape((nlat, nlon))[np.newaxis, :, :]
                 elif nlayers == 2:
                     # Two-layer: surface + atmosphere with coupling
@@ -255,8 +262,17 @@ def monthly_step(
                         assert isinstance(jacobian, sparse.csc_matrix)
 
                     residual_flat = np.concatenate([residual_surface.ravel(), residual_atmosphere.ravel()], axis=0)
+                    preconditioner_matrix = sparse.block_diag(
+                        [surface_block, atmosphere_block],
+                        format="csc",
+                    )
                     with time_block("linear_solve"):
-                        correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
+                        correction_flat = _solve_linear_system(
+                            jacobian,
+                            residual_flat,
+                            preconditioner_matrix=preconditioner_matrix,
+                            newton_iter=newton_iter,
+                        )
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
                     correction = np.stack([correction_surface, correction_atmosphere])
@@ -315,8 +331,17 @@ def monthly_step(
                         residual_boundary.ravel(),
                         residual_atmosphere.ravel()
                     ], axis=0)
+                    preconditioner_matrix = sparse.block_diag(
+                        [surface_block, boundary_block, atmosphere_block],
+                        format="csc",
+                    )
                     with time_block("linear_solve"):
-                        correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
+                        correction_flat = _solve_linear_system(
+                            jacobian,
+                            residual_flat,
+                            preconditioner_matrix=preconditioner_matrix,
+                            newton_iter=newton_iter,
+                        )
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_boundary = correction_flat[size:2*size].reshape(boundary_diag.shape)
                     correction_atmosphere = correction_flat[2*size:].reshape(atmosphere_diag.shape)
@@ -479,15 +504,35 @@ def find_periodic_climate_cycle(
     evolution operator, using Anderson acceleration for faster convergence.
     """
 
+    def _apply_inverse(vec: np.ndarray, updates: list[tuple[np.ndarray, np.ndarray]], scale: float) -> np.ndarray:
+        result = scale * vec
+        for u_vec, v_vec in updates:
+            result = result + u_vec * np.dot(v_vec, vec)
+        return result
+
+    def _apply_inverse_transpose(
+        vec: np.ndarray, updates: list[tuple[np.ndarray, np.ndarray]], scale: float
+    ) -> np.ndarray:
+        result = scale * vec
+        for u_vec, v_vec in updates:
+            result = result + v_vec * np.dot(u_vec, vec)
+        return result
+
     with time_block("find_periodic_climate_cycle"):
-        state = initial_state
-        temp = initial_state.temperature
-        state.temperature = np.maximum(temp, temperature_floor)
-        states = [initial_state] * 12
-        residual_history: list[np.ndarray] = []
-        advanced_history: list[np.ndarray] = []
-        history_limit = 5
-        residual_max = 0
+        base_state = ModelState(
+            temperature=initial_state.temperature,
+            albedo_field=initial_state.albedo_field,
+            wind_field=None,
+            humidity_field=None,
+        )
+        state = base_state
+        state.temperature = np.maximum(state.temperature, temperature_floor)
+        residual_max = 0.0
+        inv_scale = 1.0
+        update_pairs: list[tuple[np.ndarray, np.ndarray]] = []
+        update_limit = 8
+        prev_temp_flat: np.ndarray | None = None
+        prev_residual_flat: np.ndarray | None = None
 
         for iter_idx in range(FIXED_POINT_MAX_ITERS):
             with time_block("periodic_iteration"):
@@ -503,54 +548,58 @@ def find_periodic_climate_cycle(
                 )
 
                 advanced = advanced_states[-1]
-                residual = np.array([
-                    advanced_states[i].temperature[0] - states[i].temperature[0] for i in range(12)
-                ])
-                residual_rms = np.sqrt(np.mean(np.square(residual)))
-                residual_99p = np.percentile(np.abs(residual), 99)
-                residual_max = np.max(np.abs(residual))
+                residual = advanced.temperature - state.temperature
+                residual_flat = residual.ravel()
+
+                residual_rms = float(np.sqrt(np.mean(np.square(residual_flat))))
+                residual_99p = float(np.percentile(np.abs(residual_flat), 99))
+                residual_max = float(np.max(np.abs(residual_flat)))
                 print(residual_rms, residual_99p, residual_max)
 
-                if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
-                    return [advanced_states[(i - 2) % 12] for i in range(12)] # convert from March start to January start
+                if (
+                    residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K
+                    and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P
+                ):
+                    return [advanced_states[(i - 2) % 12] for i in range(12)]
 
-                states = advanced_states
-                state = advanced_states[-1]
+                if prev_temp_flat is not None and prev_residual_flat is not None:
+                    s_vec = state.temperature.ravel() - prev_temp_flat
+                    y_vec = residual_flat - prev_residual_flat
+                    if np.all(np.isfinite(s_vec)) and np.all(np.isfinite(y_vec)):
+                        if not update_pairs:
+                            denom_scale = float(np.dot(y_vec, y_vec))
+                            if np.isfinite(denom_scale) and denom_scale > 0.0:
+                                scale_est = float(np.dot(s_vec, y_vec)) / denom_scale
+                                if np.isfinite(scale_est) and scale_est > 0.0:
+                                    inv_scale = scale_est
+                        by = _apply_inverse(y_vec, update_pairs, inv_scale)
+                        denom = float(np.dot(s_vec, by))
+                        if np.isfinite(denom) and abs(denom) > 1e-12:
+                            u_vec = s_vec - by
+                            v_vec = _apply_inverse_transpose(s_vec, update_pairs, inv_scale) / denom
+                            update_pairs.append((u_vec, v_vec))
+                            if len(update_pairs) > update_limit:
+                                update_pairs.pop(0)
 
-                residual_flat = residual.ravel()
-                advanced_flat = advanced.temperature.ravel()
+                step = _apply_inverse(residual_flat, update_pairs, inv_scale)
+                if not np.all(np.isfinite(step)):
+                    update_pairs = []
+                    step = -residual_flat
+                else:
+                    step = np.where(step * residual_flat > 0.0, -residual_flat, step)
+                    step = np.sign(step) * np.minimum(np.abs(step), np.abs(residual_flat))
 
-                if len(residual_history) == history_limit:
-                    residual_history.pop(0)
-                    advanced_history.pop(0)
+                prev_temp_flat = state.temperature.ravel()
+                prev_residual_flat = residual_flat
 
-                residual_history.append(residual_flat)
-                advanced_history.append(advanced_flat)
-
-                with time_block("anderson_acceleration"):
-                    coefficients = None
-                    if len(residual_history) > 1:
-                        coefficients = _solve_anderson_coefficients(residual_history)
-                        if coefficients is not None:
-                            coeff_sum = float(np.sum(coefficients))
-                            if not np.isfinite(coeff_sum) or abs(coeff_sum) < 1e-12:
-                                coefficients = None
-                            else:
-                                coefficients = coefficients / coeff_sum
-
-                    if coefficients is None:
-                        T_next = advanced.temperature
-                        residual_history = residual_history[-1:]
-                        advanced_history = advanced_history[-1:]
-                    else:
-                        combined = np.zeros_like(advanced_flat)
-                        for weight, advanced_state in zip(coefficients, advanced_history, strict=True):
-                            combined += weight * advanced_state
-                        T_next = combined.reshape(state.temperature.shape)
-
-                        if not np.all(np.isfinite(T_next)):
-                            residual_history = residual_history[-1:]
-                            advanced_history = advanced_history[-1:]
+                next_temp = state.temperature - step.reshape(state.temperature.shape)
+                next_temp = np.maximum(next_temp, temperature_floor)
+                state = ModelState(
+                    temperature=next_temp,
+                    albedo_field=base_state.albedo_field,
+                    wind_field=None,
+                    humidity_field=None,
+                )
 
         raise RuntimeError(
             "Failed to converge to a periodic solution after "
