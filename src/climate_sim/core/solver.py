@@ -131,6 +131,14 @@ PERIODIC_WARM_START_COARSE_DEG = float(os.environ.get("PERIODIC_WARM_START_COARS
 # stage's solution as the initial guess for the next.
 PERIODIC_CONTINUATION_SCALES = os.environ.get("PERIODIC_CONTINUATION_SCALES", "").strip()
 PERIODIC_CONTINUATION_TARGETS = os.environ.get("PERIODIC_CONTINUATION_TARGETS", "sensible,latent").strip().lower()
+PERIODIC_CONTINUATION_ADAPTIVE = os.environ.get("PERIODIC_CONTINUATION_ADAPTIVE", "0").strip() in {"1", "true", "True"}
+PERIODIC_CONTINUATION_INITIAL_STEP = float(os.environ.get("PERIODIC_CONTINUATION_INITIAL_STEP", "0.5"))
+PERIODIC_CONTINUATION_MIN_STEP = float(os.environ.get("PERIODIC_CONTINUATION_MIN_STEP", "0.05"))
+PERIODIC_CONTINUATION_MAX_STEP = float(os.environ.get("PERIODIC_CONTINUATION_MAX_STEP", "0.5"))
+PERIODIC_CONTINUATION_GROWTH = float(os.environ.get("PERIODIC_CONTINUATION_GROWTH", "1.5"))
+PERIODIC_CONTINUATION_SHRINK = float(os.environ.get("PERIODIC_CONTINUATION_SHRINK", "0.5"))
+PERIODIC_CONTINUATION_MAX_DELTA_99P_K = float(os.environ.get("PERIODIC_CONTINUATION_MAX_DELTA_99P_K", "3.0"))
+PERIODIC_CONTINUATION_MAX_DELTA_MAX_K = float(os.environ.get("PERIODIC_CONTINUATION_MAX_DELTA_MAX_K", "10.0"))
 
 
 type FloatArray = NDArray[np.floating]
@@ -1336,12 +1344,8 @@ def solve_periodic_climate(
             solver_cache=operators.solver_cache,
         )
 
-    if _enable_warm_start and PERIODIC_CONTINUATION_SCALES:
+    if _enable_warm_start and (PERIODIC_CONTINUATION_SCALES or PERIODIC_CONTINUATION_ADAPTIVE):
         # Parse scales like "0,0.5,1"
-        parts = [p.strip() for p in PERIODIC_CONTINUATION_SCALES.split(",") if p.strip()]
-        stages = [float(p) for p in parts]
-        if stages and abs(stages[-1] - 1.0) > 1e-12:
-            stages.append(1.0)
         targets = {t.strip() for t in PERIODIC_CONTINUATION_TARGETS.split(",") if t.strip()}
         env_keys: list[str] = []
         if "sensible" in targets:
@@ -1354,19 +1358,60 @@ def solve_periodic_climate(
         try:
             stage_initial = initial_state
             stage_solution: list[ModelState] | None = None
-            for s in stages:
-                s_clamped = float(np.clip(s, 0.0, 1.0))
-                if "SENSIBLE_EXCHANGE_SCALE" in env_keys:
-                    os.environ["SENSIBLE_EXCHANGE_SCALE"] = str(s_clamped)
-                if "LATENT_EXCHANGE_SCALE" in env_keys:
-                    os.environ["LATENT_EXCHANGE_SCALE"] = str(s_clamped)
-                if "ADVECTION_SCALE" in env_keys:
-                    os.environ["ADVECTION_SCALE"] = str(s_clamped)
-
+            if PERIODIC_CONTINUATION_ADAPTIVE:
+                s_cur = 0.0
+                ds = float(np.clip(PERIODIC_CONTINUATION_INITIAL_STEP, PERIODIC_CONTINUATION_MIN_STEP, PERIODIC_CONTINUATION_MAX_STEP))
+                # Start at scale 0
+                for k in env_keys:
+                    os.environ[k] = "0.0"
                 stage_solution = _run_periodic(stage_initial)
-                # Warm start the next stage from February (Jan-start index 1), which is
-                # the start-of-March state for the March-start integration order.
                 stage_initial = stage_solution[1]
+
+                while s_cur < 1.0 - 1e-12:
+                    s_try = float(min(1.0, s_cur + ds))
+                    for k in env_keys:
+                        os.environ[k] = str(s_try)
+                    candidate_solution = _run_periodic(stage_initial)
+                    candidate_start = candidate_solution[1].temperature
+                    warm_start = stage_initial.temperature
+                    delta = candidate_start - warm_start
+                    delta_surface = delta[0]
+                    d99 = float(np.percentile(np.abs(delta_surface), 99))
+                    dmax = float(np.max(np.abs(delta_surface)))
+
+                    if (d99 <= PERIODIC_CONTINUATION_MAX_DELTA_99P_K) and (dmax <= PERIODIC_CONTINUATION_MAX_DELTA_MAX_K):
+                        # Accept
+                        s_cur = s_try
+                        stage_solution = candidate_solution
+                        stage_initial = candidate_solution[1]
+                        ds = float(min(PERIODIC_CONTINUATION_MAX_STEP, max(PERIODIC_CONTINUATION_MIN_STEP, ds * PERIODIC_CONTINUATION_GROWTH)))
+                    else:
+                        # Reject: shrink step and retry
+                        ds = float(ds * PERIODIC_CONTINUATION_SHRINK)
+                        if ds < PERIODIC_CONTINUATION_MIN_STEP:
+                            raise RuntimeError(
+                                "Adaptive continuation could not stay on the same branch: "
+                                f"delta99={d99:.3f}K deltaMax={dmax:.3f}K at scale={s_try:.3f}"
+                            )
+                assert stage_solution is not None
+            else:
+                parts = [p.strip() for p in PERIODIC_CONTINUATION_SCALES.split(",") if p.strip()]
+                stages = [float(p) for p in parts]
+                if stages and abs(stages[-1] - 1.0) > 1e-12:
+                    stages.append(1.0)
+                for s in stages:
+                    s_clamped = float(np.clip(s, 0.0, 1.0))
+                    if "SENSIBLE_EXCHANGE_SCALE" in env_keys:
+                        os.environ["SENSIBLE_EXCHANGE_SCALE"] = str(s_clamped)
+                    if "LATENT_EXCHANGE_SCALE" in env_keys:
+                        os.environ["LATENT_EXCHANGE_SCALE"] = str(s_clamped)
+                    if "ADVECTION_SCALE" in env_keys:
+                        os.environ["ADVECTION_SCALE"] = str(s_clamped)
+
+                    stage_solution = _run_periodic(stage_initial)
+                    # Warm start the next stage from February (Jan-start index 1), which is
+                    # the start-of-March state for the March-start integration order.
+                    stage_initial = stage_solution[1]
             assert stage_solution is not None
             monthly_states = stage_solution
         finally:
