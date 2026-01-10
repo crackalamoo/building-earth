@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
 from typing import Dict, Tuple
 
 import cmocean
@@ -26,6 +28,7 @@ from climate_sim.runtime.cli import (
 )
 from climate_sim.runtime.config import ModelConfig
 from climate_sim.core.solver import solve_periodic_climate
+from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.core.units import convert_temperature, temperature_unit
 
 from dotenv import load_dotenv
@@ -238,6 +241,13 @@ def main() -> None:
         help_text="Display anomalies in degrees Fahrenheit instead of Celsius",
     )
     add_headless_argument(parser)
+    parser.add_argument(
+        "--base-cache",
+        dest="base_cache",
+        action="store_true",
+        default=False,
+        help="Load baseline from cache (main.npz) instead of recomputing",
+    )
 
     args = parser.parse_args()
 
@@ -311,11 +321,23 @@ def main() -> None:
         use_elliptical_orbit=args.experiment_elliptical_orbit,
     )
 
-    lon2d, lat2d, base_layers = solve_periodic_climate(
-        resolution_deg=args.resolution,
-        model_config=base_model_config,
-        return_layer_map=True,
-    )
+    # Load or compute baseline
+    if args.base_cache:
+        data_dir = os.getenv("DATA_DIR")
+        assert data_dir is not None, "Please set the DATA_DIR environment variable to enable caching."
+        data_dir = Path(data_dir)
+        cache_path = data_dir / "main.npz"
+        lon2d, lat2d = create_lat_lon_grid(args.resolution)
+        with np.load(cache_path) as cached:
+            base_layers = {k: cached[k] for k in cached}
+    else:
+        lon2d, lat2d, base_layers = solve_periodic_climate(
+            resolution_deg=args.resolution,
+            model_config=base_model_config,
+            return_layer_map=True,
+        )
+
+    # Always compute experiment
     _, _, exp_layers = solve_periodic_climate(
         resolution_deg=args.resolution,
         model_config=exp_model_config,
