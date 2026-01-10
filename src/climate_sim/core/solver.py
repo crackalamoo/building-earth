@@ -150,6 +150,7 @@ def monthly_step(
             jacobian: sparse.csc_matrix,
             rhs: np.ndarray,
             *,
+            preconditioner_matrix: sparse.csc_matrix | None = None,
             newton_iter: int,
         ) -> np.ndarray:
             """Inexact Newton linear solve: GMRES with a reused LU preconditioner.
@@ -164,7 +165,8 @@ def monthly_step(
 
             if (preconditioner_solve is None) or (preconditioner_age >= INEXACT_NEWTON_REFACTORIZE_EVERY):
                 with time_block("factorize_solver"):
-                    preconditioner_solve = splinalg.factorized(jacobian)
+                    matrix = preconditioner_matrix if preconditioner_matrix is not None else jacobian
+                    preconditioner_solve = splinalg.factorized(matrix)
                 preconditioner_age = 0
 
             assert preconditioner_solve is not None
@@ -220,11 +222,17 @@ def monthly_step(
                     residual_flat = residual_surface.ravel()
                     
                     with time_block("jacobian_assembly"):
-                        jacobian = _build_surface_jacobian_block(
+                        surface_block = _build_surface_jacobian_block(
                             ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
                         )
+                        jacobian = surface_block
                     with time_block("linear_solve"):
-                        correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
+                        correction_flat = _solve_linear_system(
+                            jacobian,
+                            residual_flat,
+                            preconditioner_matrix=surface_block,
+                            newton_iter=newton_iter,
+                        )
                     correction = correction_flat.reshape((nlat, nlon))[np.newaxis, :, :]
                 elif nlayers == 2:
                     # Two-layer: surface + atmosphere with coupling
@@ -255,8 +263,17 @@ def monthly_step(
                         assert isinstance(jacobian, sparse.csc_matrix)
 
                     residual_flat = np.concatenate([residual_surface.ravel(), residual_atmosphere.ravel()], axis=0)
+                    preconditioner_matrix = sparse.block_diag(
+                        [surface_block, atmosphere_block],
+                        format="csc",
+                    )
                     with time_block("linear_solve"):
-                        correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
+                        correction_flat = _solve_linear_system(
+                            jacobian,
+                            residual_flat,
+                            preconditioner_matrix=preconditioner_matrix,
+                            newton_iter=newton_iter,
+                        )
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_atmosphere = correction_flat[size:].reshape(atmosphere_diag.shape)
                     correction = np.stack([correction_surface, correction_atmosphere])
@@ -315,8 +332,17 @@ def monthly_step(
                         residual_boundary.ravel(),
                         residual_atmosphere.ravel()
                     ], axis=0)
+                    preconditioner_matrix = sparse.block_diag(
+                        [surface_block, boundary_block, atmosphere_block],
+                        format="csc",
+                    )
                     with time_block("linear_solve"):
-                        correction_flat = _solve_linear_system(jacobian, residual_flat, newton_iter=newton_iter)
+                        correction_flat = _solve_linear_system(
+                            jacobian,
+                            residual_flat,
+                            preconditioner_matrix=preconditioner_matrix,
+                            newton_iter=newton_iter,
+                        )
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_boundary = correction_flat[size:2*size].reshape(boundary_diag.shape)
                     correction_atmosphere = correction_flat[2*size:].reshape(atmosphere_diag.shape)
@@ -487,7 +513,7 @@ def find_periodic_climate_cycle(
         residual_history: list[np.ndarray] = []
         advanced_history: list[np.ndarray] = []
         history_limit = 5
-        residual_max = 0
+        residual_max = 0.0
 
         for iter_idx in range(FIXED_POINT_MAX_ITERS):
             with time_block("periodic_iteration"):
@@ -512,10 +538,9 @@ def find_periodic_climate_cycle(
                 print(residual_rms, residual_99p, residual_max)
 
                 if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
-                    return [advanced_states[(i - 2) % 12] for i in range(12)] # convert from March start to January start
+                    return [advanced_states[(i - 2) % 12] for i in range(12)]
 
                 states = advanced_states
-                state = advanced_states[-1]
 
                 residual_flat = residual.ravel()
                 advanced_flat = advanced.temperature.ravel()
@@ -549,8 +574,17 @@ def find_periodic_climate_cycle(
                         T_next = combined.reshape(state.temperature.shape)
 
                         if not np.all(np.isfinite(T_next)):
+                            T_next = advanced.temperature
                             residual_history = residual_history[-1:]
                             advanced_history = advanced_history[-1:]
+
+                # Actually apply Anderson-accelerated state (fixing old bug where this was never used)
+                state = ModelState(
+                    temperature=T_next,
+                    albedo_field=initial_state.albedo_field,
+                    wind_field=None,
+                    humidity_field=None,
+                )
 
         raise RuntimeError(
             "Failed to converge to a periodic solution after "
