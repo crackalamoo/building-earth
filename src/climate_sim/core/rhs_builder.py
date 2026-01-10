@@ -36,7 +36,7 @@ class Linearization:
 type FloatArray = NDArray[np.floating]
 
 type RhsFn = Callable[[ModelState, FloatArray, float | FloatArray], FloatArray]
-type RhsDerivativeFn = Callable[[ModelState, FloatArray], Linearization]
+type RhsDerivativeFn = Callable[[ModelState, FloatArray, float | FloatArray], Linearization]
 
 @dataclass(frozen=True, slots=True)
 class RhsBuildInputs:
@@ -161,6 +161,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             humidity_q=state.humidity_field,
             log_diagnostics=log_radiation,
             cell_area_m2=cell_areas,
+            declination_rad=declination_rad,
+            lat2d=inputs.lat2d,
         )
         if inputs.radiation_config.include_atmosphere:
             radiative = radiative.copy()
@@ -273,7 +275,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             radiative = radiative + inputs.diffusion_operator.surface.tendency(state.temperature)
         return radiative
 
-    def rhs_derivative(state: ModelState, insolation: np.ndarray) -> Linearization:
+    def rhs_derivative(state: ModelState, insolation: np.ndarray, declination_rad: float | np.ndarray) -> Linearization:
         """Compute Jacobian of RHS with respect to temperature."""
         del insolation
         if inputs.radiation_config.include_atmosphere:
@@ -283,6 +285,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 config=inputs.radiation_config,
                 land_mask=inputs.land_mask,
                 humidity_q=state.humidity_field,
+                lat2d=inputs.lat2d,
+                declination_rad=declination_rad,
             )
             assert isinstance(radiative_derivative, tuple)
             radiative_diag, cross = radiative_derivative
@@ -392,6 +396,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             config=inputs.radiation_config,
             land_mask=inputs.land_mask,
             humidity_q=state.humidity_field,
+            lat2d=inputs.lat2d,
+            declination_rad=declination_rad,
         )
         assert isinstance(radiative_derivative, np.ndarray)
         diag = radiative_derivative.copy()

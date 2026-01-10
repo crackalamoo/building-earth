@@ -44,6 +44,7 @@ from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.solver import solve_periodic_climate
 from climate_sim.core.units import convert_temperature, temperature_unit
 from climate_sim.physics.humidity import compute_cloud_cover, specific_humidity_to_relative_humidity
+from climate_sim.physics.radiation import compute_cloud_coverage, _compute_pressure_anomaly
 from climate_sim.physics.solar import compute_monthly_declinations
 
 from dotenv import load_dotenv
@@ -459,16 +460,16 @@ def main() -> None:
         
             humidity_rh_cycle = np.stack(monthly_humidity_rh, axis=0)
         
-            # Compute cloud cover for each month from relative humidity
+            # Compute cloud cover for each month from relative humidity and pressure
             monthly_cloud_cover = []
+            monthly_declinations = compute_monthly_declinations()
             for month_idx in range(12):
                 rh = humidity_rh_cycle[month_idx]
-                cloud_cover = compute_cloud_cover(
-                    relative_humidity=rh,
-                    land_mask=land_mask_bool,
-                )
+                surface_temp = surface_cycle[month_idx] + 273.15  # Convert to Kelvin
+                dp_norm = _compute_pressure_anomaly(surface_temp, monthly_declinations[month_idx])
+                cloud_cover = compute_cloud_coverage(rh, dp_norm, lat2d)
                 monthly_cloud_cover.append(cloud_cover)
-        
+
             cloud_cover_cycle = np.stack(monthly_cloud_cover, axis=0)
         
             # Setup humidity plot

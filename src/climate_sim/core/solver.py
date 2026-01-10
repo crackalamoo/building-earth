@@ -204,7 +204,7 @@ def monthly_step(
                     rhs_value = rhs_fn(state_capped, insolation_W_m2, declination)
                 # Recompute Jacobian every iteration for true Newton solve
                 with time_block("rhs_derivative"):
-                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2)
+                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, declination)
                 preconditioner_age += 1
 
                 nlayers = temp_capped.shape[0]

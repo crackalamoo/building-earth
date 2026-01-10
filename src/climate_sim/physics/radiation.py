@@ -11,6 +11,7 @@ from climate_sim.physics.humidity import (
     specific_humidity_to_relative_humidity,
     compute_humidity_q,
 )
+from climate_sim.physics.atmosphere.pressure import compute_pressure
 from climate_sim.data.constants import (
     HEAT_CAPACITY_AIR_J_M2_K,
     BOUNDARY_LAYER_EMISSIVITY,
@@ -40,6 +41,128 @@ def _with_floor(values: np.ndarray, floor: float) -> np.ndarray:
     return np.maximum(values, floor)
 
 
+def _compute_pressure_anomaly(
+    surface_temp: np.ndarray,
+    declination_rad: float | np.ndarray,
+) -> np.ndarray:
+    from climate_sim.core.math_core import area_weighted_mean
+
+    pressure = compute_pressure(surface_temp, declination_rad=declination_rad)
+
+    nlat, nlon = surface_temp.shape
+    lat_spacing = 180.0 / nlat
+    lat_centers = -90.0 + (np.arange(nlat) + 0.5) * lat_spacing
+    cos_lat = np.clip(np.cos(np.deg2rad(lat_centers)), 1.0e-6, None)
+    weights = np.broadcast_to(cos_lat[:, None], (nlat, nlon))
+
+    mean_pressure = area_weighted_mean(pressure, weights)
+    dp = pressure - mean_pressure
+
+    dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
+    return dp_norm
+
+
+def compute_cloud_coverage(
+    rh: np.ndarray,
+    dp_norm: np.ndarray,
+    lat_deg: np.ndarray | None = None,
+) -> np.ndarray:
+    """Compute cloud coverage from relative humidity and pressure pattern.
+
+    Observations show:
+    - ITCZ (low pressure): 50-60% coverage (all cloud types combined)
+    - Subtropics (high pressure): 30-40% average (mostly clear with patches of stratocumulus)
+    - Polar (|lat| > 60°): 60-70% coverage (low stratus/fog)
+    - Cloud cover generally higher over ocean than land
+    """
+    rh_min = 0.35
+    rh_max = 0.85
+    rh_smooth = np.clip((rh - rh_min) / (rh_max - rh_min), 0, 1)
+    rh_smooth = 3 * rh_smooth**2 - 2 * rh_smooth**3
+
+    # Convective: ITCZ with all cloud types (50-60%)
+    c_conv = 0.40 + 0.20 * rh_smooth  # [0.40, 0.60]
+
+    # Stratocumulus: subtropical dry zones (30-40%)
+    # (Note: localized marine stratocumulus regions can be 70-90%, but
+    # subtropical average is lower due to large dry areas)
+    c_strat = 0.20 + 0.20 * rh_smooth  # [0.20, 0.40]
+
+    # Interpolate based on pressure
+    weight_strat = 0.5 * (1.0 + dp_norm)
+    coverage = c_conv + (c_strat - c_conv) * weight_strat
+
+    # Polar regime: boost coverage at high latitudes (|lat| > 60°)
+    if lat_deg is not None:
+        lat_abs = np.abs(lat_deg)
+        # Smooth transition starting at 60°, full effect at 75°
+        polar_factor = np.clip((lat_abs - 60.0) / 15.0, 0, 1)
+        polar_factor = 3 * polar_factor**2 - 2 * polar_factor**3  # Smoothstep
+        # Boost to 60-70% at poles
+        polar_coverage = 0.50 + 0.20 * rh_smooth  # [0.50, 0.70]
+        coverage = coverage * (1 - polar_factor) + polar_coverage * polar_factor
+
+    return np.array(coverage)
+
+
+def compute_cloud_top_height(
+    dp_norm: np.ndarray,
+) -> np.ndarray:
+    h_strat = 1500.0  # Stratocumulus top height (m)
+    h_conv = 12000.0  # Deep convective top height (m)
+
+    # Low pressure (dp_norm = -1) → convective → high tops
+    # High pressure (dp_norm = +1) → stratocumulus → low tops
+    weight_conv = 0.5 * (1.0 - dp_norm)
+    h_cloud = h_strat + (h_conv - h_strat) * weight_conv
+
+    return np.array(h_cloud)
+
+
+def compute_cloud_albedo(
+    rh: np.ndarray,
+    dp_norm: np.ndarray,
+    lat_deg: np.ndarray | None = None,
+) -> np.ndarray:
+    """Compute cloud albedo (reflectivity when present) from RH and pressure.
+
+    Effective atmospheric albedo (CERES observations):
+    - Tropical ITCZ: ~0.15-0.25 (60% coverage × 0.25 albedo + 0.05 clear sky)
+    - Subtropical average: ~0.19 (34% coverage × 0.41 albedo + 0.05 clear sky)
+    - Polar: ~0.20 (65% coverage × 0.25 albedo + 0.05 clear sky, thin stratus)
+
+    Key insight: ITCZ clouds are mostly thin cirrus/anvils (low albedo per cloud)
+    despite occasional thick convective cores. Subtropical regions are mostly
+    clear with localized bright stratocumulus patches. Polar clouds are thin
+    low stratus/fog with low albedo per cloud.
+    """
+    rh_min = 0.35
+    rh_max = 0.85
+    rh_smooth = np.clip((rh - rh_min) / (rh_max - rh_min), 0, 1)
+    rh_smooth = 3 * rh_smooth**2 - 2 * rh_smooth**3
+
+    # Convective: mostly thin anvils/cirrus with some thick cores
+    alpha_conv = 0.20 + 0.10 * rh_smooth  # [0.20, 0.30]
+
+    # Stratocumulus: thicker, more uniform decks
+    alpha_strat = 0.30 + 0.15 * rh_smooth  # [0.30, 0.45]
+
+    # Interpolate based on pressure
+    weight_strat = 0.5 * (1.0 + dp_norm)
+    alpha_cloud = alpha_conv + (alpha_strat - alpha_conv) * weight_strat
+
+    # Polar regime: thin stratus/fog at high latitudes (|lat| > 60°)
+    if lat_deg is not None:
+        lat_abs = np.abs(lat_deg)
+        polar_factor = np.clip((lat_abs - 60.0) / 15.0, 0, 1)
+        polar_factor = 3 * polar_factor**2 - 2 * polar_factor**3  # Smoothstep
+        # Polar clouds: thin stratus with low albedo
+        alpha_polar = 0.20 + 0.10 * rh_smooth  # [0.20, 0.30]
+        alpha_cloud = alpha_cloud * (1 - polar_factor) + alpha_polar * polar_factor
+
+    return alpha_cloud
+
+
 def radiative_balance_rhs(
     temperature_K: np.ndarray,
     insolation_W_m2: np.ndarray,
@@ -51,6 +174,8 @@ def radiative_balance_rhs(
     humidity_q: np.ndarray | None = None,
     log_diagnostics: bool = False,
     cell_area_m2: np.ndarray | None = None,
+    declination_rad: float | np.ndarray | None = None,
+    lat2d: np.ndarray | None = None,
 ) -> np.ndarray:
     """Column energy-balance tendency for the configured radiative model."""
 
@@ -73,43 +198,63 @@ def radiative_balance_rhs(
     else:
         atmosphere = _with_floor(temperature_K[1], floor)  # Atmosphere in 2-layer
 
-    # Compute cloud cover from humidity if available, else use latitude fallback
-    if humidity_q is not None:
+    # Compute cloud properties from humidity and pressure
+    if humidity_q is not None and declination_rad is not None:
         rh = specific_humidity_to_relative_humidity(humidity_q, surface)
-        cloud_cover = compute_cloud_cover(
-            relative_humidity=rh,
-            land_mask=land_mask,
-        )
-    else:
-        # Fallback to latitude-based cloud cover (for compatibility with radiation module)
-        cloud_cover = compute_cloud_cover(
-            temperature=temperature_K,
-            land_mask=land_mask,
-        )
-    atm_albedo_field = 0.05 + 0.35 * cloud_cover
+        dp_norm = _compute_pressure_anomaly(surface, declination_rad)
 
+        cloud_coverage = compute_cloud_coverage(rh, dp_norm, lat2d)
+        cloud_albedo = compute_cloud_albedo(rh, dp_norm, lat2d)
+        cloud_top_height = compute_cloud_top_height(dp_norm)
+    else:
+        # Fallback to old cloud cover parameterization
+        if humidity_q is not None:
+            rh = specific_humidity_to_relative_humidity(humidity_q, surface)
+            cloud_coverage = compute_cloud_cover(relative_humidity=rh, land_mask=land_mask)
+        else:
+            cloud_coverage = compute_cloud_cover(temperature=temperature_K, land_mask=land_mask)
+        cloud_albedo = np.array(0.35)
+        cloud_top_height = config.cloud_top_delta_z_m
+
+    # Shortwave: atmospheric albedo
+    atm_albedo_field = 0.05 + cloud_coverage * cloud_albedo
+
+    # Log cloud diagnostics if requested
+    if log_diagnostics and cell_area_m2 is not None:
+        from climate_sim.core.math_core import area_weighted_mean
+        total_area = np.sum(cell_area_m2)
+        mean_coverage = area_weighted_mean(cloud_coverage, cell_area_m2 / total_area)
+        mean_albedo_per_cloud = area_weighted_mean(cloud_albedo, cell_area_m2 / total_area)
+        mean_atm_albedo = area_weighted_mean(atm_albedo_field, cell_area_m2 / total_area)
+        print(f"[CLOUD] Global mean coverage: {mean_coverage:.3f}")
+        print(f"[CLOUD] Global mean albedo per cloud: {mean_albedo_per_cloud:.3f}")
+        print(f"[CLOUD] Global mean atmospheric albedo: {mean_atm_albedo:.3f}")
+
+    # Longwave: atmospheric emissivity
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
     eps_clear = config.emissivity_atmosphere
-    eps_cloud = 0.20 * cloud_cover
+    # Cloud contribution: sqrt saturation to account for overlap/gaps
+    # Individual clouds ≈ blackbody, but grid-cell doesn't fill perfectly
+    eps_cloud = (1.0 - eps_clear) * np.sqrt(cloud_coverage)
     eps_atm = eps_clear + eps_cloud
 
     emitted_surface = eps_sfc * sigma * np.power(surface, 4)
     emitted_atmosphere = eps_atm * sigma * np.power(atmosphere, 4)
 
-    # Cloud-top correction for TOA longwave emission:
-    # compute clear-sky and cloud contributions separately and add them.
+    # Cloud-top correction for TOA longwave emission
     cloud_top_K = _with_floor(
-        atmosphere - STANDARD_LAPSE_RATE_K_PER_M * float(config.cloud_top_delta_z_m),
+        atmosphere - STANDARD_LAPSE_RATE_K_PER_M * cloud_top_height,
         floor,
     )
     emitted_toa = (
         eps_clear * sigma * np.power(atmosphere, 4)
         + eps_cloud * sigma * np.power(cloud_top_K, 4)
     )
+
     # Shortwave partitioning
     alpha_atm = atm_albedo_field
-    beta_atm = config.shortwave_absorptance_atmosphere + 0.05 * cloud_cover
+    beta_atm = config.shortwave_absorptance_atmosphere + 0.05 * cloud_coverage
 
     # SW absorbed in atmosphere
     absorbed_shortwave_atm = beta_atm * insolation_W_m2
@@ -223,6 +368,8 @@ def radiative_balance_rhs_temperature_derivative(
     config: RadiationConfig,
     land_mask: np.ndarray | None = None,
     humidity_q: np.ndarray | None = None,
+    declination_rad: float | np.ndarray | None = None,
+    lat2d: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Partial derivatives of the radiative tendency with respect to temperature."""
 
@@ -244,24 +391,26 @@ def radiative_balance_rhs_temperature_derivative(
     else:
         atmosphere = _with_floor(temperature_K[1], floor)
 
-    # Compute cloud cover from humidity if available, else use latitude fallback
-    if humidity_q is not None:
+    # Compute cloud properties (frozen for linearization)
+    if humidity_q is not None and declination_rad is not None:
         rh = specific_humidity_to_relative_humidity(humidity_q, surface)
-        cloud_cover = compute_cloud_cover(
-            relative_humidity=rh,
-            land_mask=land_mask,
-        )
+        dp_norm = _compute_pressure_anomaly(surface, declination_rad)
+        cloud_coverage = compute_cloud_coverage(rh, dp_norm, lat2d)
+        cloud_top_height = compute_cloud_top_height(dp_norm)
     else:
-        cloud_cover = compute_cloud_cover(
-            temperature=temperature_K,
-            land_mask=land_mask,
-        )
+        if humidity_q is not None:
+            rh = specific_humidity_to_relative_humidity(humidity_q, surface)
+            cloud_coverage = compute_cloud_cover(relative_humidity=rh, land_mask=land_mask)
+        else:
+            cloud_coverage = compute_cloud_cover(temperature=temperature_K, land_mask=land_mask)
+        cloud_top_height = config.cloud_top_delta_z_m
+
     eps_clear = config.emissivity_atmosphere
-    eps_cloud = 0.20 * cloud_cover
+    eps_cloud = (1.0 - eps_clear) * np.sqrt(cloud_coverage)
     eps_atm = eps_clear + eps_cloud
 
     cloud_top_K = _with_floor(
-        atmosphere - STANDARD_LAPSE_RATE_K_PER_M * float(config.cloud_top_delta_z_m),
+        atmosphere - STANDARD_LAPSE_RATE_K_PER_M * cloud_top_height,
         floor,
     )
 
@@ -352,40 +501,53 @@ def radiative_equilibrium_initial_guess(
         surface = np.power(absorbed / (config.emissivity_surface * sigma), 0.25)
         return _with_floor(surface[np.newaxis, :, :], config.temperature_floor)
 
-    def compute_cloud_cover_field(temp_surface: np.ndarray) -> np.ndarray:
-        """Compute cloud cover from surface temperature via RH."""
+    def compute_cloud_properties(temp_surface: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Compute cloud properties from surface temperature via RH and pressure."""
         if lat2d is not None:
             rh = compute_humidity_q(
                 lat2d, temp_surface, np.array(0.0), return_rh=True, land_mask=land_mask
             )
-            return compute_cloud_cover(relative_humidity=rh, land_mask=land_mask)
+            dp_norm = _compute_pressure_anomaly(temp_surface, declination_rad=0.0)
+            coverage = compute_cloud_coverage(rh, dp_norm, lat2d)
+            albedo = compute_cloud_albedo(rh, dp_norm, lat2d)
+            top_height = compute_cloud_top_height(dp_norm)
+            return coverage, albedo, top_height
         else:
             dummy_temp = np.zeros((2,) + albedo_field.shape, dtype=float)
-            return compute_cloud_cover(temperature=dummy_temp, land_mask=land_mask)
+            coverage = compute_cloud_cover(temperature=dummy_temp, land_mask=land_mask)
+            albedo = np.array(0.35)
+            top_height = np.array(config.cloud_top_delta_z_m)
+            return coverage, albedo, top_height
 
-    def radiative_equilibrium_temps(cloud_cover: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Solve analytical radiative equilibrium for given cloud cover."""
-        atm_albedo = 0.05 + 0.35 * cloud_cover
-        atm_absorptance = config.shortwave_absorptance_atmosphere + 0.05 * cloud_cover
+    def radiative_equilibrium_temps(
+        cloud_coverage: np.ndarray,
+        cloud_albedo: np.ndarray,
+        cloud_top_height: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Solve analytical radiative equilibrium for given cloud properties."""
+        atm_albedo = 0.05 + cloud_coverage * cloud_albedo
+        atm_absorptance = config.shortwave_absorptance_atmosphere + 0.05 * cloud_coverage
 
         absorbed_sw_atm = atm_absorptance * insolation
         sw_down_surface = (1.0 - atm_albedo - atm_absorptance) * insolation
         absorbed_sw_surface = sw_down_surface * (1.0 - albedo_field)
 
-        eps_atm = config.emissivity_atmosphere + 0.20 * cloud_cover
+        eps_clear = config.emissivity_atmosphere
+        eps_cloud = (1.0 - eps_clear) * np.sqrt(cloud_coverage)
+        eps_atm = eps_clear + eps_cloud
         denom = np.maximum(2.0 - eps_atm, 1e-6)
 
         surface = np.power((absorbed_sw_surface + 0.5 * absorbed_sw_atm) / (0.5 * denom * sigma), 0.25)
         atmosphere = np.power((absorbed_sw_atm / (eps_atm * sigma)) + 0.5 * np.power(surface, 4), 0.25)
         return surface, atmosphere
 
-    # First pass: estimate cloud cover from simple surface temperature
+    # First pass: estimate cloud properties from simple surface temperature
     absorbed_initial = insolation * (1.0 - albedo_field)
     temp_guess = np.power(absorbed_initial / (config.emissivity_surface * sigma), 0.25)
     temp_guess = np.maximum(temp_guess, config.temperature_floor)
-    cloud_cover = compute_cloud_cover_field(temp_guess)
+    coverage, albedo, top_height = compute_cloud_properties(temp_guess)
 
-    surface, atmosphere = radiative_equilibrium_temps(cloud_cover)
+    surface, atmosphere = radiative_equilibrium_temps(coverage, albedo, top_height)
 
     if config.boundary_layer_heat_capacity != config.atmosphere_heat_capacity:
         boundary = 0.7 * surface + 0.3 * atmosphere
@@ -395,9 +557,9 @@ def radiative_equilibrium_initial_guess(
 
     first_pass_temp = _with_floor(first_pass_temp, config.temperature_floor)
 
-    # Second pass: update cloud cover with first-pass surface temperature
-    cloud_cover = compute_cloud_cover_field(first_pass_temp[0])
-    surface, atmosphere = radiative_equilibrium_temps(cloud_cover)
+    # Second pass: update cloud properties with first-pass surface temperature
+    coverage, albedo, top_height = compute_cloud_properties(first_pass_temp[0])
+    surface, atmosphere = radiative_equilibrium_temps(coverage, albedo, top_height)
 
     if config.boundary_layer_heat_capacity != config.atmosphere_heat_capacity:
         boundary = 0.7 * surface + 0.3 * atmosphere
