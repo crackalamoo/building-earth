@@ -598,7 +598,7 @@ def main() -> None:
 
     atmosphere_2m_cycle = layer_cycles.get("Atmosphere (2 m)")
 
-    if not args.headless:
+    if not args.headless and not args.cache:
         data_dir_value = os.getenv("DATA_DIR")
         if not data_dir_value:
             raise ValueError("DATA_DIR environment variable must be set to save GIFs.")
