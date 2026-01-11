@@ -169,7 +169,13 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             radiative = radiative.copy()
             nlayers = state.temperature.shape[0]
             surface_temperature = state.temperature[0]
-            wind_speed_ref = state.wind_field[2] if state.wind_field is not None else None
+            # For 3-layer: use boundary layer wind (with drag), for 2-layer: use atmosphere wind
+            if nlayers == 3 and state.boundary_layer_wind_field is not None:
+                wind_speed_ref = state.boundary_layer_wind_field[2]
+            elif state.wind_field is not None:
+                wind_speed_ref = state.wind_field[2]
+            else:
+                wind_speed_ref = None
             humidity_field = state.humidity_field
 
             if inputs.diffusion_operator.surface.enabled:
@@ -226,17 +232,23 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 if inputs.diffusion_operator.atmosphere.enabled:
                     radiative[2] += inputs.diffusion_operator.atmosphere.tendency(atmosphere_temperature)
 
-                # Apply advection to both layers
-                if inputs.advection_operator is not None and state.wind_field is not None:
-                    wind_u, wind_v, _ = state.wind_field
-                    advection_boundary = inputs.advection_operator.tendency(
-                        boundary_temperature, wind_u, wind_v
-                    )
-                    advection_atmosphere = inputs.advection_operator.tendency(
-                        atmosphere_temperature, wind_u, wind_v
-                    )
-                    radiative[1] += advection_boundary
-                    radiative[2] += advection_atmosphere
+                # Apply advection to both layers with appropriate wind fields
+                if inputs.advection_operator is not None:
+                    # Boundary layer advection: use boundary layer wind (with drag)
+                    if state.boundary_layer_wind_field is not None:
+                        wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
+                        advection_boundary = inputs.advection_operator.tendency(
+                            boundary_temperature, wind_u_bl, wind_v_bl
+                        )
+                        radiative[1] += advection_boundary
+
+                    # Free atmosphere advection: use free atmosphere wind (geostrophic)
+                    if state.wind_field is not None:
+                        wind_u_atm, wind_v_atm, _ = state.wind_field
+                        advection_atmosphere = inputs.advection_operator.tendency(
+                            atmosphere_temperature, wind_u_atm, wind_v_atm
+                        )
+                        radiative[2] += advection_atmosphere
 
                 if sensible_heat_model is not None:
                     tendencies = sensible_heat_model.compute_tendencies(
@@ -311,22 +323,37 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             # Compute advection Jacobians if enabled
             atmosphere_advection_matrix = None
             boundary_layer_advection_matrix = None
-            if inputs.advection_operator is not None and state.wind_field is not None:
-                wind_u, wind_v, _ = state.wind_field
-                _, advection_matrix_csr = inputs.advection_operator.linearised_tendency(wind_u, wind_v)
-                if advection_matrix_csr is not None:
-                    advection_matrix_converted = (
-                        advection_matrix_csr
-                        if sparse.isspmatrix_csc(advection_matrix_csr)
-                        else advection_matrix_csr.tocsc()
-                    )
-                    if nlayers == 3:
-                        # Both boundary and atmosphere get advection
-                        boundary_layer_advection_matrix = advection_matrix_converted
-                        atmosphere_advection_matrix = advection_matrix_converted
-                    else:
-                        # 2-layer: only atmosphere gets advection
-                        atmosphere_advection_matrix = advection_matrix_converted
+            if inputs.advection_operator is not None:
+                if nlayers == 3:
+                    # Three-layer: use separate wind fields for boundary layer and atmosphere
+                    if state.boundary_layer_wind_field is not None:
+                        wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
+                        _, bl_matrix_csr = inputs.advection_operator.linearised_tendency(wind_u_bl, wind_v_bl)
+                        if bl_matrix_csr is not None:
+                            boundary_layer_advection_matrix = (
+                                bl_matrix_csr
+                                if sparse.isspmatrix_csc(bl_matrix_csr)
+                                else bl_matrix_csr.tocsc()
+                            )
+                    if state.wind_field is not None:
+                        wind_u_atm, wind_v_atm, _ = state.wind_field
+                        _, atm_matrix_csr = inputs.advection_operator.linearised_tendency(wind_u_atm, wind_v_atm)
+                        if atm_matrix_csr is not None:
+                            atmosphere_advection_matrix = (
+                                atm_matrix_csr
+                                if sparse.isspmatrix_csc(atm_matrix_csr)
+                                else atm_matrix_csr.tocsc()
+                            )
+                elif nlayers == 2 and state.wind_field is not None:
+                    # Two-layer: only atmosphere gets advection
+                    wind_u, wind_v, _ = state.wind_field
+                    _, advection_matrix_csr = inputs.advection_operator.linearised_tendency(wind_u, wind_v)
+                    if advection_matrix_csr is not None:
+                        atmosphere_advection_matrix = (
+                            advection_matrix_csr
+                            if sparse.isspmatrix_csc(advection_matrix_csr)
+                            else advection_matrix_csr.tocsc()
+                        )
 
             # Compute sensible heat exchange Jacobian if enabled
             if sensible_heat_model is not None:

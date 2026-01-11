@@ -92,35 +92,76 @@ def postprocess_periodic_cycle_results(
 
     layers_map["albedo"] = np.array([state.albedo_field for state in monthly_states])
 
-    wind_fields = [state.wind_field for state in monthly_states]
-    if all(wind is not None for wind in wind_fields):
-        wind_u = np.stack([wind[0] for wind in wind_fields if wind is not None], axis=0)
-        wind_v = np.stack([wind[1] for wind in wind_fields if wind is not None], axis=0)
-        wind_speed = np.stack([wind[2] for wind in wind_fields if wind is not None], axis=0)
-        layers_map["wind_u"] = wind_u
-        layers_map["wind_v"] = wind_v
-        layers_map["wind_speed"] = wind_speed
-        
-        # Compute geostrophic wind fields
-        if resolved_wind is not None and resolved_wind.enabled and resolved_radiation.include_atmosphere:
-            geostrophic_fields = []
-            monthly_declinations = compute_monthly_declinations()
-            wind_model_temp = WindModel(lon2d, lat2d, config=resolved_wind)
-            for idx, state in enumerate(monthly_states):
-                wind_temperature = select_wind_temperature(state.temperature)
-                geo_field = wind_model_temp.wind_field(
-                    wind_temperature, 
-                    declination_rad=monthly_declinations[idx], 
-                    ekman_drag=False
+    # Extract wind fields from state
+    # For 3-layer: state.wind_field = geostrophic (free atmosphere), state.boundary_layer_wind_field = Ekman (BL)
+    # For 2-layer: state.wind_field = Ekman (atmosphere), state.boundary_layer_wind_field = None
+    wind_fields_geostrophic = [state.wind_field for state in monthly_states]
+    wind_fields_ekman = []
+    for state in monthly_states:
+        # Use boundary layer wind if available (3-layer), otherwise use atmosphere wind (2-layer)
+        if state.boundary_layer_wind_field is not None:
+            wind_fields_ekman.append(state.boundary_layer_wind_field)
+        else:
+            wind_fields_ekman.append(state.wind_field)
+
+    if all(wind is not None for wind in wind_fields_geostrophic):
+        # Geostrophic wind (free atmosphere, no drag)
+        geostrophic_u = np.stack([wind[0] for wind in wind_fields_geostrophic if wind is not None], axis=0)
+        geostrophic_v = np.stack([wind[1] for wind in wind_fields_geostrophic if wind is not None], axis=0)
+        geostrophic_speed = np.stack([wind[2] for wind in wind_fields_geostrophic if wind is not None], axis=0)
+        layers_map["wind_u_geostrophic"] = geostrophic_u
+        layers_map["wind_v_geostrophic"] = geostrophic_v
+        layers_map["wind_speed_geostrophic"] = geostrophic_speed
+
+    if all(wind is not None for wind in wind_fields_ekman):
+        # Ekman wind (boundary layer with drag, or atmosphere for 2-layer)
+        ekman_u = np.stack([wind[0] for wind in wind_fields_ekman if wind is not None], axis=0)
+        ekman_v = np.stack([wind[1] for wind in wind_fields_ekman if wind is not None], axis=0)
+        ekman_speed = np.stack([wind[2] for wind in wind_fields_ekman if wind is not None], axis=0)
+        layers_map["wind_u"] = ekman_u
+        layers_map["wind_v"] = ekman_v
+        layers_map["wind_speed"] = ekman_speed
+
+        # Compute 10m wind from Ekman wind using log law
+        from climate_sim.data.landmask import compute_land_mask
+        from climate_sim.data.elevation import compute_cell_roughness_length, load_elevation_data
+        from climate_sim.physics.atmosphere.atmosphere import log_law_map_wind_speed
+
+        land_mask = compute_land_mask(lon2d, lat2d)
+        elevation_data = load_elevation_data()
+        roughness_length = compute_cell_roughness_length(lon2d, lat2d, land_mask=land_mask, data=elevation_data)
+
+        # Reference height: Ekman boundary layer effective height (200m land, 500m ocean)
+        height_ref_m = np.where(land_mask, 200.0, 500.0)
+
+        wind_10m_fields = []
+        for ekman_wind in wind_fields_ekman:
+            if ekman_wind is not None:
+                ekman_speed_2d = ekman_wind[2]
+                wind_10m_speed = log_law_map_wind_speed(
+                    ekman_speed_2d,
+                    height_ref_m=height_ref_m,
+                    height_target_m=10.0,
+                    roughness_length_m=roughness_length,
                 )
-                geostrophic_fields.append(geo_field)
-            
-            geostrophic_u = np.stack([geo[0] for geo in geostrophic_fields], axis=0)
-            geostrophic_v = np.stack([geo[1] for geo in geostrophic_fields], axis=0)
-            geostrophic_speed = np.stack([geo[2] for geo in geostrophic_fields], axis=0)
-            layers_map["wind_u_geostrophic"] = geostrophic_u
-            layers_map["wind_v_geostrophic"] = geostrophic_v
-            layers_map["wind_speed_geostrophic"] = geostrophic_speed
+                # Scale u and v components by the same ratio
+                scale_factor = np.zeros_like(ekman_speed_2d)
+                mask_nonzero = ekman_speed_2d > 1.0e-6
+                scale_factor[mask_nonzero] = wind_10m_speed[mask_nonzero] / ekman_speed_2d[mask_nonzero]
+
+                wind_10m_u = ekman_wind[0] * scale_factor
+                wind_10m_v = ekman_wind[1] * scale_factor
+                wind_10m_fields.append((wind_10m_u, wind_10m_v, wind_10m_speed))
+            else:
+                wind_10m_fields.append(None)
+
+        if all(wind is not None for wind in wind_10m_fields):
+            wind_10m_u = np.stack([wind[0] for wind in wind_10m_fields if wind is not None], axis=0)
+            wind_10m_v = np.stack([wind[1] for wind in wind_10m_fields if wind is not None], axis=0)
+            wind_10m_speed = np.stack([wind[2] for wind in wind_10m_fields if wind is not None], axis=0)
+            layers_map["wind_u_10m"] = wind_10m_u
+            layers_map["wind_v_10m"] = wind_10m_v
+            layers_map["wind_speed_10m"] = wind_10m_speed
 
     humidity_fields = [state.humidity_field for state in monthly_states]
     if all(humidity is not None for humidity in humidity_fields):

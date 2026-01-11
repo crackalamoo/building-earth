@@ -380,12 +380,15 @@ class WindModel:
         pressure = compute_pressure(atmosphere_temperature_K, declination_rad=declination_rad)
 
         # Map wind speed to 10 m height
+        # Reference height corresponds to Ekman boundary layer: 0.5 * h_m
+        # where h_m = 400m (land) or 1000m (ocean) from _apply_surface_drag
         if wind_speed_reference_m_s is None:
             wind_speed_10m = np.zeros_like(surface_temperature_K)
         else:
+            height_ref_m = np.where(self._land_mask, 200.0, 500.0)
             wind_speed_10m = log_law_map_wind_speed(
                 wind_speed_reference_m_s,
-                height_ref_m=100,
+                height_ref_m=height_ref_m,
                 height_target_m=10,
                 roughness_length_m=self._roughness_length,
             )

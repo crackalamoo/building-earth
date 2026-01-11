@@ -107,17 +107,26 @@ def monthly_step(
             base_albedo_field,
             start_temp_capped[0],
         )
-        if start_temp_capped.shape[0] == 3:
-            wind_temp_start = start_temp_capped[2]
-        elif start_temp_capped.shape[0] == 2:
-            wind_temp_start = start_temp_capped[1]
-        else:
-            wind_temp_start = start_temp_capped[0]
-        lagged_wind_field = (
-            surface_context.wind_model.wind_field(wind_temp_start, declination_rad=declination)
-            if surface_context.wind_model
-            else None
-        )
+        # Compute lagged wind field(s)
+        lagged_wind_field = None
+        lagged_boundary_layer_wind_field = None
+        if surface_context.wind_model:
+            if start_temp_capped.shape[0] == 3:
+                # Three-layer: compute separate winds
+                lagged_wind_field = surface_context.wind_model.wind_field(
+                    start_temp_capped[2], declination_rad=declination, ekman_drag=False
+                )
+                lagged_boundary_layer_wind_field = surface_context.wind_model.wind_field(
+                    start_temp_capped[1], declination_rad=declination, ekman_drag=True
+                )
+            elif start_temp_capped.shape[0] == 2:
+                lagged_wind_field = surface_context.wind_model.wind_field(
+                    start_temp_capped[1], declination_rad=declination, ekman_drag=True
+                )
+            else:
+                lagged_wind_field = surface_context.wind_model.wind_field(
+                    start_temp_capped[0], declination_rad=declination, ekman_drag=True
+                )
         lagged_humidity_field = compute_humidity_q(
             surface_context.lat2d,
             start_temp_capped[0],
@@ -138,11 +147,13 @@ def monthly_step(
                 albedo_field = lagged_albedo_field
                 wind_field = lagged_wind_field
                 humidity_field = lagged_humidity_field
+                boundary_layer_wind_field = lagged_boundary_layer_wind_field
                 return ModelState(
                     temperature=temp,
                     albedo_field=albedo_field,
                     wind_field=wind_field,
                     humidity_field=humidity_field,
+                    boundary_layer_wind_field=boundary_layer_wind_field,
                 )
 
         # implicit solver loop
@@ -406,16 +417,27 @@ def monthly_step(
         final_state = _init_state(final_temp)
         final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, final_temp[0])
         # Update diagnostics for output.
-        if final_temp.shape[0] == 3:
-            wind_temp_final = final_temp[2]
-        elif final_temp.shape[0] == 2:
-            wind_temp_final = final_temp[1]
-        else:
-            wind_temp_final = final_temp[0]
         if surface_context.wind_model:
-            final_state.wind_field = surface_context.wind_model.wind_field(
-                wind_temp_final, declination_rad=declination
-            )
+            if final_temp.shape[0] == 3:
+                # Three-layer: compute separate winds for boundary layer and free atmosphere
+                # Free atmosphere wind: geostrophic (no drag)
+                final_state.wind_field = surface_context.wind_model.wind_field(
+                    final_temp[2], declination_rad=declination, ekman_drag=False
+                )
+                # Boundary layer wind: with surface drag
+                final_state.boundary_layer_wind_field = surface_context.wind_model.wind_field(
+                    final_temp[1], declination_rad=declination, ekman_drag=True
+                )
+            elif final_temp.shape[0] == 2:
+                # Two-layer: single wind with drag (represents near-surface atmosphere)
+                final_state.wind_field = surface_context.wind_model.wind_field(
+                    final_temp[1], declination_rad=declination, ekman_drag=True
+                )
+            else:
+                # One-layer: single wind with drag
+                final_state.wind_field = surface_context.wind_model.wind_field(
+                    final_temp[0], declination_rad=declination, ekman_drag=True
+                )
         final_state.humidity_field = compute_humidity_q(
             surface_context.lat2d,
             final_temp[0],
@@ -684,16 +706,46 @@ def solve_periodic_climate(
         with time_block("update_wind_fields"):
             monthly_declinations = compute_monthly_declinations()
             for idx, month_state in enumerate(monthly_states):
-                wind_temperature = select_wind_temperature(month_state.temperature)
-                wind_field = month_state.wind_field or operators.wind_model.wind_field(
-                    wind_temperature, declination_rad=monthly_declinations[idx]
-                )
-                monthly_states[idx] = ModelState(
-                    temperature=month_state.temperature,
-                    albedo_field=month_state.albedo_field,
-                    wind_field=wind_field,
-                    humidity_field=month_state.humidity_field,
-                )
+                nlayers = month_state.temperature.shape[0]
+
+                # Compute wind fields if not already present
+                if nlayers == 3:
+                    # Three-layer: compute both winds if not present
+                    atm_wind = month_state.wind_field
+                    bl_wind = month_state.boundary_layer_wind_field
+
+                    if atm_wind is None:
+                        atm_wind = operators.wind_model.wind_field(
+                            month_state.temperature[2],
+                            declination_rad=monthly_declinations[idx],
+                            ekman_drag=False
+                        )
+                    if bl_wind is None:
+                        bl_wind = operators.wind_model.wind_field(
+                            month_state.temperature[1],
+                            declination_rad=monthly_declinations[idx],
+                            ekman_drag=True
+                        )
+
+                    monthly_states[idx] = ModelState(
+                        temperature=month_state.temperature,
+                        albedo_field=month_state.albedo_field,
+                        wind_field=atm_wind,
+                        humidity_field=month_state.humidity_field,
+                        boundary_layer_wind_field=bl_wind,
+                    )
+                else:
+                    # Two-layer or one-layer: single wind field with drag
+                    wind_temperature = select_wind_temperature(month_state.temperature)
+                    wind_field = month_state.wind_field or operators.wind_model.wind_field(
+                        wind_temperature, declination_rad=monthly_declinations[idx], ekman_drag=True
+                    )
+                    monthly_states[idx] = ModelState(
+                        temperature=month_state.temperature,
+                        albedo_field=month_state.albedo_field,
+                        wind_field=wind_field,
+                        humidity_field=month_state.humidity_field,
+                    )
 
     # Post-process results (convert to Celsius, reshape layers)
     get_profiler().print_summary()

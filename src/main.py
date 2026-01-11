@@ -184,12 +184,19 @@ def main() -> None:
         if atmosphere_2m_cycle is not None:
             layer_cycles["Atmosphere (2 m)"] = atmosphere_2m_cycle
 
-    wind_u = layers.get("wind_u")
-    wind_v = layers.get("wind_v")
-    wind_speed = layers.get("wind_speed")
+    # Wind fields at different levels:
+    # - geostrophic: free atmosphere, no drag
+    # - ekman (wind_u/v/speed): boundary layer with drag (or atmosphere for 2-layer)
+    # - 10m: ekman wind scaled to 10m via log law
     wind_u_geo = layers.get("wind_u_geostrophic")
     wind_v_geo = layers.get("wind_v_geostrophic")
     wind_speed_geo = layers.get("wind_speed_geostrophic")
+    wind_u = layers.get("wind_u")
+    wind_v = layers.get("wind_v")
+    wind_speed = layers.get("wind_speed")
+    wind_u_10m = layers.get("wind_u_10m")
+    wind_v_10m = layers.get("wind_v_10m")
+    wind_speed_10m = layers.get("wind_speed_10m")
 
     Tatm_field = layers.get("Tatm")
     Tatm_cycle_K: np.ndarray | None = None
@@ -216,28 +223,7 @@ def main() -> None:
             )
         slp_cycle_hpa = pressure_monthly * 0.01
 
-    wind_speed_10 = None
-    if wind_u is not None and wind_v is not None and wind_speed is not None:
-        roughness_length = compute_cell_roughness_length(
-            lon2d,
-            lat2d,
-            land_mask=land_mask_bool,
-        )
-        height_ref_field = np.where(land_mask_bool, 400.0, 1000.0)
-        height_target_m = sensible_heat_config.reference_height_surface_m
-        wind_speed_10 = log_law_map_wind_speed(
-            wind_speed,
-            height_ref_m=height_ref_field,
-            height_target_m=height_target_m,
-            roughness_length_m=roughness_length,
-        )
-        scale_factor = np.zeros_like(wind_speed)
-        mask_nonzero = wind_speed > 1.0e-6
-        scale_factor[mask_nonzero] = wind_speed_10[mask_nonzero] / wind_speed[mask_nonzero]
-        wind_u_10 = wind_u * scale_factor
-        wind_v_10 = wind_v * scale_factor
-
-        if not args.headless:
+    if wind_u is not None and wind_v is not None and wind_speed is not None and not args.headless:
             projection = ccrs.PlateCarree()
             fig_wind, ax_wind = plt.subplots(
                 figsize=(12, 6), subplot_kw=dict(projection=projection)
@@ -260,24 +246,33 @@ def main() -> None:
             lon_sort_idx = np.argsort(lon_wrapped)
             lon_sorted = lon_wrapped[lon_sort_idx]
 
+            # Ekman wind (boundary layer with drag, or atmosphere for 2-layer)
             wind_u_sorted = wind_u[:, :, lon_sort_idx]
             wind_v_sorted = wind_v[:, :, lon_sort_idx]
             wind_speed_sorted = wind_speed[:, :, lon_sort_idx]
-            wind_u_10_sorted = wind_u_10[:, :, lon_sort_idx]
-            wind_v_10_sorted = wind_v_10[:, :, lon_sort_idx]
-            wind_speed_10_sorted = wind_speed_10[:, :, lon_sort_idx]
-            wind_u_geo_sorted = wind_u_geo[:, :, lon_sort_idx]
-            wind_v_geo_sorted = wind_v_geo[:, :, lon_sort_idx]
-            wind_speed_geo_sorted = wind_speed_geo[:, :, lon_sort_idx]
+
+            # 10m wind (from Ekman via log law)
+            wind_u_10m_sorted = wind_u_10m[:, :, lon_sort_idx] if wind_u_10m is not None else None
+            wind_v_10m_sorted = wind_v_10m[:, :, lon_sort_idx] if wind_v_10m is not None else None
+            wind_speed_10m_sorted = wind_speed_10m[:, :, lon_sort_idx] if wind_speed_10m is not None else None
+
+            # Geostrophic wind (free atmosphere, no drag)
+            wind_u_geo_sorted = wind_u_geo[:, :, lon_sort_idx] if wind_u_geo is not None else None
+            wind_v_geo_sorted = wind_v_geo[:, :, lon_sort_idx] if wind_v_geo is not None else None
+            wind_speed_geo_sorted = wind_speed_geo[:, :, lon_sort_idx] if wind_speed_geo is not None else None
 
             slp_sorted = None
             if slp_cycle_hpa is not None:
                 slp_sorted = slp_cycle_hpa[:, :, lon_sort_idx]
 
-            max_speed = float(np.max(np.maximum(
-                np.maximum(wind_speed_sorted, wind_speed_10_sorted),
-                wind_speed_geo_sorted
-            )))
+            # Compute max speed across all available wind levels
+            all_speeds = [wind_speed_sorted]
+            if wind_speed_10m_sorted is not None:
+                all_speeds.append(wind_speed_10m_sorted)
+            if wind_speed_geo_sorted is not None:
+                all_speeds.append(wind_speed_geo_sorted)
+
+            max_speed = float(np.max([np.max(s) for s in all_speeds]))
             if not np.isfinite(max_speed) or max_speed <= 0.0:
                 max_speed = 1.0
 
@@ -299,23 +294,25 @@ def main() -> None:
             cmap = cmocean.cm.speed
             norm = Normalize(vmin=0.0, vmax=max_speed)
 
-            wind_levels = {
-                "100 m": {
-                    "u": wind_u_sorted,
-                    "v": wind_v_sorted,
-                    "speed": wind_speed_sorted,
-                },
-                "10 m": {
-                    "u": wind_u_10_sorted,
-                    "v": wind_v_10_sorted,
-                    "speed": wind_speed_10_sorted,
-                },
-                "geostrophic": {
+            # Build wind levels dict with available fields
+            wind_levels = {}
+            if wind_u_geo_sorted is not None:
+                wind_levels["Geostrophic"] = {
                     "u": wind_u_geo_sorted,
                     "v": wind_v_geo_sorted,
                     "speed": wind_speed_geo_sorted,
-                },
+                }
+            wind_levels["Ekman (BL)"] = {
+                "u": wind_u_sorted,
+                "v": wind_v_sorted,
+                "speed": wind_speed_sorted,
             }
+            if wind_u_10m_sorted is not None:
+                wind_levels["10 m"] = {
+                    "u": wind_u_10m_sorted,
+                    "v": wind_v_10m_sorted,
+                    "speed": wind_speed_10m_sorted,
+                }
 
             level_names = list(wind_levels.keys())
             current_state = {"level": level_names[0], "month": 0}
@@ -654,9 +651,9 @@ def main() -> None:
             )
             print(f"  Wind speed mean (land/ocean) [m/s]: N/A ({reason})")
 
-        if wind_speed_10 is not None:
-            wind10_land = area_weighted_mean(wind_speed_10[idx], land_weights)
-            wind10_ocean = area_weighted_mean(wind_speed_10[idx], ocean_weights)
+        if wind_speed_10m is not None:
+            wind10_land = area_weighted_mean(wind_speed_10m[idx], land_weights)
+            wind10_ocean = area_weighted_mean(wind_speed_10m[idx], ocean_weights)
             print(f"  Wind speed 10 m mean (land/ocean) [m/s]: {wind10_land:.2f} / {wind10_ocean:.2f}")
         else:
             reason = (
@@ -695,9 +692,9 @@ def main() -> None:
         )
         print(f"  Wind speed mean (land/ocean) [m/s]: N/A ({reason})")
 
-    if wind_speed_10 is not None:
-        wind10_land_annual = area_weighted_mean(wind_speed_10.mean(axis=0), land_weights)
-        wind10_ocean_annual = area_weighted_mean(wind_speed_10.mean(axis=0), ocean_weights)
+    if wind_speed_10m is not None:
+        wind10_land_annual = area_weighted_mean(wind_speed_10m.mean(axis=0), land_weights)
+        wind10_ocean_annual = area_weighted_mean(wind_speed_10m.mean(axis=0), ocean_weights)
         print(f"  Wind speed 10 m mean (land/ocean) [m/s]: {wind10_land_annual:.2f} / {wind10_ocean_annual:.2f}")
     else:
         reason = (

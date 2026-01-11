@@ -14,6 +14,7 @@ class ModelState:
     albedo_field: np.ndarray
     wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     humidity_field: np.ndarray | None = None
+    boundary_layer_wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
 
 def select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
