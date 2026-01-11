@@ -220,3 +220,30 @@ def compute_pressure(
     # p_surface = mean_p + dp_hadley
 
     return p_surface
+
+
+def compute_geopotential_height(
+    temperature_K: np.ndarray,
+    reference_pressure_pa: float,
+    surface_pressure_pa: np.ndarray,
+    gravity_m_s2: float = 9.81,
+) -> np.ndarray:
+    """Compute geopotential height (m) of a pressure surface.
+
+    For a given pressure level p₀, computes the altitude where pressure equals p₀.
+    Uses hydrostatic balance with isothermal atmosphere assumption:
+        Z = (RT/g) * ln(p_surface/p₀)
+    """
+    temperature = np.asarray(temperature_K, dtype=float)
+    if temperature.ndim != 2:
+        raise ValueError("temperature_K must be a 2-D latitude/longitude field")
+
+    T_safe = np.maximum(temperature, 150.0)
+    scale_height = GAS_CONSTANT_J_KG_K * T_safe / gravity_m_s2
+
+    # Where surface pressure < reference pressure (e.g., high mountains), the
+    # reference pressure level doesn't exist. Clip to avoid log of values < 1.
+    pressure_ratio = np.maximum(surface_pressure_pa / reference_pressure_pa, 1.0)
+    geopotential_height = scale_height * np.log(pressure_ratio)
+
+    return geopotential_height

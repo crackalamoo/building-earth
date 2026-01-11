@@ -113,9 +113,14 @@ def monthly_step(
         if surface_context.wind_model:
             if start_temp_capped.shape[0] == 3:
                 # Three-layer: compute separate winds
+                # Atmosphere wind: use atmosphere T + BL T for height-weighted column average
                 lagged_wind_field = surface_context.wind_model.wind_field(
-                    start_temp_capped[2], declination_rad=declination, ekman_drag=False
+                    start_temp_capped[2],
+                    temperature_boundary_layer=start_temp_capped[1],
+                    declination_rad=declination,
+                    ekman_drag=False
                 )
+                # Boundary layer wind: use BL T only
                 lagged_boundary_layer_wind_field = surface_context.wind_model.wind_field(
                     start_temp_capped[1], declination_rad=declination, ekman_drag=True
                 )
@@ -420,9 +425,12 @@ def monthly_step(
         if surface_context.wind_model:
             if final_temp.shape[0] == 3:
                 # Three-layer: compute separate winds for boundary layer and free atmosphere
-                # Free atmosphere wind: geostrophic (no drag)
+                # Free atmosphere wind: geostrophic (no drag), with BL temp for column average
                 final_state.wind_field = surface_context.wind_model.wind_field(
-                    final_temp[2], declination_rad=declination, ekman_drag=False
+                    final_temp[2],
+                    temperature_boundary_layer=final_temp[1],
+                    declination_rad=declination,
+                    ekman_drag=False
                 )
                 # Boundary layer wind: with surface drag
                 final_state.boundary_layer_wind_field = surface_context.wind_model.wind_field(
@@ -717,6 +725,7 @@ def solve_periodic_climate(
                     if atm_wind is None:
                         atm_wind = operators.wind_model.wind_field(
                             month_state.temperature[2],
+                            temperature_boundary_layer=month_state.temperature[1],
                             declination_rad=monthly_declinations[idx],
                             ekman_drag=False
                         )

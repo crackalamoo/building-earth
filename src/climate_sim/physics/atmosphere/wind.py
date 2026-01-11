@@ -13,6 +13,7 @@ from climate_sim.data.elevation import (
     neutral_drag_from_roughness_length,
     WATER_ROUGHNESS_LENGTH_M,
 )
+from climate_sim.data.constants import BOUNDARY_LAYER_HEIGHT_M, ATMOSPHERE_LAYER_HEIGHT_M
 from climate_sim.physics.atmosphere.pressure import compute_pressure
 from climate_sim.physics.atmosphere.atmosphere import (
     compute_two_meter_temperature,
@@ -214,8 +215,9 @@ class WindModel:
         return self._config.enabled
 
     def wind_field(
-        self, 
-        temperature: np.ndarray, 
+        self,
+        temperature: np.ndarray,
+        temperature_boundary_layer: np.ndarray | None = None,
         declination_rad: float | np.ndarray | None = None,
         ekman_drag: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -230,15 +232,72 @@ class WindModel:
             zeros = np.zeros_like(temperature)
             return zeros, zeros, zeros
 
-        pressure = compute_pressure(temperature, declination_rad=declination_rad)
+        # Determine which pressure level this wind represents
+        # BL wind: ~925 hPa, Free atmosphere: ~700 hPa
+
+        if ekman_drag:
+            # Boundary layer wind
+            reference_pressure_pa = 92500.0  # 925 hPa
+            column_temperature = temperature  # T_BL is already the column average
+        else:
+            # Free atmosphere wind - need height-weighted temperature
+            reference_pressure_pa = 70000.0  # 700 hPa
+            if temperature_boundary_layer is not None:
+                # Height-weighted average: (T_BL * h_BL + T_atm * h_atm) / (h_BL + h_atm)
+                total_height = BOUNDARY_LAYER_HEIGHT_M + ATMOSPHERE_LAYER_HEIGHT_M
+                column_temperature = (
+                    temperature_boundary_layer * BOUNDARY_LAYER_HEIGHT_M +
+                    temperature * ATMOSPHERE_LAYER_HEIGHT_M
+                ) / total_height
+            else:
+                # Single-layer case or missing BL temp - use atmosphere temperature
+                column_temperature = temperature
+
+        # Compute geopotential height using smoothed temperature and full pressure field
+        # This removes spurious small-scale variations while preserving large-scale patterns
+        from climate_sim.physics.atmosphere.pressure import (
+            compute_geopotential_height,
+            _smooth_temperature_field,
+            _get_latitude_centers,
+        )
+        from climate_sim.core.math_core import area_weighted_mean
+
+        # Smooth the column temperature to get large-scale patterns (same as compute_pressure)
+        nlat, nlon = column_temperature.shape
+        lat_deg = _get_latitude_centers(nlat)
+        cos_lat = np.clip(np.cos(np.deg2rad(lat_deg)), 1.0e-6, None)
+        weights = np.broadcast_to(cos_lat[:, None], column_temperature.shape)
+
+        column_temperature_smooth = _smooth_temperature_field(
+            column_temperature, lat_deg, smoothing_length_km=1000.0
+        )
+
+        # Preserve global mean (same as compute_pressure does)
+        target_mean = area_weighted_mean(column_temperature, weights)
+        smooth_mean = area_weighted_mean(column_temperature_smooth, weights)
+        column_temperature_smooth = column_temperature_smooth + (target_mean - smooth_mean)
+
+        # Use full pressure field (with Hadley + thermal patterns) for p_SLP
+        # This is what provides the large-scale circulation patterns
+        p_SLP = compute_pressure(column_temperature_smooth, declination_rad=declination_rad)
+
+        # Compute geopotential height of the reference pressure surface
+        geopotential = compute_geopotential_height(
+            column_temperature_smooth,
+            reference_pressure_pa,
+            p_SLP,
+            gravity_m_s2=self._config.gravity_m_s2,
+        )
+
         geostrophic = self._compute_geostrophic_wind_components(
             temperature,
             config=self._config,
-            pressure=pressure,
+            geopotential=geopotential,
+            layer_pressure=reference_pressure_pa,
         )
 
         u_geo, v_geo, speed_geo = geostrophic
-        
+
         if ekman_drag:
             u_final, v_final, speed_final = self._apply_surface_drag(u_geo, v_geo, speed_geo)
             return u_final, v_final, speed_final
@@ -250,10 +309,12 @@ class WindModel:
         temperature: np.ndarray,
         *,
         config: WindConfig,
-        pressure: np.ndarray,
+        geopotential: np.ndarray,
+        layer_pressure: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return the geostrophic wind given horizontal temperature gradients."""
-        grad_x, grad_y = self._horizontal_gradient(pressure)
+        """Return the geostrophic wind from geopotential height gradients.
+        """
+        grad_x, grad_y = self._horizontal_gradient(geopotential)
 
         # Apply a Coriolis floor while preserving hemisphere sign, including exactly
         # at the equator where the raw Coriolis parameter is zero.
@@ -261,8 +322,8 @@ class WindModel:
         sign[sign == 0.0] = 1.0
         coriolis_safe = sign * np.maximum(np.abs(self._coriolis), config.coriolis_floor_s)
 
-        pressure_safe = np.maximum(pressure, 100.0)
-        scale = GAS_CONSTANT_J_KG_K * temperature / (coriolis_safe * pressure_safe + 1e-8)
+        # Geostrophic wind: u = -(g/f) * ∂Z/∂y, v = (g/f) * ∂Z/∂x
+        scale = config.gravity_m_s2 / coriolis_safe
         velocity_x = -grad_y * scale
         velocity_y = grad_x * scale
         speed = np.hypot(velocity_x, velocity_y)
@@ -366,7 +427,7 @@ class WindModel:
         Returns
         -------
         tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-            - pressure: Atmospheric pressure in Pa
+            - pressure: Atmospheric pressure in Pa (at boundary layer level)
             - air_density: Air density in kg/m³
             - wind_speed_10m: Wind speed at 10 m in m/s
             - bulk_transfer_coefficient: Dimensionless bulk transfer coefficient

@@ -42,9 +42,13 @@ def specific_humidity_to_relative_humidity(
     # Compute saturation vapor pressure (Magnus formula)
     # Magnus formula requires temperature in Celsius
     temperature_C = temperature_K - 273.15
-    p = compute_pressure(temperature_K, declination_rad=declination_rad)
+
+    p_Pa = compute_pressure(temperature_K, declination_rad=declination_rad)
+    p_hPa = p_Pa / 100.0  # Convert Pa to hPa
+
+    # Magnus formula: e_sat in hPa
     e_sat = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
-    q_sat = (0.622 * e_sat) / (p - (1 - 0.622) * e_sat)
+    q_sat = (0.622 * e_sat) / (p_hPa - (1 - 0.622) * e_sat)
 
     # Compute RH = q / q_sat, clamped to valid range
     rh = q / np.maximum(q_sat, 1e-10)
@@ -134,9 +138,12 @@ def compute_humidity_q(
 
     # Magnus formula requires temperature in Celsius
     temperature_C = temperature - 273.15
-    p_guess = compute_pressure(temperature, declination_rad=declination_rad)
+
+    p_Pa = compute_pressure(temperature, declination_rad=declination_rad)
+    p_hPa = p_Pa / 100.0  # Convert Pa to hPa
+
     e_sat = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
-    q_sat = (0.622 * e_sat)/(p_guess - (1-0.622)*e_sat)
+    q_sat = (0.622 * e_sat) / (p_hPa - (1 - 0.622) * e_sat)
 
     return q_sat * rh
 
