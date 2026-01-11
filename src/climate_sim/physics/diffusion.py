@@ -127,7 +127,7 @@ class DiffusionConfig:
             raise ValueError(
                 "Reference resolution must be positive to scale diffusivity"
             )
-        scale = (grid_resolution_deg / resolution_ref_deg) ** 2
+        scale = grid_resolution_deg / resolution_ref_deg
         return kappa_ref * scale
 
     def surface_diffusivity(self, grid_resolution_deg: float) -> float:

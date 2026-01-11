@@ -206,7 +206,7 @@ def compute_pressure(
     if declination_rad is None:
         declination_rad = 0.0
     # ITCZ follows thermal equator (scaled by solar declination)
-    itcz_lat_rad = declination_rad * 0.65
+    itcz_lat_rad = declination_rad * 0.4
     hadley_function = _hadley_cell_pressure_function(itcz_lat_rad)
 
     # Create 2D latitude field in radians

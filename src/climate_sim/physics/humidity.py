@@ -106,7 +106,7 @@ def compute_humidity_q(
     # Convert latitude to radians for internal computation
     lat_2d_rad = np.deg2rad(lat_2d)
 
-    itcz = declination_rad * 0.65
+    itcz = declination_rad * 0.4
     rh_function = _guess_humidity_rh_function(itcz)
     rh = rh_function(lat_2d_rad)
 
