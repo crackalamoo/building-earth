@@ -3,6 +3,7 @@
 
 import io
 from pathlib import Path
+from typing import Callable, Iterable, Mapping, Sequence
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -13,7 +14,6 @@ from matplotlib.colors import LinearSegmentedColormap, Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.widgets import RadioButtons, Slider
 from PIL import Image
-from typing import Iterable, Mapping, Sequence
 
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.core.units import convert_temperature, temperature_unit
@@ -126,6 +126,19 @@ def plot_field(
 
     plt.show()
 
+def _format_lat(lat_deg: float) -> str:
+    """Format latitude with hemisphere indicator."""
+    hemisphere = "N" if lat_deg >= 0 else "S"
+    return f"{abs(lat_deg):.1f}°{hemisphere}"
+
+
+def _format_lon(lon_deg: float) -> str:
+    """Format longitude with hemisphere indicator."""
+    lon_wrapped = ((lon_deg + 180.0) % 360.0) - 180.0
+    hemisphere = "E" if lon_wrapped >= 0 else "W"
+    return f"{abs(lon_wrapped):.1f}°{hemisphere}"
+
+
 def add_status_readout(
     fig: plt.Figure,
     ax: plt.Axes,
@@ -136,22 +149,43 @@ def add_status_readout(
     unit_label: str | None = None,
 ) -> None:
     """Push hover readout to the interactive toolbar/status bar."""
+    add_dynamic_status_readout(
+        fig=fig,
+        ax=ax,
+        lon_coords=lon2d[0, :],
+        lat_coords=lat2d[:, 0],
+        data_container={"field": field},
+        format_message=lambda lon, lat, data, lon_idx, lat_idx: (
+            f"{_format_lat(lat)}  {_format_lon(lon)}  "
+            f"{data['field'][lat_idx, lon_idx]:.1f}"
+            + (f" {unit_label}" if unit_label else "")
+        ),
+    )
+
+
+def add_dynamic_status_readout(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    lon_coords: np.ndarray,
+    lat_coords: np.ndarray,
+    data_container: dict,
+    format_message: callable,
+) -> None:
+    """Add hover readout with custom data and formatting.
+
+    Args:
+        fig: The matplotlib figure
+        ax: The axes to attach hover events to
+        lon_coords: 1-D array of longitude coordinates
+        lat_coords: 1-D array of latitude coordinates
+        data_container: Dictionary containing data arrays that can be updated dynamically
+        format_message: Callable(lon, lat, data_container, lon_idx, lat_idx) -> str
+                       Function to format the status message from sampled data
+    """
     manager = getattr(fig.canvas, "manager", None)
     toolbar = getattr(manager, "toolbar", None)
     if toolbar is None or not hasattr(toolbar, "set_message"):
         return
-
-    lons = lon2d[0, :]
-    lats = lat2d[:, 0]
-
-    def format_lat(lat_deg: float) -> str:
-        hemisphere = "N" if lat_deg >= 0 else "S"
-        return f"{abs(lat_deg):.1f}°{hemisphere}"
-
-    def format_lon(lon_deg: float) -> str:
-        lon_wrapped = ((lon_deg + 180.0) % 360.0) - 180.0
-        hemisphere = "E" if lon_wrapped >= 0 else "W"
-        return f"{abs(lon_wrapped):.1f}°{hemisphere}"
 
     def on_move(event):
         if event.inaxes != ax or event.xdata is None or event.ydata is None:
@@ -164,17 +198,14 @@ def add_status_readout(
         if not np.isfinite(lon) or not np.isfinite(lat):
             return
 
-        lon_idx = int(np.abs(lons - lon).argmin())
-        lat_idx = int(np.abs(lats - lat).argmin())
+        lon_idx = int(np.argmin(np.abs(lon_coords - lon)))
+        lat_idx = int(np.argmin(np.abs(lat_coords - lat)))
 
-        sample_lon = lon2d[lat_idx, lon_idx]
-        sample_lat = lat2d[lat_idx, lon_idx]
-        temperature = field[lat_idx, lon_idx]
+        sample_lon = lon_coords[lon_idx]
+        sample_lat = lat_coords[lat_idx]
 
-        suffix = f" {unit_label}" if unit_label else ""
-        toolbar.set_message(
-            f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {temperature:.1f}{suffix}"
-        )
+        message = format_message(sample_lon, sample_lat, data_container, lon_idx, lat_idx)
+        toolbar.set_message(message)
 
     fig.canvas.mpl_connect("motion_notify_event", on_move)
     fig.canvas.mpl_connect("figure_leave_event", lambda _evt: toolbar.set_message(""))
@@ -314,49 +345,17 @@ def plot_layered_monthly_temperature_cycle(
         "data": data_stack_display[current_state["layer"]][current_state["month"]]
     }
 
-    def update_status_handler() -> None:
-        lons = lon2d[0, :]
-        lats = lat2d[:, 0]
-        manager = getattr(fig.canvas, "manager", None)
-        toolbar = getattr(manager, "toolbar", None)
-        if toolbar is None or not hasattr(toolbar, "set_message"):
-            return
-
-        def format_lat(lat_deg: float) -> str:
-            hemisphere = "N" if lat_deg >= 0 else "S"
-            return f"{abs(lat_deg):.1f}°{hemisphere}"
-
-        def format_lon(lon_deg: float) -> str:
-            lon_wrapped = ((lon_deg + 180.0) % 360.0) - 180.0
-            hemisphere = "E" if lon_wrapped >= 0 else "W"
-            return f"{abs(lon_wrapped):.1f}°{hemisphere}"
-
-        def on_move(event):
-            if event.inaxes != ax or event.xdata is None or event.ydata is None:
-                toolbar.set_message("")
-                return
-
-            lon = event.xdata % 360.0
-            lat = event.ydata
-
-            if not np.isfinite(lon) or not np.isfinite(lat):
-                return
-
-            lon_idx = int(np.abs(lons - lon).argmin())
-            lat_idx = int(np.abs(lats - lat).argmin())
-
-            sample_lon = lon2d[lat_idx, lon_idx]
-            sample_lat = lat2d[lat_idx, lon_idx]
-            temperature = current_field["data"][lat_idx, lon_idx]
-
-            toolbar.set_message(
-                f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  {temperature:.1f} {unit}"
-            )
-
-        fig.canvas.mpl_connect("motion_notify_event", on_move)
-        fig.canvas.mpl_connect("figure_leave_event", lambda _evt: toolbar.set_message(""))
-
-    update_status_handler()
+    add_dynamic_status_readout(
+        fig=fig,
+        ax=ax,
+        lon_coords=lon2d[0, :],
+        lat_coords=lat2d[:, 0],
+        data_container=current_field,
+        format_message=lambda lon, lat, data, lon_idx, lat_idx: (
+            f"{_format_lat(lat)}  {_format_lon(lon)}  "
+            f"{data['data'][lat_idx, lon_idx]:.1f} {unit}"
+        ),
+    )
 
     def update_plot() -> None:
         data = data_stack_display[current_state["layer"]][current_state["month"]]

@@ -25,6 +25,9 @@ from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.plotting import (
     plot_layered_monthly_temperature_cycle,
     save_monthly_temperature_gif,
+    add_dynamic_status_readout,
+    _format_lat,
+    _format_lon,
 )
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.runtime.cli import add_common_model_arguments
@@ -445,60 +448,20 @@ def main() -> None:
 
             level_selector.on_clicked(_on_level_change)
 
-            # Add hover functionality (status bar readout)
-            manager = getattr(fig_wind.canvas, "manager", None)
-            toolbar = getattr(manager, "toolbar", None)
-
-            if toolbar is not None and hasattr(toolbar, "set_message"):
-                def format_lat(lat_deg: float) -> str:
-                    hemisphere = "N" if lat_deg >= 0 else "S"
-                    return f"{abs(lat_deg):.1f}°{hemisphere}"
-
-                def format_lon(lon_deg: float) -> str:
-                    lon_wrapped = ((lon_deg + 180.0) % 360.0) - 180.0
-                    hemisphere = "E" if lon_wrapped >= 0 else "W"
-                    return f"{abs(lon_wrapped):.1f}°{hemisphere}"
-
-                def _on_hover(event) -> None:
-                    if event.inaxes != ax_wind or event.xdata is None or event.ydata is None:
-                        toolbar.set_message("")
-                        return
-
-                    lon_mouse = event.xdata % 360.0
-                    lat_mouse = event.ydata
-
-                    if not np.isfinite(lon_mouse) or not np.isfinite(lat_mouse):
-                        return
-
-                    lon_arr = stream_container.get("lon_coords")
-                    lat_arr = stream_container.get("lat_coords")
-
-                    if lon_arr is None or lat_arr is None:
-                        return
-
-                    lon_idx = int(np.argmin(np.abs(lon_arr - lon_mouse)))
-                    lat_idx = int(np.argmin(np.abs(lat_arr - lat_mouse)))
-
-                    u_data = stream_container.get("u_data")
-                    v_data = stream_container.get("v_data")
-                    speed_data = stream_container.get("speed_data")
-
-                    if u_data is None or v_data is None or speed_data is None:
-                        return
-
-                    sample_lon = lon_arr[lon_idx]
-                    sample_lat = lat_arr[lat_idx]
-                    u_val = u_data[lat_idx, lon_idx]
-                    v_val = v_data[lat_idx, lon_idx]
-                    speed_val = speed_data[lat_idx, lon_idx]
-
-                    toolbar.set_message(
-                        f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  "
-                        f"Speed: {speed_val:.1f} m/s  U: {u_val:.1f} m/s  V: {v_val:.1f} m/s"
-                    )
-
-                fig_wind.canvas.mpl_connect("motion_notify_event", _on_hover)
-                fig_wind.canvas.mpl_connect("figure_leave_event", lambda _evt: toolbar.set_message(""))
+            # Add hover functionality using helper
+            add_dynamic_status_readout(
+                fig=fig_wind,
+                ax=ax_wind,
+                lon_coords=stream_container.get("lon_coords", lon_coords),
+                lat_coords=stream_container.get("lat_coords", lat_coords),
+                data_container=stream_container,
+                format_message=lambda lon, lat, data, lon_idx, lat_idx: (
+                    f"{_format_lat(lat)}  {_format_lon(lon)}  "
+                    f"Speed: {data.get('speed_data', [[0]])[lat_idx, lon_idx]:.1f} m/s  "
+                    f"U: {data.get('u_data', [[0]])[lat_idx, lon_idx]:.1f} m/s  "
+                    f"V: {data.get('v_data', [[0]])[lat_idx, lon_idx]:.1f} m/s"
+                ) if data.get("u_data") is not None else ""
+            )
 
             _draw_streamplot()
 
@@ -652,8 +615,41 @@ def main() -> None:
             def _on_humidity_type_change(label: str) -> None:
                 current_state_humidity["type"] = label
                 _update_humidity_plot()
-        
+
             type_selector_humidity.on_clicked(_on_humidity_type_change)
+
+            # Add hover functionality for humidity plot
+            humidity_hover_data = {
+                "field": humidity_data[current_state_humidity["type"]][current_state_humidity["month"]],
+                "type": current_state_humidity["type"],
+            }
+
+            def format_humidity_message(lon: float, lat: float, data: dict, lon_idx: int, lat_idx: int) -> str:
+                value = data["field"][lat_idx, lon_idx]
+                var_type = data["type"]
+                if var_type == "Specific Humidity (q)":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  q: {value:.4f} kg/kg"
+                elif var_type == "Relative Humidity (RH)":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  RH: {value:.2%}"
+                else:  # Cloud Cover
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Cloud: {value:.2%}"
+
+            add_dynamic_status_readout(
+                fig=fig_humidity,
+                ax=ax_humidity,
+                lon_coords=lon_sorted,
+                lat_coords=lat_sorted,
+                data_container=humidity_hover_data,
+                format_message=format_humidity_message,
+            )
+
+            # Update hover data when plot updates
+            original_update = _update_humidity_plot
+            def _update_humidity_plot() -> None:
+                original_update()
+                humidity_hover_data["field"] = humidity_data[current_state_humidity["type"]][current_state_humidity["month"]]
+                humidity_hover_data["type"] = current_state_humidity["type"]
+
             _update_humidity_plot()
 
     atmosphere_2m_cycle = layer_cycles.get("Atmosphere (2 m)")
