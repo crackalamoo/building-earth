@@ -126,7 +126,7 @@ class WindConfig:
     earth_rotation_rate_rad_s: float = 7.2921e-5
     gravity_m_s2: float = 9.81
     troposphere_scale_height_m: float = 8000.0
-    coriolis_floor_s: float = 1e-4
+    coriolis_floor_s: float = 1e-5
     minimum_temperature_K: float = 150.0
 
 class WindModel:

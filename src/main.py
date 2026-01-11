@@ -402,12 +402,19 @@ def main() -> None:
                 )
 
                 stream_container["obj"] = new_stream
+                # Store current wind data for hover
+                stream_container["u_data"] = u_slice
+                stream_container["v_data"] = v_slice
+                stream_container["speed_data"] = speed_slice
+                stream_container["lon_coords"] = lon_coords
+                stream_container["lat_coords"] = lat_coords
+
                 pressure_artist = pressure_container.get("artist")
                 slp_data = pressure_container.get("data")
                 if pressure_artist is not None and slp_data is not None:
                     pressure_artist.set_data(slp_data[idx])
                 ax_wind.set_title(
-                    f"Geostrophic Wind ({current_state['level']}) – {month_names[idx]}"
+                    f"Wind ({current_state['level']}) – {month_names[idx]}"
                 )
                 fig_wind.canvas.draw_idle()
 
@@ -437,6 +444,62 @@ def main() -> None:
                 _draw_streamplot()
 
             level_selector.on_clicked(_on_level_change)
+
+            # Add hover functionality (status bar readout)
+            manager = getattr(fig_wind.canvas, "manager", None)
+            toolbar = getattr(manager, "toolbar", None)
+
+            if toolbar is not None and hasattr(toolbar, "set_message"):
+                def format_lat(lat_deg: float) -> str:
+                    hemisphere = "N" if lat_deg >= 0 else "S"
+                    return f"{abs(lat_deg):.1f}°{hemisphere}"
+
+                def format_lon(lon_deg: float) -> str:
+                    lon_wrapped = ((lon_deg + 180.0) % 360.0) - 180.0
+                    hemisphere = "E" if lon_wrapped >= 0 else "W"
+                    return f"{abs(lon_wrapped):.1f}°{hemisphere}"
+
+                def _on_hover(event) -> None:
+                    if event.inaxes != ax_wind or event.xdata is None or event.ydata is None:
+                        toolbar.set_message("")
+                        return
+
+                    lon_mouse = event.xdata % 360.0
+                    lat_mouse = event.ydata
+
+                    if not np.isfinite(lon_mouse) or not np.isfinite(lat_mouse):
+                        return
+
+                    lon_arr = stream_container.get("lon_coords")
+                    lat_arr = stream_container.get("lat_coords")
+
+                    if lon_arr is None or lat_arr is None:
+                        return
+
+                    lon_idx = int(np.argmin(np.abs(lon_arr - lon_mouse)))
+                    lat_idx = int(np.argmin(np.abs(lat_arr - lat_mouse)))
+
+                    u_data = stream_container.get("u_data")
+                    v_data = stream_container.get("v_data")
+                    speed_data = stream_container.get("speed_data")
+
+                    if u_data is None or v_data is None or speed_data is None:
+                        return
+
+                    sample_lon = lon_arr[lon_idx]
+                    sample_lat = lat_arr[lat_idx]
+                    u_val = u_data[lat_idx, lon_idx]
+                    v_val = v_data[lat_idx, lon_idx]
+                    speed_val = speed_data[lat_idx, lon_idx]
+
+                    toolbar.set_message(
+                        f"{format_lat(sample_lat)}  {format_lon(sample_lon)}  "
+                        f"Speed: {speed_val:.1f} m/s  U: {u_val:.1f} m/s  V: {v_val:.1f} m/s"
+                    )
+
+                fig_wind.canvas.mpl_connect("motion_notify_event", _on_hover)
+                fig_wind.canvas.mpl_connect("figure_leave_event", lambda _evt: toolbar.set_message(""))
+
             _draw_streamplot()
 
     # Humidity plot
