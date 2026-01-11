@@ -319,82 +319,113 @@ def aggregate_reference_to_sim_grid(
     return ds_out
 
 
-def weighted_rmse(diff: np.ndarray, weights: np.ndarray) -> float:
-    """Compute the area-weighted RMSE, ignoring NaNs."""
+def _prepare_weighted_arrays(
+    *arrays: np.ndarray, weights: np.ndarray
+) -> tuple[tuple[np.ndarray, ...], np.ndarray, float] | None:
+    """Prepare arrays and weights for weighted statistics computation.
 
-    diff_array = np.asarray(diff, dtype=float)
+    Returns:
+        Tuple of (valid_arrays, valid_weights, total_weight) or None if no valid data
+    """
+    arrays_float = tuple(np.asarray(arr, dtype=float) for arr in arrays)
     weights_2d = np.asarray(weights, dtype=float)
 
-    if diff_array.ndim == 2:
+    # Broadcast weights to match array shape
+    ref_array = arrays_float[0]
+    if ref_array.ndim == 2:
         weights_b = weights_2d
-    elif diff_array.ndim == 3:
-        weights_b = np.broadcast_to(weights_2d, diff_array.shape)
+    elif ref_array.ndim == 3:
+        weights_b = np.broadcast_to(weights_2d, ref_array.shape)
     else:
-        raise ValueError("diff must be 2-D or 3-D")
+        raise ValueError("Arrays must be 2-D or 3-D")
 
-    valid = np.isfinite(diff_array) & np.isfinite(weights_b) & (weights_b > 0)
+    # Find valid data points (finite and positive weight)
+    valid = np.isfinite(weights_b) & (weights_b > 0)
+    for arr in arrays_float:
+        valid &= np.isfinite(arr)
+
     if not np.any(valid):
-        return float("nan")
+        return None
 
-    diff_sq = diff_array[valid] ** 2
     weights_valid = weights_b[valid]
-
     total_weight = np.sum(weights_valid)
     if total_weight <= 0:
+        return None
+
+    valid_arrays = tuple(arr[valid] for arr in arrays_float)
+    return valid_arrays, weights_valid, total_weight
+
+
+def weighted_rmse(diff: np.ndarray, weights: np.ndarray) -> float:
+    """Compute the area-weighted RMSE, ignoring NaNs."""
+    result = _prepare_weighted_arrays(diff, weights=weights)
+    if result is None:
         return float("nan")
 
-    rmse = np.sqrt(np.sum(weights_valid * diff_sq) / total_weight)
+    (diff_valid,), weights_valid, total_weight = result
+    rmse = np.sqrt(np.sum(weights_valid * diff_valid**2) / total_weight)
     return float(rmse)
 
 
 def weighted_mean(diff: np.ndarray, weights: np.ndarray) -> float:
     """Compute the area-weighted mean (bias), ignoring NaNs."""
-
-    diff_array = np.asarray(diff, dtype=float)
-    weights_2d = np.asarray(weights, dtype=float)
-
-    if diff_array.ndim == 2:
-        weights_b = weights_2d
-    elif diff_array.ndim == 3:
-        weights_b = np.broadcast_to(weights_2d, diff_array.shape)
-    else:
-        raise ValueError("diff must be 2-D or 3-D")
-
-    valid = np.isfinite(diff_array) & np.isfinite(weights_b) & (weights_b > 0)
-    if not np.any(valid):
+    result = _prepare_weighted_arrays(diff, weights=weights)
+    if result is None:
         return float("nan")
 
-    weights_valid = weights_b[valid]
-    total_weight = np.sum(weights_valid)
-    if total_weight <= 0:
-        return float("nan")
-
-    mean_val = np.sum(weights_valid * diff_array[valid]) / total_weight
+    (diff_valid,), weights_valid, total_weight = result
+    mean_val = np.sum(weights_valid * diff_valid) / total_weight
     return float(mean_val)
+
+
+def weighted_pattern_correlation(
+    sim: np.ndarray,
+    obs: np.ndarray,
+    weights: np.ndarray,
+) -> float:
+    """Compute the area-weighted pattern correlation coefficient.
+
+    Pattern correlation measures how well the spatial patterns match between
+    simulation and observation, independent of the mean bias.
+    """
+    result = _prepare_weighted_arrays(sim, obs, weights=weights)
+    if result is None:
+        return float("nan")
+
+    (sim_valid, obs_valid), weights_valid, total_weight = result
+
+    # Compute weighted means
+    sim_mean = np.sum(weights_valid * sim_valid) / total_weight
+    obs_mean = np.sum(weights_valid * obs_valid) / total_weight
+
+    # Compute anomalies from weighted mean
+    sim_anom = sim_valid - sim_mean
+    obs_anom = obs_valid - obs_mean
+
+    # Compute weighted covariance and variances
+    covariance = np.sum(weights_valid * sim_anom * obs_anom) / total_weight
+    sim_variance = np.sum(weights_valid * sim_anom**2) / total_weight
+    obs_variance = np.sum(weights_valid * obs_anom**2) / total_weight
+
+    # Compute correlation coefficient
+    if sim_variance <= 0 or obs_variance <= 0:
+        return float("nan")
+
+    correlation = covariance / np.sqrt(sim_variance * obs_variance)
+    return float(correlation)
 
 
 def weighted_min_max(
     data: np.ndarray, weights: np.ndarray
 ) -> tuple[float, float]:
     """Compute min and max over valid (finite, weighted) cells, ignoring NaNs."""
-
-    data_array = np.asarray(data, dtype=float)
-    weights_2d = np.asarray(weights, dtype=float)
-
-    if data_array.ndim == 2:
-        weights_b = weights_2d
-    elif data_array.ndim == 3:
-        weights_b = np.broadcast_to(weights_2d, data_array.shape)
-    else:
-        raise ValueError("data must be 2-D or 3-D")
-
-    valid = np.isfinite(data_array) & np.isfinite(weights_b) & (weights_b > 0)
-    if not np.any(valid):
+    result = _prepare_weighted_arrays(data, weights=weights)
+    if result is None:
         return float("nan"), float("nan")
 
-    data_valid = data_array[valid]
-    min_val = float(np.nanmin(data_valid))
-    max_val = float(np.nanmax(data_valid))
+    (data_valid,), _, _ = result
+    min_val = float(np.min(data_valid))
+    max_val = float(np.max(data_valid))
     return min_val, max_val
 
 
@@ -432,19 +463,21 @@ def log_temperature_statistics(
             return value
         return float(convert_temperature(value, use_fahrenheit, is_delta=False))
 
-    # Compute statistics for simulation
-    sim_land_stats = compute_temperature_statistics(sim_t2m, weights_land)
-    sim_ocean_stats = compute_temperature_statistics(sim_sst, weights_ocean)
+    def format_stats(stats: dict[str, float]) -> str:
+        return f"mean={convert(stats['mean']):.2f}, min={convert(stats['min']):.2f}, max={convert(stats['max']):.2f}"
 
-    # Compute statistics for observation
-    obs_land_stats = compute_temperature_statistics(obs_t2m, weights_land)
-    obs_ocean_stats = compute_temperature_statistics(obs_sst, weights_ocean)
+    # Compute all statistics
+    datasets = [
+        ("Sim Land T2m: ", sim_t2m, weights_land),
+        ("Sim Ocean SST:", sim_sst, weights_ocean),
+        ("Obs Land T2m: ", obs_t2m, weights_land),
+        ("Obs Ocean SST:", obs_sst, weights_ocean),
+    ]
 
     print(f"\nTemperature Statistics ({unit}):")
-    print(f"  Sim Land T2m:  mean={convert(sim_land_stats['mean']):.2f}, min={convert(sim_land_stats['min']):.2f}, max={convert(sim_land_stats['max']):.2f}")
-    print(f"  Sim Ocean SST: mean={convert(sim_ocean_stats['mean']):.2f}, min={convert(sim_ocean_stats['min']):.2f}, max={convert(sim_ocean_stats['max']):.2f}")
-    print(f"  Obs Land T2m:  mean={convert(obs_land_stats['mean']):.2f}, min={convert(obs_land_stats['min']):.2f}, max={convert(obs_land_stats['max']):.2f}")
-    print(f"  Obs Ocean SST: mean={convert(obs_ocean_stats['mean']):.2f}, min={convert(obs_ocean_stats['min']):.2f}, max={convert(obs_ocean_stats['max']):.2f}")
+    for label, temperature, weights in datasets:
+        stats = compute_temperature_statistics(temperature, weights)
+        print(f"  {label} {format_stats(stats)}")
 
 
 def compute_rmse_statistics(
@@ -458,9 +491,11 @@ def compute_rmse_statistics(
     dict[str, float],
     list[dict[str, float]],
     dict[str, float],
+    list[dict[str, float]],
+    dict[str, float],
     np.ndarray,
 ]:
-    """Return monthly/annual RMSE and bias values, and anomaly fields."""
+    """Return monthly/annual RMSE, bias, and pattern correlation values, plus anomaly fields."""
 
     weights_land = cell_areas * land_mask
     weights_ocean = cell_areas * (~land_mask)
@@ -477,6 +512,7 @@ def compute_rmse_statistics(
 
     monthly_rmse: list[dict[str, float]] = []
     monthly_bias: list[dict[str, float]] = []
+    monthly_pattern_corr: list[dict[str, float]] = []
     for month_idx in range(sim_surface.shape[0]):
         monthly_rmse.append(
             {
@@ -492,6 +528,19 @@ def compute_rmse_statistics(
                 "global": weighted_mean(global_diff[month_idx], cell_areas),
             }
         )
+        monthly_pattern_corr.append(
+            {
+                "land": weighted_pattern_correlation(
+                    sim_t2m[month_idx], obs_land[month_idx], weights_land
+                ),
+                "ocean": weighted_pattern_correlation(
+                    sim_surface[month_idx], obs_sst[month_idx], weights_ocean
+                ),
+                "global": weighted_pattern_correlation(
+                    sim_combined[month_idx], obs_surface[month_idx], cell_areas
+                ),
+            }
+        )
 
     annual_rmse = {
         "land": weighted_rmse(land_diff, weights_land),
@@ -503,8 +552,73 @@ def compute_rmse_statistics(
         "ocean": weighted_mean(ocean_diff, weights_ocean),
         "global": weighted_mean(global_diff, cell_areas),
     }
+    annual_pattern_corr = {
+        "land": weighted_pattern_correlation(sim_t2m, obs_land, weights_land),
+        "ocean": weighted_pattern_correlation(sim_surface, obs_sst, weights_ocean),
+        "global": weighted_pattern_correlation(sim_combined, obs_surface, cell_areas),
+    }
 
-    return monthly_rmse, annual_rmse, monthly_bias, annual_bias, global_diff
+    return (
+        monthly_rmse,
+        annual_rmse,
+        monthly_bias,
+        annual_bias,
+        monthly_pattern_corr,
+        annual_pattern_corr,
+        global_diff,
+    )
+
+
+def format_statistics_table(
+    monthly: Iterable[dict[str, float]],
+    annual: dict[str, float],
+    title: str,
+    unit_suffix: str = "",
+    precision: int = 2,
+    convert_values: bool = False,
+    use_fahrenheit: bool = False,
+) -> None:
+    """Print a nicely formatted statistics table.
+
+    Args:
+        monthly: Monthly statistics with land/ocean/global keys
+        annual: Annual statistics with land/ocean/global keys
+        title: Table title
+        unit_suffix: Unit to display in title (e.g., "°C")
+        precision: Number of decimal places
+        convert_values: Whether to apply temperature unit conversion
+        use_fahrenheit: Whether to convert to Fahrenheit
+    """
+
+    def convert(value: float) -> float:
+        if not np.isfinite(value):
+            return value
+        if convert_values:
+            return float(convert_temperature(value, use_fahrenheit, is_delta=True))
+        return value
+
+    def fmt(value: float) -> str:
+        if not np.isfinite(value):
+            return "    —"
+        return f"{value:8.{precision}f}"
+
+    header = f"{'Month':<12}{'Land':>10}{'Ocean':>10}{'Global':>10}"
+    title_with_unit = f"{title} ({unit_suffix})" if unit_suffix else title
+    print(f"\n{title_with_unit}")
+    print(header)
+    print("-" * len(header))
+
+    for name, row in zip(MONTH_NAMES, monthly):
+        land = fmt(convert(row["land"]))
+        ocean = fmt(convert(row["ocean"]))
+        global_val = fmt(convert(row["global"]))
+        print(f"{name:<12}{land:>10}{ocean:>10}{global_val:>10}")
+
+    land_avg = fmt(convert(annual["land"]))
+    ocean_avg = fmt(convert(annual["ocean"]))
+    global_avg = fmt(convert(annual["global"]))
+    print("-" * len(header))
+    print(f"{'Annual':<12}{land_avg:>10}{ocean_avg:>10}{global_avg:>10}")
 
 
 def format_rmse_table(
@@ -513,35 +627,16 @@ def format_rmse_table(
     use_fahrenheit: bool,
 ) -> None:
     """Print a nicely formatted RMSE table."""
-
     unit = temperature_unit(use_fahrenheit)
-
-    def convert(value: float) -> float:
-        if not np.isfinite(value):
-            return value
-        return float(convert_temperature(value, use_fahrenheit, is_delta=True))
-
-    def fmt(value: float) -> str:
-        if not np.isfinite(value):
-            return "    —"
-        return f"{value:8.2f}"
-
-    header = f"{'Month':<12}{'Land':>10}{'Ocean':>10}{'Global':>10}"
-    print("\nArea-weighted RMSE (" + unit + ")")
-    print(header)
-    print("-" * len(header))
-
-    for name, row in zip(MONTH_NAMES, monthly):
-        land = fmt(convert(row["land"]))
-        ocean = fmt(convert(row["ocean"]))
-        global_rmse = fmt(convert(row["global"]))
-        print(f"{name:<12}{land:>10}{ocean:>10}{global_rmse:>10}")
-
-    land_avg = fmt(convert(annual["land"]))
-    ocean_avg = fmt(convert(annual["ocean"]))
-    global_avg = fmt(convert(annual["global"]))
-    print("-" * len(header))
-    print(f"{'Annual':<12}{land_avg:>10}{ocean_avg:>10}{global_avg:>10}")
+    format_statistics_table(
+        monthly,
+        annual,
+        title="Area-weighted RMSE",
+        unit_suffix=unit,
+        precision=2,
+        convert_values=True,
+        use_fahrenheit=use_fahrenheit,
+    )
 
 
 def format_bias_table(
@@ -550,35 +645,30 @@ def format_bias_table(
     use_fahrenheit: bool,
 ) -> None:
     """Print a nicely formatted Bias (area-weighted mean error) table."""
-
     unit = temperature_unit(use_fahrenheit)
+    format_statistics_table(
+        monthly,
+        annual,
+        title="Area-weighted Bias",
+        unit_suffix=unit,
+        precision=2,
+        convert_values=True,
+        use_fahrenheit=use_fahrenheit,
+    )
 
-    def convert(value: float) -> float:
-        if not np.isfinite(value):
-            return value
-        return float(convert_temperature(value, use_fahrenheit, is_delta=True))
 
-    def fmt(value: float) -> str:
-        if not np.isfinite(value):
-            return "    —"
-        return f"{value:8.2f}"
-
-    header = f"{'Month':<12}{'Land':>10}{'Ocean':>10}{'Global':>10}"
-    print("\nArea-weighted Bias (" + unit + ")")
-    print(header)
-    print("-" * len(header))
-
-    for name, row in zip(MONTH_NAMES, monthly):
-        land = fmt(convert(row["land"]))
-        ocean = fmt(convert(row["ocean"]))
-        global_bias = fmt(convert(row["global"]))
-        print(f"{name:<12}{land:>10}{ocean:>10}{global_bias:>10}")
-
-    land_avg = fmt(convert(annual["land"]))
-    ocean_avg = fmt(convert(annual["ocean"]))
-    global_avg = fmt(convert(annual["global"]))
-    print("-" * len(header))
-    print(f"{'Annual':<12}{land_avg:>10}{ocean_avg:>10}{global_avg:>10}")
+def format_pattern_correlation_table(
+    monthly: Iterable[dict[str, float]],
+    annual: dict[str, float],
+) -> None:
+    """Print a nicely formatted Pattern Correlation table."""
+    format_statistics_table(
+        monthly,
+        annual,
+        title="Area-weighted Pattern Correlation",
+        precision=3,
+        convert_values=False,
+    )
 
 
 def compute_bias_corrected_anomaly(
@@ -615,6 +705,51 @@ def compute_bias_corrected_anomaly(
     return bias_corrected_anomaly
 
 
+def _compute_anomaly_display_range(
+    anomaly: np.ndarray,
+    use_fahrenheit: bool,
+    max_display: float = 10.0,
+) -> float:
+    """Compute symmetric display range for anomaly plots."""
+    max_abs = float(np.nanmax(np.abs(anomaly))) if anomaly.size else 0.0
+    if not np.isfinite(max_abs) or max_abs <= 0:
+        max_abs = 0.5
+    display_max = float(convert_temperature(max_abs, use_fahrenheit, is_delta=True))
+    if display_max <= 0:
+        display_max = 0.5
+    return float(np.minimum(display_max, max_display))
+
+
+def _plot_anomaly(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    anomaly: np.ndarray,
+    title: str,
+    use_fahrenheit: bool,
+) -> None:
+    """Plot an anomaly field with annual mean appended."""
+    display_max = _compute_anomaly_display_range(anomaly, use_fahrenheit)
+    cmap = colormaps["RdBu_r"]
+    norm = Normalize(vmin=-display_max, vmax=display_max)
+    unit = temperature_unit(use_fahrenheit)
+
+    anomaly_with_annual = np.concatenate(
+        [anomaly, np.mean(anomaly, axis=0, keepdims=True)], axis=0
+    )
+
+    plot_monthly_temperature_cycle(
+        lon2d,
+        lat2d,
+        anomaly_with_annual,
+        title=title,
+        cmap=cmap,
+        norm=norm,
+        colorbar_label=f"Temperature anomaly ({unit})",
+        use_fahrenheit=use_fahrenheit,
+        value_is_delta=True,
+    )
+
+
 def plot_baseline_and_anomaly(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
@@ -624,43 +759,27 @@ def plot_baseline_and_anomaly(
     headless: bool = False,
 ) -> None:
     """Generate baseline and anomaly plots."""
+    if headless:
+        return
 
-    if not headless:
-        obs_with_annual = np.concatenate(
-            [obs_surface, np.mean(obs_surface, axis=0, keepdims=True)], axis=0
-        )
-        plot_monthly_temperature_cycle(
-            lon2d,
-            lat2d,
-            obs_with_annual,
-            title="NOAA 1981–2010 Monthly Climatology (incl. annual mean)",
-            use_fahrenheit=use_fahrenheit,
-        )
+    obs_with_annual = np.concatenate(
+        [obs_surface, np.mean(obs_surface, axis=0, keepdims=True)], axis=0
+    )
+    plot_monthly_temperature_cycle(
+        lon2d,
+        lat2d,
+        obs_with_annual,
+        title="NOAA 1981–2010 Monthly Climatology (incl. annual mean)",
+        use_fahrenheit=use_fahrenheit,
+    )
 
-        max_abs = float(np.nanmax(np.abs(anomaly))) if anomaly.size else 0.0
-        if not np.isfinite(max_abs) or max_abs <= 0:
-            max_abs = 0.5
-        display_max = float(convert_temperature(max_abs, use_fahrenheit, is_delta=True))
-        if display_max <= 0:
-            display_max = 0.5
-        display_max = np.minimum(display_max, 10.0)
-
-        cmap = colormaps["RdBu_r"]
-        norm = Normalize(vmin=-display_max, vmax=display_max)
-        unit = temperature_unit(use_fahrenheit)
-        anomaly = np.concatenate([anomaly, np.mean(anomaly, axis=0, keepdims=True)], axis=0)
-
-        plot_monthly_temperature_cycle(
-            lon2d,
-            lat2d,
-            anomaly,
-            title="Simulation − NOAA Surface Anomaly",
-            cmap=cmap,
-            norm=norm,
-            colorbar_label=f"Temperature anomaly ({unit})",
-            use_fahrenheit=use_fahrenheit,
-            value_is_delta=True,
-        )
+    _plot_anomaly(
+        lon2d,
+        lat2d,
+        anomaly,
+        title="Simulation − NOAA Surface Anomaly",
+        use_fahrenheit=use_fahrenheit,
+    )
 
 
 def plot_bias_corrected_anomaly(
@@ -671,37 +790,16 @@ def plot_bias_corrected_anomaly(
     headless: bool = False,
 ) -> None:
     """Generate bias-corrected anomaly plot."""
+    if headless:
+        return
 
-    if not headless:
-        max_abs = float(np.nanmax(np.abs(bias_corrected_anomaly))) if bias_corrected_anomaly.size else 0.0
-        if not np.isfinite(max_abs) or max_abs <= 0:
-            max_abs = 0.5
-        display_max = float(convert_temperature(max_abs, use_fahrenheit, is_delta=True))
-        if display_max <= 0:
-            display_max = 0.5
-        display_max = np.minimum(display_max, 10.0)
-
-        cmap = colormaps["RdBu_r"]
-        norm = Normalize(vmin=-display_max, vmax=display_max)
-        unit = temperature_unit(use_fahrenheit)
-
-        # Add annual mean
-        anomaly_with_annual = np.concatenate(
-            [bias_corrected_anomaly, np.mean(bias_corrected_anomaly, axis=0, keepdims=True)],
-            axis=0
-        )
-
-        plot_monthly_temperature_cycle(
-            lon2d,
-            lat2d,
-            anomaly_with_annual,
-            title="Bias-Corrected Anomaly (land/ocean biases removed)",
-            cmap=cmap,
-            norm=norm,
-            colorbar_label=f"Temperature anomaly ({unit})",
-            use_fahrenheit=use_fahrenheit,
-            value_is_delta=True,
-        )
+    _plot_anomaly(
+        lon2d,
+        lat2d,
+        bias_corrected_anomaly,
+        title="Bias-Corrected Anomaly (land/ocean biases removed)",
+        use_fahrenheit=use_fahrenheit,
+    )
 
 
 # ----------------------------
@@ -794,7 +892,15 @@ def main() -> None:
     weights_land = cell_areas * land_mask
     weights_ocean = cell_areas * (~land_mask)
 
-    monthly_rmse, annual_rmse, monthly_bias, annual_bias, anomaly = compute_rmse_statistics(
+    (
+        monthly_rmse,
+        annual_rmse,
+        monthly_bias,
+        annual_bias,
+        monthly_pattern_corr,
+        annual_pattern_corr,
+        anomaly,
+    ) = compute_rmse_statistics(
         surface_cycle,
         sim_t2m,
         obs_for_stats,
@@ -815,6 +921,7 @@ def main() -> None:
 
     format_rmse_table(monthly_rmse, annual_rmse, args.fahrenheit)
     format_bias_table(monthly_bias, annual_bias, args.fahrenheit)
+    format_pattern_correlation_table(monthly_pattern_corr, annual_pattern_corr)
 
     plot_baseline_and_anomaly(
         lon2d,
