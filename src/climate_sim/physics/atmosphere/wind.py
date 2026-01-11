@@ -279,7 +279,10 @@ class WindModel:
 
         # Use full pressure field (with Hadley + thermal patterns) for p_SLP
         # This is what provides the large-scale circulation patterns
-        p_SLP = compute_pressure(column_temperature_smooth, declination_rad=declination_rad)
+        # Skip smoothing since we already smoothed the temperature
+        p_SLP = compute_pressure(
+            column_temperature_smooth, declination_rad=declination_rad, skip_smoothing=True
+        )
 
         # Compute geopotential height of the reference pressure surface
         geopotential = compute_geopotential_height(

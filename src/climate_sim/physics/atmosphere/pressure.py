@@ -132,6 +132,7 @@ def compute_pressure(
     humidity_q: np.ndarray | None = None,
     gravity_m_s2: float = 9.81,
     declination_rad: float | np.ndarray | None = None,
+    skip_smoothing: bool = False,
 ) -> np.ndarray:
     """Compute surface pressure (Pa) from temperature and elevation using hydrostatic balance.
 
@@ -148,6 +149,9 @@ def compute_pressure(
     declination_rad : float | None
         Solar declination angle in radians. If provided, adds Hadley cell circulation
         pattern with ITCZ following the thermal equator.
+    skip_smoothing : bool
+        If True, assume temperature_K is already smoothed and skip the smoothing step.
+        Use this when calling from wind calculations to avoid double smoothing.
 
     Returns
     -------
@@ -179,7 +183,11 @@ def compute_pressure(
     cos_lat = np.clip(np.cos(np.deg2rad(lat_deg)), 1.0e-6, None)
     weights = np.asarray(np.broadcast_to(cos_lat[:, None], shape), dtype=float)
 
-    if humidity_q is not None:
+    if skip_smoothing:
+        # Temperature is already smoothed, use it directly
+        temp_smooth = temperature
+        target_mean = area_weighted_mean(temperature, weights)
+    elif humidity_q is not None:
         virtual_temperature = temperature * (1 + 0.61 * humidity_q)
         temp_smooth = _smooth_temperature_field(virtual_temperature, lat_deg, smoothing_length_km=1000.0)
         target_mean = area_weighted_mean(virtual_temperature, weights)
