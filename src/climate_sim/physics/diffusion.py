@@ -112,7 +112,7 @@ class DiffusionConfig:
     use_latitude_dependent_atmosphere: bool = True
     atmosphere_meridional_tropical_scale: float = 0.5  # 0-30° latitude
     atmosphere_meridional_midlat_scale: float = 8.0    # 30-60° latitude (peak)
-    atmosphere_meridional_polar_scale: float = 0.5     # 60-90° latitude
+    atmosphere_meridional_polar_scale: float = 1.0     # 60-90° latitude
     atmosphere_zonal_tropical_scale: float = 1.5       # 0-30° latitude
     atmosphere_zonal_midlat_scale: float = 2.5         # 30-60° latitude
     atmosphere_zonal_polar_scale: float = 1.0          # 60-90° latitude
@@ -274,6 +274,7 @@ class DiffusionOperator:
                 self.off_diagonal_matrix = off_diag
 
         return diag, self.off_diagonal_matrix
+
 
 @dataclass
 class LayeredDiffusionOperator:

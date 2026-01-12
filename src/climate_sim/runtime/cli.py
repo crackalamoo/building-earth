@@ -181,6 +181,15 @@ def add_common_model_arguments(
     )
     add_boolean_flag(
         parser,
+        dest="ocean_advection",
+        default=True,
+        enable_option="--ocean-advection",
+        disable_option="--no-ocean-advection",
+        help_enable="Enable ocean heat advection by Sverdrup-Stommel currents (default)",
+        help_disable="Disable ocean heat advection",
+    )
+    add_boolean_flag(
+        parser,
         dest="boundary_layer",
         default=True,
         enable_option="--boundary-layer",

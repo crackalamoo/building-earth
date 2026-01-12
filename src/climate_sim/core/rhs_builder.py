@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import climate_sim.physics.radiation as radiation
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeModel, SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeModel, LatentHeatExchangeConfig
+from climate_sim.physics.ocean_currents import compute_ocean_currents, OceanAdvectionConfig
 from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
@@ -27,6 +28,7 @@ class Linearization:
     diag: np.ndarray
     cross: np.ndarray | None = None
     surface_diffusion_matrix: sparse.csc_matrix | None = None
+    surface_advection_matrix: sparse.csc_matrix | None = None  # Ocean heat advection
     atmosphere_diffusion_matrix: sparse.csc_matrix | None = None
     atmosphere_advection_matrix: sparse.csc_matrix | None = None
     boundary_layer_diffusion_matrix: sparse.csc_matrix | None = None
@@ -54,6 +56,7 @@ class RhsBuildInputs:
     advection_operator: AdvectionOperator | None
     lon2d: FloatArray
     lat2d: FloatArray
+    ocean_advection_cfg: OceanAdvectionConfig | None = None
 
 def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
     """Build RHS and Jacobian functions from physics configuration.
@@ -181,6 +184,26 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
             if inputs.diffusion_operator.surface.enabled:
                 radiative[0] += inputs.diffusion_operator.surface.tendency(surface_temperature)
+
+            # Ocean heat transport: use advection operator with ocean currents
+            ocean_advection_enabled = (
+                inputs.ocean_advection_cfg is not None and inputs.ocean_advection_cfg.enabled
+            )
+            if ocean_advection_enabled and state.ocean_current_field is not None:
+                ocean_u, ocean_v = state.ocean_current_field
+                # Create advection operator for ocean surface if not already available
+                if inputs.advection_operator is not None:
+                    # Replace NaN (land cells) with 0 for the advection operator
+                    ocean_u_safe = np.where(np.isnan(ocean_u), 0.0, ocean_u)
+                    ocean_v_safe = np.where(np.isnan(ocean_v), 0.0, ocean_v)
+                    # Use the existing advection operator infrastructure
+                    ocean_advection_tendency = inputs.advection_operator.tendency(
+                        surface_temperature, ocean_u_safe, ocean_v_safe
+                    )
+                    # Mask out land cells
+                    ocean_mask = ~inputs.land_mask
+                    ocean_advection_tendency = np.where(ocean_mask, ocean_advection_tendency, 0.0)
+                    radiative[0] += ocean_advection_tendency
 
             if nlayers == 2:
                 # Two-layer system
@@ -322,7 +345,25 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 if atmosphere_diffusion_diag is not None:
                     diag[2] = diag[2] + atmosphere_diffusion_diag
 
-            # Compute advection Jacobians if enabled
+            # Ocean advection Jacobian
+            surface_advection_matrix = None
+            ocean_advection_enabled = (
+                inputs.ocean_advection_cfg is not None and inputs.ocean_advection_cfg.enabled
+            )
+            if ocean_advection_enabled and state.ocean_current_field is not None and inputs.advection_operator is not None:
+                ocean_u, ocean_v = state.ocean_current_field
+                # Replace NaN (land cells) with 0 for the advection operator
+                ocean_u_safe = np.where(np.isnan(ocean_u), 0.0, ocean_u)
+                ocean_v_safe = np.where(np.isnan(ocean_v), 0.0, ocean_v)
+                _, ocean_advection_mat = inputs.advection_operator.linearised_tendency(ocean_u_safe, ocean_v_safe)
+                if ocean_advection_mat is not None:
+                    surface_advection_matrix = (
+                        ocean_advection_mat
+                        if sparse.isspmatrix_csc(ocean_advection_mat)
+                        else ocean_advection_mat.tocsc()
+                    )
+
+            # Compute atmosphere/boundary layer advection Jacobians if enabled
             atmosphere_advection_matrix = None
             boundary_layer_advection_matrix = None
             if inputs.advection_operator is not None:
@@ -411,10 +452,22 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 else:
                     cross = lh_cross
 
+            # Use updated surface diffusion matrix if ocean ψ was applied
+            actual_surface_diffusion_matrix = surface_matrix
+            if inputs.diffusion_operator.surface.enabled and state.ocean_current_psi is not None:
+                _, new_surface_offdiag = inputs.diffusion_operator.surface.linearised_tendency()
+                if new_surface_offdiag is not None and new_surface_offdiag.nnz > 0:
+                    actual_surface_diffusion_matrix = (
+                        new_surface_offdiag
+                        if sparse.isspmatrix_csc(new_surface_offdiag)
+                        else new_surface_offdiag.tocsc()
+                    )
+
             return Linearization(
                 diag=diag,
                 cross=cross,
-                surface_diffusion_matrix=surface_matrix,
+                surface_diffusion_matrix=actual_surface_diffusion_matrix,
+                surface_advection_matrix=surface_advection_matrix,
                 atmosphere_diffusion_matrix=atmosphere_matrix,
                 atmosphere_advection_matrix=atmosphere_advection_matrix,
                 boundary_layer_diffusion_matrix=boundary_layer_matrix,

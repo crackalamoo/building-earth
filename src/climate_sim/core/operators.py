@@ -28,6 +28,7 @@ from climate_sim.physics.diffusion import (
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
+from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.snow_albedo import AlbedoModel
 from climate_sim.physics.solar import compute_monthly_insolation_field
 from climate_sim.runtime.config import ModelConfig
@@ -73,6 +74,7 @@ class ModelOperators:
     sensible_heat_cfg: SensibleHeatExchangeConfig
     latent_heat_cfg: LatentHeatExchangeConfig
     boundary_layer_cfg: BoundaryLayerConfig
+    ocean_advection_cfg: OceanAdvectionConfig
 
 
 def build_model_operators(
@@ -252,4 +254,5 @@ def build_model_operators(
         sensible_heat_cfg=sensible_heat_cfg,
         latent_heat_cfg=latent_heat_cfg,
         boundary_layer_cfg=boundary_layer_cfg,
+        ocean_advection_cfg=model_config.ocean_advection,
     )

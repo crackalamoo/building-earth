@@ -26,6 +26,7 @@ from climate_sim.core.postprocess import postprocess_periodic_cycle_results
 from climate_sim.core.rhs_builder import create_rhs_functions, RhsFn, RhsDerivativeFn, RhsBuildInputs
 from climate_sim.core.operators import SurfaceHeatCapacityContext, build_model_operators
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
+from climate_sim.physics.ocean_currents import compute_ocean_currents
 from climate_sim.core.math_core import spherical_cell_area
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.runtime.config import ModelConfig
@@ -64,12 +65,16 @@ def _build_surface_jacobian_block(
     base_capacity: np.ndarray,
     diffusion_matrix: sparse.csc_matrix | None,
     dt_seconds: float,
+    advection_matrix: sparse.csc_matrix | None = None,
 ) -> sparse.csc_matrix:
     """Build the surface layer jacobian block (shared between single and multi-layer)."""
     block = sparse.diags(ceff.ravel(), format="csc")
     block -= dt_seconds * sparse.diags((base_capacity * diag).ravel(), format="csc")
     if diffusion_matrix is not None and diffusion_matrix.nnz > 0:
         block -= dt_seconds * sparse.diags(base_capacity.ravel(), format="csc") @ diffusion_matrix
+    # Ocean heat advection (surface layer only)
+    if advection_matrix is not None and advection_matrix.nnz > 0:
+        block -= dt_seconds * sparse.diags(base_capacity.ravel(), format="csc") @ advection_matrix
     return block
 
 
@@ -84,6 +89,7 @@ def monthly_step(
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext,
+    ocean_advection_enabled: bool = True,
 ) -> ModelState:
     """Advance the column temperature one implicit backward-Euler step."""
     with time_block("monthly_step"):
@@ -133,6 +139,32 @@ def monthly_step(
                     start_temp_capped[0], itcz_rad=itcz_rad, ekman_drag=True
                 )
 
+        # Compute lagged ocean currents from 10m wind (boundary layer or atmosphere wind)
+        lagged_ocean_current_field = None
+        lagged_ocean_current_psi = None
+        if ocean_advection_enabled:
+            if lagged_boundary_layer_wind_field is not None:
+                # 3-layer: use boundary layer wind (10m equivalent)
+                wind_u_10m, wind_v_10m = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+            elif lagged_wind_field is not None:
+                # 2-layer or 1-layer: use atmosphere wind
+                wind_u_10m, wind_v_10m = lagged_wind_field[0], lagged_wind_field[1]
+            else:
+                wind_u_10m, wind_v_10m = None, None
+
+            if wind_u_10m is not None and wind_v_10m is not None:
+                ocean_results = compute_ocean_currents(
+                    wind_u_10m, wind_v_10m,
+                    surface_context.lon2d, surface_context.lat2d,
+                    surface_context.land_mask,
+                    include_stommel=True,
+                )
+                lagged_ocean_current_field = (
+                    ocean_results['u_velocity'],
+                    ocean_results['v_velocity'],
+                )
+                lagged_ocean_current_psi = ocean_results['psi']
+
         # Compute cell areas once for ITCZ calculations inside Newton loop
         cell_areas = spherical_cell_area(
             surface_context.lon2d, surface_context.lat2d, earth_radius_m=R_EARTH_METERS
@@ -176,10 +208,12 @@ def monthly_step(
                     itcz_rad=current_itcz,
                 )
 
-                # Keep albedo and wind lagged
+                # Keep albedo, wind, and ocean currents lagged
                 albedo_field = lagged_albedo_field
                 wind_field = lagged_wind_field
                 boundary_layer_wind_field = lagged_boundary_layer_wind_field
+                ocean_current_field = lagged_ocean_current_field
+                ocean_current_psi = lagged_ocean_current_psi
 
                 return ModelState(
                     temperature=temp,
@@ -187,6 +221,8 @@ def monthly_step(
                     wind_field=wind_field,
                     humidity_field=humidity_field,
                     boundary_layer_wind_field=boundary_layer_wind_field,
+                    ocean_current_field=ocean_current_field,
+                    ocean_current_psi=ocean_current_psi,
                 ), current_itcz
 
         # implicit solver loop
@@ -270,7 +306,8 @@ def monthly_step(
                     
                     with time_block("jacobian_assembly"):
                         surface_block = _build_surface_jacobian_block(
-                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
+                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds,
+                            advection_matrix=linearization.surface_advection_matrix,
                         )
                         jacobian = surface_block
                     with time_block("linear_solve"):
@@ -291,7 +328,8 @@ def monthly_step(
 
                     with time_block("jacobian_assembly"):
                         surface_block = _build_surface_jacobian_block(
-                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
+                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds,
+                            advection_matrix=linearization.surface_advection_matrix,
                         )
                         atmosphere_block = identity.copy()
                         atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
@@ -337,7 +375,8 @@ def monthly_step(
 
                     with time_block("jacobian_assembly"):
                         surface_block = _build_surface_jacobian_block(
-                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds
+                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds,
+                            advection_matrix=linearization.surface_advection_matrix,
                         )
 
                         # Boundary layer block (with diffusion and advection if available)
@@ -488,6 +527,7 @@ def evolve_year(
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext,
+    ocean_advection_enabled: bool = True,
 ) -> list[ModelState]:
     """Propagate the state through 12 implicit steps"""
     states: list[ModelState] = []
@@ -516,6 +556,7 @@ def evolve_year(
                 temperature_floor=temperature_floor,
                 solver_cache=solver_cache,
                 surface_context=surface_context,
+                ocean_advection_enabled=ocean_advection_enabled,
             )
             states.append(state)
         return states
@@ -568,6 +609,7 @@ def find_periodic_climate_cycle(
     surface_context: SurfaceHeatCapacityContext,
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
+    ocean_advection_enabled: bool = True,
 ) -> list[ModelState]:
     """Solve for the periodic annual climate cycle using Anderson acceleration.
 
@@ -595,6 +637,7 @@ def find_periodic_climate_cycle(
                     temperature_floor=temperature_floor,
                     solver_cache=solver_cache,
                     surface_context=surface_context,
+                    ocean_advection_enabled=ocean_advection_enabled,
                 )
 
                 advanced = advanced_states[-1]
@@ -711,6 +754,7 @@ def solve_periodic_climate(
             advection_operator=operators.advection_operator,
             lon2d=operators.lon2d,
             lat2d=operators.lat2d,
+            ocean_advection_cfg=operators.ocean_advection_cfg,
         )
         rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
 
@@ -732,6 +776,7 @@ def solve_periodic_climate(
         )
 
     # Solve for periodic cycle
+    ocean_advection_enabled = operators.ocean_advection_cfg.enabled
     monthly_states = find_periodic_climate_cycle(
         initial_state=initial_state,
         monthly_insolation=operators.monthly_insolation,
@@ -741,6 +786,7 @@ def solve_periodic_climate(
         surface_context=operators.surface_context,
         temperature_floor=operators.radiation_config.temperature_floor,
         solver_cache=operators.solver_cache,
+        ocean_advection_enabled=ocean_advection_enabled,
     )
 
     # Update wind fields if wind model is enabled
@@ -776,12 +822,27 @@ def solve_periodic_climate(
                             ekman_drag=True
                         )
 
+                    # Compute ocean currents from boundary layer wind
+                    ocean_current_field = None
+                    ocean_current_psi = None
+                    if ocean_advection_enabled and bl_wind is not None:
+                        ocean_results = compute_ocean_currents(
+                            bl_wind[0], bl_wind[1],
+                            operators.lon2d, operators.lat2d,
+                            operators.land_mask,
+                            include_stommel=True,
+                        )
+                        ocean_current_field = (ocean_results['u_velocity'], ocean_results['v_velocity'])
+                        ocean_current_psi = ocean_results['psi']
+
                     monthly_states[idx] = ModelState(
                         temperature=month_state.temperature,
                         albedo_field=month_state.albedo_field,
                         wind_field=atm_wind,
                         humidity_field=month_state.humidity_field,
                         boundary_layer_wind_field=bl_wind,
+                        ocean_current_field=ocean_current_field,
+                        ocean_current_psi=ocean_current_psi,
                     )
                 else:
                     # Two-layer or one-layer: single wind field with drag
@@ -789,11 +850,27 @@ def solve_periodic_climate(
                     wind_field = month_state.wind_field or operators.wind_model.wind_field(
                         wind_temperature, itcz_rad=itcz_rad, ekman_drag=True
                     )
+
+                    # Compute ocean currents from atmosphere wind
+                    ocean_current_field = None
+                    ocean_current_psi = None
+                    if ocean_advection_enabled and wind_field is not None:
+                        ocean_results = compute_ocean_currents(
+                            wind_field[0], wind_field[1],
+                            operators.lon2d, operators.lat2d,
+                            operators.land_mask,
+                            include_stommel=True,
+                        )
+                        ocean_current_field = (ocean_results['u_velocity'], ocean_results['v_velocity'])
+                        ocean_current_psi = ocean_results['psi']
+
                     monthly_states[idx] = ModelState(
                         temperature=month_state.temperature,
                         albedo_field=month_state.albedo_field,
                         wind_field=wind_field,
                         humidity_field=month_state.humidity_field,
+                        ocean_current_field=ocean_current_field,
+                        ocean_current_psi=ocean_current_psi,
                     )
 
     # Post-process results (convert to Celsius, reshape layers)

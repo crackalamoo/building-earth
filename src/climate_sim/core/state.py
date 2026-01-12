@@ -15,6 +15,8 @@ class ModelState:
     wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     humidity_field: np.ndarray | None = None
     boundary_layer_wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    ocean_current_field: tuple[np.ndarray, np.ndarray] | None = None  # (u, v) in m/s
+    ocean_current_psi: np.ndarray | None = None  # Streamfunction in Sv
 
 
 def select_wind_temperature(temperature: np.ndarray) -> np.ndarray:

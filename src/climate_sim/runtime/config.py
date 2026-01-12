@@ -9,6 +9,7 @@ from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.physics.atmosphere.wind import WindConfig
 from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
+from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
@@ -30,6 +31,7 @@ class ModelConfig:
         default_factory=LatentHeatExchangeConfig
     )
     boundary_layer: BoundaryLayerConfig = field(default_factory=BoundaryLayerConfig)
+    ocean_advection: OceanAdvectionConfig = field(default_factory=OceanAdvectionConfig)
     solar_constant: float | None = None
     use_elliptical_orbit: bool = True
     ocean_heat_capacity: float | None = None

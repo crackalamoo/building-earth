@@ -34,6 +34,7 @@ from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.runtime.config import ModelConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.atmosphere.wind import WindConfig
+from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.physics.atmosphere.pressure import compute_pressure
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
@@ -95,6 +96,7 @@ def main() -> None:
     advection_config = AdvectionConfig(enabled=args.advection)
     wind_config = WindConfig()
     boundary_layer_config = BoundaryLayerConfig(enabled=args.boundary_layer)
+    ocean_advection_config = OceanAdvectionConfig(enabled=args.ocean_advection)
 
     model_config = ModelConfig(
         radiation=radiation_config,
@@ -105,6 +107,7 @@ def main() -> None:
         sensible_heat=sensible_heat_config,
         latent_heat=latent_heat_config,
         boundary_layer=boundary_layer_config,
+        ocean_advection=ocean_advection_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )
@@ -663,6 +666,185 @@ def main() -> None:
                 humidity_hover_data["type"] = current_state_humidity["type"]
 
             _update_humidity_plot()
+
+    # Ocean currents plot
+    ocean_u = layers.get("ocean_u")
+    ocean_v = layers.get("ocean_v")
+    if ocean_u is not None and ocean_v is not None and not args.headless:
+        projection = ccrs.PlateCarree()
+        fig_ocean, ax_ocean = plt.subplots(
+            figsize=(12, 6), subplot_kw=dict(projection=projection)
+        )
+        ax_ocean.set_global()
+        ax_ocean.coastlines(linewidth=0.4)
+        ax_ocean.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+        ax_ocean.add_feature(
+            cfeature.NaturalEarthFeature(
+                "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+            ),
+            linewidth=0.2,
+        )
+        ax_ocean.add_feature(
+            cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0
+        )
+
+        # Wrap longitude for display
+        lon_full = lon2d[0]
+        lon_wrapped = ((lon_full + 180.0) % 360.0) - 180.0
+        lon_sort_idx = np.argsort(lon_wrapped)
+        lon_sorted = lon_wrapped[lon_sort_idx]
+
+        ocean_u_sorted = ocean_u[:, :, lon_sort_idx]
+        ocean_v_sorted = ocean_v[:, :, lon_sort_idx]
+
+        # Compute ocean current speed (with NaN handling)
+        ocean_speed = np.sqrt(
+            np.nan_to_num(ocean_u_sorted, nan=0.0)**2 +
+            np.nan_to_num(ocean_v_sorted, nan=0.0)**2
+        )
+        # Set land cells back to NaN for display
+        ocean_speed = np.where(
+            np.isnan(ocean_u_sorted) | np.isnan(ocean_v_sorted),
+            np.nan,
+            ocean_speed
+        )
+
+        max_speed = float(np.nanmax(ocean_speed))
+        if not np.isfinite(max_speed) or max_speed <= 0.0:
+            max_speed = 0.1
+
+        stride = max(1, int(round(1.0 / args.resolution)))
+        lat_coords = lat2d[::stride, 0]
+        lon_coords = lon_sorted[::stride]
+
+        meters_per_deg_lat = np.pi / 180.0 * R_EARTH_METERS
+        cosphi = np.cos(np.deg2rad(lat_coords))
+        meters_per_deg_lon_vec = meters_per_deg_lat * np.clip(cosphi, 1e-6, None)
+
+        def _to_deg_per_sec_ocean(
+            u_slice: np.ndarray, v_slice: np.ndarray
+        ) -> tuple[np.ndarray, np.ndarray]:
+            u_deg = u_slice / meters_per_deg_lon_vec[:, None]
+            v_deg = v_slice / meters_per_deg_lat
+            return u_deg, v_deg
+
+        cmap_ocean = cmocean.cm.tempo
+        norm_ocean = Normalize(vmin=0.0, vmax=max_speed)
+
+        current_state_ocean = {"month": 0}
+        stream_container_ocean: dict[str, object | None] = {"obj": None}
+        speed_mesh_container: dict[str, object | None] = {"mesh": None}
+
+        # Create background mesh for speed coloring
+        lat_sorted = lat2d[:, 0]
+        lon_sorted_2d, lat_sorted_2d = np.meshgrid(lon_sorted, lat_sorted)
+
+        speed_mesh = ax_ocean.pcolormesh(
+            lon_sorted_2d,
+            lat_sorted_2d,
+            ocean_speed[0],
+            cmap=cmap_ocean,
+            norm=norm_ocean,
+            shading="auto",
+            transform=projection,
+            zorder=0,
+        )
+        speed_mesh_container["mesh"] = speed_mesh
+
+        cbar_ocean = fig_ocean.colorbar(
+            speed_mesh,
+            ax=ax_ocean,
+            orientation="vertical",
+            pad=0.04,
+            fraction=0.046,
+        )
+        cbar_ocean.set_label("Current speed (m/s)")
+
+        def _clear_streamplot_ocean(stream_set) -> None:
+            if stream_set is None:
+                return
+            stream_set.lines.set_segments([])
+            stream_set.lines.set_array(np.array([]))
+            stream_set.lines.set_visible(False)
+            for art in list(ax_ocean.get_children()):
+                if isinstance(art, mpatches.FancyArrowPatch):
+                    art.remove()
+
+        def _draw_streamplot_ocean() -> None:
+            idx = current_state_ocean["month"]
+            u_slice = ocean_u_sorted[idx, ::stride, ::stride]
+            v_slice = ocean_v_sorted[idx, ::stride, ::stride]
+            speed_slice = ocean_speed[idx, ::stride, ::stride]
+
+            # Update background speed mesh
+            speed_mesh = speed_mesh_container["mesh"]
+            if speed_mesh is not None:
+                speed_mesh.set_array(ocean_speed[idx].ravel())
+
+            # Replace NaN with 0 for streamplot (it can't handle NaN)
+            u_safe = np.nan_to_num(u_slice, nan=0.0)
+            v_safe = np.nan_to_num(v_slice, nan=0.0)
+
+            u_deg_slice, v_deg_slice = _to_deg_per_sec_ocean(u_safe, v_safe)
+
+            current_stream = stream_container_ocean["obj"]
+            _clear_streamplot_ocean(current_stream)
+
+            new_stream = ax_ocean.streamplot(
+                lon_coords,
+                lat_coords,
+                u_deg_slice,
+                v_deg_slice,
+                color="#1a1a1a",
+                transform=projection,
+                density=1.8,
+                linewidth=0.8,
+                arrowsize=1.2,
+            )
+
+            stream_container_ocean["obj"] = new_stream
+            stream_container_ocean["u_data"] = u_slice
+            stream_container_ocean["v_data"] = v_slice
+            stream_container_ocean["speed_data"] = speed_slice
+            stream_container_ocean["lon_coords"] = lon_coords
+            stream_container_ocean["lat_coords"] = lat_coords
+
+            ax_ocean.set_title(f"Ocean Currents – {month_names[idx]}")
+            fig_ocean.canvas.draw_idle()
+
+        slider_ocean_ax = fig_ocean.add_axes([0.2, 0.08, 0.6, 0.03])
+        month_slider_ocean = Slider(
+            slider_ocean_ax,
+            label="Month",
+            valmin=0,
+            valmax=11,
+            valinit=0,
+            valstep=1,
+            valfmt="%0.0f",
+        )
+
+        def _on_ocean_month_change(val: float) -> None:
+            current_state_ocean["month"] = int(val)
+            _draw_streamplot_ocean()
+
+        month_slider_ocean.on_changed(_on_ocean_month_change)
+
+        # Add hover functionality
+        add_dynamic_status_readout(
+            fig=fig_ocean,
+            ax=ax_ocean,
+            lon_coords=stream_container_ocean.get("lon_coords", lon_coords),
+            lat_coords=stream_container_ocean.get("lat_coords", lat_coords),
+            data_container=stream_container_ocean,
+            format_message=lambda lon, lat, data, lon_idx, lat_idx: (
+                f"{_format_lat(lat)}  {_format_lon(lon)}  "
+                f"Speed: {np.nan_to_num(data.get('speed_data', [[0]])[lat_idx, lon_idx], nan=0.0):.3f} m/s  "
+                f"U: {np.nan_to_num(data.get('u_data', [[0]])[lat_idx, lon_idx], nan=0.0):.3f} m/s  "
+                f"V: {np.nan_to_num(data.get('v_data', [[0]])[lat_idx, lon_idx], nan=0.0):.3f} m/s"
+            ) if data.get("u_data") is not None else ""
+        )
+
+        _draw_streamplot_ocean()
 
     atmosphere_2m_cycle = layer_cycles.get("Atmosphere (2 m)")
 
