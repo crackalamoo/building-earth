@@ -14,6 +14,8 @@ from climate_sim.data.constants import (
     HEAT_CAPACITY_AIR_J_KG_K,
 )
 from climate_sim.data.elevation import VON_KARMAN_CONSTANT
+from climate_sim.data.calendar import SECONDS_PER_DAY
+from climate_sim.core.math_core import area_weighted_mean
 
 from climate_sim.physics.atmosphere.wind import WindModel
 
@@ -87,7 +89,7 @@ class SensibleHeatExchangeModel:
         atmosphere_temperature_K: np.ndarray,
         *,
         wind_speed_reference_m_s: np.ndarray | None,
-        declination_rad: float | np.ndarray | None = None,
+        itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
         log_diagnostics: bool = False,
         cell_area_m2: np.ndarray | None = None,
@@ -122,7 +124,7 @@ class SensibleHeatExchangeModel:
                 surface_temperature,
                 atmosphere_temperature,
                 wind_speed_reference_m_s,
-                declination_rad=declination_rad,
+                itcz_rad=itcz_rad,
             )
         else:
             # Fallback: no wind, no exchange
@@ -176,9 +178,6 @@ class SensibleHeatExchangeModel:
             atmosphere_tendency = heat_flux_bl_atm / self._atmosphere_heat_capacity
 
             if log_diagnostics:
-                from climate_sim.core.math_core import area_weighted_mean
-                from climate_sim.data.calendar import SECONDS_PER_DAY
-
                 if cell_area_m2 is None:
                     raise ValueError("cell_area_m2 must be provided when log_diagnostics=True")
 
@@ -212,7 +211,7 @@ class SensibleHeatExchangeModel:
         atmosphere_temperature_K: np.ndarray,
         *,
         wind_speed_reference_m_s: np.ndarray | None,
-        declination_rad: float | np.ndarray | None = None,
+        itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return Jacobian (diagonal and cross-coupling) for sensible heat exchange.
@@ -242,7 +241,7 @@ class SensibleHeatExchangeModel:
                 surface_temperature,
                 atmosphere_temperature,
                 wind_speed_reference_m_s,
-                declination_rad=declination_rad,
+                itcz_rad=itcz_rad,
             )
         else:
             if boundary_layer_temperature_K is not None:

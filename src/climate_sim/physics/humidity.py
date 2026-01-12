@@ -3,25 +3,40 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.interpolate import PchipInterpolator
 
 from climate_sim.physics.atmosphere.pressure import compute_pressure
+from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, DELTA_SUBTROPICS, compute_itcz_latitude
+from climate_sim.core.math_core import spherical_cell_area
+from climate_sim.core.timing import time_block
+from climate_sim.data.constants import R_EARTH_METERS
 
-RH_POLES = 0.85
-RH_SUBTROPICS= 0.35
-RH_ITCZ = 0.80
-RH_POLES_WATER = 0.90
-RH_SUBTROPICS_WATER = 0.63
-RH_ITCZ_WATER = 0.88
-STORM_BAND = np.deg2rad([30, 60])
-DELTA_SUBTROPICS = np.deg2rad(20)
-LAT_POLES = np.deg2rad(80)
+# Mean RH and anomalies at key latitude bands (like pressure anomalies)
+RH_MEAN = 0.65
+DRH_ITCZ = +0.15           # Humid at ITCZ (convergence, rising air)
+DRH_SUBTROPICS = -0.30     # Dry at subtropics (descending air, deserts)
+DRH_SUBPOLAR = +0.10       # Moderately humid (storm tracks)
+DRH_POLES = +0.20          # Humid at poles
+
+# Ocean has higher RH overall
+RH_MEAN_WATER = 0.75
+DRH_ITCZ_WATER = +0.13
+DRH_SUBTROPICS_WATER = -0.12
+DRH_SUBPOLAR_WATER = +0.05
+DRH_POLES_WATER = +0.15
+
+# Width of humidity features (radians)
+SIGMA_RH_ITCZ = np.deg2rad(10.0)       # ITCZ humid zone width
+SIGMA_RH_SUBTROPICS = np.deg2rad(15.0)  # Subtropical dry zone width
+SIGMA_RH_SUBPOLAR = np.deg2rad(12.0)   # Subpolar storm track width
+SIGMA_RH_POLES = np.deg2rad(10.0)      # Polar humid zone width
 
 
 def specific_humidity_to_relative_humidity(
     q: np.ndarray,
     temperature_K: np.ndarray,
-    declination_rad: float | None = None,
+    itcz_rad: np.ndarray | None = None,
+    lat2d: np.ndarray | None = None,
+    lon2d: np.ndarray | None = None,
 ) -> np.ndarray:
     """Convert specific humidity to relative humidity.
 
@@ -31,8 +46,12 @@ def specific_humidity_to_relative_humidity(
         Specific humidity (kg/kg).
     temperature_K : np.ndarray
         Temperature field in Kelvin.
-    declination_rad : float | None
-        Solar declination angle in radians (optional).
+    itcz_rad : np.ndarray | None
+        ITCZ latitude in radians (optional).
+    lat2d : np.ndarray | None
+        Latitude field in degrees.
+    lon2d : np.ndarray | None
+        Longitude field in degrees.
 
     Returns
     -------
@@ -43,7 +62,7 @@ def specific_humidity_to_relative_humidity(
     # Magnus formula requires temperature in Celsius
     temperature_C = temperature_K - 273.15
 
-    p_Pa = compute_pressure(temperature_K, declination_rad=declination_rad)
+    p_Pa = compute_pressure(temperature_K, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
     p_hPa = p_Pa / 100.0  # Convert Pa to hPa
 
     # Magnus formula: e_sat in hPa
@@ -55,52 +74,95 @@ def specific_humidity_to_relative_humidity(
     return np.clip(rh, 0.0, 1.0)
 
 
-def _guess_humidity_rh_function(itcz: np.ndarray,
-    rh_poles=RH_POLES, rh_subtropics=RH_SUBTROPICS, rh_itcz=RH_ITCZ) -> PchipInterpolator:
-    phi = np.array([
-        -LAT_POLES,
-        itcz - DELTA_SUBTROPICS,
-        itcz,
-        itcz + DELTA_SUBTROPICS,
-        LAT_POLES
-    ])
+def relative_humidity_pattern(
+    lat_rad: np.ndarray,
+    itcz_rad: np.ndarray,
+    rh_mean: float = RH_MEAN,
+    drh_itcz: float = DRH_ITCZ,
+    drh_subtropics: float = DRH_SUBTROPICS,
+    drh_subpolar: float = DRH_SUBPOLAR,
+    drh_poles: float = DRH_POLES,
+) -> np.ndarray:
+    """Compute relative humidity pattern using anomalies from mean.
 
-    target_rh = np.array([
-        rh_poles,
-        rh_subtropics,
-        rh_itcz,
-        rh_subtropics,
-        rh_poles
-    ])
+    Like pressure, RH is computed as mean + sum of Gaussian anomalies:
+    - ITCZ: positive anomaly (humid, rising air)
+    - Subtropics: negative anomaly (dry, descending air)
+    - Subpolar: positive anomaly (storm tracks)
+    - Poles: positive anomaly (humid)
 
-    interp = PchipInterpolator(phi, target_rh)
+    Parameters
+    ----------
+    lat_rad : np.ndarray
+        Latitude field in radians, shape (nlat, nlon).
+    itcz_rad : np.ndarray
+        ITCZ latitude in radians, shape (nlon,) or broadcast-compatible.
+    rh_mean : float
+        Mean relative humidity.
+    drh_itcz, drh_subtropics, drh_subpolar, drh_poles : float
+        RH anomalies at key latitude bands.
 
-    return interp
+    Returns
+    -------
+    np.ndarray
+        Relative humidity (0-1), same shape as lat_rad.
+    """
+    # Subtropical dry zones follow ITCZ (descending branch of Hadley cell)
+    lat_subtrop_south = 0.5 * itcz_rad - DELTA_SUBTROPICS
+    lat_subtrop_north = 0.5 * itcz_rad + DELTA_SUBTROPICS
+
+    # ITCZ humid anomaly
+    rh_itcz = drh_itcz * np.exp(-((lat_rad - itcz_rad) / SIGMA_RH_ITCZ) ** 2)
+
+    # Subtropical dry anomaly (both hemispheres)
+    rh_subtrop = drh_subtropics * (
+        np.exp(-((lat_rad - lat_subtrop_south) / SIGMA_RH_SUBTROPICS) ** 2)
+        + np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_RH_SUBTROPICS) ** 2)
+    )
+
+    # Subpolar humid anomaly (fixed latitudes, both hemispheres)
+    rh_subpolar = drh_subpolar * (
+        np.exp(-((lat_rad + LAT_SUBPOLAR) / SIGMA_RH_SUBPOLAR) ** 2)
+        + np.exp(-((lat_rad - LAT_SUBPOLAR) / SIGMA_RH_SUBPOLAR) ** 2)
+    )
+
+    # Polar humid anomaly (fixed latitudes, both hemispheres)
+    rh_polar = drh_poles * (
+        np.exp(-((lat_rad + LAT_POLES) / SIGMA_RH_POLES) ** 2)
+        + np.exp(-((lat_rad - LAT_POLES) / SIGMA_RH_POLES) ** 2)
+    )
+
+    rh = rh_mean + rh_itcz + rh_subtrop + rh_subpolar + rh_polar
+
+    return np.clip(rh, 0.1, 0.98)
 
 def compute_humidity_q(
     lat_2d: np.ndarray,
     temperature: np.ndarray,
-    declination_rad: np.ndarray,
     *,
     return_rh: bool = False,
     land_mask: np.ndarray | None = None,
+    lon_2d: np.ndarray | None = None,
+    itcz_rad: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute humidity field (specific humidity or relative humidity).
-    
+
     Parameters
     ----------
     lat_2d : np.ndarray
         Latitude field in degrees.
     temperature : np.ndarray
         Temperature field in Kelvin.
-    declination_rad : np.ndarray
-        Solar declination angle in radians.
     return_rh : bool, optional
         If True, return relative humidity (0-1). If False, return specific humidity (kg/kg).
         Default is False.
     land_mask : np.ndarray | None, optional
         Boolean array indicating land cells (True) vs ocean cells (False).
-    
+    lon_2d : np.ndarray | None
+        Longitude field in degrees. Used to compute ITCZ if itcz_rad not provided.
+    itcz_rad : np.ndarray | None
+        Pre-computed ITCZ latitude in radians, shape (nlon,).
+
     Returns
     -------
     np.ndarray
@@ -110,28 +172,43 @@ def compute_humidity_q(
     # Convert latitude to radians for internal computation
     lat_2d_rad = np.deg2rad(lat_2d)
 
-    itcz = declination_rad * 0.4
-    rh_function = _guess_humidity_rh_function(itcz)
-    rh = rh_function(lat_2d_rad)
+    # Compute ITCZ from temperature or use pre-computed
+    if itcz_rad is None:
+        with time_block("compute_itcz_in_humidity"):
+            cell_areas = spherical_cell_area(lon_2d, lat_2d, earth_radius_m=R_EARTH_METERS)
+            itcz = compute_itcz_latitude(temperature, lat_2d, cell_areas)
+    else:
+        itcz = itcz_rad
 
-    # Apply ocean boost if land mask is provided
+    nlat, nlon = temperature.shape
+
+    # Broadcast ITCZ to 2D grid
+    itcz_2d = np.broadcast_to(itcz[np.newaxis, :], (nlat, nlon))
+
+    # Compute RH using analytical formula for land
+    rh_land = relative_humidity_pattern(lat_2d_rad, itcz_2d)
+
+    # Blend with ocean values at cell level if land mask is provided
     if land_mask is not None:
-        ocean_mask = ~land_mask
-        rh_function_ocean = _guess_humidity_rh_function(declination_rad * 0.3,
-        RH_POLES_WATER, RH_SUBTROPICS_WATER, RH_ITCZ_WATER)
-        rh_ocean = rh_function_ocean(lat_2d_rad)
-        rh = np.where(ocean_mask, rh_ocean, rh)
+        ocean_mask = ~land_mask  # True for ocean cells
 
-    lat_rel = lat_2d_rad - itcz
-    storm_bump = 0.5 * (1 - np.cos(2*np.pi * (lat_rel - STORM_BAND[0])/(STORM_BAND[1] - STORM_BAND[0])))
-    storm_bump = np.where(
-        ((STORM_BAND[0] < lat_rel) & (lat_rel < STORM_BAND[1]))
-        | ((-STORM_BAND[1] < lat_rel) & (lat_rel < -STORM_BAND[0])),
-        storm_bump, 0)
-    storm_A = 0.2
-    rh = rh + storm_A * (1-rh) * storm_bump
+        if ocean_mask.any():
+            # Ocean ITCZ is scaled by 0.75 (less land-ocean contrast)
+            itcz_ocean_2d = np.broadcast_to((itcz * 0.75)[np.newaxis, :], (nlat, nlon))
 
-    rh = np.clip(rh, 0.1, 0.98)
+            # Compute ocean RH with ocean-specific parameters
+            rh_ocean = relative_humidity_pattern(
+                lat_2d_rad, itcz_ocean_2d,
+                RH_MEAN_WATER, DRH_ITCZ_WATER, DRH_SUBTROPICS_WATER,
+                DRH_SUBPOLAR_WATER, DRH_POLES_WATER
+            )
+
+            # Blend: use ocean values for ocean cells, land values for land cells
+            rh = np.where(ocean_mask, rh_ocean, rh_land)
+        else:
+            rh = rh_land
+    else:
+        rh = rh_land
 
     if return_rh:
         return rh
@@ -139,7 +216,7 @@ def compute_humidity_q(
     # Magnus formula requires temperature in Celsius
     temperature_C = temperature - 273.15
 
-    p_Pa = compute_pressure(temperature, declination_rad=declination_rad)
+    p_Pa = compute_pressure(temperature, lat2d=lat_2d, lon2d=lon_2d, itcz_rad=itcz)
     p_hPa = p_Pa / 100.0  # Convert Pa to hPa
 
     e_sat = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
@@ -167,7 +244,7 @@ def compute_cloud_cover(
         Boolean array indicating land cells (True) vs ocean cells (False).
         If provided, different values are used for land vs ocean in the fallback.
     temperature : np.ndarray | None, optional
-        Temperature field (K).   
+        Temperature field (K).
     Returns
     -------
     np.ndarray

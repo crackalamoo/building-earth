@@ -11,9 +11,6 @@ from scipy.sparse import linalg as splinalg
 
 import climate_sim.physics.radiation as radiation
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.physics.solar import (
-    compute_monthly_declinations,
-)
 from climate_sim.physics.humidity import compute_humidity_q
 from climate_sim.core.timing import time_block, get_profiler, reset_profiler
 from climate_sim.core.math_core import (
@@ -27,12 +24,15 @@ from climate_sim.core.state import (
 )
 from climate_sim.core.postprocess import postprocess_periodic_cycle_results
 from climate_sim.core.rhs_builder import create_rhs_functions, RhsFn, RhsDerivativeFn, RhsBuildInputs
-from climate_sim.core.operators import SurfaceHeatCapacityContext
+from climate_sim.core.operators import SurfaceHeatCapacityContext, build_model_operators
+from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
+from climate_sim.core.math_core import spherical_cell_area
+from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.runtime.config import ModelConfig
 
 NEWTON_STEP_TOLERANCE_K = 1.0
 PERIODIC_FIXED_POINT_TOLERANCE_K = 0.5
-PERIODIC_FIXED_POINT_TOLERANCE_K_99P = 1.0
+PERIODIC_FIXED_POINT_TOLERANCE_K_95P = 1.0
 NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
@@ -76,7 +76,7 @@ def _build_surface_jacobian_block(
 def monthly_step(
     state: ModelState,
     insolation_W_m2: np.ndarray,
-    declination: np.ndarray,
+    itcz_rad: np.ndarray,
     dt_seconds: float,
     *,
     rhs_fn: RhsFn,
@@ -117,26 +117,28 @@ def monthly_step(
                 lagged_wind_field = surface_context.wind_model.wind_field(
                     start_temp_capped[2],
                     temperature_boundary_layer=start_temp_capped[1],
-                    declination_rad=declination,
+                    itcz_rad=itcz_rad,
                     ekman_drag=False
                 )
                 # Boundary layer wind: use BL T only
                 lagged_boundary_layer_wind_field = surface_context.wind_model.wind_field(
-                    start_temp_capped[1], declination_rad=declination, ekman_drag=True
+                    start_temp_capped[1], itcz_rad=itcz_rad, ekman_drag=True
                 )
             elif start_temp_capped.shape[0] == 2:
                 lagged_wind_field = surface_context.wind_model.wind_field(
-                    start_temp_capped[1], declination_rad=declination, ekman_drag=True
+                    start_temp_capped[1], itcz_rad=itcz_rad, ekman_drag=True
                 )
             else:
                 lagged_wind_field = surface_context.wind_model.wind_field(
-                    start_temp_capped[0], declination_rad=declination, ekman_drag=True
+                    start_temp_capped[0], itcz_rad=itcz_rad, ekman_drag=True
                 )
+
         lagged_humidity_field = compute_humidity_q(
             surface_context.lat2d,
             start_temp_capped[0],
-            declination,
             land_mask=surface_context.land_mask,
+            lon_2d=surface_context.lon2d,
+            itcz_rad=itcz_rad,
         )
 
         def _effective_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
@@ -146,7 +148,8 @@ def monthly_step(
                 base_C_land=surface_context.base_C_land,
                 base_C_ocean=surface_context.base_C_ocean,
             )
-        
+
+
         def _init_state(temp: np.ndarray) -> ModelState:
             with time_block("_init_state"):
                 albedo_field = lagged_albedo_field
@@ -220,10 +223,10 @@ def monthly_step(
                 temp_capped = np.maximum(temp_next, temperature_floor)
                 state_capped = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
-                    rhs_value = rhs_fn(state_capped, insolation_W_m2, declination)
+                    rhs_value = rhs_fn(state_capped, insolation_W_m2, itcz_rad)
                 # Recompute Jacobian every iteration for true Newton solve
                 with time_block("rhs_derivative"):
-                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, declination)
+                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, itcz_rad)
                 preconditioner_age += 1
 
                 nlayers = temp_capped.shape[0]
@@ -380,7 +383,7 @@ def monthly_step(
                     temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
                     state_candidate = _init_state(temp_candidate)
                     with time_block("backtrack_rhs"):
-                        rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, declination)
+                        rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, itcz_rad)
                     
                     ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                     nlayers = temp_candidate.shape[0]
@@ -429,28 +432,29 @@ def monthly_step(
                 final_state.wind_field = surface_context.wind_model.wind_field(
                     final_temp[2],
                     temperature_boundary_layer=final_temp[1],
-                    declination_rad=declination,
+                    itcz_rad=itcz_rad,
                     ekman_drag=False
                 )
                 # Boundary layer wind: with surface drag
                 final_state.boundary_layer_wind_field = surface_context.wind_model.wind_field(
-                    final_temp[1], declination_rad=declination, ekman_drag=True
+                    final_temp[1], itcz_rad=itcz_rad, ekman_drag=True
                 )
             elif final_temp.shape[0] == 2:
                 # Two-layer: single wind with drag (represents near-surface atmosphere)
                 final_state.wind_field = surface_context.wind_model.wind_field(
-                    final_temp[1], declination_rad=declination, ekman_drag=True
+                    final_temp[1], itcz_rad=itcz_rad, ekman_drag=True
                 )
             else:
                 # One-layer: single wind with drag
                 final_state.wind_field = surface_context.wind_model.wind_field(
-                    final_temp[0], declination_rad=declination, ekman_drag=True
+                    final_temp[0], itcz_rad=itcz_rad, ekman_drag=True
                 )
         final_state.humidity_field = compute_humidity_q(
             surface_context.lat2d,
             final_temp[0],
-            declination,
             land_mask=surface_context.land_mask,
+            lon_2d=surface_context.lon2d,
+            itcz_rad=itcz_rad,
         )
         return final_state
 
@@ -467,14 +471,21 @@ def evolve_year(
 ) -> list[ModelState]:
     """Propagate the state through 12 implicit steps"""
     states: list[ModelState] = []
-    monthly_declinations = compute_monthly_declinations()
     with time_block("evolve_year"):
         for month_n in range(12):
             month = (month_n + 2) % 12 # start from March so initial guess is better
+            # Compute ITCZ from current temperature
+            with time_block("compute_itcz_monthly"):
+                cell_areas = spherical_cell_area(surface_context.lon2d, surface_context.lat2d, earth_radius_m=R_EARTH_METERS)
+                itcz_rad = compute_itcz_latitude(
+                    np.maximum(state.temperature[0], temperature_floor),
+                    surface_context.lat2d,
+                    cell_areas
+                )
             state = monthly_step(
                 state,
                 monthly_insolation[month],
-                monthly_declinations[month],
+                itcz_rad,
                 month_durations[month],
                 rhs_fn=rhs_fn,
                 rhs_temperature_derivative_fn=rhs_temperature_derivative_fn,
@@ -567,11 +578,11 @@ def find_periodic_climate_cycle(
                     advanced_states[i].temperature[0] - states[i].temperature[0] for i in range(12)
                 ])
                 residual_rms = np.sqrt(np.mean(np.square(residual)))
-                residual_99p = np.percentile(np.abs(residual), 99)
+                residual_95p = np.percentile(np.abs(residual), 95)
                 residual_max = np.max(np.abs(residual))
-                print(residual_rms, residual_99p, residual_max)
+                print(residual_rms, residual_95p, residual_max)
 
-                if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_99p < PERIODIC_FIXED_POINT_TOLERANCE_K_99P:
+                if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_95p < PERIODIC_FIXED_POINT_TOLERANCE_K_95P:
                     return [advanced_states[(i - 2) % 12] for i in range(12)]
 
                 states = advanced_states
@@ -654,8 +665,6 @@ def solve_periodic_climate(
         - Surface temperature field in Celsius (if return_layer_map=False)
         - Dictionary mapping layer names to temperature fields (if return_layer_map=True)
     """
-    from climate_sim.core.operators import build_model_operators
-
     reset_profiler()
 
     # Build all operators and grids from configuration
@@ -689,6 +698,7 @@ def solve_periodic_climate(
             config=operators.radiation_config,
             land_mask=operators.land_mask,
             lat2d=operators.lat2d,
+            lon2d=operators.lon2d,
         )
         initial_state = ModelState(
             temperature=initial_temp_guess,
@@ -712,9 +722,14 @@ def solve_periodic_climate(
     # Update wind fields if wind model is enabled
     if operators.wind_model is not None and operators.wind_model.enabled:
         with time_block("update_wind_fields"):
-            monthly_declinations = compute_monthly_declinations()
+            cell_areas = spherical_cell_area(operators.lon2d, operators.lat2d, earth_radius_m=R_EARTH_METERS)
+
             for idx, month_state in enumerate(monthly_states):
                 nlayers = month_state.temperature.shape[0]
+
+                # Compute ITCZ from surface temperature
+                surface_temp = np.maximum(month_state.temperature[0], operators.radiation_config.temperature_floor)
+                itcz_rad = compute_itcz_latitude(surface_temp, operators.lat2d, cell_areas)
 
                 # Compute wind fields if not already present
                 if nlayers == 3:
@@ -726,13 +741,13 @@ def solve_periodic_climate(
                         atm_wind = operators.wind_model.wind_field(
                             month_state.temperature[2],
                             temperature_boundary_layer=month_state.temperature[1],
-                            declination_rad=monthly_declinations[idx],
+                            itcz_rad=itcz_rad,
                             ekman_drag=False
                         )
                     if bl_wind is None:
                         bl_wind = operators.wind_model.wind_field(
                             month_state.temperature[1],
-                            declination_rad=monthly_declinations[idx],
+                            itcz_rad=itcz_rad,
                             ekman_drag=True
                         )
 
@@ -747,7 +762,7 @@ def solve_periodic_climate(
                     # Two-layer or one-layer: single wind field with drag
                     wind_temperature = select_wind_temperature(month_state.temperature)
                     wind_field = month_state.wind_field or operators.wind_model.wind_field(
-                        wind_temperature, declination_rad=monthly_declinations[idx], ekman_drag=True
+                        wind_temperature, itcz_rad=itcz_rad, ekman_drag=True
                     )
                     monthly_states[idx] = ModelState(
                         temperature=month_state.temperature,

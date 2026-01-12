@@ -32,23 +32,17 @@ from climate_sim.plotting import (
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.runtime.config import ModelConfig
-from climate_sim.physics.atmosphere.atmosphere import (
-    log_law_map_wind_speed,
-)
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.atmosphere.wind import WindConfig
 from climate_sim.data.constants import R_EARTH_METERS
-from climate_sim.data.elevation import (
-    compute_cell_roughness_length,
-)
 from climate_sim.physics.atmosphere.pressure import compute_pressure
+from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.solver import solve_periodic_climate
 from climate_sim.core.units import convert_temperature, temperature_unit
-from climate_sim.physics.humidity import compute_cloud_cover, specific_humidity_to_relative_humidity
+from climate_sim.physics.humidity import specific_humidity_to_relative_humidity
 from climate_sim.physics.radiation import compute_cloud_coverage, _compute_pressure_anomaly
-from climate_sim.physics.solar import compute_monthly_declinations
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -214,15 +208,17 @@ def main() -> None:
     elif atmosphere_cycle is not None:
         Tatm_cycle_K = atmosphere_cycle + 273.15
 
-    monthly_declinations = compute_monthly_declinations()
-    
+    # Compute ITCZ from surface temperature for pressure calculations
     slp_cycle_hpa: np.ndarray | None = None
     if Tatm_cycle_K is not None:
+        cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=R_EARTH_METERS)
         pressure_monthly = np.empty_like(Tatm_cycle_K, dtype=float)
         for idx in range(Tatm_cycle_K.shape[0]):
+            # Compute ITCZ from surface temperature for this month
+            itcz_rad = compute_itcz_latitude(surface_cycle[idx] + 273.15, lat2d, cell_areas)
             pressure_monthly[idx] = compute_pressure(
                 Tatm_cycle_K[idx],
-                declination_rad=monthly_declinations[idx],
+                itcz_rad=itcz_rad,
             )
         slp_cycle_hpa = pressure_monthly * 0.01
 
@@ -478,18 +474,21 @@ def main() -> None:
             for month_idx in range(12):
                 temp_K = temp_for_humidity[month_idx]
                 q = humidity_q_cycle[month_idx]
-                rh = specific_humidity_to_relative_humidity(q, temp_K)
+                # Compute ITCZ from surface temperature for this month
+                itcz_rad = compute_itcz_latitude(temp_K, lat2d, cell_areas)
+                rh = specific_humidity_to_relative_humidity(q, temp_K, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
                 monthly_humidity_rh.append(rh)
         
             humidity_rh_cycle = np.stack(monthly_humidity_rh, axis=0)
         
             # Compute cloud cover for each month from relative humidity and pressure
             monthly_cloud_cover = []
-            monthly_declinations = compute_monthly_declinations()
             for month_idx in range(12):
                 rh = humidity_rh_cycle[month_idx]
                 surface_temp = surface_cycle[month_idx] + 273.15  # Convert to Kelvin
-                dp_norm = _compute_pressure_anomaly(surface_temp, monthly_declinations[month_idx])
+                # Compute ITCZ from surface temperature
+                itcz_rad = compute_itcz_latitude(surface_temp, lat2d, cell_areas)
+                dp_norm = _compute_pressure_anomaly(surface_temp, itcz_rad, lat2d=lat2d, lon2d=lon2d)
                 cloud_cover = compute_cloud_coverage(rh, dp_norm, lat2d)
                 monthly_cloud_cover.append(cloud_cover)
 

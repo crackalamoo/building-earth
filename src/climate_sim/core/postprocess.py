@@ -6,11 +6,12 @@ from typing import Dict
 
 import numpy as np
 
-from climate_sim.physics.atmosphere.atmosphere import compute_two_meter_temperature
+from climate_sim.physics.atmosphere.atmosphere import compute_two_meter_temperature, log_law_map_wind_speed
 from climate_sim.physics.atmosphere.wind import WindConfig, WindModel
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.physics.solar import compute_monthly_declinations
 from climate_sim.core.state import ModelState, select_wind_temperature
+from climate_sim.data.landmask import compute_land_mask
+from climate_sim.data.elevation import compute_cell_roughness_length, load_elevation_data
 
 
 def postprocess_periodic_cycle_results(
@@ -123,10 +124,6 @@ def postprocess_periodic_cycle_results(
         layers_map["wind_speed"] = ekman_speed
 
         # Compute 10m wind from Ekman wind using log law
-        from climate_sim.data.landmask import compute_land_mask
-        from climate_sim.data.elevation import compute_cell_roughness_length, load_elevation_data
-        from climate_sim.physics.atmosphere.atmosphere import log_law_map_wind_speed
-
         land_mask = compute_land_mask(lon2d, lat2d)
         elevation_data = load_elevation_data()
         roughness_length = compute_cell_roughness_length(lon2d, lat2d, land_mask=land_mask, data=elevation_data)

@@ -14,7 +14,12 @@ from climate_sim.data.elevation import (
     WATER_ROUGHNESS_LENGTH_M,
 )
 from climate_sim.data.constants import BOUNDARY_LAYER_HEIGHT_M, ATMOSPHERE_LAYER_HEIGHT_M
-from climate_sim.physics.atmosphere.pressure import compute_pressure
+from climate_sim.physics.atmosphere.pressure import (
+    compute_pressure,
+    compute_geopotential_height,
+    _smooth_temperature_field,
+    _get_latitude_centers,
+)
 from climate_sim.physics.atmosphere.atmosphere import (
     compute_two_meter_temperature,
     log_law_map_wind_speed,
@@ -24,6 +29,7 @@ from climate_sim.core.math_core import (
     regular_latitude_edges,
     regular_longitude_edges,
     spherical_cell_area,
+    area_weighted_mean,
 )
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.data.elevation import VON_KARMAN_CONSTANT
@@ -184,7 +190,7 @@ class WindModel:
         elevation_data = load_elevation_data()
         assert elevation_data is not None, "Elevation data could not be loaded"
         self.elevation_m = compute_cell_elevation(
-            self._lon2d, self._lat2d, data=elevation_data, sample_method="center"
+            self._lon2d, self._lat2d, data=elevation_data
         )
         self.elevation_m = np.maximum(self.elevation_m, 0.0)
 
@@ -218,7 +224,7 @@ class WindModel:
         self,
         temperature: np.ndarray,
         temperature_boundary_layer: np.ndarray | None = None,
-        declination_rad: float | np.ndarray | None = None,
+        itcz_rad: np.ndarray | None = None,
         ekman_drag: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute the geostrophic wind field (u, v, speed) for the given temperatures."""
@@ -255,12 +261,6 @@ class WindModel:
 
         # Compute geopotential height using smoothed temperature and full pressure field
         # This removes spurious small-scale variations while preserving large-scale patterns
-        from climate_sim.physics.atmosphere.pressure import (
-            compute_geopotential_height,
-            _smooth_temperature_field,
-            _get_latitude_centers,
-        )
-        from climate_sim.core.math_core import area_weighted_mean
 
         # Smooth the column temperature to get large-scale patterns (same as compute_pressure)
         nlat, nlon = column_temperature.shape
@@ -281,7 +281,8 @@ class WindModel:
         # This is what provides the large-scale circulation patterns
         # Skip smoothing since we already smoothed the temperature
         p_SLP = compute_pressure(
-            column_temperature_smooth, declination_rad=declination_rad, skip_smoothing=True
+            column_temperature_smooth, itcz_rad=itcz_rad, skip_smoothing=True,
+            lat2d=self._lat2d, lon2d=self._lon2d
         )
 
         # Compute geopotential height of the reference pressure surface
@@ -423,7 +424,7 @@ class WindModel:
         atmosphere_temperature_K: np.ndarray,
         wind_speed_reference_m_s: np.ndarray | None,
         *,
-        declination_rad: float | np.ndarray | None = None,
+        itcz_rad: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Compute atmospheric properties needed for heat exchange calculations.
 
@@ -441,7 +442,7 @@ class WindModel:
             raise ValueError("Atmosphere temperature must match grid shape")
 
         # Compute pressure from atmosphere temperature
-        pressure = compute_pressure(atmosphere_temperature_K, declination_rad=declination_rad)
+        pressure = compute_pressure(atmosphere_temperature_K, itcz_rad=itcz_rad, lat2d=self._lat2d, lon2d=self._lon2d)
 
         # Map wind speed to 10 m height
         # Reference height corresponds to Ekman boundary layer: 0.5 * h_m

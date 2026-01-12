@@ -75,7 +75,7 @@ class LatentHeatExchangeModel:
         humidity_q: np.ndarray,
         *,
         wind_speed_reference_m_s: np.ndarray | None,
-        declination_rad: float | np.ndarray | None = None,
+        itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return surface and atmospheric tendencies from latent heat exchange.
@@ -109,7 +109,7 @@ class LatentHeatExchangeModel:
                 surface_temperature,
                 atmosphere_temperature,
                 wind_speed_reference_m_s,
-                declination_rad=declination_rad,
+                itcz_rad=itcz_rad,
             )
         else:
             # Fallback: no wind, no exchange
@@ -149,7 +149,7 @@ class LatentHeatExchangeModel:
         humidity_q: np.ndarray,
         *,
         wind_speed_reference_m_s: np.ndarray | None,
-        declination_rad: float | np.ndarray | None = None,
+        itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return Jacobian (diagonal and cross-coupling) for latent heat exchange.
@@ -180,7 +180,7 @@ class LatentHeatExchangeModel:
                 surface_temperature,
                 atmosphere_temperature,
                 wind_speed_reference_m_s,
-                declination_rad=declination_rad,
+                itcz_rad=itcz_rad,
             )
         else:
             if boundary_layer_temperature_K is not None:

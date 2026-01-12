@@ -35,8 +35,8 @@ class Linearization:
 
 type FloatArray = NDArray[np.floating]
 
-type RhsFn = Callable[[ModelState, FloatArray, float | FloatArray], FloatArray]
-type RhsDerivativeFn = Callable[[ModelState, FloatArray, float | FloatArray], Linearization]
+type RhsFn = Callable[[ModelState, FloatArray, FloatArray], FloatArray]
+type RhsDerivativeFn = Callable[[ModelState, FloatArray, FloatArray], Linearization]
 
 @dataclass(frozen=True, slots=True)
 class RhsBuildInputs:
@@ -139,7 +139,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             ),
         )
 
-    def rhs(state: ModelState, insolation: np.ndarray, declination_rad: float | np.ndarray) -> np.ndarray:
+    def rhs(state: ModelState, insolation: np.ndarray, itcz_rad: np.ndarray) -> np.ndarray:
         """Compute temperature tendencies from all physics."""
         log_radiation = os.environ.get("LOG_RADIATION", "0") == "1"
 
@@ -162,8 +162,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             humidity_q=state.humidity_field,
             log_diagnostics=log_radiation,
             cell_area_m2=cell_areas,
-            declination_rad=declination_rad,
+            itcz_rad=itcz_rad,
             lat2d=inputs.lat2d,
+            lon2d=inputs.lon2d,
         )
         if inputs.radiation_config.include_atmosphere:
             radiative = radiative.copy()
@@ -200,7 +201,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         surface_temperature_K=surface_temperature,
                         atmosphere_temperature_K=atmosphere_temperature,
                         wind_speed_reference_m_s=wind_speed_ref,
-                        declination_rad=declination_rad,
+                        itcz_rad=itcz_rad,
                     )
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 2
@@ -214,7 +215,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         atmosphere_temperature_K=atmosphere_temperature,
                         humidity_q=humidity_field,
                         wind_speed_reference_m_s=wind_speed_ref,
-                        declination_rad=declination_rad,
+                        itcz_rad=itcz_rad,
                     )
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 2
@@ -255,7 +256,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         surface_temperature_K=surface_temperature,
                         atmosphere_temperature_K=atmosphere_temperature,
                         wind_speed_reference_m_s=wind_speed_ref,
-                        declination_rad=declination_rad,
+                        itcz_rad=itcz_rad,
                         boundary_layer_temperature_K=boundary_temperature,
                         log_diagnostics=log_radiation,
                         cell_area_m2=cell_areas,
@@ -273,7 +274,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         atmosphere_temperature_K=atmosphere_temperature,
                         humidity_q=humidity_field,
                         wind_speed_reference_m_s=wind_speed_ref,
-                        declination_rad=declination_rad,
+                        itcz_rad=itcz_rad,
                         boundary_layer_temperature_K=boundary_temperature,
                     )
                     assert isinstance(tendencies, tuple)
@@ -288,7 +289,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             radiative = radiative + inputs.diffusion_operator.surface.tendency(state.temperature)
         return radiative
 
-    def rhs_derivative(state: ModelState, insolation: np.ndarray, declination_rad: float | np.ndarray) -> Linearization:
+    def rhs_derivative(state: ModelState, insolation: np.ndarray, itcz_rad: np.ndarray) -> Linearization:
         """Compute Jacobian of RHS with respect to temperature."""
         del insolation
         if inputs.radiation_config.include_atmosphere:
@@ -299,7 +300,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 land_mask=inputs.land_mask,
                 humidity_q=state.humidity_field,
                 lat2d=inputs.lat2d,
-                declination_rad=declination_rad,
+                lon2d=inputs.lon2d,
+                itcz_rad=itcz_rad,
             )
             assert isinstance(radiative_derivative, tuple)
             radiative_diag, cross = radiative_derivative
@@ -362,7 +364,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         state.temperature[0],
                         state.temperature[2],
                         wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                        declination_rad=None,
+                        itcz_rad=None,
                         boundary_layer_temperature_K=state.temperature[1],
                     )
                 elif nlayers == 2:
@@ -370,7 +372,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         state.temperature[0],
                         state.temperature[1],
                         wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                        declination_rad=None,
+                        itcz_rad=None,
                     )
                 else:
                     assert False, "Must have atmosphere for sensible heat exchange"
@@ -389,7 +391,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         state.temperature[2],
                         state.humidity_field,
                         wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                        declination_rad=None,
+                        itcz_rad=None,
                         boundary_layer_temperature_K=state.temperature[1],
                     )
                 elif nlayers == 2:
@@ -398,7 +400,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         state.temperature[1],
                         state.humidity_field,
                         wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                        declination_rad=None,
+                        itcz_rad=None,
                     )
                 else:
                     assert False, "Must have atmosphere for latent heat exchange"
@@ -425,7 +427,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             land_mask=inputs.land_mask,
             humidity_q=state.humidity_field,
             lat2d=inputs.lat2d,
-            declination_rad=declination_rad,
+            itcz_rad=itcz_rad,
         )
         assert isinstance(radiative_derivative, np.ndarray)
         diag = radiative_derivative.copy()

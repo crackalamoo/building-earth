@@ -12,12 +12,15 @@ from climate_sim.physics.humidity import (
     compute_humidity_q,
 )
 from climate_sim.physics.atmosphere.pressure import compute_pressure
+from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
+from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.data.constants import (
     HEAT_CAPACITY_AIR_J_M2_K,
     BOUNDARY_LAYER_EMISSIVITY,
     SHORTWAVE_ABSORPTANCE_ATMOSPHERE,
     STANDARD_LAPSE_RATE_K_PER_M,
     ATMOSPHERE_LAYER_HEIGHT_M,
+    R_EARTH_METERS,
 )
 
 
@@ -43,11 +46,11 @@ def _with_floor(values: np.ndarray, floor: float) -> np.ndarray:
 
 def _compute_pressure_anomaly(
     surface_temp: np.ndarray,
-    declination_rad: float | np.ndarray,
+    itcz_rad: np.ndarray,
+    lat2d: np.ndarray | None = None,
+    lon2d: np.ndarray | None = None,
 ) -> np.ndarray:
-    from climate_sim.core.math_core import area_weighted_mean
-
-    pressure = compute_pressure(surface_temp, declination_rad=declination_rad)
+    pressure = compute_pressure(surface_temp, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
 
     nlat, nlon = surface_temp.shape
     lat_spacing = 180.0 / nlat
@@ -174,8 +177,9 @@ def radiative_balance_rhs(
     humidity_q: np.ndarray | None = None,
     log_diagnostics: bool = False,
     cell_area_m2: np.ndarray | None = None,
-    declination_rad: float | np.ndarray | None = None,
+    itcz_rad: np.ndarray | None = None,
     lat2d: np.ndarray | None = None,
+    lon2d: np.ndarray | None = None,
 ) -> np.ndarray:
     """Column energy-balance tendency for the configured radiative model."""
 
@@ -199,9 +203,9 @@ def radiative_balance_rhs(
         atmosphere = _with_floor(temperature_K[1], floor)  # Atmosphere in 2-layer
 
     # Compute cloud properties from humidity and pressure
-    if humidity_q is not None and declination_rad is not None:
-        rh = specific_humidity_to_relative_humidity(humidity_q, surface)
-        dp_norm = _compute_pressure_anomaly(surface, declination_rad)
+    if humidity_q is not None and itcz_rad is not None:
+        rh = specific_humidity_to_relative_humidity(humidity_q, surface, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
+        dp_norm = _compute_pressure_anomaly(surface, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
 
         cloud_coverage = compute_cloud_coverage(rh, dp_norm, lat2d)
         cloud_albedo = compute_cloud_albedo(rh, dp_norm, lat2d)
@@ -209,7 +213,7 @@ def radiative_balance_rhs(
     else:
         # Fallback to old cloud cover parameterization
         if humidity_q is not None:
-            rh = specific_humidity_to_relative_humidity(humidity_q, surface)
+            rh = specific_humidity_to_relative_humidity(humidity_q, surface, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
             cloud_coverage = compute_cloud_cover(relative_humidity=rh, land_mask=land_mask)
         else:
             cloud_coverage = compute_cloud_cover(temperature=temperature_K, land_mask=land_mask)
@@ -221,7 +225,6 @@ def radiative_balance_rhs(
 
     # Log cloud diagnostics if requested
     if log_diagnostics and cell_area_m2 is not None:
-        from climate_sim.core.math_core import area_weighted_mean
         total_area = np.sum(cell_area_m2)
         mean_coverage = area_weighted_mean(cloud_coverage, cell_area_m2 / total_area)
         mean_albedo_per_cloud = area_weighted_mean(cloud_albedo, cell_area_m2 / total_area)
@@ -310,7 +313,6 @@ def radiative_balance_rhs(
         ) / config.atmosphere_heat_capacity
 
         if log_diagnostics:
-            from climate_sim.core.math_core import area_weighted_mean
             if cell_area_m2 is None:
                 raise ValueError("cell_area_m2 must be provided when log_diagnostics=True")
 
@@ -368,8 +370,9 @@ def radiative_balance_rhs_temperature_derivative(
     config: RadiationConfig,
     land_mask: np.ndarray | None = None,
     humidity_q: np.ndarray | None = None,
-    declination_rad: float | np.ndarray | None = None,
+    itcz_rad: np.ndarray | None = None,
     lat2d: np.ndarray | None = None,
+    lon2d: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Partial derivatives of the radiative tendency with respect to temperature."""
 
@@ -392,14 +395,14 @@ def radiative_balance_rhs_temperature_derivative(
         atmosphere = _with_floor(temperature_K[1], floor)
 
     # Compute cloud properties (frozen for linearization)
-    if humidity_q is not None and declination_rad is not None:
-        rh = specific_humidity_to_relative_humidity(humidity_q, surface)
-        dp_norm = _compute_pressure_anomaly(surface, declination_rad)
+    if humidity_q is not None and itcz_rad is not None:
+        rh = specific_humidity_to_relative_humidity(humidity_q, surface, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
+        dp_norm = _compute_pressure_anomaly(surface, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
         cloud_coverage = compute_cloud_coverage(rh, dp_norm, lat2d)
         cloud_top_height = compute_cloud_top_height(dp_norm)
     else:
         if humidity_q is not None:
-            rh = specific_humidity_to_relative_humidity(humidity_q, surface)
+            rh = specific_humidity_to_relative_humidity(humidity_q, surface, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
             cloud_coverage = compute_cloud_cover(relative_humidity=rh, land_mask=land_mask)
         else:
             cloud_coverage = compute_cloud_cover(temperature=temperature_K, land_mask=land_mask)
@@ -486,6 +489,7 @@ def radiative_equilibrium_initial_guess(
     config: RadiationConfig,
     land_mask: np.ndarray | None = None,
     lat2d: np.ndarray | None = None,
+    lon2d: np.ndarray | None = None,
 ) -> np.ndarray:
     """Initial temperature guess via local radiative equilibrium.
 
@@ -503,11 +507,15 @@ def radiative_equilibrium_initial_guess(
 
     def compute_cloud_properties(temp_surface: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute cloud properties from surface temperature via RH and pressure."""
-        if lat2d is not None:
+        if lat2d is not None and lon2d is not None:
+            # Compute ITCZ once from temperature
+            cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=R_EARTH_METERS)
+            itcz = compute_itcz_latitude(temp_surface, lat2d, cell_areas)
+
             rh = compute_humidity_q(
-                lat2d, temp_surface, np.array(0.0), return_rh=True, land_mask=land_mask
+                lat2d, temp_surface, return_rh=True, land_mask=land_mask, lon_2d=lon2d, itcz_rad=itcz
             )
-            dp_norm = _compute_pressure_anomaly(temp_surface, declination_rad=0.0)
+            dp_norm = _compute_pressure_anomaly(temp_surface, itcz_rad=itcz, lat2d=lat2d, lon2d=lon2d)
             coverage = compute_cloud_coverage(rh, dp_norm, lat2d)
             albedo = compute_cloud_albedo(rh, dp_norm, lat2d)
             top_height = compute_cloud_top_height(dp_norm)

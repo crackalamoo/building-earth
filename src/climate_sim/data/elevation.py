@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 import urllib.request
+from collections import defaultdict
 
 import numpy as np
 import rioxarray
@@ -11,10 +12,12 @@ from PIL import Image
 from functools import lru_cache
 import xarray as xr
 
+from climate_sim.data.constants import R_EARTH_METERS
+from climate_sim.core.math_core import regular_latitude_edges, regular_longitude_edges
+
 VON_KARMAN_CONSTANT = 0.4
 REFERENCE_HEIGHT_M = 10.0
 WATER_ROUGHNESS_LENGTH_M = 2.0e-4
-from climate_sim.data.constants import R_EARTH_METERS
 
 def download_etopo(dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -67,10 +70,33 @@ def compute_cell_elevation(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     data: xr.DataArray | None = None,
-    sample_method: str = "center",
     cache: bool = True,
+    n_samples_per_cell: int = 5,
 ) -> np.ndarray:
-    """Return the elevation (m) for the provided grid cells."""
+    """Return the average elevation (m) for the provided grid cells.
+    
+    Elevation is computed by sampling at multiple points within each cell
+    and averaging the results.
+    
+    Parameters
+    ----------
+    lon2d : np.ndarray
+        2D array of longitude centers (degrees)
+    lat2d : np.ndarray
+        2D array of latitude centers (degrees)
+    data : xr.DataArray | None, optional
+        Elevation dataset. If None, loads from default location.
+    cache : bool, default True
+        Whether to use disk caching.
+    n_samples_per_cell : int, default 5
+        Number of sample points per cell dimension.
+        Total samples per cell = n_samples_per_cell^2.
+    
+    Returns
+    -------
+    np.ndarray
+        Average elevation values (m) for each grid cell.
+    """
     if lon2d.shape != lat2d.shape:
         raise ValueError("Longitude and latitude grids must share the same shape")
 
@@ -95,44 +121,92 @@ def compute_cell_elevation(
     if dataset is None:
         return np.zeros_like(lon_array)
 
-    if sample_method != "center":
-        raise ValueError("Only 'center' sampling is currently supported")
-
     if dataset.rio.crs is None:
         dataset = dataset.rio.write_crs("EPSG:4326", inplace=False)
 
-    lon_wrapped = _wrap_longitudes(lon_array)
-    lat_clamped = np.clip(lat_array, -90.0, 90.0)
-
-    lon_flat = lon_wrapped.ravel()
-    lat_flat = lat_clamped.ravel()
-
-    # Sample the dataset at the cell center using bilinear interpolation when possible.
-    coords = {
-        "x": ("points", lon_flat),
-        "y": ("points", lat_flat),
-    }
-
-    try:
-        sampled = dataset.interp(
-            x=coords["x"], y=coords["y"], method="linear", kwargs={"fill_value": None}
-        )
-    except TypeError:
-        sampled = dataset.interp(x=coords["x"], y=coords["y"], method="linear")
-
-    values = np.asarray(sampled.values, dtype=float).reshape(lon_array.shape)
-
-    if np.any(~np.isfinite(values)):
-        sampled_nearest = dataset.interp(
-            x=coords["x"], y=coords["y"], method="nearest"
-        )
-        nearest_values = np.asarray(sampled_nearest.values, dtype=float).reshape(
-            lon_array.shape
-        )
-        mask = ~np.isfinite(values)
-        values[mask] = nearest_values[mask]
-
-    res = np.nan_to_num(values, nan=0.0)
+    # Compute cell edges
+    lat_centers = lat_array[:, 0]
+    lon_centers = lon_array[0, :]
+    
+    lat_edges = regular_latitude_edges(lat_centers)
+    lon_edges = regular_longitude_edges(lon_centers)
+    
+    nlat, nlon = lon_array.shape
+    res = np.zeros_like(lon_array, dtype=float)
+    
+    # Create sub-grid sampling points within each cell
+    # Use n_samples_per_cell points along each dimension
+    sample_weights = np.linspace(0.0, 1.0, n_samples_per_cell + 1)
+    # Use midpoints of sub-intervals for better coverage
+    sample_weights = (sample_weights[:-1] + sample_weights[1:]) / 2.0
+    
+    # Collect all sample points for batch interpolation
+    all_lon_samples = []
+    all_lat_samples = []
+    cell_indices = []  # (i, j) for each sample point
+    
+    for i in range(nlat):
+        lat_min = lat_edges[i]
+        lat_max = lat_edges[i + 1]
+        for j in range(nlon):
+            lon_min = lon_edges[j]
+            lon_max = lon_edges[j + 1]
+            
+            # Handle longitude wrapping
+            if lon_max < lon_min:
+                lon_max += 360.0
+            
+            # Create sub-grid of sample points for this cell
+            for lat_weight in sample_weights:
+                lat_sample = lat_min + (lat_max - lat_min) * lat_weight
+                lat_sample = np.clip(lat_sample, -90.0, 90.0)
+                for lon_weight in sample_weights:
+                    lon_sample = lon_min + (lon_max - lon_min) * lon_weight
+                    lon_sample = _wrap_longitudes(np.array([lon_sample]))[0]
+                    
+                    all_lon_samples.append(lon_sample)
+                    all_lat_samples.append(lat_sample)
+                    cell_indices.append((i, j))
+    
+    # Batch interpolate all sample points
+    if all_lon_samples:
+        lon_samples_array = np.array(all_lon_samples)
+        lat_samples_array = np.array(all_lat_samples)
+        
+        coords = {
+            "x": ("points", lon_samples_array),
+            "y": ("points", lat_samples_array),
+        }
+        
+        try:
+            sampled = dataset.interp(
+                x=coords["x"], y=coords["y"], method="linear", kwargs={"fill_value": None}
+            )
+        except TypeError:
+            sampled = dataset.interp(x=coords["x"], y=coords["y"], method="linear")
+        
+        sampled_values = np.asarray(sampled.values, dtype=float)
+        
+        # Fill missing values with nearest neighbor
+        if np.any(~np.isfinite(sampled_values)):
+            sampled_nearest = dataset.interp(
+                x=coords["x"], y=coords["y"], method="nearest"
+            )
+            nearest_values = np.asarray(sampled_nearest.values, dtype=float)
+            mask = ~np.isfinite(sampled_values)
+            sampled_values[mask] = nearest_values[mask]
+        
+        sampled_values = np.nan_to_num(sampled_values, nan=0.0)
+        
+        # Average samples for each cell
+        cell_sample_sums = defaultdict(list)
+        for idx, (i, j) in enumerate(cell_indices):
+            cell_sample_sums[(i, j)].append(sampled_values[idx])
+        
+        for (i, j), samples in cell_sample_sums.items():
+            res[i, j] = np.mean(samples)
+    
+    res = np.nan_to_num(res, nan=0.0)
 
     if cache:
         # save to disk
@@ -206,7 +280,6 @@ def compute_cell_roughness_length(
         lon_array,
         lat_array,
         data=dataset,
-        sample_method="center",
         cache=cache,
     )
 

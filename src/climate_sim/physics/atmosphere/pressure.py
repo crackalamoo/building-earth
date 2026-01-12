@@ -2,21 +2,23 @@
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
-from scipy.interpolate import PchipInterpolator
-from climate_sim.core.math_core import area_weighted_mean
+from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
+from climate_sim.core.timing import time_block
 from climate_sim.data.constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2, GAS_CONSTANT_J_KG_K, R_EARTH_METERS
+from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, DELTA_SUBTROPICS, compute_itcz_latitude
 
 # Hadley cell pressure anomalies (Pa)
 # Low pressure at ITCZ (rising air), high pressure at subtropics (descending air)
-DP_ITCZ = -1000.0  # Low pressure at equatorial trough
-DP_SUBTROPICS = 800.0  # High pressure at subtropical highs (~30°)
+DP_ITCZ = -800.0  # Low pressure at equatorial trough
+DP_SUBTROPICS = 800.0  # High pressure at subtropical highs (ITCZ ± DELTA_SUBTROPICS)
 DP_SUBPOLAR = -500.0  # Low pressure at subpolar lows (~60°)
 DP_POLES = 300.0  # Weak high pressure at polar highs
 
-# Key latitude bands (radians)
-LAT_SUBTROPICS = np.deg2rad(20.0)
-LAT_SUBPOLAR = np.deg2rad(60.0)
-LAT_POLES = np.deg2rad(80.0)
+# Width of pressure features (radians) - controls smoothness of transitions
+SIGMA_ITCZ = np.deg2rad(8.0)       # ITCZ trough width
+SIGMA_SUBTROPICS = np.deg2rad(12.0)  # Subtropical high width
+SIGMA_SUBPOLAR = np.deg2rad(10.0)   # Subpolar low width
+SIGMA_POLES = np.deg2rad(8.0)       # Polar high width
 
 def _get_latitude_centers(nlat: int) -> np.ndarray:
     """Return latitude centers (deg) for a grid with nlat latitude points."""
@@ -28,42 +30,51 @@ def _get_latitude_centers(nlat: int) -> np.ndarray:
     return lat_centers
 
 
-def _hadley_cell_pressure_function(itcz_lat_rad: float | np.ndarray) -> PchipInterpolator:
-    """Create pressure anomaly interpolator for Hadley cell circulation.
+def hadley_pressure_anomaly(lat_rad: np.ndarray, itcz_rad: np.ndarray) -> np.ndarray:
+    """Compute Hadley cell pressure anomaly using analytical Gaussian formula.
+
+    This is a fully vectorized analytical formula - no interpolation needed.
+    Each pressure feature (ITCZ, subtropical highs, subpolar lows, polar highs)
+    is represented as a Gaussian bump/dip centered at its characteristic latitude.
 
     Parameters
     ----------
-    itcz_lat_rad : float
-        ITCZ latitude in radians (follows solar declination).
+    lat_rad : np.ndarray
+        Latitude field in radians, shape (nlat, nlon).
+    itcz_rad : np.ndarray
+        ITCZ latitude in radians, shape (nlon,) or broadcast-compatible.
 
     Returns
     -------
-    PchipInterpolator
-        Interpolator mapping latitude (radians) to pressure anomaly (Pa).
+    np.ndarray
+        Pressure anomaly in Pa, same shape as lat_rad.
     """
-    # Control points for pressure pattern
-    # Symmetric pattern shifted by ITCZ position
-    phi = np.array([
-        -LAT_POLES,          # South polar high
-        -LAT_SUBPOLAR,       # South subpolar low
-        -LAT_SUBTROPICS,     # South subtropical high
-        itcz_lat_rad,        # ITCZ (equatorial trough)
-        LAT_SUBTROPICS,      # North subtropical high
-        LAT_SUBPOLAR,        # North subpolar low
-        LAT_POLES            # North polar high
-    ])
+    # Subtropical highs follow ITCZ (descending branch of Hadley cell)
+    lat_subtrop_south = 0.5 * itcz_rad - DELTA_SUBTROPICS
+    lat_subtrop_north = 0.5 * itcz_rad + DELTA_SUBTROPICS
 
-    dp = np.array([
-        DP_POLES,
-        DP_SUBPOLAR,
-        DP_SUBTROPICS,
-        DP_ITCZ,
-        DP_SUBTROPICS,
-        DP_SUBPOLAR,
-        DP_POLES
-    ])
+    # ITCZ low pressure trough
+    dp_itcz = DP_ITCZ * np.exp(-((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2)
 
-    return PchipInterpolator(phi, dp)
+    # Subtropical highs (follow ITCZ)
+    dp_subtrop = DP_SUBTROPICS * (
+        np.exp(-((lat_rad - lat_subtrop_south) / SIGMA_SUBTROPICS) ** 2)
+        + np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_SUBTROPICS) ** 2)
+    )
+
+    # Subpolar lows (fixed latitudes)
+    dp_subpolar = DP_SUBPOLAR * (
+        np.exp(-((lat_rad + LAT_SUBPOLAR) / SIGMA_SUBPOLAR) ** 2)
+        + np.exp(-((lat_rad - LAT_SUBPOLAR) / SIGMA_SUBPOLAR) ** 2)
+    )
+
+    # Polar highs (fixed latitudes)
+    dp_poles = DP_POLES * (
+        np.exp(-((lat_rad + LAT_POLES) / SIGMA_POLES) ** 2)
+        + np.exp(-((lat_rad - LAT_POLES) / SIGMA_POLES) ** 2)
+    )
+
+    return dp_itcz + dp_subtrop + dp_subpolar + dp_poles
 
 
 def _smooth_temperature_field(
@@ -131,8 +142,10 @@ def compute_pressure(
     elevation_m: np.ndarray | None = None,
     humidity_q: np.ndarray | None = None,
     gravity_m_s2: float = 9.81,
-    declination_rad: float | np.ndarray | None = None,
     skip_smoothing: bool = False,
+    lat2d: np.ndarray | None = None,
+    lon2d: np.ndarray | None = None,
+    itcz_rad: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute surface pressure (Pa) from temperature and elevation using hydrostatic balance.
 
@@ -146,12 +159,16 @@ def compute_pressure(
         Specific humidity in kg/kg (optional).
     gravity_m_s2 : float
         Gravitational acceleration in m/s².
-    declination_rad : float | None
-        Solar declination angle in radians. If provided, adds Hadley cell circulation
-        pattern with ITCZ following the thermal equator.
     skip_smoothing : bool
         If True, assume temperature_K is already smoothed and skip the smoothing step.
         Use this when calling from wind calculations to avoid double smoothing.
+    lat2d : np.ndarray | None
+        2D latitude grid in degrees (optional). Used to compute ITCZ if itcz_rad not provided.
+    lon2d : np.ndarray | None
+        2D longitude grid in degrees (optional). Used to compute ITCZ if itcz_rad not provided.
+    itcz_rad : np.ndarray | None
+        Pre-computed ITCZ latitude in radians, shape (nlon,). If provided, uses this.
+        Otherwise computes from temperature if lat2d/lon2d provided.
 
     Returns
     -------
@@ -210,17 +227,27 @@ def compute_pressure(
 
     p_orog = mean_p * np.exp(-gravity_m_s2 * elevation / (GAS_CONSTANT_J_KG_K * t_ref_safe))
 
-    # Add Hadley cell circulation pattern if declination is provided
-    if declination_rad is None:
-        declination_rad = 0.0
-    # ITCZ follows thermal equator (scaled by solar declination)
-    itcz_lat_rad = declination_rad * 0.4
-    hadley_function = _hadley_cell_pressure_function(itcz_lat_rad)
+    # Compute ITCZ from temperature or use pre-computed
+    if itcz_rad is None:
+        if lat2d is None or lon2d is None:
+            raise ValueError("lat2d and lon2d must be provided when itcz_rad is None")
+        # Type narrowing: after the check above, we know these are not None
+        lat2d_nonnull: np.ndarray = lat2d  # type: ignore[assignment]
+        lon2d_nonnull: np.ndarray = lon2d  # type: ignore[assignment]
+        with time_block("compute_itcz_in_pressure"):
+            cell_areas = spherical_cell_area(lon2d_nonnull, lat2d_nonnull, earth_radius_m=R_EARTH_METERS)
+            itcz_lat_rad = compute_itcz_latitude(temperature, lat2d_nonnull, cell_areas)
+    else:
+        itcz_lat_rad = itcz_rad
 
     # Create 2D latitude field in radians
     lat_2d_rad = np.deg2rad(np.broadcast_to(lat_deg[:, None], shape))
 
-    dp_hadley = hadley_function(lat_2d_rad)
+    # Broadcast ITCZ to 2D grid (same value for all latitudes in a longitude column)
+    itcz_2d = np.broadcast_to(itcz_lat_rad[np.newaxis, :], shape)
+
+    # Apply Hadley cell pressure pattern using analytical Gaussian formula
+    dp_hadley = hadley_pressure_anomaly(lat_2d_rad, itcz_2d)
     dp_hadley = dp_hadley - area_weighted_mean(dp_hadley, weights)
 
     p_surface = p_orog + dp_th + dp_hadley

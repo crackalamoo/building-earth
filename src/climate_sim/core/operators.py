@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
 from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.core.math_core import LinearSolveCache
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
+from climate_sim.data.constants import ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K
 from climate_sim.data.elevation import compute_cell_elevation, compute_cell_roughness_length
 from climate_sim.data.landmask import (
     LAND_ALBEDO,
@@ -129,8 +130,6 @@ def build_model_operators(
     if boundary_layer_cfg.enabled:
         if not radiation_config.include_atmosphere:
             raise ValueError("Boundary layer requires include_atmosphere=True in radiation config")
-        from dataclasses import replace
-        from climate_sim.data.constants import ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K
 
         radiation_config = replace(
             radiation_config,
