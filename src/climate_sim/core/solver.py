@@ -133,12 +133,9 @@ def monthly_step(
                     start_temp_capped[0], itcz_rad=itcz_rad, ekman_drag=True
                 )
 
-        lagged_humidity_field = compute_humidity_q(
-            surface_context.lat2d,
-            start_temp_capped[0],
-            land_mask=surface_context.land_mask,
-            lon_2d=surface_context.lon2d,
-            itcz_rad=itcz_rad,
+        # Compute cell areas once for ITCZ calculations inside Newton loop
+        cell_areas = spherical_cell_area(
+            surface_context.lon2d, surface_context.lat2d, earth_radius_m=R_EARTH_METERS
         )
 
         def _effective_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
@@ -150,19 +147,47 @@ def monthly_step(
             )
 
 
-        def _init_state(temp: np.ndarray) -> ModelState:
+        def _compute_itcz_from_temp(temp: np.ndarray) -> np.ndarray:
+            """Compute ITCZ from current temperature iterate."""
+            nlayers = temp.shape[0]
+            # Use boundary layer temp (layer 1) for 3-layer, surface temp (layer 0) for 2-layer
+            itcz_temp = temp[1] if nlayers >= 3 else temp[0]
+            return compute_itcz_latitude(
+                np.maximum(itcz_temp, temperature_floor),
+                surface_context.lat2d,
+                cell_areas,
+            )
+
+        def _init_state(temp: np.ndarray) -> tuple[ModelState, np.ndarray]:
+            """Create model state with freshly computed ITCZ and humidity.
+
+            Returns the state and the computed ITCZ for use in RHS evaluation.
+            """
             with time_block("_init_state"):
+                # Compute ITCZ dynamically from current temperature
+                current_itcz = _compute_itcz_from_temp(temp)
+
+                # Compute humidity dynamically using current temp and ITCZ
+                humidity_field = compute_humidity_q(
+                    surface_context.lat2d,
+                    temp[0],
+                    land_mask=surface_context.land_mask,
+                    lon_2d=surface_context.lon2d,
+                    itcz_rad=current_itcz,
+                )
+
+                # Keep albedo and wind lagged
                 albedo_field = lagged_albedo_field
                 wind_field = lagged_wind_field
-                humidity_field = lagged_humidity_field
                 boundary_layer_wind_field = lagged_boundary_layer_wind_field
+
                 return ModelState(
                     temperature=temp,
                     albedo_field=albedo_field,
                     wind_field=wind_field,
                     humidity_field=humidity_field,
                     boundary_layer_wind_field=boundary_layer_wind_field,
-                )
+                ), current_itcz
 
         # implicit solver loop
         preconditioner_solve: Callable[[np.ndarray], np.ndarray] | None = None
@@ -221,12 +246,12 @@ def monthly_step(
         for newton_iter in range(NEWTON_MAX_ITERS):
             with time_block("newton_iteration"):
                 temp_capped = np.maximum(temp_next, temperature_floor)
-                state_capped = _init_state(temp_capped)
+                state_capped, current_itcz = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
-                    rhs_value = rhs_fn(state_capped, insolation_W_m2, itcz_rad)
+                    rhs_value = rhs_fn(state_capped, insolation_W_m2, current_itcz)
                 # Recompute Jacobian every iteration for true Newton solve
                 with time_block("rhs_derivative"):
-                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, itcz_rad)
+                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, current_itcz)
                 preconditioner_age += 1
 
                 nlayers = temp_capped.shape[0]
@@ -381,9 +406,9 @@ def monthly_step(
 
                 while damping >= NEWTON_BACKTRACK_CUTOFF:
                     temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
-                    state_candidate = _init_state(temp_candidate)
+                    state_candidate, candidate_itcz = _init_state(temp_candidate)
                     with time_block("backtrack_rhs"):
-                        rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, itcz_rad)
+                        rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, candidate_itcz)
                     
                     ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                     nlayers = temp_candidate.shape[0]
@@ -420,11 +445,12 @@ def monthly_step(
 
 
         # Return a state that is internally consistent with the converged temperature.
-        # (Still lagged within the step, but updated for the returned diagnostic state.)
+        # Humidity and ITCZ are already computed fresh by _init_state.
+        # Only albedo and wind need to be updated (wind uses the fresh ITCZ).
         final_temp = np.maximum(temp_next, temperature_floor)
-        final_state = _init_state(final_temp)
+        final_state, final_itcz = _init_state(final_temp)
         final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, final_temp[0])
-        # Update diagnostics for output.
+        # Update wind diagnostics for output using the converged ITCZ.
         if surface_context.wind_model:
             if final_temp.shape[0] == 3:
                 # Three-layer: compute separate winds for boundary layer and free atmosphere
@@ -432,30 +458,24 @@ def monthly_step(
                 final_state.wind_field = surface_context.wind_model.wind_field(
                     final_temp[2],
                     temperature_boundary_layer=final_temp[1],
-                    itcz_rad=itcz_rad,
+                    itcz_rad=final_itcz,
                     ekman_drag=False
                 )
                 # Boundary layer wind: with surface drag
                 final_state.boundary_layer_wind_field = surface_context.wind_model.wind_field(
-                    final_temp[1], itcz_rad=itcz_rad, ekman_drag=True
+                    final_temp[1], itcz_rad=final_itcz, ekman_drag=True
                 )
             elif final_temp.shape[0] == 2:
                 # Two-layer: single wind with drag (represents near-surface atmosphere)
                 final_state.wind_field = surface_context.wind_model.wind_field(
-                    final_temp[1], itcz_rad=itcz_rad, ekman_drag=True
+                    final_temp[1], itcz_rad=final_itcz, ekman_drag=True
                 )
             else:
                 # One-layer: single wind with drag
                 final_state.wind_field = surface_context.wind_model.wind_field(
-                    final_temp[0], itcz_rad=itcz_rad, ekman_drag=True
+                    final_temp[0], itcz_rad=final_itcz, ekman_drag=True
                 )
-        final_state.humidity_field = compute_humidity_q(
-            surface_context.lat2d,
-            final_temp[0],
-            land_mask=surface_context.land_mask,
-            lon_2d=surface_context.lon2d,
-            itcz_rad=itcz_rad,
-        )
+        # Humidity is already computed fresh by _init_state, no need to recompute
         return final_state
 
 def evolve_year(
@@ -474,11 +494,15 @@ def evolve_year(
     with time_block("evolve_year"):
         for month_n in range(12):
             month = (month_n + 2) % 12 # start from March so initial guess is better
-            # Compute ITCZ from current temperature
+            # Compute ITCZ from temperature field
+            # Use boundary layer temperature if available (3-layer), otherwise surface (2-layer)
+            # Boundary layer temp avoids cold high-elevation surfaces (e.g., Tibet) biasing ITCZ
             with time_block("compute_itcz_monthly"):
                 cell_areas = spherical_cell_area(surface_context.lon2d, surface_context.lat2d, earth_radius_m=R_EARTH_METERS)
+                nlayers = state.temperature.shape[0]
+                itcz_temp = state.temperature[1] if nlayers >= 3 else state.temperature[0]
                 itcz_rad = compute_itcz_latitude(
-                    np.maximum(state.temperature[0], temperature_floor),
+                    np.maximum(itcz_temp, temperature_floor),
                     surface_context.lat2d,
                     cell_areas
                 )
@@ -727,9 +751,10 @@ def solve_periodic_climate(
             for idx, month_state in enumerate(monthly_states):
                 nlayers = month_state.temperature.shape[0]
 
-                # Compute ITCZ from surface temperature
-                surface_temp = np.maximum(month_state.temperature[0], operators.radiation_config.temperature_floor)
-                itcz_rad = compute_itcz_latitude(surface_temp, operators.lat2d, cell_areas)
+                # Compute ITCZ from boundary layer temp (3-layer) or surface temp (2-layer)
+                itcz_temp = month_state.temperature[1] if nlayers >= 3 else month_state.temperature[0]
+                itcz_temp = np.maximum(itcz_temp, operators.radiation_config.temperature_floor)
+                itcz_rad = compute_itcz_latitude(itcz_temp, operators.lat2d, cell_areas)
 
                 # Compute wind fields if not already present
                 if nlayers == 3:

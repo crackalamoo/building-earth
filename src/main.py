@@ -208,14 +208,22 @@ def main() -> None:
     elif atmosphere_cycle is not None:
         Tatm_cycle_K = atmosphere_cycle + 273.15
 
-    # Compute ITCZ from surface temperature for pressure calculations
+    # Get boundary layer temperature if available (3-layer model)
+    boundary_layer_cycle = layers.get("boundary_layer")
+
+    # Compute ITCZ from boundary layer temp (3-layer) or surface temp (2-layer)
+    # Using boundary layer avoids cold high-elevation surfaces (e.g., Tibet) biasing ITCZ
     slp_cycle_hpa: np.ndarray | None = None
     if Tatm_cycle_K is not None:
         cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=R_EARTH_METERS)
         pressure_monthly = np.empty_like(Tatm_cycle_K, dtype=float)
         for idx in range(Tatm_cycle_K.shape[0]):
-            # Compute ITCZ from surface temperature for this month
-            itcz_rad = compute_itcz_latitude(surface_cycle[idx] + 273.15, lat2d, cell_areas)
+            # Use boundary layer temp if available, otherwise surface temp
+            if boundary_layer_cycle is not None:
+                itcz_temp_K = boundary_layer_cycle[idx] + 273.15
+            else:
+                itcz_temp_K = surface_cycle[idx] + 273.15
+            itcz_rad = compute_itcz_latitude(itcz_temp_K, lat2d, cell_areas)
             pressure_monthly[idx] = compute_pressure(
                 Tatm_cycle_K[idx],
                 itcz_rad=itcz_rad,
@@ -467,28 +475,33 @@ def main() -> None:
             # Compute relative humidity from stored specific humidity
             # Use surface temperature (matching solver's _select_humidity_temperature behavior)
             temp_for_humidity = surface_cycle + 273.15  # Convert to Kelvin
-        
+
             # Compute RH from q: rh = q / q_sat
             # where q_sat is computed from temperature and pressure
             monthly_humidity_rh = []
             for month_idx in range(12):
                 temp_K = temp_for_humidity[month_idx]
                 q = humidity_q_cycle[month_idx]
-                # Compute ITCZ from surface temperature for this month
-                itcz_rad = compute_itcz_latitude(temp_K, lat2d, cell_areas)
+                if boundary_layer_cycle is not None:
+                    itcz_temp_K = boundary_layer_cycle[month_idx] + 273.15
+                else:
+                    itcz_temp_K = temp_K
+                itcz_rad = compute_itcz_latitude(itcz_temp_K, lat2d, cell_areas)
                 rh = specific_humidity_to_relative_humidity(q, temp_K, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d)
                 monthly_humidity_rh.append(rh)
-        
+
             humidity_rh_cycle = np.stack(monthly_humidity_rh, axis=0)
-        
+
             # Compute cloud cover for each month from relative humidity and pressure
             monthly_cloud_cover = []
             for month_idx in range(12):
                 rh = humidity_rh_cycle[month_idx]
-                surface_temp = surface_cycle[month_idx] + 273.15  # Convert to Kelvin
-                # Compute ITCZ from surface temperature
-                itcz_rad = compute_itcz_latitude(surface_temp, lat2d, cell_areas)
-                dp_norm = _compute_pressure_anomaly(surface_temp, itcz_rad, lat2d=lat2d, lon2d=lon2d)
+                if boundary_layer_cycle is not None:
+                    itcz_temp_K = boundary_layer_cycle[month_idx] + 273.15
+                else:
+                    itcz_temp_K = surface_cycle[month_idx] + 273.15
+                itcz_rad = compute_itcz_latitude(itcz_temp_K, lat2d, cell_areas)
+                dp_norm = _compute_pressure_anomaly(itcz_temp_K, itcz_rad, lat2d=lat2d, lon2d=lon2d)
                 cloud_cover = compute_cloud_coverage(rh, dp_norm, lat2d)
                 monthly_cloud_cover.append(cloud_cover)
 
