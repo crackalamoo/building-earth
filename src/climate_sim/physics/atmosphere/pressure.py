@@ -5,7 +5,13 @@ from scipy.ndimage import gaussian_filter
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.timing import time_block
 from climate_sim.data.constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2, GAS_CONSTANT_J_KG_K, R_EARTH_METERS
-from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, DELTA_SUBTROPICS, compute_itcz_latitude
+from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, compute_itcz_latitude
+
+# Base latitude of subtropical highs (radians) - relatively fixed at ~30°
+LAT_SUBTROPICS_BASE = np.deg2rad(29.0)
+# How much subtropical highs track ITCZ movement (0 = fixed, 1 = moves with ITCZ)
+# Derived from: ITCZ range -5° to 15°, subtropical high range 27-28° to 33-35°
+SUBTROPICS_ITCZ_COUPLING = 0.325
 
 # Hadley cell pressure anomalies (Pa)
 # Low pressure at ITCZ (rising air), high pressure at subtropics (descending air)
@@ -49,9 +55,10 @@ def hadley_pressure_anomaly(lat_rad: np.ndarray, itcz_rad: np.ndarray) -> np.nda
     np.ndarray
         Pressure anomaly in Pa, same shape as lat_rad.
     """
-    # Subtropical highs follow ITCZ (descending branch of Hadley cell)
-    lat_subtrop_south = 0.5 * itcz_rad - DELTA_SUBTROPICS
-    lat_subtrop_north = 0.5 * itcz_rad + DELTA_SUBTROPICS
+    # Subtropical highs: base at ~30° with small ITCZ-tracking component
+    # When ITCZ moves north, subtropical highs shift slightly poleward in NH, equatorward in SH
+    lat_subtrop_north = LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
+    lat_subtrop_south = -LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
 
     # ITCZ low pressure trough
     dp_itcz = DP_ITCZ * np.exp(-((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2)
