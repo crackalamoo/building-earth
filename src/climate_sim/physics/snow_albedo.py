@@ -8,27 +8,56 @@ import numpy as np
 
 ARCTIC_CIRCLE_LATITUDE_DEG = 66.5
 
+# Seawater freezes at about -1.8°C due to salinity
+SEAWATER_FREEZE_C = -1.8
+
 @dataclass(frozen=True)
 class SnowAlbedoConfig:
     """Configuration for the diagnostic snow albedo scheme."""
 
     enabled: bool = True
     latent_heat_enabled: bool = True
-    snow_albedo: float = 0.45
+    snow_albedo: float = 0.45  # Seasonal snow at low elevations
+    ice_sheet_albedo: float = 0.45  # Permanent ice at high elevations
     freeze_temperature_c: float = -5.0
-    melt_temperature_c: float = 1.0
-    picard_iterations: int = 2
+    melt_temperature_c: float = 1.0  # Snow melts above 1°C
+
+    # Ice sheet vs seasonal snow discrimination
+    # Based on actual surface temperature: very cold = permanent ice, warmer = seasonal snow
+    # Smooth hermite blend between these thresholds
+    ice_sheet_temp_c: float = -35.0  # Below this: 100% ice sheet albedo
+    seasonal_snow_temp_c: float = -15.0  # Above this: 100% seasonal snow albedo
+
     latent_melt_center_K: float = 273.15
     latent_melt_halfwidth_K: float = 2.0
     latent_energy_J_per_m2: float = 3.34e7
 
+    # Sea ice parameters
+    sea_ice_enabled: bool = False
+    sea_ice_albedo: float = 0.60  # Multi-year ice with some melt ponds
+    sea_ice_max_fraction: float = 0.70  # Seasonal average (winter max ~85%, summer min ~35%)
+    sea_ice_freeze_c: float = SEAWATER_FREEZE_C  # Start freezing at -1.8°C
+    sea_ice_full_c: float = -8.0  # Full ice formation by -8°C
+    # Heat capacity reduction factor when fully ice-covered
+    # Real ice is ~1700x lower, but we use gentler factor for stability
+    sea_ice_heat_capacity_factor: float = 0.08  # 8% of ocean = ~12x reduction
+
 
 class AlbedoModel:
-    def __init__(self, lat2d: np.ndarray, lon2d: np.ndarray, land_mask: np.ndarray, config: SnowAlbedoConfig | None = None) -> None:
+    def __init__(
+        self,
+        lat2d: np.ndarray,
+        lon2d: np.ndarray,
+        land_mask: np.ndarray,
+        config: SnowAlbedoConfig | None = None,
+    ) -> None:
         """Initialize the snow albedo model.
 
         Args:
+            lat2d: Latitude grid in degrees.
+            lon2d: Longitude grid in degrees.
             land_mask: Boolean array of shape (lat, lon) indicating land grid cells.
+            config: Snow albedo configuration.
         """
         self.lat2d = lat2d
         self.lon2d = lon2d
@@ -47,12 +76,39 @@ class AlbedoModel:
             albedo = np.where(in_arctic, self.config.snow_albedo, albedo)
             return albedo
 
+    def compute_sea_ice_fraction(self, temperatures_c: np.ndarray) -> np.ndarray:
+        """Compute sea ice fraction based on temperature.
+
+        Uses smooth hermite interpolation between freeze and full-ice temperatures.
+        Returns fraction in [0, max_fraction] for ocean cells, 0 for land.
+        """
+        if not self.config.sea_ice_enabled:
+            return np.zeros_like(temperatures_c)
+
+        # Smooth transition from freeze temp to full-ice temp
+        denom = self.config.sea_ice_freeze_c - self.config.sea_ice_full_c
+        if abs(denom) < 1e-6:
+            # Avoid division by zero
+            u = np.where(temperatures_c < self.config.sea_ice_freeze_c, 1.0, 0.0)
+        else:
+            u = (self.config.sea_ice_freeze_c - temperatures_c) / denom
+        u_clamped = np.clip(u, 0.0, 1.0)
+
+        # Smooth hermite interpolation
+        ice_fraction = u_clamped * u_clamped * (3.0 - 2.0 * u_clamped)
+
+        # Apply max fraction and mask to ocean only
+        ice_fraction = ice_fraction * self.config.sea_ice_max_fraction
+        ice_fraction = np.where(self.land_mask, 0.0, ice_fraction)
+
+        return ice_fraction
+
     def apply_snow_albedo(
         self,
         base_albedo: np.ndarray,
         monthly_temperatures_K: np.ndarray,
     ) -> np.ndarray:
-        """Return an albedo field with snow adjustments applied."""
+        """Return an albedo field with snow and sea ice adjustments applied."""
 
         if not self.config.enabled:
             return base_albedo
@@ -72,17 +128,49 @@ class AlbedoModel:
 
         temperatures_c = surface_temperatures - 273.15
 
+        # Land snow fraction using actual surface temperature
+        # Snow melts when surface temperature exceeds melt threshold
         denom = self.config.melt_temperature_c - self.config.freeze_temperature_c
         u = (self.config.melt_temperature_c - temperatures_c) / denom
         u_clamped = np.clip(u, 0.0, 1.0)
-        mean_snow_fraction = u_clamped * u_clamped * (3.0 - 2.0 * u_clamped)
+        snow_fraction = u_clamped * u_clamped * (3.0 - 2.0 * u_clamped)
+        snow_fraction = np.clip(snow_fraction, 0.0, 1.0)
+        land_snow_fraction = np.where(self.land_mask, snow_fraction, 0.0)
 
-        # mean_snow_fraction = snow_fraction.mean(axis=0)
-        mean_snow_fraction = np.clip(mean_snow_fraction, 0.0, 1.0)
+        # Ice sheet vs seasonal snow discrimination
+        # Based on actual surface temperature - very cold regions get ice sheet albedo
+        # Only apply if ice_sheet_albedo differs from snow_albedo
+        if abs(self.config.ice_sheet_albedo - self.config.snow_albedo) > 1e-6:
+            ice_sheet_temp = self.config.ice_sheet_temp_c
+            seasonal_snow_temp = self.config.seasonal_snow_temp_c
+            temp_range = seasonal_snow_temp - ice_sheet_temp
+            if abs(temp_range) < 1e-6:
+                ice_sheet_frac = np.zeros_like(temperatures_c)
+            else:
+                # u = 1 when T <= ice_sheet_temp, u = 0 when T >= seasonal_snow_temp
+                u_ice = (seasonal_snow_temp - temperatures_c) / temp_range
+                u_ice_clamped = np.clip(u_ice, 0.0, 1.0)
+                # Smooth hermite interpolation
+                ice_sheet_frac = u_ice_clamped * u_ice_clamped * (3.0 - 2.0 * u_ice_clamped)
 
-        land_snow_fraction = np.where(self.land_mask, mean_snow_fraction, 0.0)
+            # Blend snow albedo: seasonal snow → ice sheet based on temperature
+            effective_snow_albedo = (
+                self.config.snow_albedo
+                + (self.config.ice_sheet_albedo - self.config.snow_albedo) * ice_sheet_frac
+            )
+        else:
+            # No ice sheet discrimination - use uniform snow albedo
+            effective_snow_albedo = self.config.snow_albedo
 
-        adjusted = base_albedo + (self.config.snow_albedo - base_albedo) * land_snow_fraction
+        # Sea ice fraction (new)
+        sea_ice_fraction = self.compute_sea_ice_fraction(temperatures_c)
+
+        # Apply snow albedo to land (using temperature-dependent effective albedo)
+        adjusted = base_albedo + (effective_snow_albedo - base_albedo) * land_snow_fraction
+
+        # Apply sea ice albedo to ocean
+        adjusted = adjusted + (self.config.sea_ice_albedo - adjusted) * sea_ice_fraction
+
         return adjusted
 
     def effective_heat_capacity_surface(
@@ -93,10 +181,28 @@ class AlbedoModel:
         base_C_land: float,
         base_C_ocean: float,
     ) -> np.ndarray:
-        """Return the latent-heat-adjusted surface heat capacity field."""
+        """Return the latent-heat-adjusted surface heat capacity field.
 
+        Includes:
+        - Latent heat effects near freezing for land
+        - Reduced heat capacity for sea ice covered ocean
+        """
         ceff = np.where(land_mask, base_C_land, base_C_ocean).astype(float)
 
+        # Sea ice heat capacity reduction for ocean cells
+        if self.config.sea_ice_enabled:
+            temperatures_c = T_surface - 273.15
+            ice_fraction = self.compute_sea_ice_fraction(temperatures_c)
+
+            # Blend between full ocean and reduced ice heat capacity
+            # ice_factor interpolates from 1.0 (open ocean) to sea_ice_heat_capacity_factor (ice)
+            ocean_mask = ~land_mask
+            ice_factor = 1.0 - ice_fraction * (1.0 - self.config.sea_ice_heat_capacity_factor)
+
+            # Apply only to ocean cells
+            ceff = np.where(ocean_mask, ceff * ice_factor, ceff)
+
+        # Latent heat effects for land near freezing (existing logic)
         if not self.config.latent_heat_enabled:
             return ceff
 
