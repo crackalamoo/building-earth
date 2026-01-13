@@ -102,20 +102,40 @@ def _assemble_sparse_matrix(
 
 @dataclass(frozen=True)
 class DiffusionConfig:
+    # Ocean mesoscale eddy diffusivity: ~500-2000 m²/s typical
     surface_kappa_ref_m2_s: float = 2.0e3
+
     surface_resolution_ref_deg: float = 1.0
-    atmosphere_kappa_ref_m2_s: float = 5.0e3
+
+    # Ocean latitude-dependent scaling to represent thermohaline circulation
+    # MOC transports ~2 PW poleward, requiring strong effective diffusivity
+    use_latitude_dependent_surface: bool = True
+    surface_meridional_tropical_scale: float = 0.5    # 0-30°: Weak cross-equatorial
+    surface_meridional_midlat_scale: float = 1.5      # 30-60°: Western boundary currents
+    surface_meridional_polar_scale: float = 1.5       # 60-90°: Strong MOC/deep convection
+
+    # Atmospheric eddy diffusivity: ~1-5e6 m²/s for individual eddies, but
+    # our EBM is tuned with lower effective value for some reason.
+    atmosphere_kappa_ref_m2_s: float = 5.0e4
+
     atmosphere_resolution_ref_deg: float = 1.0
     enabled: bool = True
 
     # Latitude-dependent atmospheric diffusivity scaling
+    # Peak at midlatitudes where baroclinic storm tracks dominate
     use_latitude_dependent_atmosphere: bool = True
-    atmosphere_meridional_tropical_scale: float = 0.5  # 0-30° latitude
-    atmosphere_meridional_midlat_scale: float = 8.0    # 30-60° latitude (peak)
-    atmosphere_meridional_polar_scale: float = 1.0     # 60-90° latitude
-    atmosphere_zonal_tropical_scale: float = 1.5       # 0-30° latitude
-    atmosphere_zonal_midlat_scale: float = 2.5         # 30-60° latitude
-    atmosphere_zonal_polar_scale: float = 1.0          # 60-90° latitude
+    atmosphere_meridional_tropical_scale: float = 0.5   # 0-30°: Hadley cell dominates, weak eddy mixing
+    atmosphere_meridional_midlat_scale: float = 8.0     # 30-60°: Storm tracks, peak eddy transport
+    atmosphere_meridional_polar_scale: float = 0.5      # 60-90°: Polar vortex isolation, but still significant transport
+    atmosphere_zonal_tropical_scale: float = 1.5        # 0-30°: Trade winds mix zonally
+    atmosphere_zonal_midlat_scale: float = 2.5          # 30-60°: Westerlies enhance zonal mixing
+    atmosphere_zonal_polar_scale: float = 1.0           # 60-90°: Polar vortex limits mixing
+
+    # Boundary layer diffusivity scaling relative to free atmosphere
+    # BL is thin (~1km) and its heat transport is mostly vertical (convection),
+    # not the large-scale eddies that transport across latitudes.
+    # BL feels meridional transport indirectly via coupling to free atm above.
+    boundary_layer_diffusivity_scale: float = 0.1  # 10% of free atmosphere
 
     @staticmethod
     def _scaled_diffusivity(
@@ -149,22 +169,39 @@ class DiffusionConfig:
         lat_deg: np.ndarray,
         *,
         meridional: bool,
+        layer: str = "atmosphere",
     ) -> np.ndarray:
-        """Compute latitude-dependent scaling factor for atmospheric diffusivity.
+        """Compute latitude-dependent scaling factor for diffusivity.
+
+        Args:
+            lat_deg: Latitude values in degrees
+            meridional: Whether to use meridional (N-S) or zonal (E-W) scaling
+            layer: Which layer scaling to use ("atmosphere" or "surface")
         """
-        if not self.use_latitude_dependent_atmosphere:
-            return np.ones_like(lat_deg)
+        if layer == "surface":
+            if not self.use_latitude_dependent_surface:
+                return np.ones_like(lat_deg)
+            # Surface only has meridional scaling (ocean gyres don't enhance zonal)
+            if meridional:
+                tropical_scale = self.surface_meridional_tropical_scale
+                midlat_scale = self.surface_meridional_midlat_scale
+                polar_scale = self.surface_meridional_polar_scale
+            else:
+                return np.ones_like(lat_deg)
+        else:  # atmosphere
+            if not self.use_latitude_dependent_atmosphere:
+                return np.ones_like(lat_deg)
+
+            if meridional:
+                tropical_scale = self.atmosphere_meridional_tropical_scale
+                midlat_scale = self.atmosphere_meridional_midlat_scale
+                polar_scale = self.atmosphere_meridional_polar_scale
+            else:
+                tropical_scale = self.atmosphere_zonal_tropical_scale
+                midlat_scale = self.atmosphere_zonal_midlat_scale
+                polar_scale = self.atmosphere_zonal_polar_scale
 
         lat_abs = np.abs(lat_deg)
-
-        if meridional:
-            tropical_scale = self.atmosphere_meridional_tropical_scale
-            midlat_scale = self.atmosphere_meridional_midlat_scale
-            polar_scale = self.atmosphere_meridional_polar_scale
-        else:
-            tropical_scale = self.atmosphere_zonal_tropical_scale
-            midlat_scale = self.atmosphere_zonal_midlat_scale
-            polar_scale = self.atmosphere_zonal_polar_scale
 
         # Smooth transitions using piecewise smoothstep interpolation
         # 0-30°: tropical → midlat
@@ -300,6 +337,7 @@ def _build_single_layer_operator(
     active_mask: np.ndarray | None = None,
     diffusivity_m2_s: float,
     use_latitude_scaling: bool = False,
+    layer: str = "atmosphere",
 ) -> DiffusionOperator:
     if lon2d.shape != lat2d.shape or lon2d.shape != heat_capacity_field.shape:
         raise ValueError("Grid and heat capacity field must share the same shape")
@@ -373,7 +411,7 @@ def _build_single_layer_operator(
         # Apply latitude-dependent scaling for meridional diffusion
         if use_latitude_scaling:
             meridional_scaling = config.compute_latitude_scaling(
-                interface_lat_deg, meridional=True
+                interface_lat_deg, meridional=True, layer=layer
             )
             north_diffusivity = north_diffusivity * meridional_scaling[:, np.newaxis]
 
@@ -408,7 +446,7 @@ def _build_single_layer_operator(
         # Apply latitude-dependent scaling for zonal diffusion
         if use_latitude_scaling:
             zonal_scaling = config.compute_latitude_scaling(
-                lat_centers, meridional=False
+                lat_centers, meridional=False, layer=layer
             )
             east_diffusivity = east_diffusivity * zonal_scaling[:, np.newaxis]
 
@@ -490,7 +528,8 @@ def create_diffusion_operator(
         config=config,
         active_mask=~land_mask,
         diffusivity_m2_s=surface_diffusivity_m2_s,
-        use_latitude_scaling=False,  # Surface ocean uses uniform diffusivity
+        use_latitude_scaling=True,  # Surface ocean uses latitude-dependent diffusivity
+        layer="surface",
     )
     atmosphere_operator = _build_single_layer_operator(
         lon2d,
@@ -508,14 +547,17 @@ def create_diffusion_operator(
         boundary_layer_heat_capacity_field = np.full_like(
             heat_capacity_field, boundary_layer_heat_capacity, dtype=float
         )
+        # BL diffusivity is scaled down - BL transport is mostly vertical,
+        # not the large-scale eddies that transport across latitudes
+        boundary_layer_diffusivity = atmosphere_diffusivity_m2_s * config.boundary_layer_diffusivity_scale
         boundary_layer_operator = _build_single_layer_operator(
             lon2d,
             lat2d,
             boundary_layer_heat_capacity_field,
             cell_area_field,
             config=config,
-            diffusivity_m2_s=atmosphere_diffusivity_m2_s,
-            use_latitude_scaling=True,  # Boundary layer also uses latitude-dependent diffusivity
+            diffusivity_m2_s=boundary_layer_diffusivity,
+            use_latitude_scaling=True,  # BL uses same latitude pattern as atmosphere
         )
 
     return LayeredDiffusionOperator(
