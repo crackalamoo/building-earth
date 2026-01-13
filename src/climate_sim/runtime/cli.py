@@ -86,6 +86,22 @@ def add_headless_argument(
     parser.add_argument("--headless", dest="headless", action="store_true", help=help_text)
 
 
+def add_interpolation_arguments(
+    parser: argparse.ArgumentParser,
+) -> None:
+    """Add interpolation-related arguments."""
+
+    add_boolean_flag(
+        parser,
+        dest="interpolate",
+        default=False,
+        enable_option="--interpolate",
+        disable_option="--no-interpolate",
+        help_enable="Interpolate temperature fields to 1° resolution for display (includes lapse rate correction for land)",
+        help_disable="Display at solver resolution (default)",
+    )
+
+
 def add_common_model_arguments(
     parser: argparse.ArgumentParser,
     *,
@@ -208,3 +224,4 @@ def add_common_model_arguments(
             options=fahrenheit_options,
         )
     add_headless_argument(parser)
+    add_interpolation_arguments(parser)

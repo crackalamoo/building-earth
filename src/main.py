@@ -42,6 +42,8 @@ from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.solver import solve_periodic_climate
 from climate_sim.core.units import convert_temperature, temperature_unit
+from climate_sim.core.interpolation import interpolate_layer_map
+from climate_sim.core.timing import time_block, get_profiler
 from climate_sim.physics.humidity import specific_humidity_to_relative_humidity
 from climate_sim.physics.radiation import compute_cloud_coverage, _compute_pressure_anomaly
 
@@ -848,32 +850,6 @@ def main() -> None:
 
     atmosphere_2m_cycle = layer_cycles.get("Atmosphere (2 m)")
 
-    if not args.headless and not args.cache:
-        data_dir_value = os.getenv("DATA_DIR")
-        if not data_dir_value:
-            raise ValueError("DATA_DIR environment variable must be set to save GIFs.")
-        data_dir = Path(data_dir_value).expanduser()
-        data_dir.mkdir(parents=True, exist_ok=True)
-
-        def _save_cycle(name: str, field: np.ndarray, filename: str) -> None:
-            output_path = data_dir / filename
-            save_monthly_temperature_gif(
-                lon2d,
-                lat2d,
-                field,
-                output_path=output_path,
-                title=f"{name} Temperature ({unit})",
-                colorbar_label=f"Temperature ({unit})",
-                use_fahrenheit=args.fahrenheit,
-            )
-            print(f"Saved {name.lower()} temperature animation to {output_path}")
-
-        _save_cycle("Surface", surface_cycle, "surface_temperature_cycle.gif")
-        if atmosphere_2m_cycle is not None:
-            _save_cycle("Two-meter", atmosphere_2m_cycle, "two_meter_temperature_cycle.gif")
-        if atmosphere_cycle is not None:
-            _save_cycle("Atmosphere", atmosphere_cycle, "atmosphere_temperature_cycle.gif")
-
     for idx in range(12):
         print(f"{month_names[idx]} statistics:")
         surface_land = area_weighted_mean(surface_cycle[idx], land_weights)
@@ -956,10 +932,70 @@ def main() -> None:
         print(f"  Wind speed 10 m mean (land/ocean) [m/s]: N/A ({reason})")
 
     if not args.headless:
+        # Apply interpolation if requested
+        plot_lon2d = lon2d
+        plot_lat2d = lat2d
+        plot_layer_cycles = layer_cycles
+
+        if args.interpolate:
+            output_resolution = 0.25
+            print(f"Interpolating temperature fields to {output_resolution}° resolution...")
+            with time_block("interpolation"):
+                # Build layer map for interpolation (need lowercase keys)
+                interp_layers = {
+                    "surface": layer_cycles["Surface"],
+                }
+                if "Atmosphere (2 m)" in layer_cycles:
+                    interp_layers["temperature_2m"] = layer_cycles["Atmosphere (2 m)"]
+
+                plot_lon2d, plot_lat2d, interpolated = interpolate_layer_map(
+                    interp_layers,
+                    lon2d,
+                    lat2d,
+                    output_resolution_deg=output_resolution,
+                    apply_lapse_rate_to_2m=True,
+                )
+
+                # Rebuild layer_cycles with interpolated data
+                plot_layer_cycles = {}
+                if "surface" in interpolated:
+                    plot_layer_cycles["Surface"] = interpolated["surface"]
+                if "temperature_2m" in interpolated:
+                    plot_layer_cycles["Atmosphere (2 m)"] = interpolated["temperature_2m"]
+
+            get_profiler().print_summary()
+            print(f"Interpolation complete. Output grid: {plot_lat2d.shape}")
+
+        # Save GIFs using the (potentially interpolated) data
+        data_dir_value = os.getenv("DATA_DIR")
+        if data_dir_value:
+            data_dir = Path(data_dir_value).expanduser()
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            def _save_cycle(name: str, field: np.ndarray, filename: str) -> None:
+                output_path = data_dir / filename
+                save_monthly_temperature_gif(
+                    plot_lon2d,
+                    plot_lat2d,
+                    field,
+                    output_path=output_path,
+                    title=f"{name} Temperature ({unit})",
+                    colorbar_label=f"Temperature ({unit})",
+                    use_fahrenheit=args.fahrenheit,
+                )
+                print(f"Saved {name.lower()} temperature animation to {output_path}")
+
+            if "Surface" in plot_layer_cycles:
+                _save_cycle("Surface", plot_layer_cycles["Surface"], "surface_temperature_cycle.gif")
+            if "Atmosphere (2 m)" in plot_layer_cycles:
+                _save_cycle("Two-meter", plot_layer_cycles["Atmosphere (2 m)"], "two_meter_temperature_cycle.gif")
+            if "Atmosphere" in plot_layer_cycles:
+                _save_cycle("Atmosphere", plot_layer_cycles["Atmosphere"], "atmosphere_temperature_cycle.gif")
+
         plot_layered_monthly_temperature_cycle(
-            lon2d,
-            lat2d,
-            layer_cycles,
+            plot_lon2d,
+            plot_lat2d,
+            plot_layer_cycles,
             title=f"Temperature Cycle ({unit})",
             use_fahrenheit=args.fahrenheit,
         )

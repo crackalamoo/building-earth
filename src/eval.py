@@ -38,6 +38,8 @@ from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import spherical_cell_area
 from climate_sim.core.solver import solve_periodic_climate
 from climate_sim.core.units import convert_temperature, temperature_unit
+from climate_sim.core.interpolation import interpolate_layer_map
+from climate_sim.core.timing import time_block, get_profiler
 from climate_sim.runtime.config import ModelConfig
 
 load_dotenv()
@@ -865,16 +867,51 @@ def main() -> None:
     else:
         sim_t2m = temperature_2m
 
+    # Apply interpolation if requested - upscale simulation to 1° for comparison
+    if args.interpolate:
+        print("Interpolating simulation output to 1° for evaluation...")
+        with time_block("interpolation"):
+            interp_layers = {"surface": surface_cycle}
+            if temperature_2m is not None:
+                interp_layers["temperature_2m"] = temperature_2m
+
+            eval_lon2d, eval_lat2d, interpolated = interpolate_layer_map(
+                interp_layers,
+                lon2d,
+                lat2d,
+                output_resolution_deg=1.0,
+                apply_lapse_rate_to_2m=True,
+            )
+
+            surface_cycle = interpolated["surface"]
+            if "temperature_2m" in interpolated:
+                sim_t2m = interpolated["temperature_2m"]
+            else:
+                sim_t2m = surface_cycle.copy()
+
+        get_profiler().print_summary()
+        print(f"Interpolation complete. Eval grid: {eval_lat2d.shape}")
+
+        # Use interpolated grid for evaluation
+        lon2d, lat2d = eval_lon2d, eval_lat2d
+
     land_mask = compute_land_mask(lon2d, lat2d)
     cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=R_EARTH_METERS)
 
-    # Aggregate NOAA reference data onto the simulation grid using cell-mean values.
-    aggregated_obs = aggregate_reference_to_sim_grid(reference, lon2d, lat2d)
-    obs_land = aggregated_obs["t_land_clim"].values
-    obs_sst = aggregated_obs["t_sst_clim"].values
-    obs_surface = np.where(land_mask[None, ...], obs_land, obs_sst)
+    # Get observation data at the evaluation resolution
+    if args.interpolate:
+        # Use 1° NOAA reference directly (no aggregation needed)
+        obs_land = reference["t_land_clim"].values
+        obs_sst = reference["t_sst_clim"].values
+        obs_surface = reference["t_surface_clim"].values
+    else:
+        # Aggregate NOAA reference data onto the simulation grid using cell-mean values.
+        aggregated_obs = aggregate_reference_to_sim_grid(reference, lon2d, lat2d)
+        obs_land = aggregated_obs["t_land_clim"].values
+        obs_sst = aggregated_obs["t_sst_clim"].values
+        obs_surface = np.where(land_mask[None, ...], obs_land, obs_sst)
 
-    # Wrap aggregated fields back into a lightweight Dataset so the existing
+    # Wrap fields into a lightweight Dataset so the existing
     # compute_rmse_statistics interface can be reused without modification.
     obs_for_stats = xr.Dataset(
         dict(
@@ -883,9 +920,9 @@ def main() -> None:
             t_surface_clim=(("month", "lat", "lon"), obs_surface),
         ),
         coords=dict(
-            month=("month", aggregated_obs["month"].values),
-            lat=("lat", aggregated_obs["lat"].values),
-            lon=("lon", aggregated_obs["lon"].values),
+            month=("month", np.arange(1, 13, dtype=int)),
+            lat=("lat", lat2d[:, 0]),
+            lon=("lon", lon2d[0, :]),
         ),
     )
 
