@@ -37,6 +37,10 @@ MAX_LATITUDE_DEG = 65.0  # Exclude polar regions
 # This gives boundary layer width L = r/β ~ 50-100 km
 STOMMEL_FRICTION = 5.0e-6  # 1/s, Rayleigh friction coefficient
 
+# Ekman layer parameters
+EKMAN_DEPTH = 50.0  # meters, typical Ekman layer depth
+MIN_EKMAN_LATITUDE_DEG = 3.0  # Exclude very near-equator (f→0 singularity)
+
 
 def compute_beta(lat_deg: np.ndarray) -> np.ndarray:
     """Compute the meridional gradient of the Coriolis parameter.
@@ -128,6 +132,106 @@ def compute_wind_stress_curl(
     metric_term = tau_y * np.tan(lat_rad) / R_EARTH_METERS
 
     return dtau_y_dx - dtau_x_dy + metric_term
+
+
+def compute_coriolis_parameter(lat_deg: np.ndarray) -> np.ndarray:
+    """Compute the Coriolis parameter f = 2Ω sin(lat).
+
+    Parameters
+    ----------
+    lat_deg : np.ndarray
+        Latitude in degrees.
+
+    Returns
+    -------
+    np.ndarray
+        Coriolis parameter f in 1/s, same shape as input.
+    """
+    lat_rad = np.deg2rad(lat_deg)
+    return 2.0 * OMEGA * np.sin(lat_rad)
+
+
+def compute_ekman_transport(
+    tau_x: np.ndarray,
+    tau_y: np.ndarray,
+    lat_deg: np.ndarray,
+    rho_water: float = RHO_WATER,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute Ekman mass transport from wind stress.
+
+    Ekman transport is perpendicular to wind stress (to the right in NH):
+        M_x = τ_y / (ρf)
+        M_y = -τ_x / (ρf)
+
+    Parameters
+    ----------
+    tau_x : np.ndarray
+        Zonal wind stress (N/m²), shape (nlat, nlon).
+    tau_y : np.ndarray
+        Meridional wind stress (N/m²), shape (nlat, nlon).
+    lat_deg : np.ndarray
+        Latitude centers (degrees), shape (nlat,).
+    rho_water : float
+        Seawater density in kg/m³.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        (M_x, M_y) Ekman mass transport in kg/(m·s) or equivalently m²/s.
+        M_x is zonal transport, M_y is meridional transport.
+        NaN where |lat| < MIN_EKMAN_LATITUDE_DEG.
+    """
+    # Compute Coriolis parameter
+    f = compute_coriolis_parameter(lat_deg)[:, np.newaxis]
+
+    # Mask near-equator where f→0
+    lat_2d = np.broadcast_to(lat_deg[:, np.newaxis], tau_x.shape)
+    valid = np.abs(lat_2d) >= MIN_EKMAN_LATITUDE_DEG
+
+    # Safe division (avoid f=0)
+    f_safe = np.where(valid, f, np.nan)
+
+    # Ekman transport: perpendicular to stress, to the right in NH
+    # M_x = τ_y / (ρf)
+    # M_y = -τ_x / (ρf)
+    M_x = tau_y / (rho_water * f_safe)
+    M_y = -tau_x / (rho_water * f_safe)
+
+    return np.where(valid, M_x, np.nan), np.where(valid, M_y, np.nan)
+
+
+def ekman_transport_to_velocity(
+    M_x: np.ndarray,
+    M_y: np.ndarray,
+    ocean_mask: np.ndarray,
+    ekman_depth: float = EKMAN_DEPTH,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert Ekman transport to velocity by distributing over Ekman depth.
+
+    Parameters
+    ----------
+    M_x : np.ndarray
+        Zonal Ekman transport (m²/s), shape (nlat, nlon).
+    M_y : np.ndarray
+        Meridional Ekman transport (m²/s), shape (nlat, nlon).
+    ocean_mask : np.ndarray
+        Boolean mask, True for ocean cells.
+    ekman_depth : float
+        Ekman layer depth (meters).
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        (u_ekman, v_ekman) Ekman velocities in m/s.
+    """
+    u_ekman = M_x / ekman_depth
+    v_ekman = M_y / ekman_depth
+
+    # Apply ocean mask
+    u_ekman = np.where(ocean_mask, u_ekman, np.nan)
+    v_ekman = np.where(ocean_mask, v_ekman, np.nan)
+
+    return u_ekman, v_ekman
 
 
 def compute_sverdrup_transport(
@@ -543,8 +647,9 @@ def compute_ocean_currents(
     lat2d: np.ndarray,
     land_mask: np.ndarray,
     include_stommel: bool = True,
+    include_ekman: bool = True,
 ) -> dict[str, np.ndarray]:
-    """Compute ocean currents from wind field using Sverdrup-Stommel balance.
+    """Compute ocean currents from wind field using Sverdrup-Stommel balance + Ekman.
 
     Computes:
     1. Wind stress and curl from 10m winds
@@ -552,6 +657,11 @@ def compute_ocean_currents(
     3. Interior streamfunction by integrating from east coast
     4. Stommel western boundary layer closure (optional)
     5. Velocity field derived from streamfunction
+    6. Ekman transport (optional): surface layer transport perpendicular to wind
+
+    The Ekman transport allows heat exchange between otherwise isolated gyres,
+    particularly enabling poleward heat transport at high latitudes where
+    polar easterlies drive poleward Ekman flow.
 
     Parameters
     ----------
@@ -568,6 +678,9 @@ def compute_ocean_currents(
     include_stommel : bool
         If True, include Stommel western boundary closure.
         If False, return interior Sverdrup solution only.
+    include_ekman : bool
+        If True, include Ekman surface layer transport.
+        This provides cross-gyre exchange that Sverdrup circulation lacks.
 
     Returns
     -------
@@ -579,8 +692,12 @@ def compute_ocean_currents(
         - 'sverdrup_transport': Sverdrup meridional transport (m²/s)
         - 'psi_interior': Interior streamfunction (Sv)
         - 'psi': Total streamfunction with boundary closure (Sv)
-        - 'u_velocity': Zonal velocity (m/s), positive eastward
-        - 'v_velocity': Meridional velocity (m/s), positive northward
+        - 'u_gyre': Zonal gyre velocity from streamfunction (m/s)
+        - 'v_gyre': Meridional gyre velocity from streamfunction (m/s)
+        - 'u_ekman': Zonal Ekman velocity (m/s), if include_ekman=True
+        - 'v_ekman': Meridional Ekman velocity (m/s), if include_ekman=True
+        - 'u_velocity': Total zonal velocity (m/s), positive eastward
+        - 'v_velocity': Total meridional velocity (m/s), positive northward
     """
     nlat, nlon = u_wind.shape
     resolution_deg = 180.0 / nlat
@@ -614,10 +731,32 @@ def compute_ocean_currents(
     else:
         psi = psi_interior
 
-    # Derive velocity from streamfunction
-    u_velocity, v_velocity = streamfunction_to_velocity(
+    # Derive gyre velocity from streamfunction
+    u_gyre, v_gyre = streamfunction_to_velocity(
         psi, ocean_mask, lat_deg, resolution_deg
     )
+
+    # Compute Ekman transport and velocity
+    if include_ekman:
+        M_x, M_y = compute_ekman_transport(tau_x, tau_y, lat_deg)
+        u_ekman, v_ekman = ekman_transport_to_velocity(M_x, M_y, ocean_mask)
+    else:
+        u_ekman = np.full_like(u_gyre, np.nan)
+        v_ekman = np.full_like(v_gyre, np.nan)
+
+    # Combine gyre and Ekman velocities for total ocean current
+    # Use nan-safe addition: treat NaN as 0 for combination
+    u_gyre_safe = np.where(np.isnan(u_gyre), 0.0, u_gyre)
+    v_gyre_safe = np.where(np.isnan(v_gyre), 0.0, v_gyre)
+    u_ekman_safe = np.where(np.isnan(u_ekman), 0.0, u_ekman)
+    v_ekman_safe = np.where(np.isnan(v_ekman), 0.0, v_ekman)
+
+    u_velocity = u_gyre_safe + u_ekman_safe
+    v_velocity = v_gyre_safe + v_ekman_safe
+
+    # Re-apply ocean mask (land cells should be NaN)
+    u_velocity = np.where(ocean_mask, u_velocity, np.nan)
+    v_velocity = np.where(ocean_mask, v_velocity, np.nan)
 
     return {
         'tau_x': tau_x,
@@ -626,6 +765,10 @@ def compute_ocean_currents(
         'sverdrup_transport': sverdrup_transport,
         'psi_interior': psi_interior,
         'psi': psi,
+        'u_gyre': u_gyre,
+        'v_gyre': v_gyre,
+        'u_ekman': u_ekman,
+        'v_ekman': v_ekman,
         'u_velocity': u_velocity,
         'v_velocity': v_velocity,
     }
