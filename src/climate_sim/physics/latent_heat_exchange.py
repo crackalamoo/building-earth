@@ -16,6 +16,11 @@ class LatentHeatExchangeConfig:
 
     enabled: bool = True
     minimum_wind_speed_m_s: float = 0.1
+    # Land evapotranspiration is weaker than ocean evaporation due to:
+    # - Limited soil moisture availability
+    # - Stomatal resistance in vegetation
+    # Typical values: 0.3-0.6 of ocean evaporation in humid regions
+    land_evapotranspiration_factor: float = 0.4
 
 
 class LatentHeatExchangeModel:
@@ -127,7 +132,14 @@ class LatentHeatExchangeModel:
 
         humidity_q = np.minimum(humidity_q, q_sat)
         heat_flux = rho * 2.5e6 * ch * wind_abs * (q_sat - humidity_q)
-        heat_flux = np.where(self._land_mask, 0, heat_flux)
+        # Land evapotranspiration scales with:
+        # 1. Base factor (soil/vegetation resistance)
+        # 2. Relative humidity (proxy for soil moisture availability)
+        #    - Deserts (low RH ~0.3): factor ~0.12
+        #    - Humid tropics (high RH ~0.8): factor ~0.32
+        rh = humidity_q / np.maximum(q_sat, 1e-10)
+        land_factor = self._config.land_evapotranspiration_factor * rh
+        heat_flux = np.where(self._land_mask, heat_flux * land_factor, heat_flux)
 
         # Three-layer system: latent heat only between surface and boundary layer
         if boundary_layer_temperature_K is not None:
@@ -255,10 +267,13 @@ class LatentHeatExchangeModel:
         # ∂F/∂T_atm = L_v * ch * wind_abs * [rho * dq_sat/dT_atm + q_deficit * drho/dT_atm]
         dheat_flux_dT_surf = L_v * ch * wind_abs * (rho * dq_sat_dT_surf + q_deficit * drho_dT_surf)
         dheat_flux_dT_atm = L_v * ch * wind_abs * (rho * dq_sat_dT_atm + q_deficit * drho_dT_atm)
-        
-        # Zero out over land
-        dheat_flux_dT_surf = np.where(self._land_mask, 0, dheat_flux_dT_surf)
-        dheat_flux_dT_atm = np.where(self._land_mask, 0, dheat_flux_dT_atm)
+
+        # Apply land factor (reduced evapotranspiration scaled by humidity)
+        q_sat_safe = np.maximum(q_sat, 1e-10)
+        rh = humidity_q_clamped / q_sat_safe
+        land_factor = self._config.land_evapotranspiration_factor * rh
+        dheat_flux_dT_surf = np.where(self._land_mask, dheat_flux_dT_surf * land_factor, dheat_flux_dT_surf)
+        dheat_flux_dT_atm = np.where(self._land_mask, dheat_flux_dT_atm * land_factor, dheat_flux_dT_atm)
 
         # Three-layer system: latent heat only between surface and boundary layer
         if boundary_layer_temperature_K is not None:
@@ -278,7 +293,8 @@ class LatentHeatExchangeModel:
             
             # ∂F/∂T_boundary = L_v * ch * wind_abs * [rho * dq_sat/dT_boundary + q_deficit * drho/dT_boundary]
             dheat_flux_dT_boundary = L_v * ch * wind_abs * (rho * dq_sat_dT_boundary + q_deficit * drho_dT_boundary)
-            dheat_flux_dT_boundary = np.where(self._land_mask, 0, dheat_flux_dT_boundary)
+            # Apply land factor (same as for other derivatives)
+            dheat_flux_dT_boundary = np.where(self._land_mask, dheat_flux_dT_boundary * land_factor, dheat_flux_dT_boundary)
 
             # Surface tendency: -heat_flux / C_surf
             # ∂/∂T_surf = -dheat_flux_dT_surf / C_surf
