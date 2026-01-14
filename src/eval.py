@@ -22,6 +22,7 @@ import pooch
 import xarray as xr
 from matplotlib import colormaps
 from matplotlib.colors import Normalize
+from matplotlib.widgets import RadioButtons
 
 from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.radiation import RadiationConfig
@@ -804,6 +805,221 @@ def plot_bias_corrected_anomaly(
     )
 
 
+def compute_cell_rmse(anomaly: np.ndarray) -> np.ndarray:
+    """Compute RMSE at each grid cell across all months.
+
+    Args:
+        anomaly: 3-D array of shape (months, lat, lon) containing sim - obs differences
+
+    Returns:
+        2-D array of shape (lat, lon) with RMSE at each cell
+    """
+    return np.sqrt(np.mean(anomaly**2, axis=0))
+
+
+def plot_eval_metrics(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    sim: np.ndarray,
+    obs: np.ndarray,
+    land_mask: np.ndarray,
+    use_fahrenheit: bool,
+    headless: bool = False,
+) -> None:
+    """Plot evaluation metrics with tabs for RMSE map and correlation scatter.
+
+    Tab 1: Per-cell RMSE spatial map
+    Tab 2: Obs vs Sim scatter plot showing correlation
+    """
+    if headless:
+        return
+
+    import matplotlib.pyplot as plt
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    from scipy import stats
+
+    unit = temperature_unit(use_fahrenheit)
+    anomaly = sim - obs
+
+    # Compute per-cell RMSE across months
+    cell_rmse = compute_cell_rmse(anomaly)
+    cell_rmse_display = convert_temperature(cell_rmse, use_fahrenheit, is_delta=True)
+
+    # Compute display range for RMSE
+    rmse_vmax = float(np.nanmax(cell_rmse_display))
+    if not np.isfinite(rmse_vmax) or rmse_vmax <= 0:
+        rmse_vmax = 10.0
+    rmse_vmax = min(rmse_vmax, 10.0)
+
+    rmse_cmap = colormaps["Purples"]  # Neutral colormap for error magnitude
+    rmse_norm = Normalize(vmin=0, vmax=rmse_vmax)
+
+    # Prepare scatter data - flatten all months and cells
+    sim_display = convert_temperature(sim, use_fahrenheit, is_delta=False)
+    obs_display = convert_temperature(obs, use_fahrenheit, is_delta=False)
+
+    # Broadcast land_mask to match 3D shape
+    land_mask_3d = np.broadcast_to(land_mask[None, ...], sim.shape)
+
+    # Get valid (non-NaN) data points
+    valid = np.isfinite(sim_display) & np.isfinite(obs_display)
+    land_valid = valid & land_mask_3d
+    ocean_valid = valid & ~land_mask_3d
+
+    obs_land = obs_display[land_valid].ravel()
+    sim_land = sim_display[land_valid].ravel()
+    obs_ocean = obs_display[ocean_valid].ravel()
+    sim_ocean = sim_display[ocean_valid].ravel()
+
+    # Compute statistics
+    obs_all = obs_display[valid].ravel()
+    sim_all = sim_display[valid].ravel()
+
+    r_all, _ = stats.pearsonr(obs_all, sim_all)
+    r_land, _ = stats.pearsonr(obs_land, sim_land) if len(obs_land) > 2 else (np.nan, 0)
+    r_ocean, _ = stats.pearsonr(obs_ocean, sim_ocean) if len(obs_ocean) > 2 else (np.nan, 0)
+
+    # Linear regression for best-fit lines (overall, land, ocean)
+    slope_all, intercept_all, _, _, _ = stats.linregress(obs_all, sim_all)
+    slope_land, intercept_land, _, _, _ = stats.linregress(obs_land, sim_land) if len(obs_land) > 2 else (np.nan, np.nan, 0, 0, 0)
+    slope_ocean, intercept_ocean, _, _, _ = stats.linregress(obs_ocean, sim_ocean) if len(obs_ocean) > 2 else (np.nan, np.nan, 0, 0, 0)
+
+    # Create figure with two axes (we'll show/hide them with tabs)
+    fig = plt.figure(figsize=(12, 7))
+    plt.subplots_adjust(left=0.1, right=0.88, bottom=0.12, top=0.92)
+
+    # Map axis (for RMSE)
+    projection = ccrs.PlateCarree()
+    ax_map = fig.add_axes([0.1, 0.15, 0.75, 0.75], projection=projection)
+    ax_map.set_global()
+    ax_map.coastlines(linewidth=0.4)
+    ax_map.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+    ax_map.add_feature(
+        cfeature.NaturalEarthFeature(
+            "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+        ),
+        linewidth=0.2,
+    )
+
+    mesh = ax_map.pcolormesh(
+        lon2d,
+        lat2d,
+        cell_rmse_display,
+        cmap=rmse_cmap,
+        norm=rmse_norm,
+        shading="auto",
+        transform=projection,
+    )
+    ax_map.set_title(f"Per-Cell RMSE Across Months ({unit})")
+
+    cbar_ax_map = fig.add_axes([0.87, 0.15, 0.02, 0.75])
+    cbar_map = fig.colorbar(mesh, cax=cbar_ax_map)
+    cbar_map.set_label(f"RMSE ({unit})")
+
+    # Scatter axis (for correlation)
+    ax_scatter = fig.add_axes([0.1, 0.15, 0.75, 0.75])
+
+    # Use hexbin for density visualization (many points)
+    data_min = min(obs_all.min(), sim_all.min())
+    data_max = max(obs_all.max(), sim_all.max())
+    padding = (data_max - data_min) * 0.05
+    plot_min, plot_max = data_min - padding, data_max + padding
+
+    # Hexbin for all data with density coloring
+    hb = ax_scatter.hexbin(
+        obs_all, sim_all,
+        gridsize=50,
+        cmap="Blues",
+        mincnt=1,
+        extent=[plot_min, plot_max, plot_min, plot_max],
+    )
+
+    # Overlay land/ocean distinction with transparent scatter
+    ax_scatter.scatter(
+        obs_land[::10], sim_land[::10],  # Subsample for visibility
+        c="#8B4513", alpha=0.3, s=3, label=f"Land (r={r_land:.3f})", rasterized=True
+    )
+    ax_scatter.scatter(
+        obs_ocean[::10], sim_ocean[::10],
+        c="#1E90FF", alpha=0.3, s=3, label=f"Ocean (r={r_ocean:.3f})", rasterized=True
+    )
+
+    # 1:1 reference line
+    ax_scatter.plot(
+        [plot_min, plot_max], [plot_min, plot_max],
+        "k--", linewidth=1.5, label="1:1 line"
+    )
+
+    # Best-fit regression lines for land and ocean
+    fit_x = np.array([plot_min, plot_max])
+
+    # Land fit line
+    if np.isfinite(slope_land):
+        fit_y_land = slope_land * fit_x + intercept_land
+        ax_scatter.plot(
+            fit_x, fit_y_land,
+            color="#8B4513", linewidth=2, linestyle="-",
+            label=f"Land fit: y={slope_land:.2f}x{intercept_land:+.1f}"
+        )
+
+    # Ocean fit line
+    if np.isfinite(slope_ocean):
+        fit_y_ocean = slope_ocean * fit_x + intercept_ocean
+        ax_scatter.plot(
+            fit_x, fit_y_ocean,
+            color="#1E90FF", linewidth=2, linestyle="-",
+            label=f"Ocean fit: y={slope_ocean:.2f}x{intercept_ocean:+.1f}"
+        )
+
+    ax_scatter.set_xlim(plot_min, plot_max)
+    ax_scatter.set_ylim(plot_min, plot_max)
+    ax_scatter.set_aspect("equal")
+    ax_scatter.set_xlabel(f"Observed Temperature ({unit})")
+    ax_scatter.set_ylabel(f"Simulated Temperature ({unit})")
+    ax_scatter.set_title(f"Obs vs Sim Correlation (r={r_all:.3f})")
+    ax_scatter.legend(loc="upper left", fontsize=8)
+    ax_scatter.grid(True, alpha=0.3)
+
+    # Colorbar for hexbin density
+    cbar_ax_scatter = fig.add_axes([0.87, 0.15, 0.02, 0.75])
+    cbar_scatter = fig.colorbar(hb, cax=cbar_ax_scatter)
+    cbar_scatter.set_label("Point density")
+
+    # Initially hide scatter plot
+    ax_scatter.set_visible(False)
+    cbar_ax_scatter.set_visible(False)
+
+    # State tracking
+    current_state = {"view": "RMSE Map"}
+
+    def update_view() -> None:
+        if current_state["view"] == "RMSE Map":
+            ax_map.set_visible(True)
+            cbar_ax_map.set_visible(True)
+            ax_scatter.set_visible(False)
+            cbar_ax_scatter.set_visible(False)
+        else:
+            ax_map.set_visible(False)
+            cbar_ax_map.set_visible(False)
+            ax_scatter.set_visible(True)
+            cbar_ax_scatter.set_visible(True)
+        fig.canvas.draw_idle()
+
+    # Radio buttons for view selection
+    radio_ax = fig.add_axes([0.01, 0.4, 0.08, 0.15])
+    radio_ax.set_title("View", fontsize=9)
+    radio = RadioButtons(radio_ax, ["RMSE Map", "Correlation"], active=0)
+
+    def on_view_change(label: str) -> None:
+        current_state["view"] = label
+        update_view()
+
+    radio.on_clicked(on_view_change)
+
+    plt.show()
+
+
 # ----------------------------
 # Main entry point
 # ----------------------------
@@ -984,6 +1200,19 @@ def main() -> None:
         lon2d,
         lat2d,
         bias_corrected_anomaly,
+        args.fahrenheit,
+        args.headless,
+    )
+
+    # Compute combined simulation field (T2m over land, surface over ocean)
+    sim_combined = np.where(land_mask[None, ...], sim_t2m, surface_cycle)
+
+    plot_eval_metrics(
+        lon2d,
+        lat2d,
+        sim_combined,
+        obs_surface,
+        land_mask,
         args.fahrenheit,
         args.headless,
     )
