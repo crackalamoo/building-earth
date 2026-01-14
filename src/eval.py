@@ -22,6 +22,7 @@ import pooch
 import xarray as xr
 from matplotlib import colormaps
 from matplotlib.colors import Normalize
+from matplotlib.widgets import RadioButtons
 
 from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.radiation import RadiationConfig
@@ -804,6 +805,82 @@ def plot_bias_corrected_anomaly(
     )
 
 
+def compute_cell_rmse(anomaly: np.ndarray) -> np.ndarray:
+    """Compute RMSE at each grid cell across all months.
+
+    Args:
+        anomaly: 3-D array of shape (months, lat, lon) containing sim - obs differences
+
+    Returns:
+        2-D array of shape (lat, lon) with RMSE at each cell
+    """
+    return np.sqrt(np.mean(anomaly**2, axis=0))
+
+
+def plot_eval_metrics(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    anomaly: np.ndarray,
+    use_fahrenheit: bool,
+    headless: bool = False,
+) -> None:
+    """Plot per-cell RMSE as a spatial map.
+
+    Shows RMSE computed at each grid cell across all 12 months.
+    """
+    if headless:
+        return
+
+    import matplotlib.pyplot as plt
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+
+    unit = temperature_unit(use_fahrenheit)
+
+    # Compute per-cell RMSE across months
+    cell_rmse = compute_cell_rmse(anomaly)
+    cell_rmse_display = convert_temperature(cell_rmse, use_fahrenheit, is_delta=True)
+
+    # Compute display range
+    rmse_vmax = float(np.nanmax(cell_rmse_display))
+    if not np.isfinite(rmse_vmax) or rmse_vmax <= 0:
+        rmse_vmax = 10.0
+    rmse_vmax = min(rmse_vmax, 20.0)  # Cap at reasonable maximum
+
+    rmse_cmap = colormaps["YlOrRd"]
+    rmse_norm = Normalize(vmin=0, vmax=rmse_vmax)
+
+    # Create figure with map projection
+    projection = ccrs.PlateCarree()
+    fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
+    ax.set_global()
+    ax.coastlines(linewidth=0.4)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+    ax.add_feature(
+        cfeature.NaturalEarthFeature(
+            "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+        ),
+        linewidth=0.2,
+    )
+
+    mesh = ax.pcolormesh(
+        lon2d,
+        lat2d,
+        cell_rmse_display,
+        cmap=rmse_cmap,
+        norm=rmse_norm,
+        shading="auto",
+        transform=projection,
+    )
+
+    ax.set_title(f"Per-Cell RMSE Across Months ({unit})")
+
+    cbar = fig.colorbar(mesh, ax=ax, orientation="vertical", pad=0.04, fraction=0.046)
+    cbar.set_label(f"RMSE ({unit})")
+
+    plt.show()
+
+
 # ----------------------------
 # Main entry point
 # ----------------------------
@@ -984,6 +1061,14 @@ def main() -> None:
         lon2d,
         lat2d,
         bias_corrected_anomaly,
+        args.fahrenheit,
+        args.headless,
+    )
+
+    plot_eval_metrics(
+        lon2d,
+        lat2d,
+        anomaly,
         args.fahrenheit,
         args.headless,
     )
