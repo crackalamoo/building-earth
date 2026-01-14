@@ -850,7 +850,7 @@ def plot_eval_metrics(
     rmse_vmax = float(np.nanmax(cell_rmse_display))
     if not np.isfinite(rmse_vmax) or rmse_vmax <= 0:
         rmse_vmax = 10.0
-    rmse_vmax = min(rmse_vmax, 20.0)
+    rmse_vmax = min(rmse_vmax, 10.0)
 
     rmse_cmap = colormaps["Purples"]  # Neutral colormap for error magnitude
     rmse_norm = Normalize(vmin=0, vmax=rmse_vmax)
