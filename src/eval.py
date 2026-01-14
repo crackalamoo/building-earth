@@ -852,7 +852,7 @@ def plot_eval_metrics(
         rmse_vmax = 10.0
     rmse_vmax = min(rmse_vmax, 20.0)
 
-    rmse_cmap = colormaps["YlOrRd"]
+    rmse_cmap = colormaps["Purples"]  # Neutral colormap for error magnitude
     rmse_norm = Normalize(vmin=0, vmax=rmse_vmax)
 
     # Prepare scatter data - flatten all months and cells
@@ -880,8 +880,10 @@ def plot_eval_metrics(
     r_land, _ = stats.pearsonr(obs_land, sim_land) if len(obs_land) > 2 else (np.nan, 0)
     r_ocean, _ = stats.pearsonr(obs_ocean, sim_ocean) if len(obs_ocean) > 2 else (np.nan, 0)
 
-    # Linear regression for best-fit line
-    slope, intercept, _, _, _ = stats.linregress(obs_all, sim_all)
+    # Linear regression for best-fit lines (overall, land, ocean)
+    slope_all, intercept_all, _, _, _ = stats.linregress(obs_all, sim_all)
+    slope_land, intercept_land, _, _, _ = stats.linregress(obs_land, sim_land) if len(obs_land) > 2 else (np.nan, np.nan, 0, 0, 0)
+    slope_ocean, intercept_ocean, _, _, _ = stats.linregress(obs_ocean, sim_ocean) if len(obs_ocean) > 2 else (np.nan, np.nan, 0, 0, 0)
 
     # Create figure with two axes (we'll show/hide them with tabs)
     fig = plt.figure(figsize=(12, 7))
@@ -949,13 +951,26 @@ def plot_eval_metrics(
         "k--", linewidth=1.5, label="1:1 line"
     )
 
-    # Best-fit regression line
+    # Best-fit regression lines for land and ocean
     fit_x = np.array([plot_min, plot_max])
-    fit_y = slope * fit_x + intercept
-    ax_scatter.plot(
-        fit_x, fit_y,
-        "r-", linewidth=1.5, label=f"Fit: y={slope:.2f}x{intercept:+.1f}"
-    )
+
+    # Land fit line
+    if np.isfinite(slope_land):
+        fit_y_land = slope_land * fit_x + intercept_land
+        ax_scatter.plot(
+            fit_x, fit_y_land,
+            color="#8B4513", linewidth=2, linestyle="-",
+            label=f"Land fit: y={slope_land:.2f}x{intercept_land:+.1f}"
+        )
+
+    # Ocean fit line
+    if np.isfinite(slope_ocean):
+        fit_y_ocean = slope_ocean * fit_x + intercept_ocean
+        ax_scatter.plot(
+            fit_x, fit_y_ocean,
+            color="#1E90FF", linewidth=2, linestyle="-",
+            label=f"Ocean fit: y={slope_ocean:.2f}x{intercept_ocean:+.1f}"
+        )
 
     ax_scatter.set_xlim(plot_min, plot_max)
     ax_scatter.set_ylim(plot_min, plot_max)
