@@ -85,3 +85,7 @@ New physics processes follow a standard pipeline: create the physics module in `
 ## Testing philosophy
 - Expensive experiment scripts (`main.py`, `scenario_compare.py`) are exercised manually; keep them thin wrappers around tested utilities.
 - For now, focus on improving the core functionality rather than writing tests unless specifically instructed. The code is in an early stage, and still iterating too quickly for tests to be very useful.
+
+## Debugging workflow
+- **Run simulations via scripts**: Prefer running scripts such as `uv run python src/main.py --headless --resolution 5` and analyzing the resulting `data/main.npz` file, rather than running the simulation directly in Python. The scripts handle setup correctly and cache results.
+- **Physics parameters should match observations**: When adjusting physical constants (pressure anomalies, diffusivities, etc.), first establish what the correct value should be based on correct physics. Don't tune parameters to fit model output on a particular paramter to observed data - that masks underlying bugs.
