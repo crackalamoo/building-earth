@@ -17,6 +17,7 @@ class ModelState:
     boundary_layer_wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     ocean_current_field: tuple[np.ndarray, np.ndarray] | None = None  # (u, v) in m/s
     ocean_current_psi: np.ndarray | None = None  # Streamfunction in Sv
+    precipitation_field: np.ndarray | None = None  # Precipitation rate in kg/m²/s
 
 
 def select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
@@ -29,9 +30,3 @@ def select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
     if nlayers == 3:
         return temperature[2]  # Free atmosphere layer (not boundary layer)
     raise ValueError(f"Unsupported number of layers: {nlayers}")
-
-
-def select_humidity_temperature(temperature: np.ndarray) -> np.ndarray:
-    """Return the temperature field to use when computing humidity diagnostics."""
-    # Always use surface temperature (layer 0) for humidity
-    return temperature[0]

@@ -12,14 +12,15 @@ from dataclasses import dataclass
 import climate_sim.physics.radiation as radiation
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeModel, SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeModel, LatentHeatExchangeConfig
-from climate_sim.physics.ocean_currents import compute_ocean_currents, OceanAdvectionConfig
+from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.diffusion import LayeredDiffusionOperator
 from climate_sim.physics.radiation import RadiationConfig
+from climate_sim.physics.vertical_motion import VerticalMotionConfig, compute_vertical_motion_tendency, compute_vertical_motion_tendencies
 from climate_sim.core.state import ModelState
-from climate_sim.core.math_core import spherical_cell_area
+from climate_sim.core.math_core import spherical_cell_area, compute_divergence
 from climate_sim.data.constants import R_EARTH_METERS
 from typing import Callable
 
@@ -57,6 +58,7 @@ class RhsBuildInputs:
     lon2d: FloatArray
     lat2d: FloatArray
     ocean_advection_cfg: OceanAdvectionConfig | None = None
+    vertical_motion_cfg: VerticalMotionConfig | None = None
 
 def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
     """Build RHS and Jacobian functions from physics configuration.
@@ -306,6 +308,20 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     radiative[0] += surface_tendency
                     radiative[1] += boundary_tendency
                     radiative[2] += atmosphere_tendency
+
+                # Vertical motion: energy-conserving heat exchange between BL and atmosphere
+                vertical_motion_enabled = (
+                    inputs.vertical_motion_cfg is not None
+                    and inputs.vertical_motion_cfg.enabled
+                )
+                if vertical_motion_enabled and state.boundary_layer_wind_field is not None:
+                    wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
+                    divergence = compute_divergence(wind_u_bl, wind_v_bl, inputs.lat2d, inputs.lon2d)
+                    bl_tendency, atm_tendency = compute_vertical_motion_tendencies(
+                        divergence, boundary_temperature, atmosphere_temperature
+                    )
+                    radiative[1] += bl_tendency
+                    radiative[2] += atm_tendency
 
             return radiative
         if inputs.diffusion_operator.surface.enabled:

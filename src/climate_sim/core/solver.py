@@ -11,7 +11,7 @@ from scipy.sparse import linalg as splinalg
 
 import climate_sim.physics.radiation as radiation
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.physics.humidity import compute_humidity_q
+from climate_sim.physics.humidity import compute_humidity_and_precipitation
 from climate_sim.core.timing import time_block, get_profiler, reset_profiler
 from climate_sim.core.math_core import (
     LinearSolveCache,
@@ -199,12 +199,24 @@ def monthly_step(
                 # Compute ITCZ dynamically from current temperature
                 current_itcz = _compute_itcz_from_temp(temp)
 
-                # Compute humidity dynamically using current temp and ITCZ
-                humidity_field = compute_humidity_q(
+                # Get wind field for moisture advection (prefer boundary layer)
+                if lagged_boundary_layer_wind_field is not None:
+                    wind_u, wind_v = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+                elif lagged_wind_field is not None:
+                    wind_u, wind_v = lagged_wind_field[0], lagged_wind_field[1]
+                else:
+                    wind_u, wind_v = None, None
+
+                # Use BL temperature for humidity (3-layer: index 1), otherwise surface
+                # In 2-layer mode, temp[1] is atmosphere not BL, so use surface
+                t_for_humidity = temp[1] if temp.shape[0] == 3 else temp[0]
+
+                humidity_field, precipitation_field = compute_humidity_and_precipitation(
+                    wind_u, wind_v,
+                    surface_context.land_mask,
                     surface_context.lat2d,
-                    temp[0],
-                    land_mask=surface_context.land_mask,
-                    lon_2d=surface_context.lon2d,
+                    surface_context.lon2d,
+                    t_for_humidity,
                     itcz_rad=current_itcz,
                 )
 
@@ -223,6 +235,7 @@ def monthly_step(
                     boundary_layer_wind_field=boundary_layer_wind_field,
                     ocean_current_field=ocean_current_field,
                     ocean_current_psi=ocean_current_psi,
+                    precipitation_field=precipitation_field,
                 ), current_itcz
 
         # implicit solver loop
@@ -755,6 +768,7 @@ def solve_periodic_climate(
             lon2d=operators.lon2d,
             lat2d=operators.lat2d,
             ocean_advection_cfg=operators.ocean_advection_cfg,
+            vertical_motion_cfg=operators.vertical_motion_cfg,
         )
         rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
 
@@ -843,6 +857,7 @@ def solve_periodic_climate(
                         boundary_layer_wind_field=bl_wind,
                         ocean_current_field=ocean_current_field,
                         ocean_current_psi=ocean_current_psi,
+                        precipitation_field=month_state.precipitation_field,
                     )
                 else:
                     # Two-layer or one-layer: single wind field with drag
@@ -869,8 +884,10 @@ def solve_periodic_climate(
                         albedo_field=month_state.albedo_field,
                         wind_field=wind_field,
                         humidity_field=month_state.humidity_field,
+                        boundary_layer_wind_field=month_state.boundary_layer_wind_field,
                         ocean_current_field=ocean_current_field,
                         ocean_current_psi=ocean_current_psi,
+                        precipitation_field=month_state.precipitation_field,
                     )
 
     # Post-process results (convert to Celsius, reshape layers)

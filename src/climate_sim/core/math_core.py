@@ -10,6 +10,8 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse import linalg as splinalg
 
+from climate_sim.data.constants import R_EARTH_METERS
+
 
 def harmonic_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Return the element-wise harmonic mean for positive arrays."""
@@ -184,3 +186,36 @@ def get_factorized_solver(
         solver = splinalg.factorized(matrix)
         cache.factorized_solvers[key] = solver
     return solver
+
+
+def compute_divergence(
+    u: np.ndarray,
+    v: np.ndarray,
+    lat2d: np.ndarray,
+    lon2d: np.ndarray,
+) -> np.ndarray:
+    """Compute horizontal divergence on a lat-lon grid.
+
+    div(V) = (1/R cos φ) * ∂u/∂λ + (1/R cos φ) * ∂(v cos φ)/∂φ
+    """
+    R = R_EARTH_METERS
+    lat_rad = np.deg2rad(lat2d)
+
+    cos_lat = np.cos(lat_rad)
+    cos_lat = np.maximum(cos_lat, 0.01)  # Avoid division by zero at poles
+
+    # Grid spacings (assumes uniform grid)
+    dlat = np.deg2rad(lat2d[1, 0] - lat2d[0, 0])
+    dlon = np.deg2rad(lon2d[0, 1] - lon2d[0, 0])
+
+    # ∂u/∂λ
+    du_dlon = np.gradient(u, axis=1) / dlon
+
+    # ∂(v cos φ)/∂φ
+    v_cos_lat = v * cos_lat
+    d_vcos_dlat = np.gradient(v_cos_lat, axis=0) / dlat
+
+    # Divergence
+    div = (1 / (R * cos_lat)) * du_dlon + (1 / (R * cos_lat)) * d_vcos_dlat
+
+    return div

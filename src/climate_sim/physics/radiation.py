@@ -15,7 +15,8 @@ from climate_sim.physics.atmosphere.pressure import compute_pressure
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.data.constants import (
-    HEAT_CAPACITY_AIR_J_M2_K,
+    ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
+    BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
     BOUNDARY_LAYER_EMISSIVITY,
     SHORTWAVE_ABSORPTANCE_ATMOSPHERE,
     STANDARD_LAPSE_RATE_K_PER_M,
@@ -32,9 +33,9 @@ class RadiationConfig:
     emissivity_surface: float = 1.0
     emissivity_atmosphere: float = 0.78
     include_atmosphere: bool = True
-    atmosphere_heat_capacity: float = HEAT_CAPACITY_AIR_J_M2_K
+    atmosphere_heat_capacity: float = ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K
     temperature_floor: float = 10.0  # K
-    boundary_layer_heat_capacity: float = HEAT_CAPACITY_AIR_J_M2_K
+    boundary_layer_heat_capacity: float = BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K
     boundary_layer_emissivity: float = BOUNDARY_LAYER_EMISSIVITY
     shortwave_absorptance_atmosphere: float = SHORTWAVE_ABSORPTANCE_ATMOSPHERE
     cloud_top_delta_z_m: float = ATMOSPHERE_LAYER_HEIGHT_M / 2.0

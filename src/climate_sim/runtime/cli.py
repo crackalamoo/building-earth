@@ -213,6 +213,15 @@ def add_common_model_arguments(
         help_enable="Enable the atmospheric boundary layer (750m, optically thin) (default)",
         help_disable="Disable the boundary layer (use 2-layer model)",
     )
+    add_boolean_flag(
+        parser,
+        dest="vertical_motion",
+        default=True,
+        enable_option="--vertical-motion",
+        disable_option="--no-vertical-motion",
+        help_enable="Enable vertical motion physics (subsidence warming + latent heat release) (default)",
+        help_disable="Disable vertical motion physics",
+    )
     if include_temperature_unit:
         add_temperature_unit_argument(
             parser,

@@ -21,6 +21,7 @@ from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfi
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
+from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.plotting import (
     plot_layered_monthly_temperature_cycle,
@@ -99,6 +100,7 @@ def main() -> None:
     wind_config = WindConfig()
     boundary_layer_config = BoundaryLayerConfig(enabled=args.boundary_layer)
     ocean_advection_config = OceanAdvectionConfig(enabled=args.ocean_advection)
+    vertical_motion_config = VerticalMotionConfig(enabled=args.vertical_motion)
 
     model_config = ModelConfig(
         radiation=radiation_config,
@@ -110,6 +112,7 @@ def main() -> None:
         latent_heat=latent_heat_config,
         boundary_layer=boundary_layer_config,
         ocean_advection=ocean_advection_config,
+        vertical_motion=vertical_motion_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )
@@ -478,8 +481,11 @@ def main() -> None:
     if humidity_q_cycle is not None and not args.headless:
             # Use stored humidity from solver state
             # Compute relative humidity from stored specific humidity
-            # Use surface temperature (matching solver's _select_humidity_temperature behavior)
-            temp_for_humidity = surface_cycle + 273.15  # Convert to Kelvin
+            # Use boundary layer temperature if available (3-layer), fall back to surface (2-layer)
+            if boundary_layer_cycle is not None:
+                temp_for_humidity = boundary_layer_cycle + 273.15  # Convert to Kelvin
+            else:
+                temp_for_humidity = surface_cycle + 273.15  # Convert to Kelvin
 
             # Compute RH from q: rh = q / q_sat
             # where q_sat is computed from temperature and pressure
@@ -539,12 +545,22 @@ def main() -> None:
             humidity_q_sorted = humidity_q_cycle[:, :, lon_sort_idx]
             humidity_rh_sorted = humidity_rh_cycle[:, :, lon_sort_idx]
             cloud_cover_sorted = cloud_cover_cycle[:, :, lon_sort_idx]
-        
+
+            # Get precipitation if available
+            precipitation_cycle = layers.get("precipitation")
+            precipitation_sorted = None
+            if precipitation_cycle is not None:
+                # Convert from kg/m²/s to mm/day for visualization
+                precipitation_mm_day = precipitation_cycle * 86400  # 1 kg/m² = 1 mm
+                precipitation_sorted = precipitation_mm_day[:, :, lon_sort_idx]
+
             humidity_data = {
                 "Specific Humidity (q)": humidity_q_sorted,
                 "Relative Humidity (RH)": humidity_rh_sorted,
                 "Cloud Cover": cloud_cover_sorted,
             }
+            if precipitation_sorted is not None:
+                humidity_data["Precipitation"] = precipitation_sorted
         
             # Initial state
             current_state_humidity = {"month": 0, "type": "Specific Humidity (q)"}
@@ -558,6 +574,10 @@ def main() -> None:
                     vmin = 0
                     vmax = 1
                     label = "Relative Humidity"
+                elif humidity_type == "Precipitation":
+                    vmin = 0
+                    vmax = 15  # mm/day, typical tropical max
+                    label = "Precipitation (mm/day)"
                 else:  # Cloud Cover
                     vmin = 0
                     vmax = 1
@@ -648,6 +668,8 @@ def main() -> None:
                     return f"{_format_lat(lat)}  {_format_lon(lon)}  q: {value:.4f} kg/kg"
                 elif var_type == "Relative Humidity (RH)":
                     return f"{_format_lat(lat)}  {_format_lon(lon)}  RH: {value:.2%}"
+                elif var_type == "Precipitation":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Precip: {value:.1f} mm/day"
                 else:  # Cloud Cover
                     return f"{_format_lat(lat)}  {_format_lon(lon)}  Cloud: {value:.2%}"
 

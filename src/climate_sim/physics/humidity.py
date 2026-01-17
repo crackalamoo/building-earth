@@ -5,10 +5,13 @@ from __future__ import annotations
 import numpy as np
 
 from climate_sim.physics.atmosphere.pressure import compute_pressure
-from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, DELTA_SUBTROPICS, compute_itcz_latitude
-from climate_sim.core.math_core import spherical_cell_area
+from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, compute_itcz_latitude
+from climate_sim.physics.atmosphere.pressure import LAT_SUBTROPICS_BASE, SUBTROPICS_ITCZ_COUPLING
+from climate_sim.core.math_core import spherical_cell_area, compute_divergence
 from climate_sim.core.timing import time_block
 from climate_sim.data.constants import R_EARTH_METERS
+from climate_sim.physics.vertical_motion import compute_subsidence_drying
+from climate_sim.physics.precipitation import compute_precipitation_rate
 
 # Mean RH and anomalies at key latitude bands (like pressure anomalies)
 RH_MEAN = 0.65
@@ -29,6 +32,153 @@ SIGMA_RH_ITCZ = np.deg2rad(10.0)       # ITCZ humid zone width
 SIGMA_RH_SUBTROPICS = np.deg2rad(15.0)  # Subtropical dry zone width
 SIGMA_RH_SUBPOLAR = np.deg2rad(12.0)   # Subpolar storm track width
 SIGMA_RH_POLES = np.deg2rad(10.0)      # Polar humid zone width
+
+# Moisture advection parameters
+# Penetration length is longer for q advection (conserved quantity) vs RH
+# ~2500 km allows monsoon moisture to reach interior continents
+MOISTURE_PENETRATION_LENGTH = 2500e3  # meters, e-folding distance for moisture decay over land
+RH_OCEAN_SOURCE = 0.80  # Relative humidity over ocean (moisture source)
+MOISTURE_ADVECTION_ITERATIONS = 15  # Number of iterations for convergence
+
+
+def advect_moisture_from_ocean(
+    wind_u: np.ndarray,
+    wind_v: np.ndarray,
+    land_mask: np.ndarray,
+    lat2d: np.ndarray,
+    lon2d: np.ndarray,
+    temperature_field: np.ndarray | None = None,
+    itcz_rad: np.ndarray | None = None,
+    penetration_length: float = MOISTURE_PENETRATION_LENGTH,
+    n_iterations: int = MOISTURE_ADVECTION_ITERATIONS,
+) -> np.ndarray:
+    """Compute specific humidity by advecting moisture from ocean sources.
+
+    Ocean cells are moisture sources with q computed from RH pattern and temperature.
+    Land cells receive q from upwind with exponential decay (representing
+    precipitation loss, mixing, etc).
+
+    We advect q (not RH) because specific humidity is the conserved quantity
+    during adiabatic transport. RH changes with temperature even without
+    moisture exchange.
+
+    The decay follows: dq/ds = -q/L, giving q(s) = q_0 * exp(-s/L)
+    where s is distance and L is the penetration length scale.
+    """
+    nlat, nlon = land_mask.shape
+    ocean_mask = ~land_mask
+
+    # Compute q_sat from temperature (using boundary layer temperature)
+    if temperature_field is None:
+        raise ValueError("temperature_field is required for q advection")
+
+    temperature_C = temperature_field - 273.15
+    e_sat = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
+    p_hPa = 1013.25  # Approximate surface pressure
+    q_sat = (0.622 * e_sat) / (p_hPa - (1 - 0.622) * e_sat)
+
+    # Compute ocean RH pattern (higher near ITCZ, lower in subtropics)
+    lat_rad = np.deg2rad(lat2d)
+    if itcz_rad is not None:
+        itcz_2d = np.broadcast_to(itcz_rad[np.newaxis, :], lat_rad.shape)
+        rh_ocean = relative_humidity_pattern(lat_rad, itcz_2d)
+        # Ocean is generally more humid than the pattern
+        rh_ocean = np.clip(rh_ocean + 0.10, 0.60, 0.90)
+    else:
+        rh_ocean = np.full_like(lat2d, RH_OCEAN_SOURCE, dtype=float)
+
+    # Ocean source: q = RH * q_sat
+    q_ocean = rh_ocean * q_sat
+
+    # Initialize: ocean = source q, land = 0
+    q = np.where(ocean_mask, q_ocean, 0.0)
+
+    # Compute grid spacings in meters
+    lon_rad = np.deg2rad(lon2d)
+
+    # Grid spacing
+    dlat_rad = np.abs(lat_rad[1, 0] - lat_rad[0, 0]) if nlat > 1 else np.deg2rad(1.0)
+    dlon_rad = np.abs(lon_rad[0, 1] - lon_rad[0, 0]) if nlon > 1 else np.deg2rad(1.0)
+
+    # Physical grid spacing (meters)
+    dy = R_EARTH_METERS * dlat_rad  # Constant
+    dx = R_EARTH_METERS * np.cos(lat_rad) * dlon_rad  # Varies with latitude
+
+    # Iterate: propagate moisture from ocean following wind
+    for _ in range(n_iterations):
+        # Sample q from upwind location
+        q_upwind = _sample_upwind(q, wind_u, wind_v, dx, dy)
+
+        # Compute decay factor based on physical distance traveled
+        wind_speed = np.sqrt(wind_u**2 + wind_v**2)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            dist = np.where(
+                wind_speed > 0.1,
+                np.sqrt((wind_u * dx / np.maximum(wind_speed, 0.1))**2 +
+                        (wind_v * dy / np.maximum(wind_speed, 0.1))**2),
+                0.5 * (dx + dy)  # Fallback for calm conditions
+            )
+
+        # Physical decay: exp(-distance / penetration_length)
+        decay = np.exp(-dist / penetration_length)
+
+        # Update: land gets upwind q with decay, ocean stays at source
+        q = np.where(ocean_mask, q_ocean, q_upwind * decay)
+
+    # Ensure valid range (small positive floor, capped at saturation)
+    q = np.maximum(q, 1e-6)
+    q = np.minimum(q, q_sat)
+
+    return q
+
+
+def _sample_upwind(
+    field: np.ndarray,
+    wind_u: np.ndarray,
+    wind_v: np.ndarray,
+    dx: np.ndarray,
+    dy: float,
+) -> np.ndarray:
+    """Sample field values from upwind locations using first-order upwind scheme.
+    """
+    nlat, nlon = field.shape
+
+    # Upwind indices for zonal direction (periodic)
+    # If u > 0 (eastward wind), upwind is to the west (j-1)
+    # If u < 0 (westward wind), upwind is to the east (j+1)
+    j_upwind_east = np.roll(np.arange(nlon), -1)  # j+1
+    j_upwind_west = np.roll(np.arange(nlon), 1)   # j-1
+
+    # Sample from west or east based on wind direction
+    field_west = field[:, j_upwind_west]
+    field_east = field[:, j_upwind_east]
+    zonal_upwind = np.where(wind_u >= 0, field_west, field_east)
+
+    # Upwind indices for meridional direction (bounded at poles)
+    # If v > 0 (northward wind), upwind is to the south (i-1)
+    # If v < 0 (southward wind), upwind is to the north (i+1)
+    field_south = np.roll(field, 1, axis=0)
+    field_north = np.roll(field, -1, axis=0)
+
+    # Handle pole boundaries
+    field_south[0, :] = field[0, :]  # South pole: no upwind from further south
+    field_north[-1, :] = field[-1, :]  # North pole: no upwind from further north
+
+    merid_upwind = np.where(wind_v >= 0, field_south, field_north)
+
+    # Blend zonal and meridional based on wind magnitude
+    wind_speed = np.sqrt(wind_u**2 + wind_v**2)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        weight_u = np.abs(wind_u) / np.maximum(wind_speed, 0.01)
+        weight_v = np.abs(wind_v) / np.maximum(wind_speed, 0.01)
+
+    # Weighted average of upwind samples
+    upwind = weight_u * zonal_upwind + weight_v * merid_upwind
+
+    # For very weak winds, use local value
+    upwind = np.where(wind_speed < 0.1, field, upwind)
+
+    return upwind
 
 
 def specific_humidity_to_relative_humidity(
@@ -107,9 +257,10 @@ def relative_humidity_pattern(
     np.ndarray
         Relative humidity (0-1), same shape as lat_rad.
     """
-    # Subtropical dry zones follow ITCZ (descending branch of Hadley cell)
-    lat_subtrop_south = 0.5 * itcz_rad - DELTA_SUBTROPICS
-    lat_subtrop_north = 0.5 * itcz_rad + DELTA_SUBTROPICS
+    # Subtropical dry zones: base at ~29° with small ITCZ-tracking component
+    # (matches pressure.py pattern exactly)
+    lat_subtrop_north = LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
+    lat_subtrop_south = -LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
 
     # ITCZ humid anomaly
     rh_itcz = drh_itcz * np.exp(-((lat_rad - itcz_rad) / SIGMA_RH_ITCZ) ** 2)
@@ -270,7 +421,7 @@ def _compute_cloud_cover_latitude_fallback(
     temperature: np.ndarray, land_mask: np.ndarray | None = None
 ) -> np.ndarray:
     """Fallback latitude-dependent cloud cover (for backward compatibility).
-    
+
     Uses a simple parameterization based on latitude only:
         C = 0.65 - 2.59 * sin²(lat) + 3.55 * sin⁴(lat)
     """
@@ -298,3 +449,62 @@ def _compute_cloud_cover_latitude_fallback(
     cloud_cover = np.minimum(cloud_cover, 0.9)
 
     return cloud_cover
+
+
+def compute_humidity_and_precipitation(
+    wind_u: np.ndarray | None,
+    wind_v: np.ndarray | None,
+    land_mask: np.ndarray,
+    lat2d: np.ndarray,
+    lon2d: np.ndarray,
+    temperature_field: np.ndarray,
+    itcz_rad: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Compute humidity field and precipitation.
+
+    If wind is available, uses wind-advected moisture from ocean with
+    subsidence drying applied over land. If wind is not available,
+    falls back to pattern-based humidity computation.
+    """
+    if wind_u is not None and wind_v is not None:
+        # Advect specific humidity (conserved) from ocean to land
+        humidity_field = advect_moisture_from_ocean(
+            wind_u, wind_v,
+            land_mask,
+            lat2d,
+            lon2d,
+            temperature_field=temperature_field,
+            itcz_rad=itcz_rad,
+        )
+
+        # Apply subsidence drying over LAND only: descending air brings dry air down
+        # Over ocean, evaporation replenishes moisture so subsidence doesn't dry it out
+        divergence = compute_divergence(wind_u, wind_v, lat2d, lon2d)
+        # Subsidence drying is a tendency (kg/kg/s), apply for ~1 month
+        # Use a scaling factor to convert instantaneous tendency to monthly effect
+        seconds_per_month = 30.0 * 24.0 * 3600.0
+        drying_tendency = compute_subsidence_drying(divergence, humidity_field)
+        # Apply as multiplicative factor to avoid negative humidity
+        # dq/q = (dq/dt * dt) / q = drying_tendency * dt / humidity_field
+        drying_factor = 1.0 + (drying_tendency * seconds_per_month) / np.maximum(humidity_field, 1e-10)
+        drying_factor = np.clip(drying_factor, 0.1, 1.0)  # Cap between 10% and 100%
+        # Only apply over land - ocean evaporation maintains humidity despite subsidence
+        drying_factor = np.where(land_mask, drying_factor, 1.0)
+        humidity_field = humidity_field * drying_factor
+
+        # Compute precipitation from wind and humidity
+        precipitation_field = compute_precipitation_rate(
+            humidity_field, wind_u, wind_v, lat2d, lon2d
+        )
+
+        return humidity_field, precipitation_field
+    else:
+        # Fallback to latitude-pattern humidity when no wind available
+        humidity_field = compute_humidity_q(
+            lat2d,
+            temperature_field,
+            land_mask=land_mask,
+            lon_2d=lon2d,
+            itcz_rad=itcz_rad,
+        )
+        return humidity_field, None

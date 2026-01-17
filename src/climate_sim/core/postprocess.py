@@ -165,6 +165,12 @@ def postprocess_periodic_cycle_results(
         humidity_q = np.stack([humidity for humidity in humidity_fields if humidity is not None], axis=0)
         layers_map["humidity"] = humidity_q
 
+    # Extract precipitation fields from state
+    precipitation_fields = [state.precipitation_field for state in monthly_states]
+    if all(precip is not None for precip in precipitation_fields):
+        precipitation = np.stack([precip for precip in precipitation_fields if precip is not None], axis=0)
+        layers_map["precipitation"] = precipitation
+
     # Extract ocean current fields from state
     ocean_current_fields = [state.ocean_current_field for state in monthly_states]
     if all(current is not None for current in ocean_current_fields):

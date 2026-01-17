@@ -15,7 +15,7 @@ class LatentHeatExchangeConfig:
     """Configuration for the latent heat exchange model."""
 
     enabled: bool = True
-    minimum_wind_speed_m_s: float = 0.1
+    minimum_wind_speed_m_s: float = 1.0  # Free convection velocity scale (same as sensible)
     # Land evapotranspiration is weaker than ocean evaporation due to:
     # - Limited soil moisture availability
     # - Stomatal resistance in vegetation
