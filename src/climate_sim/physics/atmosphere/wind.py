@@ -144,6 +144,8 @@ class WindModel:
         lat2d: np.ndarray,
         *,
         config: WindConfig,
+        roughness_length: np.ndarray | None = None,
+        land_mask: np.ndarray | None = None,
     ) -> None:
         if lon2d.shape != lat2d.shape:
             raise ValueError("Longitude and latitude grids must share the same shape")
@@ -182,10 +184,23 @@ class WindModel:
         )
         self._coriolis = coriolis
 
-        self._land_mask = compute_land_mask(self._lon2d, self._lat2d)
-        self._drag_coefficient = compute_surface_roughness(
-            self._lon2d, self._lat2d, self._land_mask
+        self._land_mask = (
+            land_mask if land_mask is not None
+            else compute_land_mask(self._lon2d, self._lat2d)
         )
+
+        if roughness_length is not None:
+            self._roughness_length = roughness_length
+            self._drag_coefficient = neutral_drag_from_roughness_length(roughness_length)
+        else:
+            self._drag_coefficient = compute_surface_roughness(
+                self._lon2d, self._lat2d, self._land_mask
+            )
+            elevation_data = load_elevation_data()
+            assert elevation_data is not None, "Elevation data could not be loaded"
+            self._roughness_length = compute_cell_roughness_length(
+                self._lon2d, self._lat2d, data=elevation_data, land_mask=self._land_mask
+            )
 
         elevation_data = load_elevation_data()
         assert elevation_data is not None, "Elevation data could not be loaded"
@@ -193,11 +208,6 @@ class WindModel:
             self._lon2d, self._lat2d, data=elevation_data
         )
         self.elevation_m = np.maximum(self.elevation_m, 0.0)
-
-        # Store roughness length for wind speed calculations
-        self._roughness_length = compute_cell_roughness_length(
-            self._lon2d, self._lat2d, data=elevation_data, land_mask=self._land_mask
-        )
 
         # Pre-compute bulk transfer coefficient (constant for the grid)
         log_height_surface = 10.0
