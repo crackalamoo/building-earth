@@ -205,8 +205,7 @@ def compute_cell_elevation(
     lon_edges = regular_longitude_edges(lon_centers)
     
     nlat, nlon = lon_array.shape
-    res = np.zeros_like(lon_array, dtype=float)
-    
+
     # Create sub-grid sampling points within each cell (vectorized)
     # Use n_samples_per_cell points along each dimension
     sample_weights = np.linspace(0.0, 1.0, n_samples_per_cell + 1)

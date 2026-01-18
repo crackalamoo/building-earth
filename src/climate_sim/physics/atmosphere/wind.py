@@ -189,6 +189,9 @@ class WindModel:
             else compute_land_mask(self._lon2d, self._lat2d)
         )
 
+        elevation_data = load_elevation_data()
+        assert elevation_data is not None, "Elevation data could not be loaded"
+
         if roughness_length is not None:
             self._roughness_length = roughness_length
             self._drag_coefficient = neutral_drag_from_roughness_length(roughness_length)
@@ -196,14 +199,10 @@ class WindModel:
             self._drag_coefficient = compute_surface_roughness(
                 self._lon2d, self._lat2d, self._land_mask
             )
-            elevation_data = load_elevation_data()
-            assert elevation_data is not None, "Elevation data could not be loaded"
             self._roughness_length = compute_cell_roughness_length(
                 self._lon2d, self._lat2d, data=elevation_data, land_mask=self._land_mask
             )
 
-        elevation_data = load_elevation_data()
-        assert elevation_data is not None, "Elevation data could not be loaded"
         self.elevation_m = compute_cell_elevation(
             self._lon2d, self._lat2d, data=elevation_data
         )
