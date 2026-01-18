@@ -4,9 +4,9 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 import urllib.request
-from collections import defaultdict
 
 import numpy as np
+import rasterio
 import rioxarray
 from PIL import Image
 from functools import lru_cache
@@ -18,6 +18,50 @@ from climate_sim.core.math_core import regular_latitude_edges, regular_longitude
 VON_KARMAN_CONSTANT = 0.4
 REFERENCE_HEIGHT_M = 10.0
 WATER_ROUGHNESS_LENGTH_M = 2.0e-4
+
+
+# Module-level cache for rasterio data to avoid repeated file reads
+_rasterio_cache: dict[str, tuple[np.ndarray, rasterio.Affine, int, int]] = {}
+
+
+def _get_rasterio_data(tif_path: Path) -> tuple[np.ndarray, rasterio.Affine, int, int]:
+    """Load and cache GeoTIFF data using rasterio.
+
+    Caches the full image read which is faster than xarray (~1s vs 3.5s).
+    """
+    global _rasterio_cache
+
+    path_str = str(tif_path)
+    if path_str in _rasterio_cache:
+        return _rasterio_cache[path_str]
+
+    with rasterio.open(tif_path) as src:
+        data = src.read(1)
+        transform = src.transform
+        height, width = src.height, src.width
+
+    result = (data, transform, height, width)
+    _rasterio_cache[path_str] = result
+    return result
+
+
+def _sample_elevation_points_rasterio(
+    tif_path: Path,
+    lon_samples: np.ndarray,
+    lat_samples: np.ndarray,
+) -> np.ndarray:
+    """Sample elevation at given lon/lat points using rasterio.
+
+    Uses nearest-neighbor sampling since the source grid (1 arc-minute) is
+    fine enough relative to typical model resolutions.
+    """
+    data, transform, height, width = _get_rasterio_data(tif_path)
+
+    rows, cols = rasterio.transform.rowcol(transform, lon_samples, lat_samples)
+    rows = np.clip(np.asarray(rows), 0, height - 1).astype(int)
+    cols = np.clip(np.asarray(cols), 0, width - 1).astype(int)
+
+    return data[rows, cols].astype(float)
 
 def download_etopo(dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -65,6 +109,35 @@ def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
     if data.rio.crs is None:
         data = data.rio.write_crs("EPSG:4326", inplace=False)
     return data
+
+
+# Module-level cache for extracted numpy arrays to avoid repeated slow .values calls
+_elevation_arrays_cache: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+
+def _get_elevation_arrays(dataset: xr.DataArray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract and cache numpy arrays from an xarray dataset.
+
+    Returns (x_coords, y_coords, data_values) with y_coords sorted ascending
+    for compatibility with RegularGridInterpolator.
+    """
+    global _elevation_arrays_cache
+
+    dataset_id = id(dataset)
+    if dataset_id in _elevation_arrays_cache:
+        return _elevation_arrays_cache[dataset_id]
+
+    x_coords = dataset.coords["x"].values
+    y_coords = dataset.coords["y"].values
+    data_values = dataset.values
+
+    if y_coords[0] > y_coords[-1]:
+        y_coords = y_coords[::-1]
+        data_values = data_values[::-1, :]
+
+    result = (x_coords, y_coords, data_values)
+    _elevation_arrays_cache[dataset_id] = result
+    return result
 
 def compute_cell_elevation(
     lon2d: np.ndarray,
@@ -132,79 +205,94 @@ def compute_cell_elevation(
     lon_edges = regular_longitude_edges(lon_centers)
     
     nlat, nlon = lon_array.shape
-    res = np.zeros_like(lon_array, dtype=float)
-    
-    # Create sub-grid sampling points within each cell
+
+    # Create sub-grid sampling points within each cell (vectorized)
     # Use n_samples_per_cell points along each dimension
     sample_weights = np.linspace(0.0, 1.0, n_samples_per_cell + 1)
     # Use midpoints of sub-intervals for better coverage
     sample_weights = (sample_weights[:-1] + sample_weights[1:]) / 2.0
-    
-    # Collect all sample points for batch interpolation
-    all_lon_samples = []
-    all_lat_samples = []
-    cell_indices = []  # (i, j) for each sample point
-    
-    for i in range(nlat):
-        lat_min = lat_edges[i]
-        lat_max = lat_edges[i + 1]
-        for j in range(nlon):
-            lon_min = lon_edges[j]
-            lon_max = lon_edges[j + 1]
-            
-            # Handle longitude wrapping
-            if lon_max < lon_min:
-                lon_max += 360.0
-            
-            # Create sub-grid of sample points for this cell
-            for lat_weight in sample_weights:
-                lat_sample = lat_min + (lat_max - lat_min) * lat_weight
-                lat_sample = np.clip(lat_sample, -90.0, 90.0)
-                for lon_weight in sample_weights:
-                    lon_sample = lon_min + (lon_max - lon_min) * lon_weight
-                    lon_sample = _wrap_longitudes(np.array([lon_sample]))[0]
-                    
-                    all_lon_samples.append(lon_sample)
-                    all_lat_samples.append(lat_sample)
-                    cell_indices.append((i, j))
-    
-    # Batch interpolate all sample points
-    if all_lon_samples:
-        lon_samples_array = np.array(all_lon_samples)
-        lat_samples_array = np.array(all_lat_samples)
-        
-        coords = {
-            "x": ("points", lon_samples_array),
-            "y": ("points", lat_samples_array),
-        }
-        
-        try:
-            sampled = dataset.interp(
-                x=coords["x"], y=coords["y"], method="linear", kwargs={"fill_value": None}
-            )
-        except TypeError:
-            sampled = dataset.interp(x=coords["x"], y=coords["y"], method="linear")
-        
-        sampled_values = np.asarray(sampled.values, dtype=float)
-        
+
+    # Build all sample coordinates using broadcasting (no Python loops)
+    # Create full 2D arrays for cell edges
+    lat_min_2d = np.broadcast_to(lat_edges[:-1, np.newaxis], (nlat, nlon))  # (nlat, nlon)
+    lat_max_2d = np.broadcast_to(lat_edges[1:, np.newaxis], (nlat, nlon))   # (nlat, nlon)
+    lon_min_2d = np.broadcast_to(lon_edges[np.newaxis, :-1], (nlat, nlon))  # (nlat, nlon)
+    lon_max_2d = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))   # (nlat, nlon)
+
+    # Handle longitude wrapping: where lon_max < lon_min, add 360
+    lon_max_2d = np.where(lon_max_2d < lon_min_2d, lon_max_2d + 360.0, lon_max_2d)
+
+    # Broadcast to (nlat, nlon, n_samples, n_samples)
+    # sample_weights shape: (n_samples,)
+    lat_weights = sample_weights[np.newaxis, np.newaxis, :, np.newaxis]  # (1, 1, n, 1)
+    lon_weights = sample_weights[np.newaxis, np.newaxis, np.newaxis, :]  # (1, 1, 1, n)
+
+    lat_min_4d = lat_min_2d[:, :, np.newaxis, np.newaxis]  # (nlat, nlon, 1, 1)
+    lat_max_4d = lat_max_2d[:, :, np.newaxis, np.newaxis]
+    lon_min_4d = lon_min_2d[:, :, np.newaxis, np.newaxis]
+    lon_max_4d = lon_max_2d[:, :, np.newaxis, np.newaxis]
+
+    # Compute sample points - lat varies on axis 2, lon on axis 3
+    # Shape will be (nlat, nlon, n, 1) and (nlat, nlon, 1, n) respectively
+    lat_samples_partial = lat_min_4d + (lat_max_4d - lat_min_4d) * lat_weights
+    lat_samples_partial = np.clip(lat_samples_partial, -90.0, 90.0)
+    lon_samples_partial = lon_min_4d + (lon_max_4d - lon_min_4d) * lon_weights
+    lon_samples_partial = _wrap_longitudes(lon_samples_partial)
+
+    # Broadcast to full (nlat, nlon, n_samples, n_samples) shape
+    target_shape = (nlat, nlon, n_samples_per_cell, n_samples_per_cell)
+    lat_samples_4d = np.broadcast_to(lat_samples_partial, target_shape)
+    lon_samples_4d = np.broadcast_to(lon_samples_partial, target_shape)
+
+    # Flatten to 1D for interpolation
+    lon_samples_flat = lon_samples_4d.ravel()
+    lat_samples_flat = lat_samples_4d.ravel()
+
+    # Get the GeoTIFF path for windowed reading
+    data_dir = os.getenv("DATA_DIR")
+    tif_path = Path(data_dir) / "etopo_60s.tif" if data_dir else None
+
+    if tif_path is not None and tif_path.exists():
+        # Use fast rasterio read (avoids slow xarray .values call)
+        sampled_values = _sample_elevation_points_rasterio(
+            tif_path, lon_samples_flat, lat_samples_flat
+        )
+    else:
+        # Fallback to scipy interpolator if we have xarray dataset
+        from scipy.interpolate import RegularGridInterpolator
+
+        # Get cached numpy arrays (avoids slow .values call on each invocation)
+        x_coords, y_coords, data_values = _get_elevation_arrays(dataset)
+
+        interp_linear = RegularGridInterpolator(
+            (y_coords, x_coords),
+            data_values,
+            method="linear",
+            bounds_error=False,
+            fill_value=np.nan,
+        )
+
+        # Stack points as (N, 2) array with (y, x) order
+        points = np.stack([lat_samples_flat, lon_samples_flat], axis=-1)
+        sampled_values = interp_linear(points)
+
         # Fill missing values with nearest neighbor
         if np.any(~np.isfinite(sampled_values)):
-            sampled_nearest = dataset.interp(
-                x=coords["x"], y=coords["y"], method="nearest"
+            interp_nearest = RegularGridInterpolator(
+                (y_coords, x_coords),
+                data_values,
+                method="nearest",
+                bounds_error=False,
+                fill_value=0.0,
             )
-            nearest_values = np.asarray(sampled_nearest.values, dtype=float)
             mask = ~np.isfinite(sampled_values)
-            sampled_values[mask] = nearest_values[mask]
-        
-        sampled_values = np.nan_to_num(sampled_values, nan=0.0)
-        
-        # Average samples for each cell
-        cell_sample_sums = defaultdict(list)
-        for idx, (i, j) in enumerate(cell_indices):
-            cell_sample_sums[(i, j)].append(sampled_values[idx])
-        
-        for (i, j), samples in cell_sample_sums.items():
-            res[i, j] = np.mean(samples)
+            sampled_values[mask] = interp_nearest(points[mask])
+
+    sampled_values = np.nan_to_num(sampled_values, nan=0.0)
+
+    # Reshape back to (nlat, nlon, n_samples, n_samples) and average over samples
+    sampled_reshaped = sampled_values.reshape(nlat, nlon, n_samples_per_cell, n_samples_per_cell)
+    res = np.mean(sampled_reshaped, axis=(2, 3))
     
     res = np.nan_to_num(res, nan=0.0)
 

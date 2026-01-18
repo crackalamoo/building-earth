@@ -190,6 +190,8 @@ def build_model_operators(
         lon2d,
         lat2d,
         config=wind_config,
+        roughness_length=roughness_length,
+        land_mask=land_mask,
     )
 
     advection_operator = AdvectionOperator(
