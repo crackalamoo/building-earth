@@ -16,6 +16,8 @@ OCEAN_HEAT_CAPACITY_M2 = 2.94e8  # J m-2 K-1, 70 m mixed-layer ocean
 LAND_HEAT_CAPACITY_M2 = 3.0e6  # J m-2 K-1, 1.5 m soil skin depth
 OCEAN_ALBEDO = 0.06
 LAND_ALBEDO = 0.18
+POLAR_LAND_ALBEDO = 0.30  # Bare rock/tundra beyond tree line
+TREE_LINE_LATITUDE_DEG = 70.0  # No vegetation poleward of this
 
 _MASK_CACHE: dict[
     tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]
@@ -109,12 +111,29 @@ def compute_albedo_field(
     *,
     land_albedo: float | None = None,
     ocean_albedo: float | None = None,
+    polar_land_albedo: float | None = None,
+    tree_line_latitude_deg: float | None = None,
 ) -> np.ndarray:
-    """Assign per-cell albedo based on the land/sea classification."""
+    """Assign per-cell albedo based on the land/sea classification.
+
+    High-latitude land (poleward of tree line) gets higher albedo
+    to represent bare rock/tundra instead of vegetation.
+    """
     land_mask = compute_land_mask(lon2d, lat2d)
     land_albedo = land_albedo if land_albedo is not None else LAND_ALBEDO
     ocean_albedo = ocean_albedo if ocean_albedo is not None else OCEAN_ALBEDO
-    return np.where(land_mask, land_albedo, ocean_albedo)
+    polar_land_albedo = polar_land_albedo if polar_land_albedo is not None else POLAR_LAND_ALBEDO
+    tree_line_lat = tree_line_latitude_deg if tree_line_latitude_deg is not None else TREE_LINE_LATITUDE_DEG
+
+    # Start with ocean albedo everywhere
+    albedo = np.full_like(lat2d, ocean_albedo)
+    # Land gets vegetation albedo
+    albedo = np.where(land_mask, land_albedo, albedo)
+    # High-latitude land gets bare rock/tundra albedo
+    polar_land = land_mask & (np.abs(lat2d) >= tree_line_lat)
+    albedo = np.where(polar_land, polar_land_albedo, albedo)
+
+    return albedo
 
 def _default_grid(resolution_deg: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
     """Generate a lon/lat grid matching the modeling module defaults."""

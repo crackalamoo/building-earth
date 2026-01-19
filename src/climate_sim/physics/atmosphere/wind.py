@@ -398,7 +398,16 @@ class WindModel:
         if np.any(zero_geo):
             alpha[zero_geo] = 0.0
 
-        rotation_angle = np.where(coriolis >= 0.0, -alpha, alpha)
+        # Ekman turning: wind rotates toward low pressure in the friction layer
+        # In NH (f > 0): wind turns LEFT (counterclockwise) from geostrophic
+        # In SH (f < 0): wind turns RIGHT (clockwise) from geostrophic
+        # This is because friction breaks geostrophic balance, allowing
+        # flow down the pressure gradient (toward low pressure)
+        #
+        # Convention: positive angle = counterclockwise rotation
+        # NH: we want counterclockwise turn → positive angle
+        # SH: we want clockwise turn → negative angle
+        rotation_angle = np.where(coriolis >= 0.0, alpha, -alpha)
         cos_a = np.cos(rotation_angle)
         sin_a = np.sin(rotation_angle)
 

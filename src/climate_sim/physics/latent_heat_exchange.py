@@ -10,6 +10,10 @@ from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.data.constants import GAS_CONSTANT_J_KG_K, STANDARD_LAPSE_RATE_K_PER_M, BOUNDARY_LAYER_HEIGHT_M
 
 
+# Seawater freezes at about -1.8°C due to salinity
+SEAWATER_FREEZE_C = -1.8
+
+
 @dataclass(frozen=True)
 class LatentHeatExchangeConfig:
     """Configuration for the latent heat exchange model."""
@@ -21,6 +25,8 @@ class LatentHeatExchangeConfig:
     # - Stomatal resistance in vegetation
     # Typical values: 0.3-0.6 of ocean evaporation in humid regions
     land_evapotranspiration_factor: float = 0.4
+    # No evaporation below freezing (ice-covered surface)
+    freeze_threshold_c: float = SEAWATER_FREEZE_C
 
 
 class LatentHeatExchangeModel:
@@ -125,10 +131,11 @@ class LatentHeatExchangeModel:
 
         wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
 
-        # Magnus formula requires temperature in Celsius
+        # Magnus formula gives e_sat in hPa, pressure is in Pa - convert to hPa
         surface_temperature_C = surface_temperature_K - 273.15
         e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
-        q_sat = (0.622 * e_sat) / (pressure - (1 - 0.622) * e_sat)
+        pressure_hPa = pressure / 100.0
+        q_sat = (0.622 * e_sat) / (pressure_hPa - (1 - 0.622) * e_sat)
 
         humidity_q = np.minimum(humidity_q, q_sat)
         heat_flux = rho * 2.5e6 * ch * wind_abs * (q_sat - humidity_q)
@@ -141,11 +148,16 @@ class LatentHeatExchangeModel:
         land_factor = self._config.land_evapotranspiration_factor * rh
         heat_flux = np.where(self._land_mask, heat_flux * land_factor, heat_flux)
 
-        # Three-layer system: latent heat only between surface and boundary layer
+        # No evaporation below freezing (ice-covered surface can't evaporate liquid water)
+        frozen = surface_temperature_C < self._config.freeze_threshold_c
+        heat_flux = np.where(frozen, 0.0, heat_flux)
+
+        # Three-layer system: evaporation cools surface, warms atmosphere
+        # (Assuming local E ≈ P for energy conservation)
         if boundary_layer_temperature_K is not None:
             surface_tendency = -heat_flux / self._surface_heat_capacity
-            boundary_tendency = heat_flux / self._boundary_layer_heat_capacity
-            atmosphere_tendency = np.zeros_like(surface_tendency)  # No latent heat to atmosphere
+            boundary_tendency = np.zeros_like(surface_tendency)  # BL transports, doesn't absorb
+            atmosphere_tendency = heat_flux / self._atmosphere_heat_capacity
             return surface_tendency, boundary_tendency, atmosphere_tendency
 
         # Two-layer system: latent heat between surface and atmosphere
@@ -211,29 +223,28 @@ class LatentHeatExchangeModel:
         R = GAS_CONSTANT_J_KG_K
 
         # Compute saturation vapor pressure and its derivative
+        # Magnus formula gives e_sat in hPa, pressure is in Pa - convert to hPa
         surface_temperature_C = surface_temperature_K - 273.15
         e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
+        pressure_hPa = pressure / 100.0
 
         # Derivative of e_sat with respect to T_C
         # d(e_sat)/dT_C = e_sat * 17.67 * 243.5 / (T_C + 243.5)^2
         de_sat_dT_C = e_sat * 17.67 * 243.5 / np.power(surface_temperature_C + 243.5, 2)
 
-        # Compute q_sat and its derivatives
-        q_sat = (0.622 * e_sat) / (pressure - (1 - 0.622) * e_sat)
+        # Compute q_sat and its derivatives (using hPa for consistency)
+        q_sat = (0.622 * e_sat) / (pressure_hPa - (1 - 0.622) * e_sat)
         humidity_q_clamped = np.minimum(humidity_q, q_sat)
         q_deficit = q_sat - humidity_q_clamped
 
         # Derivative of q_sat with respect to T_surf (via e_sat)
         # d(q_sat)/dT_surf = 0.622 * pressure * d(e_sat)/dT_surf / (pressure - (1-0.622)*e_sat)^2
-        dq_sat_dT_surf = 0.622 * pressure * de_sat_dT_C / np.power(pressure - (1 - 0.622) * e_sat, 2)
+        dq_sat_dT_surf = 0.622 * pressure_hPa * de_sat_dT_C / np.power(pressure_hPa - (1 - 0.622) * e_sat, 2)
 
         # Derivative of q_sat with respect to T_atm (via pressure)
-        # d(q_sat)/dT_atm = -0.622 * e_sat * (1 - (1-0.622)*e_sat/pressure) * dp/dT_atm / (pressure - (1-0.622)*e_sat)^2
-        # Approximate dp/dT_atm using hydrostatic balance: p ∝ T, so dp/dT ≈ p/T_atm
-        # More precisely, from thermal wind: dp/dT ≈ -beta * (p/T_atm) where beta ~ 30 Pa/K from pressure.py
-        # For simplicity, use: dp/dT_atm ≈ -30 Pa/K (approximate from pressure.py line 196)
-        dp_dT_atm_approx = -30.0  # Pa/K (approximate from thermal wind scaling)
-        dq_sat_dT_atm = -0.622 * e_sat * (1.0 - (1.0 - 0.622) * e_sat / np.maximum(pressure, 1.0)) * dp_dT_atm_approx / np.power(pressure - (1 - 0.622) * e_sat, 2)
+        # Approximate dp/dT_atm ≈ -30 Pa/K = -0.30 hPa/K (from thermal wind scaling)
+        dp_dT_atm_approx = -0.30  # hPa/K
+        dq_sat_dT_atm = -0.622 * e_sat * (1.0 - (1.0 - 0.622) * e_sat / np.maximum(pressure_hPa, 1.0)) * dp_dT_atm_approx / np.power(pressure_hPa - (1 - 0.622) * e_sat, 2)
 
         # Compute near-surface air temperature and its derivatives
         # For 2-layer: T_2m = T_surf
@@ -275,6 +286,11 @@ class LatentHeatExchangeModel:
         dheat_flux_dT_surf = np.where(self._land_mask, dheat_flux_dT_surf * land_factor, dheat_flux_dT_surf)
         dheat_flux_dT_atm = np.where(self._land_mask, dheat_flux_dT_atm * land_factor, dheat_flux_dT_atm)
 
+        # No evaporation below freezing (zero derivatives)
+        frozen = surface_temperature_C < self._config.freeze_threshold_c
+        dheat_flux_dT_surf = np.where(frozen, 0.0, dheat_flux_dT_surf)
+        dheat_flux_dT_atm = np.where(frozen, 0.0, dheat_flux_dT_atm)
+
         # Three-layer system: latent heat only between surface and boundary layer
         if boundary_layer_temperature_K is not None:
             if self._boundary_layer_heat_capacity is None:
@@ -295,6 +311,8 @@ class LatentHeatExchangeModel:
             dheat_flux_dT_boundary = L_v * ch * wind_abs * (rho * dq_sat_dT_boundary + q_deficit * drho_dT_boundary)
             # Apply land factor (same as for other derivatives)
             dheat_flux_dT_boundary = np.where(self._land_mask, dheat_flux_dT_boundary * land_factor, dheat_flux_dT_boundary)
+            # No evaporation below freezing (zero derivatives)
+            dheat_flux_dT_boundary = np.where(frozen, 0.0, dheat_flux_dT_boundary)
 
             # Surface tendency: -heat_flux / C_surf
             # ∂/∂T_surf = -dheat_flux_dT_surf / C_surf
@@ -304,23 +322,20 @@ class LatentHeatExchangeModel:
             surface_boundary_coupling = -dheat_flux_dT_boundary / self._surface_heat_capacity
             surface_atm_coupling = -dheat_flux_dT_atm / self._surface_heat_capacity
 
-            # Boundary tendency: heat_flux / C_bl
-            # ∂/∂T_surf = dheat_flux_dT_surf / C_bl
-            # ∂/∂T_boundary = dheat_flux_dT_boundary / C_bl
-            # ∂/∂T_atm = dheat_flux_dT_atm / C_bl
-            boundary_diag = dheat_flux_dT_boundary / self._boundary_layer_heat_capacity
-            boundary_surface_coupling = dheat_flux_dT_surf / self._boundary_layer_heat_capacity
-            boundary_atm_coupling = dheat_flux_dT_atm / self._boundary_layer_heat_capacity
+            # Boundary tendency: 0 (BL just transports moisture)
+            boundary_diag = np.zeros_like(surface_diag)
 
-            # Atmosphere tendency: 0 (no latent heat to atmosphere)
-            atmosphere_diag = np.zeros_like(surface_diag)
+            # Atmosphere tendency: heat_flux / C_atm
+            atmosphere_diag = dheat_flux_dT_atm / self._atmosphere_heat_capacity
+            atmosphere_surface_coupling = dheat_flux_dT_surf / self._atmosphere_heat_capacity
+            atmosphere_boundary_coupling = dheat_flux_dT_boundary / self._atmosphere_heat_capacity
 
             diag = np.stack([surface_diag, boundary_diag, atmosphere_diag])
             cross = np.zeros((3, 3) + surface_temperature.shape)
             cross[0, 1] = surface_boundary_coupling  # Surface-boundary coupling
             cross[0, 2] = surface_atm_coupling  # Surface-atmosphere coupling
-            cross[1, 0] = boundary_surface_coupling  # Boundary-surface coupling
-            cross[1, 2] = boundary_atm_coupling  # Boundary-atmosphere coupling
+            cross[2, 0] = atmosphere_surface_coupling  # Atmosphere-surface coupling
+            cross[2, 1] = atmosphere_boundary_coupling  # Atmosphere-boundary coupling
 
             return diag, cross
 

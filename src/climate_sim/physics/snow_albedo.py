@@ -18,7 +18,7 @@ class SnowAlbedoConfig:
     enabled: bool = True
     latent_heat_enabled: bool = True
     snow_albedo: float = 0.45  # Seasonal snow at low elevations
-    ice_sheet_albedo: float = 0.45  # Permanent ice at high elevations
+    ice_sheet_albedo: float = 0.80  # Permanent ice sheets (Antarctica, Greenland)
     freeze_temperature_c: float = -5.0
     melt_temperature_c: float = 1.0  # Snow melts above 1°C
 
@@ -33,7 +33,7 @@ class SnowAlbedoConfig:
     latent_energy_J_per_m2: float = 3.34e7
 
     # Sea ice parameters
-    sea_ice_enabled: bool = False
+    sea_ice_enabled: bool = True
     sea_ice_albedo: float = 0.60  # Multi-year ice with some melt ponds
     sea_ice_max_fraction: float = 0.70  # Seasonal average (winter max ~85%, summer min ~35%)
     sea_ice_freeze_c: float = SEAWATER_FREEZE_C  # Start freezing at -1.8°C
@@ -68,13 +68,15 @@ class AlbedoModel:
             self.config = SnowAlbedoConfig()
 
     def guess_albedo_field(self) -> np.ndarray:
-        if self.config.enabled:
-            return 0.3 * np.ones_like(self.lat2d)
-        else:
-            albedo = 0.25 * np.ones_like(self.lat2d)
-            in_arctic = np.abs(self.lat2d) >= ARCTIC_CIRCLE_LATITUDE_DEG
-            albedo = np.where(in_arctic, self.config.snow_albedo, albedo)
-            return albedo
+        """Initial albedo guess with high values at polar latitudes.
+
+        Polar regions (|lat| >= 66.5°) get ice sheet albedo to ensure
+        the model starts in the cold/icy state for Antarctica and Arctic.
+        """
+        albedo = 0.3 * np.ones_like(self.lat2d)
+        in_polar = np.abs(self.lat2d) >= ARCTIC_CIRCLE_LATITUDE_DEG
+        albedo = np.where(in_polar & self.land_mask, self.config.ice_sheet_albedo, albedo)
+        return albedo
 
     def compute_sea_ice_fraction(self, temperatures_c: np.ndarray) -> np.ndarray:
         """Compute sea ice fraction based on temperature.
