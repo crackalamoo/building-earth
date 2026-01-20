@@ -118,39 +118,28 @@ def compute_vertical_motion_tendencies(
         Q = rho * cp * w * delta_T
     where delta_T is the temperature difference accounting for adiabatic change.
     """
-    # Vertical velocity from divergence (positive = downward)
-    # Scale divergence to get realistic w values
-    # div ~ 1e-5 /s in subtropics → target w ~ 0.001 m/s
-    effective_depth = 100.0  # m
-    w = divergence * effective_depth  # m/s
+    # Vertical velocity at BL top from mass continuity:
+    # w(H_BL) = divergence integrated over BL depth
+    # w = div × H_BL (if divergence roughly uniform over BL)
+    h_bl = BOUNDARY_LAYER_HEIGHT_M
+    w = divergence * h_bl  # m/s, positive = downward (subsidence)
 
-    # Air density at interface (approximate)
-    rho = 1.0  # kg/m³ (lower than surface due to altitude)
+    # Air density at interface (approximate, at ~1km altitude)
+    rho = 1.0  # kg/m³
     cp = HEAT_CAPACITY_AIR_J_KG_K  # J/kg/K
 
-    # Energy-conserving heat flux approach:
-    # Compute heat flux Q (W/m²) between layers based on mass flux and
-    # temperature difference, accounting for adiabatic temperature changes.
-    #
-    # Subsidence (w > 0): Air descends from atmosphere into BL, warming at
-    # the dry lapse rate. Heat flux Q_sub = rho * cp * w * (T_atm - T_bl + Γ_dry * h_bl)
-    #
-    # Ascent (w < 0): Air rises from BL into atmosphere, cooling at the moist
-    # lapse rate. Heat flux Q_asc = rho * cp * |w| * (T_bl - T_atm - Γ_moist * h_bl)
+    # Temperature at BL-atmosphere interface (lapse-rate extrapolated from T_atm)
+    h_atm_mid_to_interface = ATMOSPHERE_LAYER_HEIGHT_M / 2
+    T_at_interface = T_atm + GAMMA_MOIST * h_atm_mid_to_interface
 
-    h_bl = BOUNDARY_LAYER_HEIGHT_M
-
-    # Subsidence case (w > 0): heat flux from atmosphere to BL
+    # Subsidence (w > 0): descending air warms dry-adiabatically
     w_down = np.maximum(w, 0)
-    Q_subsidence = rho * cp * w_down * (T_atm - T_bl + GAMMA_DRY * h_bl)
-    # The Γ*h term accounts for adiabatic warming during descent
+    T_descending = T_at_interface + GAMMA_DRY * h_bl
+    Q_subsidence = rho * cp * w_down * (T_descending - T_bl)
 
-    # Ascent case (w < 0, so -w > 0 is upward velocity)
+    # Ascent (w < 0): rising air cools moist-adiabatically
     w_up = np.maximum(-w, 0)
-    # Heat flux from BL to atm during ascent:
-    # Air leaves BL at T_bl, arrives at atm after cooling
-    Q_ascent = rho * cp * w_up * (T_bl - T_atm - GAMMA_MOIST * h_bl)
-    # Note: GAMMA_MOIST < GAMMA_DRY because latent heat release partially offsets cooling
+    Q_ascent = rho * cp * w_up * (T_bl - T_at_interface)
 
     # Total heat flux from atmosphere to BL (positive = downward)
     Q_total = Q_subsidence - Q_ascent  # Q_ascent is BL→atm, so subtract

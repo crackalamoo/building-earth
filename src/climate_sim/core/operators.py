@@ -49,6 +49,7 @@ class SurfaceHeatCapacityContext:
     base_C_land: float
     base_C_ocean: float
     baseline_capacity: np.ndarray
+    topographic_elevation: np.ndarray | None = None
 
 
 @dataclass(frozen=True)

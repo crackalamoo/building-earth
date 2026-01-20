@@ -181,6 +181,23 @@ def _sample_upwind(
     return upwind
 
 
+def compute_saturation_specific_humidity(
+    temperature_K: np.ndarray,
+    pressure_Pa: float = 101325.0,
+) -> np.ndarray:
+    """Compute saturation specific humidity from temperature.
+
+    Uses the Magnus formula for saturation vapor pressure.
+    """
+    temperature_C = temperature_K - 273.15
+    # Magnus formula for saturation vapor pressure (hPa)
+    e_sat_hPa = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
+    p_hPa = pressure_Pa / 100.0
+    # Convert to specific humidity
+    q_sat = (0.622 * e_sat_hPa) / (p_hPa - (1 - 0.622) * e_sat_hPa)
+    return q_sat
+
+
 def specific_humidity_to_relative_humidity(
     q: np.ndarray,
     temperature_K: np.ndarray,
@@ -459,12 +476,35 @@ def compute_humidity_and_precipitation(
     lon2d: np.ndarray,
     temperature_field: np.ndarray,
     itcz_rad: np.ndarray | None = None,
+    atmosphere_temperature: np.ndarray | None = None,
+    elevation: np.ndarray | None = None,
+    vertical_velocity: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Compute humidity field and precipitation.
 
     If wind is available, uses wind-advected moisture from ocean with
     subsidence drying applied over land. If wind is not available,
     falls back to pattern-based humidity computation.
+
+    Parameters
+    ----------
+    wind_u, wind_v : np.ndarray | None
+        Wind components (m/s). If None, falls back to pattern-based humidity.
+    land_mask : np.ndarray
+        Boolean land mask.
+    lat2d, lon2d : np.ndarray
+        Coordinate grids (degrees).
+    temperature_field : np.ndarray
+        Boundary layer temperature (K).
+    itcz_rad : np.ndarray | None
+        ITCZ latitude per longitude (radians).
+    atmosphere_temperature : np.ndarray | None
+        Free atmosphere temperature (K). Used for MSE-based convective precipitation.
+    elevation : np.ndarray | None
+        Terrain elevation (m). Used for orographic precipitation.
+    vertical_velocity : np.ndarray | None
+        Large-scale vertical velocity (m/s). Positive = rising. Used to suppress
+        convection in subsidence zones.
     """
     if wind_u is not None and wind_v is not None:
         # Advect specific humidity (conserved) from ocean to land
@@ -493,8 +533,14 @@ def compute_humidity_and_precipitation(
         humidity_field = humidity_field * drying_factor
 
         # Compute precipitation from wind and humidity
+        # Pass temperature fields for MSE-based convective precipitation
+        # Pass vertical velocity to suppress convection in subsidence zones
         precipitation_field = compute_precipitation_rate(
-            humidity_field, wind_u, wind_v, lat2d, lon2d
+            humidity_field, wind_u, wind_v, lat2d, lon2d,
+            T_surface_K=temperature_field,
+            T_atm_K=atmosphere_temperature,
+            elevation=elevation,
+            vertical_velocity=vertical_velocity,
         )
 
         return humidity_field, precipitation_field
@@ -508,3 +554,8 @@ def compute_humidity_and_precipitation(
             itcz_rad=itcz_rad,
         )
         return humidity_field, None
+
+
+# Column mass for moisture budget (kg/m²)
+# Water vapor is concentrated in lower troposphere with scale height ~2 km
+COLUMN_MASS_KG_M2 = 5000.0

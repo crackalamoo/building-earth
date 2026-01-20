@@ -14,11 +14,10 @@ LAT_SUBTROPICS_BASE = np.deg2rad(29.0)
 SUBTROPICS_ITCZ_COUPLING = 0.325
 
 # Hadley cell pressure anomalies (Pa)
-# Low pressure at ITCZ (rising air), high pressure at subtropics (descending air)
-DP_ITCZ = -800.0  # Low pressure at equatorial trough
-DP_SUBTROPICS = 800.0  # High pressure at subtropical highs (ITCZ ± DELTA_SUBTROPICS)
-DP_SUBPOLAR = -500.0  # Low pressure at subpolar lows (~60°)
-DP_POLES = 300.0  # Weak high pressure at polar highs
+DP_ITCZ = -800.0  # Low pressure at equatorial trough (rising air)
+DP_SUBTROPICS = 800.0  # High pressure at subtropical highs (descending air)
+DP_SUBPOLAR = -300.0  # Low pressure at subpolar lows (~60 deg)
+DP_POLES = 0.0  # No explicit polar high (prevents excessive polar easterlies)
 
 # Width of pressure features (radians) - controls smoothness of transitions
 SIGMA_ITCZ = np.deg2rad(8.0)       # ITCZ trough width

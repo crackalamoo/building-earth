@@ -19,3 +19,7 @@ ATMOSPHERE_LAYER_HEIGHT_M = 7500.0
 ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K = 1.2 * HEAT_CAPACITY_AIR_J_KG_K * ATMOSPHERE_LAYER_HEIGHT_M  # density * cp * height ≈ 7.24e6 J m-2 K-1
 
 BOUNDARY_ATMOSPHERE_EQUILIBRATION_DAYS = 7
+
+# Thermodynamic constants for water vapor
+LATENT_HEAT_VAPORIZATION_J_KG = 2.5e6  # J/kg - latent heat of vaporization
+GAS_CONSTANT_WATER_VAPOR_J_KG_K = 461.0  # J/(kg·K) - gas constant for water vapor

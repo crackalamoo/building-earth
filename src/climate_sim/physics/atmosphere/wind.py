@@ -316,21 +316,69 @@ class WindModel:
         geopotential: np.ndarray,
         layer_pressure: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return the geostrophic wind from geopotential height gradients.
+        """Return wind from blended geostrophic and friction-balanced dynamics.
+
+        At mid-latitudes (|f| >> friction), uses geostrophic balance.
+        Near the equator (|f| ~ friction), blends toward friction-balanced flow
+        where wind blows directly down the pressure gradient.
         """
         grad_x, grad_y = self._horizontal_gradient(geopotential)
 
-        # Apply a Coriolis floor while preserving hemisphere sign, including exactly
-        # at the equator where the raw Coriolis parameter is zero.
+        # Pressure gradient from geopotential: ∇p = ρg∇Z
+        # For wind calculation, we need ∇p/ρ = g∇Z
+        # grad_x, grad_y are ∂Z/∂x, ∂Z/∂y in meters
+        g = config.gravity_m_s2
+        dp_dx_over_rho = g * grad_x  # (1/ρ) ∂p/∂x, units m/s²
+        dp_dy_over_rho = g * grad_y  # (1/ρ) ∂p/∂y, units m/s²
+
+        # Friction parameter k = Cd / h_m (same as in _apply_surface_drag)
+        # For this calculation, use ocean value as representative
+        k = 3e-4 / 150.0  # ~2e-6 /m
+
+        # === Geostrophic wind (mid-latitudes) ===
+        # u_geo = -(1/f) * (1/ρ) ∂p/∂y = -(g/f) * ∂Z/∂y
+        # v_geo = (1/f) * (1/ρ) ∂p/∂x = (g/f) * ∂Z/∂x
+        coriolis_abs = np.abs(self._coriolis)
         sign = np.sign(self._coriolis)
         sign[sign == 0.0] = 1.0
-        coriolis_safe = sign * np.maximum(np.abs(self._coriolis), config.coriolis_floor_s)
 
-        # Geostrophic wind: u = -(g/f) * ∂Z/∂y, v = (g/f) * ∂Z/∂x
-        scale = config.gravity_m_s2 / coriolis_safe
-        velocity_x = -grad_y * scale
-        velocity_y = grad_x * scale
+        # Use a small floor just to avoid division by zero (blending handles equator)
+        f_safe = np.maximum(coriolis_abs, 1e-10)
+
+        u_geo = -dp_dy_over_rho / (sign * f_safe)
+        v_geo = dp_dx_over_rho / (sign * f_safe)
+
+        # === Friction-balanced wind (equator) ===
+        # At equator: k|u|u = -(1/ρ)∇p, so wind blows down pressure gradient
+        # |u| = sqrt(|∇p/ρ| / k)
+        # Direction: opposite to pressure gradient (toward low pressure)
+        grad_mag = np.sqrt(dp_dx_over_rho**2 + dp_dy_over_rho**2)
+        speed_fric = np.sqrt(np.maximum(grad_mag / k, 0))
+
+        # Unit vector pointing down pressure gradient (toward low pressure)
+        grad_mag_safe = np.maximum(grad_mag, 1e-10)
+        u_fric = -dp_dx_over_rho / grad_mag_safe * speed_fric
+        v_fric = -dp_dy_over_rho / grad_mag_safe * speed_fric
+
+        # === Blend based on Ekman number E = k|u|/|f| ===
+        # When E << 1: geostrophic dominates
+        # When E >> 1: friction dominates
+        # Use a smooth transition based on |f| relative to a critical value
+        # Critical |f| where friction and Coriolis are comparable:
+        # k|u| ~ |f| → |f|_crit ~ k * typical_speed ~ 2e-6 * 10 = 2e-5
+        # This corresponds to ~8° latitude
+        f_crit = 2e-5  # Transition centered around this |f|
+
+        # Smooth blending weight: 1 = pure geostrophic, 0 = pure friction
+        # Use tanh for smooth transition over ~5° latitude
+        transition_width = 1e-5  # Controls sharpness of transition
+        weight_geo = 0.5 * (1 + np.tanh((coriolis_abs - f_crit) / transition_width))
+
+        # Blend winds
+        velocity_x = weight_geo * u_geo + (1 - weight_geo) * u_fric
+        velocity_y = weight_geo * v_geo + (1 - weight_geo) * v_fric
         speed = np.hypot(velocity_x, velocity_y)
+
         return velocity_x, velocity_y, speed
 
     def _horizontal_gradient(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -365,6 +413,7 @@ class WindModel:
         coriolis = self._coriolis
         coriolis_abs = np.maximum(np.abs(coriolis), self._config.coriolis_floor_s)
 
+        # Effective depth over which surface stress is distributed.
         h_m = np.where(self._land_mask, 400.0, 1000.0)
         k = drag_coeff / h_m
 
@@ -398,15 +447,8 @@ class WindModel:
         if np.any(zero_geo):
             alpha[zero_geo] = 0.0
 
-        # Ekman turning: wind rotates toward low pressure in the friction layer
-        # In NH (f > 0): wind turns LEFT (counterclockwise) from geostrophic
-        # In SH (f < 0): wind turns RIGHT (clockwise) from geostrophic
-        # This is because friction breaks geostrophic balance, allowing
-        # flow down the pressure gradient (toward low pressure)
-        #
-        # Convention: positive angle = counterclockwise rotation
-        # NH: we want counterclockwise turn → positive angle
-        # SH: we want clockwise turn → negative angle
+        # Ekman turning: wind rotates toward low pressure in the friction layer.
+        # NH (f > 0): counterclockwise turn; SH (f < 0): clockwise turn.
         rotation_angle = np.where(coriolis >= 0.0, alpha, -alpha)
         cos_a = np.cos(rotation_angle)
         sin_a = np.sin(rotation_angle)
@@ -415,8 +457,9 @@ class WindModel:
         ux = np.where(Ug_safe > 0.0, u_geo / Ug_safe, 0.0)
         vy = np.where(Ug_safe > 0.0, v_geo / Ug_safe, 0.0)
 
-        ux_rot = ux * cos_a + vy * sin_a
-        vy_rot = -ux * sin_a + vy * cos_a
+        # Counterclockwise rotation: [cos -sin; sin cos]
+        ux_rot = ux * cos_a - vy * sin_a
+        vy_rot = ux * sin_a + vy * cos_a
 
         u_final = u_mag * ux_rot
         v_final = u_mag * vy_rot

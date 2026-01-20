@@ -18,6 +18,7 @@ class ModelState:
     ocean_current_field: tuple[np.ndarray, np.ndarray] | None = None  # (u, v) in m/s
     ocean_current_psi: np.ndarray | None = None  # Streamfunction in Sv
     precipitation_field: np.ndarray | None = None  # Precipitation rate in kg/m²/s
+    soil_moisture: np.ndarray | None = None  # Soil moisture fraction (0-1), only for land
 
 
 def select_wind_temperature(temperature: np.ndarray) -> np.ndarray:

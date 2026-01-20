@@ -115,9 +115,8 @@ class DiffusionConfig:
     surface_meridional_midlat_scale: float = 1.5      # 30-60°: Western boundary currents
     surface_meridional_polar_scale: float = 1.5       # 60-90°: Strong MOC/deep convection
 
-    # Atmospheric eddy diffusivity: ~1-5e6 m²/s for individual eddies, but
-    # our EBM is tuned with lower effective value for some reason.
-    atmosphere_kappa_ref_m2_s: float = 5.0e4
+    # Atmospheric eddy diffusivity: ~1-5e6 m²/s for mid-latitude storm tracks
+    atmosphere_kappa_ref_m2_s: float = 5.0e5
 
     atmosphere_resolution_ref_deg: float = 1.0
     enabled: bool = True
