@@ -77,17 +77,17 @@ def advect_moisture_from_ocean(
     p_hPa = 1013.25  # Approximate surface pressure
     q_sat = (0.622 * e_sat) / (p_hPa - (1 - 0.622) * e_sat)
 
-    # Compute ocean RH pattern (higher near ITCZ, lower in subtropics)
-    lat_rad = np.deg2rad(lat2d)
-    if itcz_rad is not None:
-        itcz_2d = np.broadcast_to(itcz_rad[np.newaxis, :], lat_rad.shape)
-        rh_ocean = relative_humidity_pattern(lat_rad, itcz_2d)
-        # Ocean is generally more humid than the pattern
-        rh_ocean = np.clip(rh_ocean + 0.10, 0.60, 0.90)
-    else:
-        rh_ocean = np.full_like(lat2d, RH_OCEAN_SOURCE, dtype=float)
-
-    # Ocean source: q = RH * q_sat
+    # Ocean boundary layer humidity: set based on AIR temperature q_sat, not SST
+    # The marine BL maintains ~78% RH due to rapid mixing with the surface.
+    # Using a FIXED RH (not latitude-dependent) lets the evaporation physics
+    # determine the actual moisture flux based on the q_sat(SST) - q deficit.
+    #
+    # Key physics insight: Over ocean, the relevant q_sat is at the AIR temperature
+    # (boundary layer), not SST. The ocean is a moisture source, but the equilibrium
+    # humidity in the marine BL is set by air temperature. This allows evaporative
+    # cooling to work: hot SST → large q_sat(SST) - q_air deficit → strong evaporation
+    # → cooling. If we set q = f(SST), this feedback breaks.
+    rh_ocean = 0.78  # Fixed marine BL relative humidity
     q_ocean = rh_ocean * q_sat
 
     # Initialize: ocean = source q, land = 0
@@ -95,6 +95,7 @@ def advect_moisture_from_ocean(
 
     # Compute grid spacings in meters
     lon_rad = np.deg2rad(lon2d)
+    lat_rad = np.deg2rad(lat2d)
 
     # Grid spacing
     dlat_rad = np.abs(lat_rad[1, 0] - lat_rad[0, 0]) if nlat > 1 else np.deg2rad(1.0)
@@ -527,7 +528,10 @@ def compute_humidity_and_precipitation(
         # Apply as multiplicative factor to avoid negative humidity
         # dq/q = (dq/dt * dt) / q = drying_tendency * dt / humidity_field
         drying_factor = 1.0 + (drying_tendency * seconds_per_month) / np.maximum(humidity_field, 1e-10)
-        drying_factor = np.clip(drying_factor, 0.1, 1.0)  # Cap between 10% and 100%
+        # Cap the drying: minimum factor of 0.8 means at most 20% reduction per month.
+        # This allows subtropical deserts to maintain realistic humidity levels (~5-10 g/kg)
+        # through a balance of advected moisture vs subsidence drying.
+        drying_factor = np.clip(drying_factor, 0.8, 1.0)
         # Only apply over land - ocean evaporation maintains humidity despite subsidence
         drying_factor = np.where(land_mask, drying_factor, 1.0)
         humidity_field = humidity_field * drying_factor

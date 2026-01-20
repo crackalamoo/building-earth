@@ -10,7 +10,9 @@ SHORTWAVE_ABSORPTANCE_ATMOSPHERE = 0.2 - 0.025
 STANDARD_LAPSE_RATE_K_PER_M = 6.5 / 1000.0
 
 # Boundary layer constants
-BOUNDARY_LAYER_EMISSIVITY = 0.24
+# BL emissivity is now humidity-dependent in radiation.py
+# This constant is used as fallback when humidity is not available
+BOUNDARY_LAYER_EMISSIVITY = 0.50  # Fallback: moderate humidity
 BOUNDARY_LAYER_HEIGHT_M = 1000.0
 BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K = 1.2 * HEAT_CAPACITY_AIR_J_KG_K * BOUNDARY_LAYER_HEIGHT_M  # density * cp * height ≈ 9.05e5 J m-2 K-1
 
