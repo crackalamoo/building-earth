@@ -180,9 +180,16 @@ class LatentHeatExchangeModel:
             # Fallback: assume local E ≈ P (old behavior for backward compatibility)
             atmosphere_tendency = heat_flux / self._atmosphere_heat_capacity
 
-        # Three-layer system
+        # Three-layer system: BL gets fraction of precipitation heating
+        # This compensates for cooling from vertical ascent at the ITCZ
         if boundary_layer_temperature_K is not None:
-            boundary_tendency = np.zeros_like(surface_tendency)  # BL transports, doesn't absorb
+            BL_LATENT_FRACTION = 0.30  # 15% to BL, 85% to atmosphere
+            if precipitation_rate is not None:
+                precip_heating = precipitation_rate * LATENT_HEAT_VAPORIZATION_J_KG
+                boundary_tendency = BL_LATENT_FRACTION * precip_heating / self._boundary_layer_heat_capacity
+                atmosphere_tendency = (1 - BL_LATENT_FRACTION) * precip_heating / self._atmosphere_heat_capacity
+            else:
+                boundary_tendency = np.zeros_like(surface_tendency)
             return surface_tendency, boundary_tendency, atmosphere_tendency, evaporation_rate
 
         # Two-layer system

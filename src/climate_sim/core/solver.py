@@ -50,10 +50,10 @@ PERIODIC_FIXED_POINT_TOLERANCE_K_95P = 1.0
 NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
-FIXED_POINT_MAX_ITERS = 100
+FIXED_POINT_MAX_ITERS = 50
 
 # Anderson acceleration parameters for periodic cycle solver
-ANDERSON_HISTORY_LIMIT = 3
+ANDERSON_HISTORY_LIMIT = 12
 
 # Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
 INEXACT_NEWTON_REFACTORIZE_EVERY = 4

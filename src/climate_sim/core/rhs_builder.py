@@ -746,10 +746,15 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     # Temperature-humidity coupling via latent heat release
                     C_sfc = inputs.heat_capacity_field
                     C_atm = inputs.radiation_config.atmosphere_heat_capacity
+                    C_bl = inputs.radiation_config.boundary_layer_heat_capacity
 
+                    # Evaporation Jacobian: surface cools when q increases (less evap)
                     dR_Tsfc_dq = -dE_dq * L_v / C_sfc
-                    dR_Tatm_dq = dP_dq * L_v / C_atm
-                    dR_Tbl_dq = np.zeros_like(state.humidity_field) if nlayers >= 3 else None
+
+                    # Precipitation heating split: 15% to BL, 85% to atmosphere
+                    BL_LATENT_FRACTION = 0.30 if nlayers >= 3 else 0.0
+                    dR_Tatm_dq = (1 - BL_LATENT_FRACTION) * dP_dq * L_v / C_atm
+                    dR_Tbl_dq = BL_LATENT_FRACTION * dP_dq * L_v / C_bl if nlayers >= 3 else None
 
                     temp_humidity_coupling = (dR_Tsfc_dq, dR_Tbl_dq, dR_Tatm_dq) if nlayers >= 3 else (dR_Tsfc_dq, dR_Tatm_dq)
 
