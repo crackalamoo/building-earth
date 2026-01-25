@@ -104,49 +104,56 @@ def compute_vertical_motion_tendencies(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute BL and atmosphere heating from vertical motion (energy-conserving).
 
-    Vertical motion exchanges air between boundary layer and free atmosphere.
-    This function computes the heat flux between layers and returns tendencies
-    for both layers that conserve energy.
+    Uses potential temperature conservation for adiabatic vertical motion.
+
+    T_bl is sea-level equivalent temperature (≈ potential temperature at P₀).
+    T_atm is actual temperature at ~500 hPa.
 
     Physics:
-    - Subsidence (div > 0): Air descends from atmosphere into BL.
-      Atmosphere loses enthalpy, BL gains enthalpy.
-    - Ascent (div < 0): Air rises from BL into atmosphere.
-      BL loses enthalpy, atmosphere gains enthalpy (minus latent heat released).
+    - Subsidence (div > 0): Air descends from just above the BL into the BL.
+      Descending air conserves θ; if θ_exchange > θ_bl, subsidence warms the BL.
+    - Ascent (div < 0): Air rises from BL into the free troposphere.
+      Rising air conserves θ_bl; if θ_bl < θ_exchange, ascent cools the BL.
 
-    The heat flux at the interface is:
-        Q = rho * cp * w * delta_T
-    where delta_T is the temperature difference accounting for adiabatic change.
+    The exchange happens at the BL top (~850 hPa), not at 500 hPa where T_atm
+    is defined. We interpolate θ in log-pressure space between θ_bl (surface)
+    and θ_atm (500 hPa) to get θ at the exchange level.
     """
-    # Vertical velocity at BL top from mass continuity:
-    # w(H_BL) = divergence integrated over BL depth
-    # w = div × H_BL (if divergence roughly uniform over BL)
     h_bl = BOUNDARY_LAYER_HEIGHT_M
     w = divergence * h_bl  # m/s, positive = downward (subsidence)
 
-    # Air density at interface (approximate, at ~1km altitude)
     rho = 1.0  # kg/m³
     cp = HEAT_CAPACITY_AIR_J_KG_K  # J/kg/K
 
-    # Temperature at BL-atmosphere interface (lapse-rate extrapolated from T_atm)
-    h_atm_mid_to_interface = ATMOSPHERE_LAYER_HEIGHT_M / 2
-    T_at_interface = T_atm + GAMMA_MOIST * h_atm_mid_to_interface
+    # Pressure levels
+    P0 = 1013.25  # hPa, sea-level reference
+    P_ATM = 500.0  # hPa, atmosphere layer
+    P_EXCHANGE = 850.0  # hPa, exchange level just above BL
+    KAPPA = 0.286  # R/cp
 
-    # Subsidence (w > 0): descending air warms dry-adiabatically
-    w_down = np.maximum(w, 0)
-    T_descending = T_at_interface + GAMMA_DRY * h_bl
-    Q_subsidence = rho * cp * w_down * (T_descending - T_bl)
+    # Potential temperatures at known levels
+    theta_bl = T_bl  # T_bl is sea-level equivalent ≈ θ
+    theta_atm = T_atm * (P0 / P_ATM) ** KAPPA
 
-    # Ascent (w < 0): rising air cools moist-adiabatically
-    w_up = np.maximum(-w, 0)
-    Q_ascent = rho * cp * w_up * (T_bl - T_at_interface)
+    # Interpolate θ to exchange level (850 hPa) in log-pressure space
+    # f = fraction of the way from surface to 500 hPa
+    ln_P0 = np.log(P0)
+    ln_P_atm = np.log(P_ATM)
+    ln_P_exchange = np.log(P_EXCHANGE)
+    f = (ln_P0 - ln_P_exchange) / (ln_P0 - ln_P_atm)  # ≈ 0.25
 
-    # Total heat flux from atmosphere to BL (positive = downward)
-    Q_total = Q_subsidence - Q_ascent  # Q_ascent is BL→atm, so subtract
+    theta_exchange = theta_bl + f * (theta_atm - theta_bl)
 
-    # Temperature tendencies (K/s)
-    dT_bl = Q_total / C_bl
-    dT_atm = -Q_total / C_atm  # Opposite sign to conserve energy
+    # Heat exchange at BL-atmosphere interface using potential temperature
+    # Q = ρ*cp*w*(θ_exchange - θ_bl) = ρ*cp*w*f*(θ_atm - θ_bl)
+    # Positive Q when subsidence (w>0) and θ_atm > θ_bl (warm air descending)
+    Q_vertical = rho * cp * w * (theta_exchange - theta_bl)
+
+    # Energy-conserving tendencies:
+    # - BL gains/loses heat from vertical exchange
+    # - Atmosphere has opposite tendency (energy conservation)
+    dT_bl = Q_vertical / C_bl
+    dT_atm = -Q_vertical / C_atm
 
     return dT_bl, dT_atm
 

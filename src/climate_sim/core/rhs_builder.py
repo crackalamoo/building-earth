@@ -593,12 +593,12 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     cross = lh_cross
 
             # Vertical motion Jacobian (3-layer only)
-            # Q_total = rho * cp * |w| * (T_atm + const - T_bl) for subsidence
-            #         = rho * cp * |w| * (T_bl - T_atm - const) for ascent (with opposite sign)
-            # dQ_total/dT_bl = -rho * cp * |w|
-            # dQ_total/dT_atm = rho * cp * |w|
-            # dT_bl/dt = Q_total / C_bl  => d(tendency)/dT_bl = -rho*cp*|w|/C_bl
-            # dT_atm/dt = -Q_total / C_atm => d(tendency)/dT_atm = rho*cp*|w|/C_atm
+            # Tendency: Q = ρ*cp*w*f*(θ_atm - θ_bl) where θ_atm = T_atm*(P0/P_ATM)^κ
+            #
+            # True Jacobian has signed w, but ascent (w<0) creates destabilizing
+            # positive diagonal terms. We use max(w,0) to only include subsidence
+            # in the Jacobian - this keeps diagonals negative (stabilizing) while
+            # still capturing the dominant subtropical subsidence coupling.
             vertical_motion_enabled = (
                 inputs.vertical_motion_cfg is not None
                 and inputs.vertical_motion_cfg.enabled
@@ -609,26 +609,33 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
                 divergence = compute_divergence(wind_u_bl, wind_v_bl, inputs.lat2d, inputs.lon2d)
 
-                # Vertical velocity magnitude at BL top
                 h_bl = BOUNDARY_LAYER_HEIGHT_M
-                w = divergence * h_bl  # m/s
-                w_abs = np.abs(w)
+                w = divergence * h_bl  # m/s, positive = subsidence
+                w_jac = np.maximum(w, 0)  # Only subsidence in Jacobian (stabilizing)
 
-                # Coefficient: rho * cp * |w|
                 rho = 1.0  # kg/m³
                 cp = HEAT_CAPACITY_AIR_J_KG_K
-                coeff = rho * cp * w_abs
+
+                # Interpolation factor and potential temperature ratio
+                P0 = 1013.25  # hPa
+                P_ATM = 500.0  # hPa
+                P_EXCHANGE = 850.0  # hPa
+                KAPPA = 0.286
+                f = (np.log(P0) - np.log(P_EXCHANGE)) / (np.log(P0) - np.log(P_ATM))
+                alpha = (P0 / P_ATM) ** KAPPA  # ≈ 1.22
+
+                coeff = rho * cp * w_jac * f
 
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
 
-                # Diagonal contributions
-                diag[1] += -coeff / C_bl   # BL loses heat when T_bl increases
-                diag[2] += -coeff / C_atm  # Atm loses heat when T_atm increases
+                # BL Jacobian: dT_bl = Q/C_bl where Q = coeff*(α*T_atm - T_bl)
+                diag[1] += -coeff / C_bl
+                cross[1, 2] += coeff * alpha / C_bl
 
-                # Cross-coupling contributions
-                cross[1, 2] += coeff / C_bl   # BL gains when T_atm increases
-                cross[2, 1] += coeff / C_atm  # Atm gains when T_bl increases
+                # Atm Jacobian: dT_atm = -Q/C_atm (energy conservation)
+                diag[2] += -coeff * alpha / C_atm
+                cross[2, 1] += coeff / C_atm
 
             # Use updated surface diffusion matrix if ocean ψ was applied
             actual_surface_diffusion_matrix = surface_matrix
