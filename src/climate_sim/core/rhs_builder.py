@@ -611,7 +611,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
                 h_bl = BOUNDARY_LAYER_HEIGHT_M
                 w = divergence * h_bl  # m/s, positive = subsidence
-                w_jac = np.maximum(w, 0)  # Only subsidence in Jacobian (stabilizing)
+                w_subsidence = np.maximum(w, 0)  # Only subsidence for BL
+                w_ascent = np.minimum(w, 0)      # Only ascent (negative)
 
                 rho = 1.0  # kg/m³
                 cp = HEAT_CAPACITY_AIR_J_KG_K
@@ -624,18 +625,22 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 f = (np.log(P0) - np.log(P_EXCHANGE)) / (np.log(P0) - np.log(P_ATM))
                 alpha = (P0 / P_ATM) ** KAPPA  # ≈ 1.22
 
-                coeff = rho * cp * w_jac * f
+                coeff_sub = rho * cp * w_subsidence * f
+                coeff_asc = rho * cp * w_ascent * f  # negative where ascending
 
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
 
-                # BL Jacobian: dT_bl = Q/C_bl where Q = coeff*(α*T_atm - T_bl)
-                diag[1] += -coeff / C_bl
-                cross[1, 2] += coeff * alpha / C_bl
+                # BL Jacobian: only subsidence (ascent replacement via advection)
+                # dT_bl = Q_sub/C_bl where Q_sub = coeff_sub*(α*T_atm - T_bl)
+                diag[1] += -coeff_sub / C_bl
+                cross[1, 2] += coeff_sub * alpha / C_bl
 
-                # Atm Jacobian: dT_atm = -Q/C_atm (energy conservation)
-                diag[2] += -coeff * alpha / C_atm
-                cross[2, 1] += coeff / C_atm
+                # Atm Jacobian: subsidence (loses heat) + ascent (gains cool BL air)
+                # dT_atm = -Q_sub/C_atm + Q_asc/C_atm
+                # Q_asc = coeff_asc*(α*T_atm - T_bl), coeff_asc < 0 where ascending
+                diag[2] += -coeff_sub * alpha / C_atm + coeff_asc * alpha / C_atm
+                cross[2, 1] += coeff_sub / C_atm - coeff_asc / C_atm
 
             # Use updated surface diffusion matrix if ocean ψ was applied
             actual_surface_diffusion_matrix = surface_matrix

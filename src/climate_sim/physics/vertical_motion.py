@@ -102,7 +102,7 @@ def compute_vertical_motion_tendencies(
     C_bl: float = BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
     C_atm: float = ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute BL and atmosphere heating from vertical motion (energy-conserving).
+    """Compute BL and atmosphere heating from vertical motion.
 
     Uses potential temperature conservation for adiabatic vertical motion.
 
@@ -110,10 +110,16 @@ def compute_vertical_motion_tendencies(
     T_atm is actual temperature at ~500 hPa.
 
     Physics:
-    - Subsidence (div > 0): Air descends from just above the BL into the BL.
-      Descending air conserves θ; if θ_exchange > θ_bl, subsidence warms the BL.
-    - Ascent (div < 0): Air rises from BL into the free troposphere.
-      Rising air conserves θ_bl; if θ_bl < θ_exchange, ascent cools the BL.
+    - Subsidence (div > 0): Air descends from above into the BL. Descending air
+      conserves θ; if θ_exchange > θ_bl, subsidence warms the BL. The atmosphere
+      cools by the same amount (energy conserving). This is a true inter-layer
+      heat exchange.
+
+    - Ascent (div < 0): Air rises from BL into atmosphere. The BL is replenished
+      by horizontal convergence (advection) at similar θ, so the BL temperature
+      is unchanged. However, the atmosphere DOES receive air at θ_bl, which
+      affects its temperature. The latent heat from condensation is handled
+      separately by the precipitation module.
 
     The exchange happens at the BL top (~850 hPa), not at 500 hPa where T_atm
     is defined. We interpolate θ in log-pressure space between θ_bl (surface)
@@ -144,16 +150,27 @@ def compute_vertical_motion_tendencies(
 
     theta_exchange = theta_bl + f * (theta_atm - theta_bl)
 
-    # Heat exchange at BL-atmosphere interface using potential temperature
-    # Q = ρ*cp*w*(θ_exchange - θ_bl) = ρ*cp*w*f*(θ_atm - θ_bl)
-    # Positive Q when subsidence (w>0) and θ_atm > θ_bl (warm air descending)
-    Q_vertical = rho * cp * w * (theta_exchange - theta_bl)
+    # Split into subsidence and ascent
+    w_subsidence = np.maximum(w, 0)  # positive where sinking
+    w_ascent = np.minimum(w, 0)      # negative where rising
 
-    # Energy-conserving tendencies:
-    # - BL gains/loses heat from vertical exchange
-    # - Atmosphere has opposite tendency (energy conservation)
-    dT_bl = Q_vertical / C_bl
-    dT_atm = -Q_vertical / C_atm
+    # SUBSIDENCE (w > 0): Energy-conserving exchange between atm and BL
+    # Air at θ_exchange descends into BL, warming it
+    Q_subsidence = rho * cp * w_subsidence * (theta_exchange - theta_bl)
+
+    # ASCENT (w < 0): BL unchanged (replacement from advection), but
+    # atmosphere receives air at θ_bl. Since θ_bl < θ_exchange typically,
+    # this "cools" the atmosphere (adds relatively cool air).
+    # Q_ascent is the heat flux INTO atmosphere from rising BL air
+    # w_ascent is negative, and we want positive flux when θ_bl < θ_exchange
+    Q_ascent = rho * cp * w_ascent * (theta_exchange - theta_bl)
+    # When w < 0 and θ_exchange > θ_bl: Q_ascent < 0 (atmosphere cools)
+
+    # BL tendency: only from subsidence (ascent replacement via advection)
+    dT_bl = Q_subsidence / C_bl
+
+    # Atmosphere tendency: from both subsidence (loses heat) and ascent (gains cool air)
+    dT_atm = -Q_subsidence / C_atm + Q_ascent / C_atm
 
     return dT_bl, dT_atm
 
