@@ -9,37 +9,54 @@
   }
 
   let data: ClimateData | null = null;
-  let month = 0;
+  let monthProgress = 0; // Continuous 0-12 value
   let loading = true;
   let error: string | null = null;
   let playing = true;
-  let autoPlayInterval: number | null = null;
+  let animationFrameId: number | null = null;
+  let lastTime: number | null = null;
   let globeComponent: Globe;
   let recording = false;
   let recordingProgress = '';
+
+  // Derive discrete month for UI display
+  $: displayMonth = Math.round(monthProgress) % 12;
 
   const MONTH_NAMES = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
 
-  function startPlaying() {
-    if (autoPlayInterval) return;
-    playing = true;
-    autoPlayInterval = setInterval(() => {
-      month = (month + 1) % 12;
-    }, 1000);
-    if (globeComponent) {
-      globeComponent.setAutoRotate(true);
+  function animateMonth(time: number) {
+    if (lastTime !== null) {
+      const dt = (time - lastTime) / 1000;
+      // When auto-rotating: 1 month per second
+      // When not auto-rotating: 1 year per 3 minutes (12 days per year, 1 day per 15 sec)
+      const isAutoRotating = globeComponent?.isAutoRotating() ?? true;
+      const speed = isAutoRotating ? 1 : (1 / 15);
+      monthProgress = (monthProgress + dt * speed) % 12;
     }
+    lastTime = time;
+    animationFrameId = requestAnimationFrame(animateMonth);
+  }
+
+  function startPlaying() {
+    if (animationFrameId) return;
+    playing = true;
+    lastTime = null;
+    animationFrameId = requestAnimationFrame(animateMonth);
   }
 
   function stopPlaying() {
-    if (autoPlayInterval) {
-      clearInterval(autoPlayInterval);
-      autoPlayInterval = null;
+    if (animationFrameId) {
+      cancelAnimationFrame(animationFrameId);
+      animationFrameId = null;
     }
+    lastTime = null;
     playing = false;
+  }
+
+  function stopAutoRotate() {
     if (globeComponent) {
       globeComponent.setAutoRotate(false);
     }
@@ -49,11 +66,16 @@
     if (playing) {
       stopPlaying();
     } else {
-      // Reset view when resuming play
-      if (globeComponent) {
-        globeComponent.resetView();
-      }
-      month = 0;
+      startPlaying();
+    }
+  }
+
+  function resetView() {
+    if (globeComponent) {
+      globeComponent.resetView();
+    }
+    monthProgress = 0;
+    if (!playing) {
       startPlaying();
     }
   }
@@ -85,8 +107,9 @@
     const rotationPerFrame = (2 * Math.PI) / totalFrames; // Full rotation over all frames
 
     for (let i = 0; i < totalFrames; i++) {
-      month = Math.floor(i / framesPerMonth);
-      recordingProgress = `Capturing ${MONTH_NAMES[month]}... (${i + 1}/${totalFrames})`;
+      monthProgress = i / framesPerMonth;
+      const currentMonth = Math.floor(monthProgress);
+      recordingProgress = `Capturing ${MONTH_NAMES[currentMonth]}... (${i + 1}/${totalFrames})`;
 
       // Rotate globe
       globeComponent.rotateGlobe(rotationPerFrame);
@@ -129,7 +152,7 @@
     }
 
     return () => {
-      if (autoPlayInterval) clearInterval(autoPlayInterval);
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
     };
   });
 </script>
@@ -141,16 +164,17 @@
     <div class="error">Error: {error}</div>
   {:else if data}
     <div class="globe-wrapper">
-      <Globe bind:this={globeComponent} data={data.temperature_2m} {month} on:interact={stopPlaying} />
+      <Globe bind:this={globeComponent} data={data.temperature_2m} {monthProgress} on:interact={stopAutoRotate} />
     </div>
     <div class="controls">
       <label>
-        <span class="month-label">{MONTH_NAMES[month]}</span>
+        <span class="month-label">{MONTH_NAMES[displayMonth]}</span>
         <input
           type="range"
           min="0"
-          max="11"
-          bind:value={month}
+          max="11.99"
+          step="0.01"
+          bind:value={monthProgress}
           on:input={stopPlaying}
         />
       </label>
@@ -160,6 +184,9 @@
         {:else}
           Play
         {/if}
+      </button>
+      <button on:click={resetView} disabled={recording}>
+        Reset View
       </button>
       <button on:click={recordGif} disabled={recording}>
         {#if recording}
