@@ -483,8 +483,8 @@ class WindModel:
         Returns
         -------
         tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-            - pressure: Atmospheric pressure in Pa (at boundary layer level)
-            - air_density: Air density in kg/m³
+            - pressure: Local surface pressure in Pa (elevation-corrected)
+            - air_density: Air density in kg/m³ at 2m height
             - wind_speed_10m: Wind speed at 10 m in m/s
             - bulk_transfer_coefficient: Dimensionless bulk transfer coefficient
         """
@@ -493,8 +493,15 @@ class WindModel:
         if atmosphere_temperature_K.shape != self._lon2d.shape:
             raise ValueError("Atmosphere temperature must match grid shape")
 
-        # Compute pressure from atmosphere temperature
-        pressure = compute_pressure(atmosphere_temperature_K, itcz_rad=itcz_rad, lat2d=self._lat2d, lon2d=self._lon2d)
+        # Compute pressure from atmosphere temperature, accounting for elevation
+        # This gives local surface pressure, not sea-level pressure
+        pressure = compute_pressure(
+            atmosphere_temperature_K,
+            elevation_m=self.elevation_m,
+            itcz_rad=itcz_rad,
+            lat2d=self._lat2d,
+            lon2d=self._lon2d,
+        )
 
         # Map wind speed to 10 m height
         # Reference height corresponds to Ekman boundary layer: 0.5 * h_m
