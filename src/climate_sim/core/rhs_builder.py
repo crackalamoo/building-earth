@@ -689,15 +689,34 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     # dP/dq from precipitation model
                     t_bl = state.temperature[1] if nlayers == 3 else state.temperature[0]
                     t_atm = state.temperature[2] if nlayers == 3 else state.temperature[1] if nlayers == 2 else state.temperature[0]
-                    _, _, dP_dq = compute_precipitation_jacobian(t_bl, t_atm, state.humidity_field)
+
+                    # Get cloud fractions for Jacobian
+                    if cloud_output is not None:
+                        conv_frac = cloud_output.convective_frac
+                        strat_frac = cloud_output.stratiform_frac
+                        marine_frac = cloud_output.marine_sc_frac
+                    else:
+                        conv_frac = np.zeros_like(state.humidity_field)
+                        strat_frac = np.zeros_like(state.humidity_field)
+                        marine_frac = np.zeros_like(state.humidity_field)
+
+                    # Compute vertical velocity from divergence
+                    if wind_u_q is not None and wind_v_q is not None:
+                        divergence = compute_divergence(wind_u_q, wind_v_q, inputs.lat2d, inputs.lon2d)
+                        w_largescale = compute_vertical_velocity_from_divergence(divergence)
+                    else:
+                        w_largescale = np.zeros_like(state.humidity_field)
+
+                    dP_dT_bl, dP_dT_atm, dP_dq = compute_precipitation_jacobian(
+                        conv_frac, strat_frac, marine_frac,
+                        state.humidity_field, w_largescale, t_bl
+                    )
 
                     # Humidity diagonal: dE/dq / M - dP/dq / M
                     # (dE/dq is negative, dP/dq is positive)
                     humidity_diag = dE_dq / COLUMN_MASS_KG_M2 - dP_dq / COLUMN_MASS_KG_M2
 
-                    # Compute humidity-temperature coupling terms
-                    # dR_q/dT: evaporation and precipitation depend on temperature
-                    dP_dT_bl, dP_dT_atm, _ = compute_precipitation_jacobian(t_bl, t_atm, state.humidity_field)
+                    # Humidity-temperature coupling terms already computed above
 
                     # Humidity-temperature coupling via Clausius-Clapeyron
                     if latent_heat_model is not None and latent_heat_model.enabled:

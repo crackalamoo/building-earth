@@ -135,14 +135,6 @@ class CloudConfig:
     marine_sc_cloud_top_height_m: float = MARINE_SC_CLOUD_TOP_HEIGHT_M
     marine_sc_base_coverage: float = 0.75  # Base coverage in marine Sc regions
 
-    # MSE instability thresholds
-    mse_instability_threshold: float = MSE_INSTABILITY_THRESHOLD
-    mse_saturation_scale: float = MSE_SATURATION_SCALE
-
-    # Precipitation limits
-    max_convective_precip_rate: float = MAX_CONVECTIVE_PRECIP_RATE
-    stratiform_autoconversion_time: float = STRATIFORM_AUTOCONVERSION_TIME
-
 
 @dataclass
 class CloudPrecipOutput:
@@ -618,6 +610,135 @@ def compute_vertical_velocity_from_pressure(
     return w
 
 
+def compute_vertical_velocity_from_warm_advection(
+    T: np.ndarray,
+    wind_u: np.ndarray,
+    wind_v: np.ndarray,
+    dx: np.ndarray,
+    dy: float,
+    w_scale: float = 500.0,
+) -> np.ndarray:
+    """Compute vertical velocity from warm advection (frontal lifting).
+
+    At fronts, horizontal temperature advection forces vertical motion.
+    From quasi-geostrophic theory: w ∝ -V · ∇T (warm advection = rising).
+
+    When wind blows from warm to cold regions (warm advection), air rises.
+    When wind blows from cold to warm regions (cold advection), air sinks.
+
+    Parameters
+    ----------
+    T : np.ndarray
+        Temperature field (K), shape (nlat, nlon).
+    wind_u : np.ndarray
+        Zonal wind component (m/s), shape (nlat, nlon).
+    wind_v : np.ndarray
+        Meridional wind component (m/s), shape (nlat, nlon).
+    dx : np.ndarray
+        Zonal grid spacing (m), shape (nlat, 1) or (nlat, nlon).
+    dy : float
+        Meridional grid spacing (m).
+    w_scale : float
+        Conversion factor from K/s to m/s. Default 500 m/(K/s).
+        Based on QG scaling: w ~ (f/N²) * T_advection * H / T
+
+    Returns
+    -------
+    np.ndarray
+        Vertical velocity (m/s). Positive = rising, negative = sinking.
+
+    Notes
+    -----
+    The scaling relates horizontal temperature advection (K/s) to vertical
+    velocity (m/s). A typical strong front has dT/dx ~ 10 K / 1000 km = 1e-5 K/m,
+    and wind ~ 10 m/s, giving warm advection ~ 1e-4 K/s.
+    With w_scale = 500, this gives w ~ 0.05 m/s = 5 cm/s, which is reasonable
+    for frontal lifting.
+    """
+    nlat, nlon = T.shape
+
+    # Compute temperature gradients using centered differences
+    # Zonal gradient: periodic in longitude
+    T_east = np.roll(T, -1, axis=1)
+    T_west = np.roll(T, 1, axis=1)
+    dT_dx = (T_east - T_west) / (2.0 * dx)
+
+    # Meridional gradient: handle poles with one-sided differences
+    dT_dy = np.zeros_like(T)
+    if nlat > 2:
+        # Interior: centered difference
+        dT_dy[1:-1, :] = (T[2:, :] - T[:-2, :]) / (2.0 * dy)
+        # Boundaries: one-sided
+        dT_dy[0, :] = (T[1, :] - T[0, :]) / dy
+        dT_dy[-1, :] = (T[-1, :] - T[-2, :]) / dy
+
+    # Warm advection: -V · ∇T
+    # Positive when wind blows from warm to cold (warm air advected in)
+    warm_advection = -(wind_u * dT_dx + wind_v * dT_dy)  # K/s
+
+    # Convert to vertical velocity
+    # Warm advection (positive) → rising (positive w)
+    w_frontal = warm_advection * w_scale
+
+    # Limit to reasonable values (±0.1 m/s = ±10 cm/s)
+    w_frontal = np.clip(w_frontal, -0.1, 0.1)
+
+    return w_frontal
+
+
+def compute_unified_vertical_velocity(
+    dp_norm: np.ndarray,
+    T: np.ndarray | None = None,
+    wind_u: np.ndarray | None = None,
+    wind_v: np.ndarray | None = None,
+    dx: np.ndarray | None = None,
+    dy: float | None = None,
+    w_pressure_scale: float = 0.01,
+    w_frontal_scale: float = 500.0,
+) -> np.ndarray:
+    """Compute unified large-scale vertical velocity.
+
+    Combines:
+    1. Pressure-driven w (ITCZ convergence, subtropical subsidence)
+    2. Frontal w from warm advection (midlatitude fronts)
+
+    Parameters
+    ----------
+    dp_norm : np.ndarray
+        Normalized pressure anomaly from compute_pressure().
+    T : np.ndarray | None
+        Temperature field for warm advection calculation.
+    wind_u, wind_v : np.ndarray | None
+        Wind components for warm advection calculation.
+    dx : np.ndarray | None
+        Zonal grid spacing (m).
+    dy : float | None
+        Meridional grid spacing (m).
+    w_pressure_scale : float
+        Scale for pressure-driven vertical velocity.
+    w_frontal_scale : float
+        Scale for frontal warm advection vertical velocity.
+
+    Returns
+    -------
+    np.ndarray
+        Total large-scale vertical velocity (m/s).
+    """
+    # Pressure-driven component (always computed)
+    w_pressure = compute_vertical_velocity_from_pressure(dp_norm, w_scale=w_pressure_scale)
+
+    # Frontal component (if wind and temperature available)
+    if T is not None and wind_u is not None and wind_v is not None and dx is not None and dy is not None:
+        w_frontal = compute_vertical_velocity_from_warm_advection(
+            T, wind_u, wind_v, dx, dy, w_scale=w_frontal_scale
+        )
+        w_total = w_pressure + w_frontal
+    else:
+        w_total = w_pressure
+
+    return w_total
+
+
 def compute_clouds_and_precipitation(
     T_bl_K: np.ndarray,
     T_atm_K: np.ndarray,
@@ -691,37 +812,31 @@ def compute_clouds_and_precipitation(
 
     # 6. Compute cloud albedos from fixed optical depths
     # Using simplified τ values instead of LWP-based calculation
-    mse_instability = compute_mse_instability(T_bl_K, T_atm_K, q)
 
     # Fixed τ with g=7 for low clouds
     convective_albedo = np.full_like(T_bl_K, CONVECTIVE_CLOUD_TAU / (CONVECTIVE_CLOUD_TAU + TWO_STREAM_G))
     stratiform_albedo = np.full_like(T_bl_K, STRATIFORM_CLOUD_TAU / (STRATIFORM_CLOUD_TAU + TWO_STREAM_G))
     marine_sc_albedo = np.full_like(T_bl_K, MARINE_SC_CLOUD_TAU / (MARINE_SC_CLOUD_TAU + TWO_STREAM_G))
 
-    # 7. Compute precipitation (scales with cloud fraction)
+    # 7. Compute precipitation using moisture flux formulation
+    # Convective: uses sub-grid updraft velocity (cloud fraction already encodes instability)
     convective_precip = compute_convective_precipitation(
         convective_frac,
-        mse_instability,
         q,
-        config.mse_instability_threshold,
-        config.mse_saturation_scale,
-        config.max_convective_precip_rate,
     )
 
+    # Stratiform: uses large-scale vertical velocity (w > 0 regions)
     stratiform_precip = compute_stratiform_precipitation(
         stratiform_frac,
         q,
-        T_bl_K,
-        config.stratiform_cloud_top_height_m,
-        config.stratiform_autoconversion_time,
+        vertical_velocity,  # large-scale w
     )
 
+    # Marine Sc: drizzle via slow autoconversion (these form in subsiding air)
     marine_sc_precip = compute_marine_sc_precipitation(
         marine_sc_frac,
         q,
         T_bl_K,
-        config.marine_sc_cloud_top_height_m,
-        config.stratiform_autoconversion_time,
     )
 
     # 8. Compute high clouds (anvils from convection + frontal cirrus)

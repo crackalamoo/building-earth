@@ -14,9 +14,8 @@ import numpy as np
 from climate_sim.data.constants import (
     GRAVITY_M_S2,
     HEAT_CAPACITY_AIR_J_KG_K,
-    LATENT_HEAT_VAPORIZATION_J_KG,
     GAS_CONSTANT_WATER_VAPOR_J_KG_K,
-    ATMOSPHERE_LAYER_MIDPOINT_M,
+    LATENT_HEAT_VAPORIZATION_J_KG,
     STANDARD_LAPSE_RATE_K_PER_M,
 )
 from climate_sim.physics.humidity import compute_saturation_specific_humidity
@@ -25,21 +24,30 @@ from climate_sim.physics.humidity import compute_saturation_specific_humidity
 GRAVITY = GRAVITY_M_S2
 SPECIFIC_HEAT_AIR = HEAT_CAPACITY_AIR_J_KG_K
 
-# Convection parameters (used by Jacobian)
-UPPER_TROPOSPHERE_Q_FRACTION = 0.20  # q_upper / q_surface (dry air aloft)
-MSE_INSTABILITY_THRESHOLD = 5000.0  # J/kg - minimum instability for convection
-MSE_SATURATION_SCALE = 20000.0  # J/kg - instability scale for saturation
-MAX_CONVECTIVE_PRECIP_RATE = 15.0 / 86400.0  # kg/m²/s (15 mm/day)
+# Air density at surface (kg/m³)
+RHO_AIR = 1.2
 
-# Column mass for converting kg/kg to kg/m²
+# Precipitation efficiency - fraction of moisture flux converted to precipitation
+# Stratiform: ~20% (steady, widespread)
+# Convective: ~30% (intense, localized)
+STRATIFORM_PRECIP_EFFICIENCY = 0.20
+CONVECTIVE_PRECIP_EFFICIENCY = 0.30
+
+# Grid-mean convective vertical velocity contribution (m/s)
+# This represents the effective grid-mean vertical motion from convection.
+# In-cloud updrafts are 1-5 m/s, but convection covers only ~5-10% of area,
+# so grid-mean contribution is ~0.05-0.5 m/s.
+# With 20% cloud fraction and 0.3 efficiency, w_eff=0.1 gives ~5 mm/day tropical max.
+CONVECTIVE_UPDRAFT_VELOCITY = 0.10  # m/s (grid-mean effective)
+
+# Column mass for converting kg/kg to kg/m² (used in marine Sc drizzle)
 COLUMN_MASS_KG_M2 = 5000.0
 
-# Cloud base height for large-scale condensation (LCL approximation)
-CLOUD_BASE_HEIGHT_M = 1500.0  # ~1.5 km typical LCL
+# Marine Sc drizzle timescale (slow autoconversion in stable layer)
+MARINE_SC_DRIZZLE_TIMESCALE = 14 * 86400  # 2 weeks - very slow
 
 # Cloud top heights for precipitation calculations (must match clouds.py)
 MARINE_SC_CLOUD_TOP_HEIGHT_M = 1000.0  # Marine Sc tops at ~1 km (below inversion)
-STRATIFORM_CLOUD_TOP_HEIGHT_M = 1500.0  # Shallow stratiform decks at ~1.5 km
 
 
 def compute_moist_adiabatic_lapse_rate(T_K: np.ndarray, q: np.ndarray) -> np.ndarray:
@@ -77,46 +85,51 @@ def compute_moist_adiabatic_lapse_rate(T_K: np.ndarray, q: np.ndarray) -> np.nda
 
 def compute_marine_sc_precipitation(
     marine_sc_frac: np.ndarray,
-    q_surface: np.ndarray,
+    q: np.ndarray,
     T_bl_K: np.ndarray,
-    marine_sc_cloud_top_height_m: float,
-    stratiform_autoconversion_time: float,
+    drizzle_timescale: float = MARINE_SC_DRIZZLE_TIMESCALE,
 ) -> np.ndarray:
     """Compute marine stratocumulus precipitation (drizzle).
 
-    Marine Sc produce light drizzle, not heavy rain. The precipitation
-    is a slow autoconversion process in the cloud deck.
+    Marine Sc produce light drizzle, not heavy rain. Unlike stratiform and
+    convective precipitation which use moisture flux, marine Sc drizzle uses
+    slow autoconversion because these clouds form in SUBSIDING air (no w > 0).
+
+    The drizzle rate is the excess moisture (above saturation at cloud level)
+    slowly converting to precipitation via collision-coalescence.
 
     Parameters
     ----------
     marine_sc_frac : np.ndarray
         Marine Sc cloud fraction (0-1).
-    q_surface : np.ndarray
-        Surface specific humidity (kg/kg).
+    q : np.ndarray
+        Specific humidity (kg/kg).
     T_bl_K : np.ndarray
         Boundary layer temperature (K).
-    marine_sc_cloud_top_height_m : float
-        Marine Sc cloud top height (m).
-    stratiform_autoconversion_time : float
-        Autoconversion timescale (s).
+    drizzle_timescale : float
+        Autoconversion timescale (s). Default 2 weeks (very slow).
 
     Returns
     -------
     np.ndarray
         Drizzle rate (kg/m²/s). Much lighter than stratiform precip.
+
+    Notes
+    -----
+    Marine Sc form in subsidence zones where w < 0, so the moisture flux
+    approach doesn't work. Instead, drizzle is modeled as slow autoconversion
+    of cloud water. Typical drizzle rates are 0.1-0.5 mm/day.
     """
-    # Temperature at cloud level
-    T_cloud = T_bl_K - STANDARD_LAPSE_RATE_K_PER_M * marine_sc_cloud_top_height_m
+    # Temperature at cloud level (~1 km)
+    T_cloud = T_bl_K - STANDARD_LAPSE_RATE_K_PER_M * MARINE_SC_CLOUD_TOP_HEIGHT_M
 
     # Saturation specific humidity at cloud level
     q_sat_cloud = compute_saturation_specific_humidity(T_cloud)
 
-    # Excess moisture (drizzle is weak - only slight supersaturation)
-    excess_q = np.maximum(q_surface - q_sat_cloud, 0)
+    # Excess moisture above saturation (cloud water content proxy)
+    excess_q = np.maximum(q - q_sat_cloud, 0)
 
-    # Drizzle: very slow autoconversion (2x longer than stratiform)
-    # Marine Sc are stable and don't precipitate heavily
-    drizzle_timescale = 2.0 * stratiform_autoconversion_time
+    # Drizzle: slow autoconversion of excess moisture
     P_drizzle = (
         marine_sc_frac
         * excess_q
@@ -129,112 +142,105 @@ def compute_marine_sc_precipitation(
 
 def compute_convective_precipitation(
     convective_frac: np.ndarray,
-    mse_instability: np.ndarray,
-    q_surface: np.ndarray,
-    mse_instability_threshold: float,
-    mse_saturation_scale: float,
-    max_convective_precip_rate: float,
+    q: np.ndarray,
+    w_updraft: float = CONVECTIVE_UPDRAFT_VELOCITY,
+    efficiency: float = CONVECTIVE_PRECIP_EFFICIENCY,
+    rho: float = RHO_AIR,
 ) -> np.ndarray:
-    """Compute convective precipitation from cloud fraction and instability.
+    """Compute convective precipitation from moisture flux in convective updrafts.
 
-    KEY CONSTRAINT: No convective clouds = no convective precipitation.
-    This naturally handles:
-    - Hot dry deserts: high instability BUT low clouds (subsidence) -> low precip
-    - Moist tropics: high instability AND high clouds (rising) -> high precip
+    Convective precipitation = cloud_fraction × efficiency × w_updraft × q × ρ
+
+    The cloud fraction already encodes where convection is active (via LTS,
+    vertical velocity, and humidity in the cloud scheme). Once convective
+    clouds exist, precipitation scales with moisture flux through the updrafts.
 
     Parameters
     ----------
     convective_frac : np.ndarray
-        Convective cloud fraction (0-1).
-    mse_instability : np.ndarray
-        MSE instability (J/kg).
-    q_surface : np.ndarray
-        Surface specific humidity (kg/kg).
-    mse_instability_threshold : float
-        Minimum instability for convection (J/kg).
-    mse_saturation_scale : float
-        Instability scale for saturation (J/kg).
-    max_convective_precip_rate : float
-        Maximum convective precipitation rate (kg/m²/s).
+        Convective cloud fraction (0-1). Already encodes instability/rising.
+    q : np.ndarray
+        Specific humidity (kg/kg).
+    w_updraft : float
+        Typical convective updraft velocity (m/s). Default 2 m/s.
+    efficiency : float
+        Precipitation efficiency (0-1). Default 0.30.
+    rho : float
+        Air density (kg/m³). Default 1.2.
 
     Returns
     -------
     np.ndarray
         Convective precipitation rate (kg/m²/s).
+
+    Notes
+    -----
+    Physical interpretation:
+    - Moisture flux = ρ × w × q (kg/m²/s of water vapor moving upward)
+    - Precipitation = efficiency × moisture_flux × cloud_fraction
+    - cloud_fraction accounts for fractional area of convection in grid cell
+
+    Example: conv_frac=0.1, q=0.015, w=2 m/s, eff=0.3, ρ=1.2
+    → P = 0.1 × 0.3 × 2 × 0.015 × 1.2 = 1.1e-3 kg/m²/s ≈ 1 mm/day
     """
-    # Instability factor (same as for cloud formation)
-    instability_excess = np.maximum(mse_instability - mse_instability_threshold, 0)
-    instability_factor = instability_excess / (instability_excess + mse_saturation_scale)
-
-    # Moisture factor: more moisture = more precipitation
-    # Reference q ~ 0.015 kg/kg for tropical BL
-    moisture_factor = np.clip(q_surface / 0.015, 0.2, 1.5)
-
-    # Convective precipitation: SCALES WITH CLOUD FRACTION
-    # No clouds = no precipitation (enforces physical consistency)
-    P_convective = (
-        convective_frac
-        * instability_factor
-        * moisture_factor
-        * max_convective_precip_rate
-    )
+    # Moisture flux through convective updrafts
+    P_convective = convective_frac * efficiency * w_updraft * q * rho
 
     return P_convective
 
 
 def compute_stratiform_precipitation(
     stratiform_frac: np.ndarray,
-    q_surface: np.ndarray,
-    T_bl_K: np.ndarray,
-    stratiform_cloud_top_height_m: float,
-    stratiform_autoconversion_time: float,
+    q: np.ndarray,
+    w_largescale: np.ndarray,
+    efficiency: float = STRATIFORM_PRECIP_EFFICIENCY,
+    rho: float = RHO_AIR,
 ) -> np.ndarray:
-    """Compute stratiform precipitation from large-scale condensation.
+    """Compute stratiform precipitation from large-scale moisture flux.
 
-    Stratiform precipitation occurs when:
-    1. Stratiform clouds are present (requires stable, moist, rising air)
-    2. Moisture exceeds saturation at cloud level
+    Stratiform precipitation = cloud_fraction × efficiency × max(w, 0) × q × ρ
 
-    The precipitation rate is the excess moisture relaxing toward saturation
-    over the autoconversion timescale (~1 week).
+    Precipitation occurs where there are stratiform clouds AND large-scale
+    rising motion (w > 0). The rate scales with the moisture flux through
+    the cloud layer.
 
     Parameters
     ----------
     stratiform_frac : np.ndarray
         Stratiform cloud fraction (0-1).
-    q_surface : np.ndarray
-        Surface specific humidity (kg/kg).
-    T_bl_K : np.ndarray
-        Boundary layer temperature (K).
-    stratiform_cloud_top_height_m : float
-        Stratiform cloud top height (m).
-    stratiform_autoconversion_time : float
-        Autoconversion timescale (s).
+    q : np.ndarray
+        Specific humidity (kg/kg).
+    w_largescale : np.ndarray
+        Large-scale vertical velocity (m/s). Positive = rising.
+    efficiency : float
+        Precipitation efficiency (0-1). Default 0.20.
+    rho : float
+        Air density (kg/m³). Default 1.2.
 
     Returns
     -------
     np.ndarray
         Stratiform precipitation rate (kg/m²/s).
+
+    Notes
+    -----
+    Physical interpretation:
+    - Only rising air (w > 0) produces precipitation
+    - Moisture flux = ρ × w × q (kg/m²/s of water vapor lifted)
+    - Precipitation = efficiency × moisture_flux × cloud_fraction
+
+    The large-scale w includes both:
+    - Pressure-driven ascent (ITCZ convergence, frontal lifting)
+    - Warm advection at fronts (from temperature gradients)
+
+    Example: strat_frac=0.3, q=0.010, w=0.02 m/s, eff=0.2, ρ=1.2
+    → P = 0.3 × 0.2 × 0.02 × 0.010 × 1.2 = 1.4e-5 kg/m²/s ≈ 1.2 mm/day
     """
-    # Temperature at cloud base (~1.5 km above surface)
-    # Use moist adiabatic lapse rate for rising air
-    T_cloud = T_bl_K - STANDARD_LAPSE_RATE_K_PER_M * stratiform_cloud_top_height_m
+    # Only precipitate where air is rising
+    w_rising = np.maximum(w_largescale, 0.0)
 
-    # Saturation specific humidity at cloud level (colder = lower q_sat)
-    q_sat_cloud = compute_saturation_specific_humidity(T_cloud)
-
-    # Excess moisture above saturation
-    excess_q = np.maximum(q_surface - q_sat_cloud, 0)
-
-    # Stratiform precipitation: SCALES WITH CLOUD FRACTION
-    # No clouds = no precipitation
-    # Relaxation: P = cloud_frac * excess_q * COLUMN_MASS / tau
-    P_stratiform = (
-        stratiform_frac
-        * excess_q
-        * COLUMN_MASS_KG_M2
-        / stratiform_autoconversion_time
-    )
+    # Moisture flux through stratiform clouds
+    P_stratiform = stratiform_frac * efficiency * w_rising * q * rho
 
     return P_stratiform
 
@@ -271,23 +277,37 @@ def compute_static_stability(
 
 
 def compute_precipitation_jacobian(
-    T_bl: np.ndarray,
-    T_atm: np.ndarray,
+    convective_frac: np.ndarray,
+    stratiform_frac: np.ndarray,
+    marine_sc_frac: np.ndarray,
     q: np.ndarray,
+    w_largescale: np.ndarray,
+    T_bl: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute Jacobian of precipitation rate w.r.t. temperatures and humidity.
 
-    Returns derivatives for the atmosphere heating tendency from precipitation:
-        dT_atm/dt = P × L_v / C_atm
+    With the moisture flux formulation:
+    - P_conv = conv_frac × eff × w_updraft × q × ρ  (linear in q)
+    - P_strat = strat_frac × eff × max(w, 0) × q × ρ  (linear in q)
+    - P_drizzle = marine_frac × excess_q × column_mass / tau  (depends on q, T_bl)
+
+    The main derivative is ∂P/∂q since precipitation scales linearly with moisture.
+    Temperature dependence is weak (only through marine Sc drizzle saturation).
 
     Parameters
     ----------
-    T_bl : np.ndarray
-        Boundary layer temperature (K)
-    T_atm : np.ndarray
-        Free atmosphere temperature (K)
+    convective_frac : np.ndarray
+        Convective cloud fraction (0-1).
+    stratiform_frac : np.ndarray
+        Stratiform cloud fraction (0-1).
+    marine_sc_frac : np.ndarray
+        Marine Sc cloud fraction (0-1).
     q : np.ndarray
-        Specific humidity (kg/kg)
+        Specific humidity (kg/kg).
+    w_largescale : np.ndarray
+        Large-scale vertical velocity (m/s).
+    T_bl : np.ndarray
+        Boundary layer temperature (K).
 
     Returns
     -------
@@ -295,66 +315,51 @@ def compute_precipitation_jacobian(
         (dP_dT_bl, dP_dT_atm, dP_dq) - derivatives of precipitation rate (kg/m²/s)
         w.r.t. T_bl (K), T_atm (K), and q (kg/kg)
     """
-    cp = SPECIFIC_HEAT_AIR
-    Lv = LATENT_HEAT_VAPORIZATION_J_KG
-
-    # Initialize Jacobians
-    dP_dT_bl = np.zeros_like(T_bl)
-    dP_dT_atm = np.zeros_like(T_atm)
-    dP_dq = np.zeros_like(q)
+    # Initialize Jacobians (ensure float dtype)
+    dP_dT_bl = np.zeros_like(T_bl, dtype=np.float64)
+    dP_dT_atm = np.zeros_like(T_bl, dtype=np.float64)
+    dP_dq = np.zeros_like(q, dtype=np.float64)
 
     # =========================================================================
     # 1. Convective precipitation Jacobian
-    # P_conv = MAX_RATE × f(instability)  where f(x) = x / (x + scale)
-    # instability = MSE_bl - MSE_atm = cp×T_bl + Lv×q - (cp×T_atm + Lv×q_upper + g×z)
+    # P_conv = conv_frac × eff × w_updraft × q × ρ
+    # ∂P_conv/∂q = conv_frac × eff × w_updraft × ρ
     # =========================================================================
-    # Lazy import to avoid circular dependency (clouds imports precipitation)
-    from climate_sim.physics.clouds import compute_mse
-
-    MSE_surface = compute_mse(T_bl, q, height_m=0.0)
-    q_upper = q * UPPER_TROPOSPHERE_Q_FRACTION
-    MSE_upper = compute_mse(T_atm, q_upper, height_m=ATMOSPHERE_LAYER_MIDPOINT_M)
-    instability = MSE_surface - MSE_upper
-
-    instability_excess = np.maximum(instability - MSE_INSTABILITY_THRESHOLD, 0)
-    is_unstable = instability > MSE_INSTABILITY_THRESHOLD
-
-    # Derivative of f(x) = x / (x + scale): f'(x) = scale / (x + scale)²
-    denom = instability_excess + MSE_SATURATION_SCALE
-    df_dx = MSE_SATURATION_SCALE / (denom * denom)
-
-    # ∂instability/∂T_bl = cp, ∂instability/∂T_atm = -cp
-    # ∂instability/∂q = Lv × (1 - UPPER_TROP_Q_FRACTION)
-    dP_conv_dT_bl = np.where(is_unstable, MAX_CONVECTIVE_PRECIP_RATE * df_dx * cp, 0.0)
-    dP_conv_dT_atm = np.where(is_unstable, -MAX_CONVECTIVE_PRECIP_RATE * df_dx * cp, 0.0)
-    dP_conv_dq = np.where(
-        is_unstable,
-        MAX_CONVECTIVE_PRECIP_RATE * df_dx * Lv * (1 - UPPER_TROPOSPHERE_Q_FRACTION),
-        0.0
+    dP_conv_dq = (
+        convective_frac
+        * CONVECTIVE_PRECIP_EFFICIENCY
+        * CONVECTIVE_UPDRAFT_VELOCITY
+        * RHO_AIR
     )
-
-    dP_dT_bl += dP_conv_dT_bl
-    dP_dT_atm += dP_conv_dT_atm
     dP_dq += dP_conv_dq
 
     # =========================================================================
-    # 2. Supersaturation precipitation Jacobian
-    # P_ss = max(q - q_sat(T_cloud), 0) × COLUMN_MASS_KG_M2 / tau
-    # T_cloud = T_bl - γ_m × h_cloud  (γ_m depends on T_bl and q, but weakly)
-    # Approximate: ∂T_cloud/∂T_bl ≈ 1, ∂γ_m/∂T_bl ≈ 0
+    # 2. Stratiform precipitation Jacobian
+    # P_strat = strat_frac × eff × max(w, 0) × q × ρ
+    # ∂P_strat/∂q = strat_frac × eff × max(w, 0) × ρ  (only where w > 0)
     # =========================================================================
-    # Lazy import to avoid circular dependency (humidity imports precipitation)
-    from climate_sim.physics.humidity import compute_saturation_specific_humidity
+    w_rising = np.maximum(w_largescale, 0.0)
+    dP_strat_dq = (
+        stratiform_frac
+        * STRATIFORM_PRECIP_EFFICIENCY
+        * w_rising
+        * RHO_AIR
+    )
+    dP_dq += dP_strat_dq
 
-    tau_seconds = 7 * 86400  # 1 week
-
-    gamma_m = compute_moist_adiabatic_lapse_rate(T_bl, q)
-    T_cloud = T_bl - gamma_m * CLOUD_BASE_HEIGHT_M
+    # =========================================================================
+    # 3. Marine Sc drizzle Jacobian
+    # P_drizzle = marine_frac × max(q - q_sat(T_cloud), 0) × column_mass / tau
+    # ∂P_drizzle/∂q = marine_frac × column_mass / tau  (where supersaturated)
+    # ∂P_drizzle/∂T_bl = marine_frac × (-∂q_sat/∂T) × column_mass / tau
+    # =========================================================================
+    # Temperature at cloud level
+    T_cloud = T_bl - STANDARD_LAPSE_RATE_K_PER_M * MARINE_SC_CLOUD_TOP_HEIGHT_M
     q_sat_cloud = compute_saturation_specific_humidity(T_cloud)
 
     is_supersaturated = q > q_sat_cloud
 
-    # ∂q_sat/∂T using Clausius-Clapeyron (Magnus formula derivative)
+    # ∂q_sat/∂T using Clausius-Clapeyron
     T_cloud_C = T_cloud - 273.15
     e_sat = 6.112 * np.exp(17.67 * T_cloud_C / (T_cloud_C + 243.5))
     de_sat_dT = e_sat * 17.67 * 243.5 / np.power(T_cloud_C + 243.5, 2)
@@ -362,14 +367,20 @@ def compute_precipitation_jacobian(
     denom_q = p_hPa - 0.378 * e_sat
     dq_sat_dT = 0.622 * p_hPa / (denom_q * denom_q) * de_sat_dT
 
-    # ∂P_ss/∂T_bl = -∂q_sat/∂T_cloud × ∂T_cloud/∂T_bl × COLUMN_MASS_KG_M2/tau
-    #             ≈ -dq_sat_dT × COLUMN_MASS_KG_M2/tau  (since ∂T_cloud/∂T_bl ≈ 1)
-    dP_ss_dT_bl = np.where(is_supersaturated, -dq_sat_dT * COLUMN_MASS_KG_M2 / tau_seconds, 0.0)
+    tau = MARINE_SC_DRIZZLE_TIMESCALE
 
-    # ∂P_ss/∂q = COLUMN_MASS_KG_M2 / tau (direct q dependence)
-    dP_ss_dq = np.where(is_supersaturated, COLUMN_MASS_KG_M2 / tau_seconds, 0.0)
+    dP_drizzle_dq = np.where(
+        is_supersaturated,
+        marine_sc_frac * COLUMN_MASS_KG_M2 / tau,
+        0.0
+    )
+    dP_drizzle_dT_bl = np.where(
+        is_supersaturated,
+        -marine_sc_frac * dq_sat_dT * COLUMN_MASS_KG_M2 / tau,
+        0.0
+    )
 
-    dP_dT_bl += dP_ss_dT_bl
-    dP_dq += dP_ss_dq
+    dP_dq += dP_drizzle_dq
+    dP_dT_bl += dP_drizzle_dT_bl
 
     return dP_dT_bl, dP_dT_atm, dP_dq
