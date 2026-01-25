@@ -20,7 +20,16 @@ from climate_sim.physics.diffusion import LayeredDiffusionOperator
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.vertical_motion import VerticalMotionConfig, compute_vertical_motion_tendency, compute_vertical_motion_tendencies
 from climate_sim.physics.precipitation import compute_precipitation_jacobian
-from climate_sim.physics.humidity import COLUMN_MASS_KG_M2, compute_saturation_specific_humidity
+from climate_sim.physics.humidity import (
+    COLUMN_MASS_KG_M2,
+    compute_saturation_specific_humidity,
+    specific_humidity_to_relative_humidity,
+)
+from climate_sim.physics.clouds import (
+    compute_clouds_and_precipitation,
+    compute_vertical_velocity_from_divergence,
+    CloudPrecipOutput,
+)
 from climate_sim.core.state import ModelState
 from climate_sim.core.math_core import spherical_cell_area, compute_divergence
 from climate_sim.data.constants import R_EARTH_METERS, LATENT_HEAT_VAPORIZATION_J_KG, GAS_CONSTANT_WATER_VAPOR_J_KG_K
@@ -164,6 +173,55 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 earth_radius_m=R_EARTH_METERS,
             )
 
+        # Unified cloud physics: compute cloud fractions for separate cloud types
+        # (convective, stratiform, marine Sc, high clouds) with proper emission temperatures
+        cloud_output: CloudPrecipOutput | None = state.cloud_output
+        nlayers = state.temperature.shape[0]
+        humidity_field = state.humidity_field
+
+        # Compute unified clouds if not already provided in state
+        if cloud_output is None and humidity_field is not None and inputs.radiation_config.include_atmosphere:
+            # Get wind for vertical velocity computation
+            if nlayers == 3 and state.boundary_layer_wind_field is not None:
+                wind_u, wind_v, _ = state.boundary_layer_wind_field
+            elif state.wind_field is not None:
+                wind_u, wind_v, _ = state.wind_field
+            else:
+                wind_u = wind_v = None
+
+            # Compute vertical velocity from wind divergence (or use zero if no wind)
+            if wind_u is not None and wind_v is not None:
+                divergence = compute_divergence(wind_u, wind_v, inputs.lat2d, inputs.lon2d)
+                vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+            else:
+                vertical_velocity = np.zeros_like(humidity_field)
+
+            # Get temperature fields
+            surface_temp = state.temperature[0]
+            if nlayers == 3:
+                T_bl = state.temperature[1]
+                T_atm = state.temperature[2]
+            else:
+                T_bl = state.temperature[0]
+                T_atm = state.temperature[1] if nlayers >= 2 else state.temperature[0]
+
+            # Compute relative humidity
+            rh = specific_humidity_to_relative_humidity(
+                humidity_field, T_bl,
+                itcz_rad=itcz_rad, lat2d=inputs.lat2d, lon2d=inputs.lon2d
+            )
+
+            # Compute unified cloud-precipitation
+            cloud_output = compute_clouds_and_precipitation(
+                T_bl_K=T_bl,
+                T_atm_K=T_atm,
+                q=humidity_field,
+                rh=rh,
+                vertical_velocity=vertical_velocity,
+                T_surface_K=surface_temp,
+                ocean_mask=~inputs.land_mask if inputs.land_mask is not None else None,
+            )
+
         radiative = radiation.radiative_balance_rhs(
             state.temperature,
             insolation,
@@ -177,6 +235,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             itcz_rad=itcz_rad,
             lat2d=inputs.lat2d,
             lon2d=inputs.lon2d,
+            cloud_output=cloud_output,  # Use unified cloud physics with optical depth
         )
         if inputs.radiation_config.include_atmosphere:
             radiative = radiative.copy()
@@ -346,6 +405,53 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
     def rhs_derivative(state: ModelState, insolation: np.ndarray, itcz_rad: np.ndarray) -> Linearization:
         """Compute Jacobian of RHS with respect to temperature."""
         del insolation
+
+        # Unified cloud physics: compute cloud fractions for separate cloud types
+        # (convective, stratiform, marine Sc, high clouds) with proper emission temperatures
+        cloud_output: CloudPrecipOutput | None = state.cloud_output
+        nlayers = state.temperature.shape[0]
+        humidity_field = state.humidity_field
+
+        # Compute unified clouds if not already provided in state
+        if cloud_output is None and humidity_field is not None and inputs.radiation_config.include_atmosphere:
+            # Get wind for vertical velocity computation
+            if nlayers == 3 and state.boundary_layer_wind_field is not None:
+                wind_u, wind_v, _ = state.boundary_layer_wind_field
+            elif state.wind_field is not None:
+                wind_u, wind_v, _ = state.wind_field
+            else:
+                wind_u = wind_v = None
+
+            # Compute vertical velocity from wind divergence (or use zero if no wind)
+            if wind_u is not None and wind_v is not None:
+                divergence = compute_divergence(wind_u, wind_v, inputs.lat2d, inputs.lon2d)
+                vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+            else:
+                vertical_velocity = np.zeros_like(humidity_field)
+
+            surface_temp = state.temperature[0]
+            if nlayers == 3:
+                T_bl = state.temperature[1]
+                T_atm = state.temperature[2]
+            else:
+                T_bl = state.temperature[0]
+                T_atm = state.temperature[1] if nlayers >= 2 else state.temperature[0]
+
+            rh = specific_humidity_to_relative_humidity(
+                humidity_field, T_bl,
+                itcz_rad=itcz_rad, lat2d=inputs.lat2d, lon2d=inputs.lon2d
+            )
+
+            cloud_output = compute_clouds_and_precipitation(
+                T_bl_K=T_bl,
+                T_atm_K=T_atm,
+                q=humidity_field,
+                rh=rh,
+                vertical_velocity=vertical_velocity,
+                T_surface_K=surface_temp,
+                ocean_mask=~inputs.land_mask if inputs.land_mask is not None else None,
+            )
+
         if inputs.radiation_config.include_atmosphere:
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 state.temperature,
@@ -356,11 +462,11 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 lat2d=inputs.lat2d,
                 lon2d=inputs.lon2d,
                 itcz_rad=itcz_rad,
+                cloud_output=cloud_output,  # Use unified cloud physics (frozen for linearization)
             )
             assert isinstance(radiative_derivative, tuple)
             radiative_diag, cross = radiative_derivative
             diag = radiative_diag.copy()
-            nlayers = state.temperature.shape[0]
 
             if surface_diffusion_diag is not None:
                 diag[0] = diag[0] + surface_diffusion_diag
@@ -486,6 +592,44 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 else:
                     cross = lh_cross
 
+            # Vertical motion Jacobian (3-layer only)
+            # Q_total = rho * cp * |w| * (T_atm + const - T_bl) for subsidence
+            #         = rho * cp * |w| * (T_bl - T_atm - const) for ascent (with opposite sign)
+            # dQ_total/dT_bl = -rho * cp * |w|
+            # dQ_total/dT_atm = rho * cp * |w|
+            # dT_bl/dt = Q_total / C_bl  => d(tendency)/dT_bl = -rho*cp*|w|/C_bl
+            # dT_atm/dt = -Q_total / C_atm => d(tendency)/dT_atm = rho*cp*|w|/C_atm
+            vertical_motion_enabled = (
+                inputs.vertical_motion_cfg is not None
+                and inputs.vertical_motion_cfg.enabled
+                and nlayers == 3
+            )
+            if vertical_motion_enabled and state.boundary_layer_wind_field is not None:
+                from climate_sim.data.constants import HEAT_CAPACITY_AIR_J_KG_K, BOUNDARY_LAYER_HEIGHT_M
+                wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
+                divergence = compute_divergence(wind_u_bl, wind_v_bl, inputs.lat2d, inputs.lon2d)
+
+                # Vertical velocity magnitude at BL top
+                h_bl = BOUNDARY_LAYER_HEIGHT_M
+                w = divergence * h_bl  # m/s
+                w_abs = np.abs(w)
+
+                # Coefficient: rho * cp * |w|
+                rho = 1.0  # kg/m³
+                cp = HEAT_CAPACITY_AIR_J_KG_K
+                coeff = rho * cp * w_abs
+
+                C_bl = inputs.radiation_config.boundary_layer_heat_capacity
+                C_atm = inputs.radiation_config.atmosphere_heat_capacity
+
+                # Diagonal contributions
+                diag[1] += -coeff / C_bl   # BL loses heat when T_bl increases
+                diag[2] += -coeff / C_atm  # Atm loses heat when T_atm increases
+
+                # Cross-coupling contributions
+                cross[1, 2] += coeff / C_bl   # BL gains when T_atm increases
+                cross[2, 1] += coeff / C_atm  # Atm gains when T_bl increases
+
             # Use updated surface diffusion matrix if ocean ψ was applied
             actual_surface_diffusion_matrix = surface_matrix
             if inputs.diffusion_operator.surface.enabled and state.ocean_current_psi is not None:
@@ -597,6 +741,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 humidity_temp_coupling=humidity_temp_coupling,
                 temp_humidity_coupling=temp_humidity_coupling,
             )
+        # No atmosphere case - cloud_output not used
         radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
             state.temperature,
             heat_capacity_field=inputs.heat_capacity_field,
@@ -605,6 +750,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             humidity_q=state.humidity_field,
             lat2d=inputs.lat2d,
             itcz_rad=itcz_rad,
+            cloud_output=None,
         )
         assert isinstance(radiative_derivative, np.ndarray)
         diag = radiative_derivative.copy()

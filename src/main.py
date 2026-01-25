@@ -554,6 +554,33 @@ def main() -> None:
                 precipitation_mm_day = precipitation_cycle * 86400  # 1 kg/m² = 1 mm
                 precipitation_sorted = precipitation_mm_day[:, :, lon_sort_idx]
 
+            # Get cloud fractions for all four cloud types
+            convective_frac_cycle = layers.get("convective_cloud_frac")
+            convective_frac_sorted = None
+            if convective_frac_cycle is not None:
+                convective_frac_sorted = convective_frac_cycle[:, :, lon_sort_idx]
+
+            stratiform_frac_cycle = layers.get("stratiform_cloud_frac")
+            stratiform_frac_sorted = None
+            if stratiform_frac_cycle is not None:
+                stratiform_frac_sorted = stratiform_frac_cycle[:, :, lon_sort_idx]
+
+            marine_sc_frac_cycle = layers.get("marine_sc_cloud_frac")
+            marine_sc_frac_sorted = None
+            if marine_sc_frac_cycle is not None:
+                marine_sc_frac_sorted = marine_sc_frac_cycle[:, :, lon_sort_idx]
+
+            high_cloud_frac_cycle = layers.get("high_cloud_frac")
+            high_cloud_frac_sorted = None
+            if high_cloud_frac_cycle is not None:
+                high_cloud_frac_sorted = high_cloud_frac_cycle[:, :, lon_sort_idx]
+
+            # Get soil moisture if available
+            soil_moisture_cycle = layers.get("soil_moisture")
+            soil_moisture_sorted = None
+            if soil_moisture_cycle is not None:
+                soil_moisture_sorted = soil_moisture_cycle[:, :, lon_sort_idx]
+
             humidity_data = {
                 "Specific Humidity (q)": humidity_q_sorted,
                 "Relative Humidity (RH)": humidity_rh_sorted,
@@ -561,6 +588,16 @@ def main() -> None:
             }
             if precipitation_sorted is not None:
                 humidity_data["Precipitation"] = precipitation_sorted
+            if convective_frac_sorted is not None:
+                humidity_data["Convective Clouds"] = convective_frac_sorted
+            if stratiform_frac_sorted is not None:
+                humidity_data["Stratiform Clouds"] = stratiform_frac_sorted
+            if marine_sc_frac_sorted is not None:
+                humidity_data["Marine Stratocumulus"] = marine_sc_frac_sorted
+            if high_cloud_frac_sorted is not None:
+                humidity_data["High Clouds"] = high_cloud_frac_sorted
+            if soil_moisture_sorted is not None:
+                humidity_data["Soil Moisture"] = soil_moisture_sorted
         
             # Initial state
             current_state_humidity = {"month": 0, "type": "Specific Humidity (q)"}
@@ -578,7 +615,27 @@ def main() -> None:
                     vmin = 0
                     vmax = 15  # mm/day, typical tropical max
                     label = "Precipitation (mm/day)"
-                else:  # Cloud Cover
+                elif humidity_type == "Convective Clouds":
+                    vmin = 0
+                    vmax = 0.6  # Max convective fraction from clouds.py
+                    label = "Convective Cloud Fraction"
+                elif humidity_type == "Stratiform Clouds":
+                    vmin = 0
+                    vmax = 0.8  # Max stratiform fraction from clouds.py
+                    label = "Stratiform Cloud Fraction"
+                elif humidity_type == "Marine Stratocumulus":
+                    vmin = 0
+                    vmax = 0.9  # Max marine Sc fraction from clouds.py
+                    label = "Marine Sc Cloud Fraction"
+                elif humidity_type == "High Clouds":
+                    vmin = 0
+                    vmax = 0.7  # Max high cloud fraction from clouds.py
+                    label = "High Cloud Fraction"
+                elif humidity_type == "Soil Moisture":
+                    vmin = 0
+                    vmax = 1
+                    label = "Soil Moisture Fraction"
+                else:  # Cloud Cover (old/fallback)
                     vmin = 0
                     vmax = 1
                     label = "Cloud Cover Fraction"
@@ -670,7 +727,17 @@ def main() -> None:
                     return f"{_format_lat(lat)}  {_format_lon(lon)}  RH: {value:.2%}"
                 elif var_type == "Precipitation":
                     return f"{_format_lat(lat)}  {_format_lon(lon)}  Precip: {value:.1f} mm/day"
-                else:  # Cloud Cover
+                elif var_type == "Convective Clouds":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Conv. Cloud: {value:.2%}"
+                elif var_type == "Stratiform Clouds":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Strat. Cloud: {value:.2%}"
+                elif var_type == "Marine Stratocumulus":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Marine Sc: {value:.2%}"
+                elif var_type == "High Clouds":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  High Cloud: {value:.2%}"
+                elif var_type == "Soil Moisture":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Soil Moist: {value:.2%}"
+                else:  # Cloud Cover (old/fallback)
                     return f"{_format_lat(lat)}  {_format_lon(lon)}  Cloud: {value:.2%}"
 
             add_dynamic_status_readout(

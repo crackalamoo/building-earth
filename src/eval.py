@@ -1114,6 +1114,16 @@ def main() -> None:
     land_mask = compute_land_mask(lon2d, lat2d)
     cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=R_EARTH_METERS)
 
+    # Clamp simulated SST to seawater freezing point (-1.8°C) over ocean cells,
+    # matching how real SST observations handle sea ice.
+    SEAWATER_FREEZING_POINT_C = -1.8
+    ocean_mask_3d = ~land_mask[None, ...]
+    surface_cycle = np.where(
+        ocean_mask_3d,
+        np.maximum(surface_cycle, SEAWATER_FREEZING_POINT_C),
+        surface_cycle,
+    )
+
     # Get observation data at the evaluation resolution
     if args.interpolate:
         # Use 1° NOAA reference directly (no aggregation needed)

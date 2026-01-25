@@ -13,6 +13,25 @@ from scipy.sparse import linalg as splinalg
 from climate_sim.data.constants import R_EARTH_METERS
 
 
+def sigmoid(x: np.ndarray, scale: float = 1.0) -> np.ndarray:
+    """Smooth sigmoid transition: 0 for x << 0, 1 for x >> 0.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Input values.
+    scale : float
+        Controls transition width. Larger scale = smoother transition.
+
+    Returns
+    -------
+    np.ndarray
+        Values in (0, 1).
+    """
+    z = np.clip(x / scale, -20.0, 20.0)
+    return 1.0 / (1.0 + np.exp(-z))
+
+
 def harmonic_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Return the element-wise harmonic mean for positive arrays."""
 

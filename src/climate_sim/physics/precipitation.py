@@ -1,11 +1,10 @@
-"""Precipitation physics: moisture flux convergence and precipitation estimation.
+"""Precipitation physics.
 
-Physics:
-- Convergence precipitation: P_conv = max(-∇·(qV), 0) - where wind converges, moisture rains out
-- Convective precipitation: P_mse = f(MSE instability, q) - where moist static energy is unstable
-- Supersaturation precipitation: when q > q_sat, excess condenses immediately
-- Total: P = P_conv + P_mse + P_supersat
-- Latent heat release Q = P × L_v (warms atmosphere where condensation occurs)
+This module provides all precipitation computations:
+- Marine stratocumulus drizzle (cloud-coupled)
+- Convective precipitation (cloud-coupled)
+- Stratiform precipitation (cloud-coupled)
+- Jacobian calculations for the implicit solver
 """
 
 from __future__ import annotations
@@ -13,44 +12,34 @@ from __future__ import annotations
 import numpy as np
 
 from climate_sim.data.constants import (
-    R_EARTH_METERS,
+    GRAVITY_M_S2,
     HEAT_CAPACITY_AIR_J_KG_K,
-    BOUNDARY_LAYER_HEIGHT_M,
-    ATMOSPHERE_LAYER_HEIGHT_M,
     LATENT_HEAT_VAPORIZATION_J_KG,
     GAS_CONSTANT_WATER_VAPOR_J_KG_K,
+    ATMOSPHERE_LAYER_MIDPOINT_M,
+    STANDARD_LAPSE_RATE_K_PER_M,
 )
-from climate_sim.physics.atmosphere.pressure import _smooth_temperature_field, _get_latitude_centers
+from climate_sim.physics.humidity import compute_saturation_specific_humidity
 
-# Physical constants for MSE-based convection
-GRAVITY = 9.81  # m/s²
-SPECIFIC_HEAT_AIR = HEAT_CAPACITY_AIR_J_KG_K  # J/kg/K
+# Aliases for readability
+GRAVITY = GRAVITY_M_S2
+SPECIFIC_HEAT_AIR = HEAT_CAPACITY_AIR_J_KG_K
 
-# Convection parameters
-MOIST_LAYER_DEPTH_M = 3000.0  # Characteristic depth of moist layer
-RHO_AIR_SURFACE = 1.2  # kg/m³ surface air density
+# Convection parameters (used by Jacobian)
 UPPER_TROPOSPHERE_Q_FRACTION = 0.20  # q_upper / q_surface (dry air aloft)
-# Height of atmosphere layer midpoint (where T_atm represents)
-ATMOSPHERE_LAYER_MIDPOINT_M = BOUNDARY_LAYER_HEIGHT_M + ATMOSPHERE_LAYER_HEIGHT_M / 2.0
 MSE_INSTABILITY_THRESHOLD = 5000.0  # J/kg - minimum instability for convection
 MSE_SATURATION_SCALE = 20000.0  # J/kg - instability scale for saturation
-
-# Maximum precipitation rate (enforces physical limit)
-# ~15 mm/day is a reasonable upper bound for monthly-mean convective precip
-# Note: 1 mm of water = 1 kg/m², so mm/day ÷ 86400 = kg/m²/s
 MAX_CONVECTIVE_PRECIP_RATE = 15.0 / 86400.0  # kg/m²/s (15 mm/day)
 
-# Orographic precipitation parameters
-# Reduced efficiency (0.2) allows more moisture to penetrate inland
-# Real world: ~20-40% of lifted moisture precipitates, rest continues inland
-ORO_PRECIP_EFFICIENCY = 0.2  # Fraction of lifted moisture that precipitates
-ORO_SCALE_HEIGHT = 2500.0  # m - exponential decay of moisture with altitude
+# Column mass for converting kg/kg to kg/m²
+COLUMN_MASS_KG_M2 = 5000.0
 
-# Frontal precipitation parameters
-FRONTAL_STORM_TRACK_LAT = 45.0  # degrees - latitude of peak storm activity
-FRONTAL_STORM_TRACK_WIDTH = 20.0  # degrees - width of storm track belt
-# Maximum frontal precip rate ~5 mm/day in active storm tracks
-MAX_FRONTAL_PRECIP_RATE = 5.0 / 86400.0  # kg/m²/s
+# Cloud base height for large-scale condensation (LCL approximation)
+CLOUD_BASE_HEIGHT_M = 1500.0  # ~1.5 km typical LCL
+
+# Cloud top heights for precipitation calculations (must match clouds.py)
+MARINE_SC_CLOUD_TOP_HEIGHT_M = 1000.0  # Marine Sc tops at ~1 km (below inversion)
+STRATIFORM_CLOUD_TOP_HEIGHT_M = 1500.0  # Shallow stratiform decks at ~1.5 km
 
 
 def compute_moist_adiabatic_lapse_rate(T_K: np.ndarray, q: np.ndarray) -> np.ndarray:
@@ -86,280 +75,168 @@ def compute_moist_adiabatic_lapse_rate(T_K: np.ndarray, q: np.ndarray) -> np.nda
     return gamma_m
 
 
-# Cloud base height for large-scale condensation (LCL approximation)
-CLOUD_BASE_HEIGHT_M = 1500.0  # ~1.5 km typical LCL
-
-
-def compute_supersaturation_precipitation(
-    q: np.ndarray,
+def compute_marine_sc_precipitation(
+    marine_sc_frac: np.ndarray,
+    q_surface: np.ndarray,
     T_bl_K: np.ndarray,
-    tau_seconds: float = 7 * 86400,  # 1 week relaxation timescale
+    marine_sc_cloud_top_height_m: float,
+    stratiform_autoconversion_time: float,
 ) -> np.ndarray:
-    """Compute precipitation from large-scale condensation at cloud level.
+    """Compute marine stratocumulus precipitation (drizzle).
 
-    Large-scale (stratiform) precipitation occurs when air rises and cools
-    to saturation. We compute the temperature at cloud base using the
-    moist adiabatic lapse rate, then check if humidity exceeds saturation
-    at that level.
-
-    Physics:
-    - Air at BL temperature rises to cloud base (~1.5 km)
-    - It cools following the moist adiabatic lapse rate
-    - At cloud base, if q > q_sat(T_cloud), condensation occurs
-    - Excess moisture precipitates with a relaxation timescale
+    Marine Sc produce light drizzle, not heavy rain. The precipitation
+    is a slow autoconversion process in the cloud deck.
 
     Parameters
     ----------
-    q : np.ndarray
-        Specific humidity (kg/kg)
+    marine_sc_frac : np.ndarray
+        Marine Sc cloud fraction (0-1).
+    q_surface : np.ndarray
+        Surface specific humidity (kg/kg).
     T_bl_K : np.ndarray
-        Boundary layer temperature (K)
-    tau_seconds : float
-        Relaxation timescale (s). Default 7 days.
+        Boundary layer temperature (K).
+    marine_sc_cloud_top_height_m : float
+        Marine Sc cloud top height (m).
+    stratiform_autoconversion_time : float
+        Autoconversion timescale (s).
 
     Returns
     -------
     np.ndarray
-        Large-scale condensation precipitation rate (kg/m²/s)
+        Drizzle rate (kg/m²/s). Much lighter than stratiform precip.
     """
-    # Lazy import to avoid circular dependency (humidity imports precipitation)
-    from climate_sim.physics.humidity import compute_saturation_specific_humidity
+    # Temperature at cloud level
+    T_cloud = T_bl_K - STANDARD_LAPSE_RATE_K_PER_M * marine_sc_cloud_top_height_m
 
-    # Column mass for converting kg/kg to kg/m²
-    # Water vapor is concentrated in lower troposphere (scale height ~2km)
-    # Effective column mass for moisture ~5000 kg/m² (not full 10000 kg/m²)
-    COLUMN_MASS = 5000.0  # kg/m²
-
-    # Compute moist adiabatic lapse rate based on local conditions
-    gamma_m = compute_moist_adiabatic_lapse_rate(T_bl_K, q)
-
-    # Temperature at cloud base (air has cooled while rising)
-    T_cloud = T_bl_K - gamma_m * CLOUD_BASE_HEIGHT_M
-
-    # Saturation specific humidity at cloud level (colder → lower q_sat)
+    # Saturation specific humidity at cloud level
     q_sat_cloud = compute_saturation_specific_humidity(T_cloud)
 
-    # Excess moisture above saturation at cloud level
-    excess_q = np.maximum(q - q_sat_cloud, 0)
+    # Excess moisture (drizzle is weak - only slight supersaturation)
+    excess_q = np.maximum(q_surface - q_sat_cloud, 0)
 
-    # Relaxation: P = excess * COLUMN_MASS / tau
-    # This removes excess moisture with e-folding time tau
-    P_supersat = excess_q * COLUMN_MASS / tau_seconds
-
-    return P_supersat
-
-
-def compute_moisture_flux_convergence(
-    q: np.ndarray,
-    u: np.ndarray,
-    v: np.ndarray,
-    lat2d: np.ndarray,
-    lon2d: np.ndarray,
-) -> np.ndarray:
-    """Compute moisture flux convergence: -∇·(qV).
-    """
-    R = R_EARTH_METERS
-    lat_rad = np.deg2rad(lat2d)
-
-    cos_lat = np.cos(lat_rad)
-    cos_lat = np.maximum(cos_lat, 0.01)  # Avoid division by zero at poles
-
-    # Grid spacings (assumes uniform grid)
-    dlat = np.deg2rad(lat2d[1, 0] - lat2d[0, 0])
-    dlon = np.deg2rad(lon2d[0, 1] - lon2d[0, 0])
-
-    # Moisture fluxes
-    qu = q * u
-    qv = q * v
-
-    # ∂(qu)/∂λ
-    dqu_dlon = np.gradient(qu, axis=1) / dlon
-
-    # ∂(qv cos φ)/∂φ
-    qv_cos_lat = qv * cos_lat
-    d_qvcos_dlat = np.gradient(qv_cos_lat, axis=0) / dlat
-
-    # Divergence of moisture flux
-    div_qV = (1 / (R * cos_lat)) * dqu_dlon + (1 / (R * cos_lat)) * d_qvcos_dlat
-
-    # Convergence is negative divergence
-    convergence = -div_qV
-
-    return convergence
-
-
-def compute_mse(
-    temperature_K: np.ndarray,
-    specific_humidity: np.ndarray,
-    height_m: float = 0.0,
-) -> np.ndarray:
-    """Compute moist static energy.
-
-    MSE = c_p * T + L_v * q + g * z
-
-    MSE is approximately conserved during moist adiabatic processes and
-    determines whether a parcel can rise convectively.
-    """
-    return (
-        SPECIFIC_HEAT_AIR * temperature_K
-        + LATENT_HEAT_VAPORIZATION_J_KG * specific_humidity
-        + GRAVITY * height_m
+    # Drizzle: very slow autoconversion (2x longer than stratiform)
+    # Marine Sc are stable and don't precipitate heavily
+    drizzle_timescale = 2.0 * stratiform_autoconversion_time
+    P_drizzle = (
+        marine_sc_frac
+        * excess_q
+        * COLUMN_MASS_KG_M2
+        / drizzle_timescale
     )
+
+    return P_drizzle
 
 
 def compute_convective_precipitation(
+    convective_frac: np.ndarray,
+    mse_instability: np.ndarray,
     q_surface: np.ndarray,
-    T_surface_K: np.ndarray,
-    T_atm_K: np.ndarray,
-    rho_air: float = RHO_AIR_SURFACE,
-    h_moist: float = MOIST_LAYER_DEPTH_M,
-    vertical_velocity: np.ndarray | None = None,
+    mse_instability_threshold: float,
+    mse_saturation_scale: float,
+    max_convective_precip_rate: float,
 ) -> np.ndarray:
-    """Compute convective precipitation rate from MSE instability.
+    """Compute convective precipitation from cloud fraction and instability.
 
-    Physics:
-    - Convection occurs when surface MSE exceeds upper-troposphere MSE
-    - The instability drives overturning that removes moisture via precipitation
-    - Rate is proportional to instability × moisture × (depth / timescale)
-    - **Subsidence suppresses convection**: Even with high MSE, sinking air
-      prevents parcels from rising. This is why deserts (under subtropical
-      high pressure) stay dry despite having warm, moist boundary layers.
+    KEY CONSTRAINT: No convective clouds = no convective precipitation.
+    This naturally handles:
+    - Hot dry deserts: high instability BUT low clouds (subsidence) -> low precip
+    - Moist tropics: high instability AND high clouds (rising) -> high precip
 
     Parameters
     ----------
+    convective_frac : np.ndarray
+        Convective cloud fraction (0-1).
+    mse_instability : np.ndarray
+        MSE instability (J/kg).
     q_surface : np.ndarray
-        Surface specific humidity (kg/kg)
-    T_surface_K : np.ndarray
-        Boundary layer temperature (K)
-    T_atm_K : np.ndarray
-        Free atmosphere temperature (K)
-    rho_air : float
-        Air density (kg/m³)
-    h_moist : float
-        Characteristic depth of moist layer (m)
-    vertical_velocity : np.ndarray | None
-        Large-scale vertical velocity (m/s). Positive = rising (enhances convection),
-        negative = sinking (suppresses convection). If None, no suppression applied.
+        Surface specific humidity (kg/kg).
+    mse_instability_threshold : float
+        Minimum instability for convection (J/kg).
+    mse_saturation_scale : float
+        Instability scale for saturation (J/kg).
+    max_convective_precip_rate : float
+        Maximum convective precipitation rate (kg/m²/s).
 
     Returns
     -------
     np.ndarray
-        Convective precipitation rate (kg/m²/s)
+        Convective precipitation rate (kg/m²/s).
     """
-    # MSE at surface (boundary layer)
-    MSE_surface = compute_mse(T_surface_K, q_surface, height_m=0.0)
+    # Instability factor (same as for cloud formation)
+    instability_excess = np.maximum(mse_instability - mse_instability_threshold, 0)
+    instability_factor = instability_excess / (instability_excess + mse_saturation_scale)
 
-    # MSE at atmosphere layer (midpoint of free troposphere)
-    # Upper troposphere is much drier (moisture precipitates out during ascent)
-    q_upper = q_surface * UPPER_TROPOSPHERE_Q_FRACTION
-    MSE_upper = compute_mse(T_atm_K, q_upper, height_m=ATMOSPHERE_LAYER_MIDPOINT_M)
+    # Moisture factor: more moisture = more precipitation
+    # Reference q ~ 0.015 kg/kg for tropical BL
+    moisture_factor = np.clip(q_surface / 0.015, 0.2, 1.5)
 
-    # Instability: positive when surface MSE exceeds upper MSE
-    # The geopotential term (g*z) means surface air must have enough
-    # thermal + latent energy to overcome the potential energy barrier
-    instability = MSE_surface - MSE_upper  # J/kg
-
-    # Only precipitate where unstable (and above threshold)
-    instability_excess = np.maximum(instability - MSE_INSTABILITY_THRESHOLD, 0)
-
-    # Use a saturating function for instability - once strongly unstable,
-    # precipitation is limited by moisture supply, not instability
-    # f(x) = x / (x + scale) approaches 1 as x → ∞
-    instability_factor = instability_excess / (instability_excess + MSE_SATURATION_SCALE)
-
-    # Convective precipitation scales with instability factor and max rate
-    # This approach is more physically meaningful for a monthly-mean model:
-    # - Max rate ~15 mm/day represents sustained tropical convection
-    # - Instability factor (0-1) modulates how much of this max is realized
-    P_convective = instability_factor * MAX_CONVECTIVE_PRECIP_RATE
-
-    # Subsidence suppression: sinking air prevents convection (creates desert belts at ~30 deg)
-    if vertical_velocity is not None:
-        w_scale = 0.01  # m/s - characteristic convective velocity
-        suppression_factor = np.where(
-            vertical_velocity >= 0,
-            1.0,
-            np.exp(vertical_velocity / w_scale)
-        )
-        suppression_factor = np.maximum(suppression_factor, 0.05)
-        P_convective = P_convective * suppression_factor
+    # Convective precipitation: SCALES WITH CLOUD FRACTION
+    # No clouds = no precipitation (enforces physical consistency)
+    P_convective = (
+        convective_frac
+        * instability_factor
+        * moisture_factor
+        * max_convective_precip_rate
+    )
 
     return P_convective
 
 
-def compute_orographic_precipitation(
-    q: np.ndarray,
-    wind_u: np.ndarray,
-    wind_v: np.ndarray,
-    elevation: np.ndarray,
-    lat2d: np.ndarray,
-    lon2d: np.ndarray,
-    rho_air: float = RHO_AIR_SURFACE,
+def compute_stratiform_precipitation(
+    stratiform_frac: np.ndarray,
+    q_surface: np.ndarray,
+    T_bl_K: np.ndarray,
+    stratiform_cloud_top_height_m: float,
+    stratiform_autoconversion_time: float,
 ) -> np.ndarray:
-    """Compute orographic precipitation from terrain-forced ascent.
+    """Compute stratiform precipitation from large-scale condensation.
 
-    Physics:
-    - Wind blowing against terrain slopes forces air to rise
-    - Rising air cools adiabatically and moisture condenses
-    - Precipitation rate proportional to: ascent rate × moisture × efficiency
+    Stratiform precipitation occurs when:
+    1. Stratiform clouds are present (requires stable, moist, rising air)
+    2. Moisture exceeds saturation at cloud level
 
-    The vertical velocity from terrain is: w = V · ∇z
-    where ∇z is the terrain gradient.
+    The precipitation rate is the excess moisture relaxing toward saturation
+    over the autoconversion timescale (~1 week).
 
     Parameters
     ----------
-    q : np.ndarray
-        Specific humidity (kg/kg)
-    wind_u, wind_v : np.ndarray
-        Wind components (m/s)
-    elevation : np.ndarray
-        Terrain elevation (m)
-    lat2d, lon2d : np.ndarray
-        Coordinate grids (degrees)
-    rho_air : float
-        Air density (kg/m³)
+    stratiform_frac : np.ndarray
+        Stratiform cloud fraction (0-1).
+    q_surface : np.ndarray
+        Surface specific humidity (kg/kg).
+    T_bl_K : np.ndarray
+        Boundary layer temperature (K).
+    stratiform_cloud_top_height_m : float
+        Stratiform cloud top height (m).
+    stratiform_autoconversion_time : float
+        Autoconversion timescale (s).
 
     Returns
     -------
     np.ndarray
-        Orographic precipitation rate (kg/m²/s)
+        Stratiform precipitation rate (kg/m²/s).
     """
-    R = R_EARTH_METERS
-    lat_rad = np.deg2rad(lat2d)
-    cos_lat = np.cos(lat_rad)
-    cos_lat = np.maximum(cos_lat, 0.01)
+    # Temperature at cloud base (~1.5 km above surface)
+    # Use moist adiabatic lapse rate for rising air
+    T_cloud = T_bl_K - STANDARD_LAPSE_RATE_K_PER_M * stratiform_cloud_top_height_m
 
-    # Grid spacings
-    dlat = np.deg2rad(lat2d[1, 0] - lat2d[0, 0])
-    dlon = np.deg2rad(lon2d[0, 1] - lon2d[0, 0])
+    # Saturation specific humidity at cloud level (colder = lower q_sat)
+    q_sat_cloud = compute_saturation_specific_humidity(T_cloud)
 
-    # Physical distances
-    dx = R * cos_lat * dlon  # m
-    dy = R * dlat  # m
+    # Excess moisture above saturation
+    excess_q = np.maximum(q_surface - q_sat_cloud, 0)
 
-    # Terrain gradient (∂z/∂x, ∂z/∂y) in m/m
-    dz_dlon = np.gradient(elevation, axis=1)  # Change per grid cell
-    dz_dlat = np.gradient(elevation, axis=0)
-    dz_dx = dz_dlon / dx  # Convert to m/m
-    dz_dy = dz_dlat / dy
+    # Stratiform precipitation: SCALES WITH CLOUD FRACTION
+    # No clouds = no precipitation
+    # Relaxation: P = cloud_frac * excess_q * COLUMN_MASS / tau
+    P_stratiform = (
+        stratiform_frac
+        * excess_q
+        * COLUMN_MASS_KG_M2
+        / stratiform_autoconversion_time
+    )
 
-    # Vertical velocity from terrain: w = u * ∂z/∂x + v * ∂z/∂y
-    # Positive w means upslope flow (forced ascent)
-    w_terrain = wind_u * dz_dx + wind_v * dz_dy
-
-    # Only precipitate where air is rising (upslope)
-    w_up = np.maximum(w_terrain, 0)
-
-    # Moisture available decreases with elevation (exponential profile)
-    # This accounts for air getting drier as it ascends
-    moisture_factor = np.exp(-elevation / ORO_SCALE_HEIGHT)
-    moisture_factor = np.clip(moisture_factor, 0.1, 1.0)
-
-    # Orographic precipitation: P = efficiency × w × q × ρ × moisture_factor
-    # Units: [1] × [m/s] × [kg/kg] × [kg/m³] × [1] = kg/m²/s
-    P_orographic = ORO_PRECIP_EFFICIENCY * w_up * q * rho_air * moisture_factor
-
-    return P_orographic
+    return P_stratiform
 
 
 def compute_static_stability(
@@ -367,27 +244,9 @@ def compute_static_stability(
     T_atm_K: np.ndarray,
     delta_z: float = 5000.0,
 ) -> np.ndarray:
-    """Compute static stability (Brunt-Väisälä frequency N).
+    """Compute Brunt-Vaisala frequency N from vertical temperature profile.
 
-    N² = (g/θ) × (∂θ/∂z) ≈ (g/T) × (∂T/∂z + g/cp)
-
-    The term g/cp is the dry adiabatic lapse rate (~9.8 K/km).
-    If the actual lapse rate is less steep than dry adiabatic (stable),
-    N² > 0 and the atmosphere resists vertical motion.
-
-    Parameters
-    ----------
-    T_bl_K : np.ndarray
-        Boundary layer temperature (K)
-    T_atm_K : np.ndarray
-        Free atmosphere temperature (K)
-    delta_z : float
-        Height difference between BL and atmosphere layers (m)
-
-    Returns
-    -------
-    np.ndarray
-        Brunt-Väisälä frequency N (1/s), clipped to positive values
+    N^2 = (g/T) * (dT/dz + g/cp). Returns N (1/s), clipped to positive values.
     """
     g = GRAVITY
     cp = SPECIFIC_HEAT_AIR
@@ -409,250 +268,6 @@ def compute_static_stability(
     N = np.sqrt(N_squared)
 
     return N
-
-
-def compute_frontal_precipitation(
-    q: np.ndarray,
-    T_bl_K: np.ndarray,
-    lat2d: np.ndarray,
-    lon2d: np.ndarray,
-    T_atm_K: np.ndarray | None = None,
-    vertical_velocity: np.ndarray | None = None,
-    rho_air: float = RHO_AIR_SURFACE,
-) -> np.ndarray:
-    """Compute frontal precipitation from baroclinic instability.
-
-    Physics:
-    - Baroclinic instability drives midlatitude storm systems
-    - Growth rate scales with f × |∂T/∂y| / N (Eady model)
-    - f = Coriolis parameter: weak at low latitudes → suppresses storms
-    - N = static stability: high in subsidence zones → suppresses storms
-    - Subsidence (w < 0): large-scale sinking prevents storm development
-    - This naturally confines frontal precipitation to midlatitudes with
-      active weather (low stability, no subsidence)
-
-    The baroclinic growth rate (Eady model):
-        σ ∝ f × |∂T/∂y| / N
-
-    Temperature is smoothed (~1000 km) before computing gradients to filter
-    out local features (land-ocean contrast, topography) and retain only
-    synoptic-scale gradients that drive baroclinic storms.
-
-    Parameters
-    ----------
-    q : np.ndarray
-        Specific humidity (kg/kg)
-    T_bl_K : np.ndarray
-        Boundary layer temperature (K) - used for horizontal gradient
-    lat2d, lon2d : np.ndarray
-        Coordinate grids (degrees)
-    T_atm_K : np.ndarray, optional
-        Atmosphere temperature (K) - used for static stability calculation.
-        If None, stability term is omitted.
-    vertical_velocity : np.ndarray, optional
-        Large-scale vertical velocity (m/s). Positive = rising, negative = sinking.
-        Subsidence suppresses storm development.
-    rho_air : float
-        Air density (kg/m³)
-
-    Returns
-    -------
-    np.ndarray
-        Frontal precipitation rate (kg/m²/s)
-    """
-    R = R_EARTH_METERS
-    OMEGA = 7.2921e-5  # Earth's rotation rate (rad/s)
-
-    nlat, nlon = T_bl_K.shape
-    lat_rad = np.deg2rad(lat2d)
-    cos_lat = np.cos(lat_rad)
-    cos_lat = np.maximum(cos_lat, 0.01)
-
-    # Coriolis parameter: f = 2Ω sin(φ)
-    # Use absolute value since we care about magnitude of baroclinic instability
-    f = 2.0 * OMEGA * np.abs(np.sin(lat_rad))
-
-    # Smooth temperature to get synoptic-scale gradients only
-    # This filters out local land-ocean contrast and topographic effects
-    lat_centers = _get_latitude_centers(nlat)
-    T_smooth = _smooth_temperature_field(T_bl_K, lat_centers, smoothing_length_km=1000.0)
-
-    # Grid spacings
-    dlat = np.deg2rad(lat2d[1, 0] - lat2d[0, 0])
-    dlon = np.deg2rad(lon2d[0, 1] - lon2d[0, 0])
-
-    # Physical distances
-    dx = R * cos_lat * dlon
-    dy = R * dlat
-
-    # Temperature gradient magnitude |∇T| from smoothed field
-    dT_dlon = np.gradient(T_smooth, axis=1)
-    dT_dlat = np.gradient(T_smooth, axis=0)
-    dT_dx = dT_dlon / dx  # K/m
-    dT_dy = dT_dlat / dy
-    grad_T_mag = np.sqrt(dT_dx**2 + dT_dy**2)
-
-    # Static stability (Brunt-Väisälä frequency)
-    # High N in subsidence zones (deserts) suppresses baroclinic growth
-    if T_atm_K is not None:
-        N = compute_static_stability(T_bl_K, T_atm_K)
-        # Reference N for midlatitudes: ~0.01 s⁻¹
-        N_ref = 0.01
-        stability_factor = N_ref / N  # <1 where stable (suppressed), >1 where unstable
-        stability_factor = np.clip(stability_factor, 0.1, 2.0)  # Limit range
-    else:
-        stability_factor = 1.0
-
-    # Baroclinic instability measure: f × |∇T| / N
-    # This naturally suppresses frontal activity where:
-    # - f→0 (low latitudes)
-    # - N is high (stable subsidence zones)
-    # Units: [1/s] × [K/m] = [K/(m·s)]
-    # Typical midlatitude value: f~1e-4 × grad_T~1e-5 = 1e-9 K/(m·s)
-    baroclinic_measure = f * grad_T_mag * stability_factor
-
-    # Normalize to dimensionless factor
-    # Reference: f=1e-4 (45°N), grad_T=1e-5 K/m → product = 1e-9
-    baroclinic_factor = baroclinic_measure / 1e-9
-    baroclinic_factor = np.clip(baroclinic_factor, 0, 3)  # Cap at 3x typical
-
-    # Frontal precipitation: baroclinic instability × moisture
-    # Scale so that max rate ~5 mm/day in strongest storm tracks
-    P_frontal = MAX_FRONTAL_PRECIP_RATE * baroclinic_factor * (q / 0.01)
-
-    # Subsidence suppression: large-scale sinking prevents storm development
-    # Even if baroclinic conditions exist, subsidence stabilizes the atmosphere
-    # and prevents the vertical motion needed for frontal precipitation
-    if vertical_velocity is not None:
-        w_scale = 0.005  # m/s - smaller scale than convection (fronts more sensitive)
-        suppression_factor = np.where(
-            vertical_velocity >= 0,
-            1.0,
-            np.exp(vertical_velocity / w_scale)
-        )
-        suppression_factor = np.maximum(suppression_factor, 0.05)
-        P_frontal = P_frontal * suppression_factor
-
-    return P_frontal
-
-
-def compute_convergence_precipitation(
-    q: np.ndarray,
-    u: np.ndarray,
-    v: np.ndarray,
-    lat2d: np.ndarray,
-    lon2d: np.ndarray,
-    rho_air: float = RHO_AIR_SURFACE,
-    h_moist: float = MOIST_LAYER_DEPTH_M,
-) -> np.ndarray:
-    """Compute precipitation from moisture flux convergence.
-
-    Where winds converge, moisture accumulates and precipitates.
-    This represents large-scale (frontal/ITCZ) precipitation.
-
-    Units:
-    - mfc has units of [1/s] (divergence of qV / q ≈ divergence of V for slowly-varying q)
-    - P = mfc * q * rho * h gives [1/s] * [kg/kg] * [kg/m³] * [m] = [kg/m²/s]
-    """
-    mfc = compute_moisture_flux_convergence(q, u, v, lat2d, lon2d)
-    # Precipitate where there's convergence
-    # The formula P = mfc * q * rho * h represents the column moisture
-    # that accumulates due to convergence
-    P_convergence = np.maximum(mfc, 0) * q * rho_air * h_moist
-    return P_convergence
-
-
-def compute_precipitation_rate(
-    q: np.ndarray,
-    u: np.ndarray,
-    v: np.ndarray,
-    lat2d: np.ndarray,
-    lon2d: np.ndarray,
-    T_surface_K: np.ndarray | None = None,
-    T_atm_K: np.ndarray | None = None,
-    elevation: np.ndarray | None = None,
-    rho_air: float = RHO_AIR_SURFACE,
-    h_moist: float = MOIST_LAYER_DEPTH_M,
-    vertical_velocity: np.ndarray | None = None,
-) -> np.ndarray:
-    """Compute total precipitation rate from all mechanisms.
-
-    Combines three precipitation types:
-    1. Convective: MSE-based instability (tropics, summer continents)
-    2. Orographic: Terrain-forced ascent (mountains, windward slopes)
-    3. Frontal: Midlatitude storm track activity
-
-    Parameters
-    ----------
-    q : np.ndarray
-        Specific humidity (kg/kg)
-    u, v : np.ndarray
-        Wind components (m/s)
-    lat2d, lon2d : np.ndarray
-        Coordinate grids (degrees)
-    T_surface_K : np.ndarray, optional
-        Boundary layer temperature for convective precipitation
-    T_atm_K : np.ndarray, optional
-        Atmosphere temperature for convective/frontal precipitation
-    elevation : np.ndarray, optional
-        Terrain elevation (m) for orographic precipitation
-    rho_air : float
-        Air density (kg/m³)
-    h_moist : float
-        Moist layer depth (m)
-    vertical_velocity : np.ndarray, optional
-        Large-scale vertical velocity (m/s). Positive = rising, negative = sinking.
-        Used to suppress convective precipitation in subsidence zones.
-
-    Returns
-    -------
-    np.ndarray
-        Total precipitation rate (kg/m²/s)
-    """
-    P_total = np.zeros_like(q)
-    P_convective = np.zeros_like(q)
-
-    # 1. Convective precipitation (MSE-based)
-    # Subsidence (negative w) suppresses convection even with high MSE
-    if T_surface_K is not None and T_atm_K is not None:
-        P_convective = compute_convective_precipitation(
-            q, T_surface_K, T_atm_K, rho_air, h_moist,
-            vertical_velocity=vertical_velocity,
-        )
-        P_total += P_convective
-
-    # 2. Orographic precipitation (terrain-forced)
-    # TODO: Disabled - needs Jacobian implementation
-    # if elevation is not None:
-    #     P_orographic = compute_orographic_precipitation(
-    #         q, u, v, elevation, lat2d, lon2d, rho_air
-    #     )
-    #     P_total += P_orographic
-
-    # 3. Frontal precipitation (storm tracks)
-    # TODO: Disabled - needs Jacobian implementation (non-local due to T gradient)
-    # if T_surface_K is not None:
-    #     P_frontal = compute_frontal_precipitation(
-    #         q, T_surface_K, lat2d, lon2d,
-    #         T_atm_K=T_atm_K,
-    #         vertical_velocity=vertical_velocity,
-    #         rho_air=rho_air,
-    #     )
-    #     P_total += P_frontal
-
-    # 4. Supersaturation precipitation (large-scale condensation)
-    # When air rises to cloud level and q > q_sat(T_cloud), excess condenses
-    # Only apply where there's NO convective precipitation (mutually exclusive)
-    # Convection already handles moisture removal in unstable conditions
-    if T_surface_K is not None:
-        P_supersat = compute_supersaturation_precipitation(q, T_surface_K)
-        # Only add supersaturation where convection is weak (<0.5 mm/day)
-        # This avoids double-counting in convectively active regions
-        convection_threshold = 0.5 / 86400.0  # 0.5 mm/day in kg/m²/s
-        P_supersat = np.where(P_convective < convection_threshold, P_supersat, 0.0)
-        P_total += P_supersat
-
-    return P_total
 
 
 def compute_precipitation_jacobian(
@@ -680,7 +295,6 @@ def compute_precipitation_jacobian(
         (dP_dT_bl, dP_dT_atm, dP_dq) - derivatives of precipitation rate (kg/m²/s)
         w.r.t. T_bl (K), T_atm (K), and q (kg/kg)
     """
-
     cp = SPECIFIC_HEAT_AIR
     Lv = LATENT_HEAT_VAPORIZATION_J_KG
 
@@ -694,6 +308,9 @@ def compute_precipitation_jacobian(
     # P_conv = MAX_RATE × f(instability)  where f(x) = x / (x + scale)
     # instability = MSE_bl - MSE_atm = cp×T_bl + Lv×q - (cp×T_atm + Lv×q_upper + g×z)
     # =========================================================================
+    # Lazy import to avoid circular dependency (clouds imports precipitation)
+    from climate_sim.physics.clouds import compute_mse
+
     MSE_surface = compute_mse(T_bl, q, height_m=0.0)
     q_upper = q * UPPER_TROPOSPHERE_Q_FRACTION
     MSE_upper = compute_mse(T_atm, q_upper, height_m=ATMOSPHERE_LAYER_MIDPOINT_M)
@@ -722,14 +339,13 @@ def compute_precipitation_jacobian(
 
     # =========================================================================
     # 2. Supersaturation precipitation Jacobian
-    # P_ss = max(q - q_sat(T_cloud), 0) × COLUMN_MASS / tau
+    # P_ss = max(q - q_sat(T_cloud), 0) × COLUMN_MASS_KG_M2 / tau
     # T_cloud = T_bl - γ_m × h_cloud  (γ_m depends on T_bl and q, but weakly)
     # Approximate: ∂T_cloud/∂T_bl ≈ 1, ∂γ_m/∂T_bl ≈ 0
     # =========================================================================
     # Lazy import to avoid circular dependency (humidity imports precipitation)
     from climate_sim.physics.humidity import compute_saturation_specific_humidity
 
-    COLUMN_MASS = 5000.0  # kg/m² (lower troposphere)
     tau_seconds = 7 * 86400  # 1 week
 
     gamma_m = compute_moist_adiabatic_lapse_rate(T_bl, q)
@@ -746,12 +362,12 @@ def compute_precipitation_jacobian(
     denom_q = p_hPa - 0.378 * e_sat
     dq_sat_dT = 0.622 * p_hPa / (denom_q * denom_q) * de_sat_dT
 
-    # ∂P_ss/∂T_bl = -∂q_sat/∂T_cloud × ∂T_cloud/∂T_bl × COLUMN_MASS/tau
-    #             ≈ -dq_sat_dT × COLUMN_MASS/tau  (since ∂T_cloud/∂T_bl ≈ 1)
-    dP_ss_dT_bl = np.where(is_supersaturated, -dq_sat_dT * COLUMN_MASS / tau_seconds, 0.0)
+    # ∂P_ss/∂T_bl = -∂q_sat/∂T_cloud × ∂T_cloud/∂T_bl × COLUMN_MASS_KG_M2/tau
+    #             ≈ -dq_sat_dT × COLUMN_MASS_KG_M2/tau  (since ∂T_cloud/∂T_bl ≈ 1)
+    dP_ss_dT_bl = np.where(is_supersaturated, -dq_sat_dT * COLUMN_MASS_KG_M2 / tau_seconds, 0.0)
 
-    # ∂P_ss/∂q = COLUMN_MASS / tau (direct q dependence)
-    dP_ss_dq = np.where(is_supersaturated, COLUMN_MASS / tau_seconds, 0.0)
+    # ∂P_ss/∂q = COLUMN_MASS_KG_M2 / tau (direct q dependence)
+    dP_ss_dq = np.where(is_supersaturated, COLUMN_MASS_KG_M2 / tau_seconds, 0.0)
 
     dP_dT_bl += dP_ss_dT_bl
     dP_dq += dP_ss_dq

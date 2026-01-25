@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from climate_sim.physics.atmosphere.pressure import compute_pressure
@@ -11,7 +13,9 @@ from climate_sim.core.math_core import spherical_cell_area, compute_divergence
 from climate_sim.core.timing import time_block
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.physics.vertical_motion import compute_subsidence_drying
-from climate_sim.physics.precipitation import compute_precipitation_rate
+
+if TYPE_CHECKING:
+    from climate_sim.physics.clouds import CloudPrecipOutput
 
 # Mean RH and anomalies at key latitude bands (like pressure anomalies)
 RH_MEAN = 0.65
@@ -393,82 +397,6 @@ def compute_humidity_q(
 
     return q_sat * rh
 
-def compute_cloud_cover(
-    relative_humidity: np.ndarray | None = None,
-    land_mask: np.ndarray | None = None,
-    temperature: np.ndarray | None = None,
-) -> np.ndarray:
-    """Compute cloud cover fraction from relative humidity.
-    
-    Uses a physically-based parameterization where cloud cover depends on
-    relative humidity with different thresholds for land and ocean:
-        C = max(0, (RH - RH_threshold) / (1 - RH_threshold)) ^ power
-    
-    Parameters
-    ----------
-    relative_humidity : np.ndarray | None, optional
-        Relative humidity field (0-1). If None, falls back to latitude-based
-        prescription for backward compatibility.
-    land_mask : np.ndarray | None, optional
-        Boolean array indicating land cells (True) vs ocean cells (False).
-        If provided, different values are used for land vs ocean in the fallback.
-    temperature : np.ndarray | None, optional
-        Temperature field (K).
-    Returns
-    -------
-    np.ndarray
-        Cloud cover fraction (0-1) at each grid point.
-    """
-    # Fallback to latitude-based prescription if RH not provided
-    if relative_humidity is None:
-        if temperature is None:
-            raise ValueError("Either relative_humidity or temperature must be provided")
-        return _compute_cloud_cover_latitude_fallback(temperature, land_mask)
-    
-    rh_crit = 0.35
-    rh_max = 0.85
-    cloud_param = np.clip((relative_humidity - rh_crit)/(rh_max - rh_crit), 0, 1)
-
-    cloud_cover = 3*cloud_param**2 - 2*cloud_param**3
-    cloud_cover = 0.07 + (0.8 - 0.07) * cloud_cover
-    
-    return cloud_cover
-
-
-def _compute_cloud_cover_latitude_fallback(
-    temperature: np.ndarray, land_mask: np.ndarray | None = None
-) -> np.ndarray:
-    """Fallback latitude-dependent cloud cover (for backward compatibility).
-
-    Uses a simple parameterization based on latitude only:
-        C = 0.65 - 2.59 * sin²(lat) + 3.55 * sin⁴(lat)
-    """
-    nlat, nlon = temperature.shape[1], temperature.shape[2]
-
-    # Reconstruct the latitude grid (cell centers)
-    lat_spacing = 180.0 / float(nlat)
-    lat_centers = -90.0 + (np.arange(nlat, dtype=float) + 0.5) * lat_spacing
-
-    # Create 2D latitude field matching the grid
-    lat2d = lat_centers[:, np.newaxis]  # Shape: (nlat, 1)
-    lat2d = np.broadcast_to(lat2d, (nlat, nlon))  # Shape: (nlat, nlon)
-
-    # Convert to radians for trigonometric functions
-    lat_rad = np.deg2rad(lat2d)
-
-    # Compute the cloud cover formula
-    sin_lat = np.sin(lat_rad)
-    sin2_lat = sin_lat * sin_lat
-    sin4_lat = sin2_lat * sin2_lat
-
-    cloud_cover = 0.7 - 2.59 * sin2_lat + 3.55 * sin4_lat
-
-    # Clamp to maximum of 0.9
-    cloud_cover = np.minimum(cloud_cover, 0.9)
-
-    return cloud_cover
-
-
 def compute_humidity_and_precipitation(
     wind_u: np.ndarray | None,
     wind_v: np.ndarray | None,
@@ -480,12 +408,14 @@ def compute_humidity_and_precipitation(
     atmosphere_temperature: np.ndarray | None = None,
     elevation: np.ndarray | None = None,
     vertical_velocity: np.ndarray | None = None,
+    ocean_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Compute humidity field and precipitation.
+    """Compute humidity field and precipitation using unified cloud-precipitation physics.
 
     If wind is available, uses wind-advected moisture from ocean with
-    subsidence drying applied over land. If wind is not available,
-    falls back to pattern-based humidity computation.
+    subsidence drying applied over land. Precipitation is computed from the
+    unified cloud-precipitation module, ensuring physical consistency:
+    no clouds = no precipitation.
 
     Parameters
     ----------
@@ -502,11 +432,17 @@ def compute_humidity_and_precipitation(
     atmosphere_temperature : np.ndarray | None
         Free atmosphere temperature (K). Used for MSE-based convective precipitation.
     elevation : np.ndarray | None
-        Terrain elevation (m). Used for orographic precipitation.
+        Terrain elevation (m). Currently unused, reserved for orographic precipitation.
     vertical_velocity : np.ndarray | None
-        Large-scale vertical velocity (m/s). Positive = rising. Used to suppress
-        convection in subsidence zones.
+        Large-scale vertical velocity (m/s). Positive = rising. If None, computed
+        from wind divergence.
     """
+    # Import here to avoid circular dependency
+    from climate_sim.physics.clouds import (
+        compute_clouds_and_precipitation,
+        compute_vertical_velocity_from_divergence,
+    )
+
     if wind_u is not None and wind_v is not None:
         # Advect specific humidity (conserved) from ocean to land
         humidity_field = advect_moisture_from_ocean(
@@ -536,16 +472,35 @@ def compute_humidity_and_precipitation(
         drying_factor = np.where(land_mask, drying_factor, 1.0)
         humidity_field = humidity_field * drying_factor
 
-        # Compute precipitation from wind and humidity
-        # Pass temperature fields for MSE-based convective precipitation
-        # Pass vertical velocity to suppress convection in subsidence zones
-        precipitation_field = compute_precipitation_rate(
-            humidity_field, wind_u, wind_v, lat2d, lon2d,
-            T_surface_K=temperature_field,
-            T_atm_K=atmosphere_temperature,
-            elevation=elevation,
-            vertical_velocity=vertical_velocity,
+        # Compute vertical velocity from wind divergence if not provided
+        if vertical_velocity is None:
+            vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+
+        # Compute relative humidity for cloud physics
+        rh = specific_humidity_to_relative_humidity(
+            humidity_field, temperature_field,
+            itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d
         )
+
+        # Use unified cloud-precipitation module
+        # This ensures physical consistency: precipitation requires clouds
+        if atmosphere_temperature is not None:
+            # Compute ocean_mask from land_mask if not provided
+            effective_ocean_mask = ocean_mask if ocean_mask is not None else ~land_mask
+            cloud_output = compute_clouds_and_precipitation(
+                T_bl_K=temperature_field,
+                T_atm_K=atmosphere_temperature,
+                q=humidity_field,
+                rh=rh,
+                vertical_velocity=vertical_velocity,
+                T_surface_K=temperature_field,
+                ocean_mask=effective_ocean_mask,
+            )
+            precipitation_field = cloud_output.total_precip
+        else:
+            # Without atmosphere temperature, cannot compute MSE instability
+            # Return zero precipitation
+            precipitation_field = np.zeros_like(humidity_field)
 
         return humidity_field, precipitation_field
     else:

@@ -179,6 +179,33 @@ def postprocess_periodic_cycle_results(
         layers_map["ocean_u"] = ocean_u
         layers_map["ocean_v"] = ocean_v
 
+    # Extract soil moisture from state
+    soil_moisture_fields = [state.soil_moisture for state in monthly_states]
+    if all(sm is not None for sm in soil_moisture_fields):
+        soil_moisture = np.stack([sm for sm in soil_moisture_fields if sm is not None], axis=0)
+        layers_map["soil_moisture"] = soil_moisture
+
+    # Extract cloud fraction fields from state
+    convective_frac_fields = [state.convective_cloud_frac for state in monthly_states]
+    if all(cf is not None for cf in convective_frac_fields):
+        convective_frac = np.stack([cf for cf in convective_frac_fields if cf is not None], axis=0)
+        layers_map["convective_cloud_frac"] = convective_frac
+
+    stratiform_frac_fields = [state.stratiform_cloud_frac for state in monthly_states]
+    if all(sf is not None for sf in stratiform_frac_fields):
+        stratiform_frac = np.stack([sf for sf in stratiform_frac_fields if sf is not None], axis=0)
+        layers_map["stratiform_cloud_frac"] = stratiform_frac
+
+    marine_sc_frac_fields = [state.marine_sc_cloud_frac for state in monthly_states]
+    if all(mf is not None for mf in marine_sc_frac_fields):
+        marine_sc_frac = np.stack([mf for mf in marine_sc_frac_fields if mf is not None], axis=0)
+        layers_map["marine_sc_cloud_frac"] = marine_sc_frac
+
+    high_cloud_frac_fields = [state.high_cloud_frac for state in monthly_states]
+    if all(hf is not None for hf in high_cloud_frac_fields):
+        high_cloud_frac = np.stack([hf for hf in high_cloud_frac_fields if hf is not None], axis=0)
+        layers_map["high_cloud_frac"] = high_cloud_frac
+
     if return_layer_map:
         return lon2d, lat2d, layers_map
 

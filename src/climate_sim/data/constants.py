@@ -1,5 +1,9 @@
 """Shared physical constants used throughout the climate simulator."""
 
+# Fundamental constants
+STEFAN_BOLTZMANN_W_M2_K4 = 5.670374419e-8  # W m-2 K-4
+GRAVITY_M_S2 = 9.81  # m/s²
+
 R_EARTH_METERS = 6.371e6
 ATMOSPHERE_MASS = 5.1480e18  # kg
 EARTH_SURFACE_AREA_M2 = 4.0 * 3.141592653589793 * R_EARTH_METERS**2
@@ -19,8 +23,8 @@ BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K = 1.2 * HEAT_CAPACITY_AIR_J_KG_K * BOUNDARY_
 # Free atmosphere layer constants (when boundary layer enabled)
 ATMOSPHERE_LAYER_HEIGHT_M = 7500.0
 ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K = 1.2 * HEAT_CAPACITY_AIR_J_KG_K * ATMOSPHERE_LAYER_HEIGHT_M  # density * cp * height ≈ 7.24e6 J m-2 K-1
-
-BOUNDARY_ATMOSPHERE_EQUILIBRATION_DAYS = 7
+# Midpoint of the atmosphere layer (where T_atm represents)
+ATMOSPHERE_LAYER_MIDPOINT_M = BOUNDARY_LAYER_HEIGHT_M + ATMOSPHERE_LAYER_HEIGHT_M / 2.0  # ~4750 m
 
 # Thermodynamic constants for water vapor
 LATENT_HEAT_VAPORIZATION_J_KG = 2.5e6  # J/kg - latent heat of vaporization
