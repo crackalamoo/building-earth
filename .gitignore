@@ -211,3 +211,8 @@ data/*
 utils/*
 .vscode/*
 .claude/*
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/public/main.json
