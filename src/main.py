@@ -575,12 +575,6 @@ def main() -> None:
             if high_cloud_frac_cycle is not None:
                 high_cloud_frac_sorted = high_cloud_frac_cycle[:, :, lon_sort_idx]
 
-            # Get soil moisture if available
-            soil_moisture_cycle = layers.get("soil_moisture")
-            soil_moisture_sorted = None
-            if soil_moisture_cycle is not None:
-                soil_moisture_sorted = soil_moisture_cycle[:, :, lon_sort_idx]
-
             humidity_data = {
                 "Specific Humidity (q)": humidity_q_sorted,
                 "Relative Humidity (RH)": humidity_rh_sorted,
@@ -596,8 +590,6 @@ def main() -> None:
                 humidity_data["Marine Stratocumulus"] = marine_sc_frac_sorted
             if high_cloud_frac_sorted is not None:
                 humidity_data["High Clouds"] = high_cloud_frac_sorted
-            if soil_moisture_sorted is not None:
-                humidity_data["Soil Moisture"] = soil_moisture_sorted
         
             # Initial state
             current_state_humidity = {"month": 0, "type": "Specific Humidity (q)"}
@@ -631,10 +623,6 @@ def main() -> None:
                     vmin = 0
                     vmax = 0.7  # Max high cloud fraction from clouds.py
                     label = "High Cloud Fraction"
-                elif humidity_type == "Soil Moisture":
-                    vmin = 0
-                    vmax = 1
-                    label = "Soil Moisture Fraction"
                 else:  # Cloud Cover (old/fallback)
                     vmin = 0
                     vmax = 1
@@ -735,8 +723,6 @@ def main() -> None:
                     return f"{_format_lat(lat)}  {_format_lon(lon)}  Marine Sc: {value:.2%}"
                 elif var_type == "High Clouds":
                     return f"{_format_lat(lat)}  {_format_lon(lon)}  High Cloud: {value:.2%}"
-                elif var_type == "Soil Moisture":
-                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Soil Moist: {value:.2%}"
                 else:  # Cloud Cover (old/fallback)
                     return f"{_format_lat(lat)}  {_format_lon(lon)}  Cloud: {value:.2%}"
 
@@ -757,6 +743,204 @@ def main() -> None:
                 humidity_hover_data["type"] = current_state_humidity["type"]
 
             _update_humidity_plot()
+
+    # Surface Properties plot
+    if not args.headless:
+        # Collect available surface properties
+        soil_moisture_cycle = layers.get("soil_moisture")
+        vegetation_fraction_cycle = layers.get("vegetation_fraction")
+        snow_ice_fraction_cycle = layers.get("snow_ice_fraction")
+        # albedo_field is already loaded earlier (2D, not 3D monthly cycle)
+
+        # Check if we have any surface properties to plot
+        has_soil_moisture = soil_moisture_cycle is not None
+        has_vegetation = vegetation_fraction_cycle is not None
+        has_snow_ice = snow_ice_fraction_cycle is not None
+        has_albedo = albedo_field is not None
+
+        if has_soil_moisture or has_vegetation or has_snow_ice or has_albedo:
+            projection = ccrs.PlateCarree()
+            fig_surface, ax_surface = plt.subplots(
+                figsize=(12, 6), subplot_kw=dict(projection=projection)
+            )
+            ax_surface.set_global()
+            ax_surface.coastlines(linewidth=0.4)
+            ax_surface.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+            ax_surface.add_feature(
+                cfeature.NaturalEarthFeature(
+                    "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+                ),
+                linewidth=0.2,
+            )
+            ax_surface.add_feature(
+                cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0
+            )
+
+            # Wrap longitude for proper display
+            lon_full = lon2d[0]
+            lon_wrapped = ((lon_full + 180.0) % 360.0) - 180.0
+            lon_sort_idx = np.argsort(lon_wrapped)
+            lon_sorted = lon_wrapped[lon_sort_idx]
+
+            # Prepare data dictionary with available fields
+            surface_props_data: dict[str, np.ndarray] = {}
+            surface_props_is_monthly: dict[str, bool] = {}
+
+            if has_soil_moisture:
+                surface_props_data["Soil Moisture"] = soil_moisture_cycle[:, :, lon_sort_idx]
+                surface_props_is_monthly["Soil Moisture"] = True
+            if has_vegetation:
+                surface_props_data["Vegetation Fraction"] = vegetation_fraction_cycle[:, :, lon_sort_idx]
+                surface_props_is_monthly["Vegetation Fraction"] = True
+            if has_snow_ice:
+                surface_props_data["Snow/Ice Fraction"] = snow_ice_fraction_cycle[:, :, lon_sort_idx]
+                surface_props_is_monthly["Snow/Ice Fraction"] = True
+            if has_albedo:
+                # albedo_field is 3D (monthly, lat, lon)
+                surface_props_data["Surface Albedo"] = albedo_field[:, :, lon_sort_idx]
+                surface_props_is_monthly["Surface Albedo"] = True
+
+            # Create sorted lat/lon grids for pcolormesh
+            lat_sorted = lat2d[:, 0]
+            lon_sorted_2d, lat_sorted_2d = np.meshgrid(lon_sorted, lat_sorted)
+
+            # Initial state
+            prop_names = list(surface_props_data.keys())
+            current_state_surface = {"month": 0, "type": prop_names[0]}
+
+            def get_surface_norm_and_label(prop_type: str) -> tuple[Normalize, str]:
+                if prop_type == "Soil Moisture":
+                    return Normalize(vmin=0, vmax=1), "Soil Moisture Fraction"
+                elif prop_type == "Vegetation Fraction":
+                    return Normalize(vmin=0, vmax=1), "Vegetation Fraction"
+                elif prop_type == "Snow/Ice Fraction":
+                    return Normalize(vmin=0, vmax=1), "Snow/Ice Fraction"
+                elif prop_type == "Surface Albedo":
+                    return Normalize(vmin=0, vmax=1), "Surface Albedo"
+                else:
+                    return Normalize(vmin=0, vmax=1), prop_type
+
+            def get_surface_data(prop_type: str, month_idx: int) -> np.ndarray:
+                """Get the data for a surface property, handling monthly vs static fields."""
+                data = surface_props_data[prop_type]
+                if surface_props_is_monthly[prop_type]:
+                    return data[month_idx]
+                else:
+                    # Static field (like albedo), return as-is
+                    return data
+
+            norm_surface, colorbar_label_surface = get_surface_norm_and_label(current_state_surface["type"])
+            cmap_surface = cmocean.cm.turbid
+
+            surface_mesh = ax_surface.pcolormesh(
+                lon_sorted_2d,
+                lat_sorted_2d,
+                get_surface_data(current_state_surface["type"], current_state_surface["month"]),
+                cmap=cmap_surface,
+                norm=norm_surface,
+                shading="auto",
+                transform=projection,
+            )
+
+            ax_surface.set_title(
+                f"{current_state_surface['type']} – {month_names[current_state_surface['month']]}"
+                if surface_props_is_monthly.get(current_state_surface["type"], True)
+                else f"{current_state_surface['type']} (Annual)"
+            )
+
+            # Colorbar
+            cbar_surface = fig_surface.colorbar(
+                surface_mesh,
+                ax=ax_surface,
+                orientation="vertical",
+                pad=0.04,
+                fraction=0.046,
+            )
+            cbar_surface.set_label(colorbar_label_surface)
+
+            def _update_surface_plot() -> None:
+                data = get_surface_data(current_state_surface["type"], current_state_surface["month"])
+                norm_surface, colorbar_label_surface = get_surface_norm_and_label(current_state_surface["type"])
+                surface_mesh.set_norm(norm_surface)
+                surface_mesh.set_array(data.ravel())
+                cbar_surface.set_label(colorbar_label_surface)
+                cbar_surface.update_normal(surface_mesh)
+
+                # Update title based on whether field is monthly or static
+                is_monthly = surface_props_is_monthly.get(current_state_surface["type"], True)
+                if is_monthly:
+                    ax_surface.set_title(
+                        f"{current_state_surface['type']} – {month_names[current_state_surface['month']]}"
+                    )
+                else:
+                    ax_surface.set_title(f"{current_state_surface['type']} (Annual)")
+
+                fig_surface.canvas.draw_idle()
+
+            slider_surface_ax = fig_surface.add_axes([0.2, 0.08, 0.6, 0.03])
+            month_slider_surface = Slider(
+                slider_surface_ax,
+                label="Month",
+                valmin=0,
+                valmax=11,
+                valinit=0,
+                valstep=1,
+                valfmt="%0.0f",
+            )
+
+            def _on_surface_month_change(val: float) -> None:
+                current_state_surface["month"] = int(val)
+                _update_surface_plot()
+
+            month_slider_surface.on_changed(_on_surface_month_change)
+
+            radio_surface_ax = fig_surface.add_axes([0.02, 0.55, 0.14, 0.18])
+            radio_surface_ax.set_title("Variable", fontsize=9)
+            type_selector_surface = RadioButtons(radio_surface_ax, prop_names, active=0)
+
+            def _on_surface_type_change(label: str) -> None:
+                current_state_surface["type"] = label
+                _update_surface_plot()
+
+            type_selector_surface.on_clicked(_on_surface_type_change)
+
+            # Add hover functionality for surface properties plot
+            surface_hover_data = {
+                "field": get_surface_data(current_state_surface["type"], current_state_surface["month"]),
+                "type": current_state_surface["type"],
+            }
+
+            def format_surface_message(lon: float, lat: float, data: dict, lon_idx: int, lat_idx: int) -> str:
+                value = data["field"][lat_idx, lon_idx]
+                var_type = data["type"]
+                if var_type == "Soil Moisture":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Soil Moist: {value:.2%}"
+                elif var_type == "Vegetation Fraction":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Vegetation: {value:.2%}"
+                elif var_type == "Snow/Ice Fraction":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Snow/Ice: {value:.2%}"
+                elif var_type == "Surface Albedo":
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  Albedo: {value:.3f}"
+                else:
+                    return f"{_format_lat(lat)}  {_format_lon(lon)}  {var_type}: {value:.3f}"
+
+            add_dynamic_status_readout(
+                fig=fig_surface,
+                ax=ax_surface,
+                lon_coords=lon_sorted,
+                lat_coords=lat_sorted,
+                data_container=surface_hover_data,
+                format_message=format_surface_message,
+            )
+
+            # Update hover data when plot updates
+            original_surface_update = _update_surface_plot
+            def _update_surface_plot() -> None:
+                original_surface_update()
+                surface_hover_data["field"] = get_surface_data(current_state_surface["type"], current_state_surface["month"])
+                surface_hover_data["type"] = current_state_surface["type"]
+
+            _update_surface_plot()
 
     # Ocean currents plot
     ocean_u = layers.get("ocean_u")

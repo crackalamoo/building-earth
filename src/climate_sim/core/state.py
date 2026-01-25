@@ -21,6 +21,7 @@ class ModelState:
     ocean_current_psi: np.ndarray | None = None  # Streamfunction in Sv
     precipitation_field: np.ndarray | None = None  # Precipitation rate in kg/m²/s
     soil_moisture: np.ndarray | None = None  # Soil moisture fraction (0-1), only for land
+    vegetation_fraction: np.ndarray | None = None  # Vegetation cover fraction (0-1), from annual precip
     convective_cloud_frac: np.ndarray | None = None  # Convective cloud fraction (0-1)
     stratiform_cloud_frac: np.ndarray | None = None  # Stratiform cloud fraction (0-1)
     marine_sc_cloud_frac: np.ndarray | None = None  # Marine stratocumulus cloud fraction (0-1)

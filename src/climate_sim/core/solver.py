@@ -703,8 +703,9 @@ def monthly_step(
             evaporation_rate = np.maximum(q_sat - lagged_humidity, 0) * COLUMN_MASS_KG_M2 / tau_evap
 
         # Soil moisture evolution
-        SOIL_CAPACITY_KG_M2 = 100.0  # mm = kg/m²
-        TAU_DRAIN_SECONDS = 60 * 86400.0  # ~2 months
+        # Soil capacity: 300mm root zone depth (more realistic than 100mm)
+        SOIL_CAPACITY_KG_M2 = 300.0  # mm = kg/m²
+        TAU_DRAIN_SECONDS = 60 * 86400.0  # ~2 months baseflow drainage
         p_minus_e = final_precipitation - evaporation_rate
         soil_tendency = p_minus_e / SOIL_CAPACITY_KG_M2 - lagged_soil / TAU_DRAIN_SECONDS
         new_soil = lagged_soil + dt_seconds * soil_tendency
@@ -752,13 +753,19 @@ def monthly_step(
             ocean_current_psi=lagged_ocean_current_psi,
             precipitation_field=final_precipitation,
             soil_moisture=new_soil,
+            vegetation_fraction=state.vegetation_fraction,  # Carry forward from input state
             convective_cloud_frac=convective_frac,
             stratiform_cloud_frac=stratiform_frac,
             marine_sc_cloud_frac=marine_sc_frac,
             high_cloud_frac=high_cloud_frac,
         )
 
-        final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, final_temp[0])
+        final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(
+            base_albedo_field,
+            final_temp[0],
+            soil_moisture=new_soil,
+            vegetation_fraction=state.vegetation_fraction,
+        )
 
         # Update wind diagnostics for output using the converged ITCZ.
         if surface_context.wind_model:
@@ -903,8 +910,16 @@ def find_periodic_climate_cycle(
         advanced_history: list[np.ndarray] = []
         residual_max = 0.0
 
+        # Track vegetation fraction - computed from annual precipitation (lagged by 1 year)
+        # Use 50% initial vegetation fraction for first year
+        current_vegetation_fraction: np.ndarray | None = None
+
         for iter_idx in range(FIXED_POINT_MAX_ITERS):
             with time_block("periodic_iteration"):
+                # Set vegetation fraction on input state for this year
+                # (computed from previous year's precipitation)
+                state.vegetation_fraction = current_vegetation_fraction
+
                 advanced_states = evolve_year(
                     state,
                     monthly_insolation,
@@ -928,8 +943,45 @@ def find_periodic_climate_cycle(
                 residual_max = np.max(np.abs(residual))
                 print(f"iter {iter_idx:2d}: RMS={residual_rms:.3f}K  95p={residual_95p:.3f}K  max={residual_max:.3f}K")
 
+                # Compute annual precipitation and growing season for vegetation
+                # Sum monthly precipitation rates (kg/m²/s) weighted by month duration
+                precip_fields = [s.precipitation_field for s in advanced_states]
+                if all(p is not None for p in precip_fields):
+                    annual_precip_kg_m2 = sum(
+                        p * month_durations[i] for i, p in enumerate(precip_fields)
+                    )
+                    # Convert kg/m² to mm (1 kg/m² = 1 mm)
+                    annual_precip_mm = annual_precip_kg_m2
+
+                    # Get monthly temperatures for growing season calculation
+                    # Use boundary layer temperature (more representative of vegetation conditions)
+                    # For 3-layer: use BL temp; for 2-layer or 1-layer: use surface temp
+                    monthly_temps_c = np.array([
+                        (s.temperature[1] if s.temperature.shape[0] >= 3 else s.temperature[0]) - 273.15
+                        for s in advanced_states
+                    ])
+
+                    # Compute vegetation fraction from precipitation and growing season
+                    current_vegetation_fraction = surface_context.albedo_model.compute_vegetation_fraction(
+                        annual_precip_mm,
+                        monthly_temperatures_c=monthly_temps_c,
+                    )
+
                 if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_95p < PERIODIC_FIXED_POINT_TOLERANCE_K_95P:
-                    return [advanced_states[(i - 2) % 12] for i in range(12)]
+                    # Ensure vegetation fraction and consistent albedo on all returned states
+                    final_states = [advanced_states[(i - 2) % 12] for i in range(12)]
+                    if current_vegetation_fraction is not None:
+                        base_albedo = surface_context.base_albedo
+                        for s in final_states:
+                            s.vegetation_fraction = current_vegetation_fraction
+                            # Recompute albedo to be consistent with vegetation fraction
+                            s.albedo_field = surface_context.albedo_model.apply_snow_albedo(
+                                base_albedo,
+                                s.temperature[0],
+                                soil_moisture=s.soil_moisture,
+                                vegetation_fraction=current_vegetation_fraction,
+                            )
+                    return final_states
 
                 states = advanced_states
 
@@ -979,6 +1031,7 @@ def find_periodic_climate_cycle(
                     wind_field=None,
                     humidity_field=last_state.humidity_field,
                     soil_moisture=last_state.soil_moisture,
+                    vegetation_fraction=current_vegetation_fraction,  # From this year's precipitation
                 )
 
         raise RuntimeError(
@@ -1146,6 +1199,7 @@ def solve_periodic_climate(
                         ocean_current_psi=ocean_current_psi,
                         precipitation_field=month_state.precipitation_field,
                         soil_moisture=month_state.soil_moisture,
+                        vegetation_fraction=month_state.vegetation_fraction,
                         convective_cloud_frac=month_state.convective_cloud_frac,
                         stratiform_cloud_frac=month_state.stratiform_cloud_frac,
                         marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,
@@ -1181,6 +1235,7 @@ def solve_periodic_climate(
                         ocean_current_psi=ocean_current_psi,
                         precipitation_field=month_state.precipitation_field,
                         soil_moisture=month_state.soil_moisture,
+                        vegetation_fraction=month_state.vegetation_fraction,
                         convective_cloud_frac=month_state.convective_cloud_frac,
                         stratiform_cloud_frac=month_state.stratiform_cloud_frac,
                         marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,

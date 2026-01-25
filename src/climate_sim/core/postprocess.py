@@ -7,9 +7,9 @@ from typing import Dict
 import numpy as np
 
 from climate_sim.physics.atmosphere.atmosphere import compute_two_meter_temperature, log_law_map_wind_speed
-from climate_sim.physics.atmosphere.wind import WindConfig, WindModel
+from climate_sim.physics.atmosphere.wind import WindConfig
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.core.state import ModelState, select_wind_temperature
+from climate_sim.core.state import ModelState
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.data.elevation import compute_cell_roughness_length, load_elevation_data
 
@@ -205,6 +205,12 @@ def postprocess_periodic_cycle_results(
     if all(hf is not None for hf in high_cloud_frac_fields):
         high_cloud_frac = np.stack([hf for hf in high_cloud_frac_fields if hf is not None], axis=0)
         layers_map["high_cloud_frac"] = high_cloud_frac
+
+    # Extract vegetation fraction from state
+    vegetation_frac_fields = [state.vegetation_fraction for state in monthly_states]
+    if all(vf is not None for vf in vegetation_frac_fields):
+        vegetation_frac = np.stack([vf for vf in vegetation_frac_fields if vf is not None], axis=0)
+        layers_map["vegetation_fraction"] = vegetation_frac
 
     if return_layer_map:
         return lon2d, lat2d, layers_map

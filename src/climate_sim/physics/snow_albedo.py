@@ -42,6 +42,29 @@ class SnowAlbedoConfig:
     # Real ice is ~1700x lower, but we use gentler factor for stability
     sea_ice_heat_capacity_factor: float = 0.08  # 8% of ocean = ~12x reduction
 
+    # Vegetation and soil moisture albedo effects
+    vegetation_albedo_enabled: bool = True
+    # Bare soil albedo depends on moisture: dry soil is brighter
+    dry_soil_albedo: float = 0.35  # Dry sand/desert
+    wet_soil_albedo: float = 0.20  # Wet soil (darker)
+    # Vegetation albedo (forests, grasslands)
+    vegetation_albedo: float = 0.18  # Typical vegetated surface
+
+    # Vegetation fraction from annual precipitation
+    # Desert: < 250 mm/year -> veg_frac ~ 0
+    # Grassland: 250-750 mm/year -> veg_frac ~ 0.3-0.6
+    # Forest: > 1000 mm/year -> veg_frac ~ 0.8-0.9
+    veg_precip_min_mm_year: float = 200.0  # Below this: bare desert
+    veg_precip_max_mm_year: float = 1200.0  # Above this: full vegetation
+
+    # Growing season temperature threshold
+    # Vegetation needs warmth to grow - months below this don't contribute
+    # 5°C is a common threshold for temperate vegetation
+    veg_growing_threshold_c: float = 5.0
+    # Minimum growing season fraction for any vegetation
+    # Below this (e.g., < 2 months), essentially no vegetation can establish
+    veg_min_growing_season: float = 0.15  # ~2 months
+
 
 class AlbedoModel:
     def __init__(
@@ -78,6 +101,104 @@ class AlbedoModel:
         albedo = np.where(in_polar & self.land_mask, self.config.ice_sheet_albedo, albedo)
         return albedo
 
+    def compute_vegetation_fraction(
+        self,
+        annual_precip_mm_year: np.ndarray,
+        monthly_temperatures_c: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Compute vegetation fraction from precipitation and growing season.
+
+        Vegetation coverage depends on:
+        1. Annual precipitation (water availability)
+        2. Growing season length (months with T > threshold)
+
+        Parameters
+        ----------
+        annual_precip_mm_year : np.ndarray
+            Annual precipitation in mm/year.
+        monthly_temperatures_c : np.ndarray | None
+            Monthly surface temperatures in Celsius, shape (12, lat, lon).
+            If None, growing season factor is not applied.
+
+        Returns
+        -------
+        np.ndarray
+            Vegetation fraction (0-1), only meaningful for land cells.
+        """
+        if not self.config.vegetation_albedo_enabled:
+            return np.zeros_like(annual_precip_mm_year)
+
+        p_min = self.config.veg_precip_min_mm_year
+        p_max = self.config.veg_precip_max_mm_year
+
+        # Normalize precipitation to [0, 1] range
+        denom = p_max - p_min
+        if abs(denom) < 1e-6:
+            u = np.where(annual_precip_mm_year > p_min, 1.0, 0.0)
+        else:
+            u = (annual_precip_mm_year - p_min) / denom
+        u_clamped = np.clip(u, 0.0, 1.0)
+
+        # Smooth hermite interpolation for natural transition
+        veg_frac_precip = u_clamped * u_clamped * (3.0 - 2.0 * u_clamped)
+
+        # Apply growing season factor if temperatures provided
+        if monthly_temperatures_c is not None:
+            # Count fraction of year with T > threshold
+            threshold = self.config.veg_growing_threshold_c
+            months_above = np.sum(monthly_temperatures_c > threshold, axis=0)
+            growing_season_frac = months_above / 12.0
+
+            # Below minimum growing season, no vegetation can establish
+            min_gs = self.config.veg_min_growing_season
+            # Scale from 0 at min_gs to 1 at full year
+            # Using smooth hermite for gradual transition
+            denom = 1.0 - min_gs
+            if abs(denom) < 1e-6:
+                # Full year required - only year-round warm areas qualify
+                gs_factor = np.where(growing_season_frac >= 1.0 - 1e-6, 1.0, 0.0)
+            else:
+                gs_scaled = (growing_season_frac - min_gs) / denom
+                gs_scaled = np.clip(gs_scaled, 0.0, 1.0)
+                gs_factor = gs_scaled * gs_scaled * (3.0 - 2.0 * gs_scaled)
+
+            veg_frac = veg_frac_precip * gs_factor
+        else:
+            veg_frac = veg_frac_precip
+
+        # Cap at 95% - even rainforests have some bare ground
+        veg_frac = np.clip(veg_frac, 0.0, 0.95)
+
+        # Only apply to land
+        veg_frac = np.where(self.land_mask, veg_frac, 0.0)
+
+        return veg_frac
+
+    def compute_bare_soil_albedo(self, soil_moisture: np.ndarray) -> np.ndarray:
+        """Compute bare soil albedo based on soil moisture.
+
+        Wet soil is darker than dry soil due to:
+        - Water filling pore spaces reduces light scattering
+        - Typical change: ~0.10-0.15 albedo reduction when wet
+
+        Parameters
+        ----------
+        soil_moisture : np.ndarray
+            Soil moisture fraction (0-1).
+
+        Returns
+        -------
+        np.ndarray
+            Bare soil albedo.
+        """
+        dry_albedo = self.config.dry_soil_albedo
+        wet_albedo = self.config.wet_soil_albedo
+
+        # Linear interpolation between dry and wet
+        bare_soil_albedo = dry_albedo - (dry_albedo - wet_albedo) * soil_moisture
+
+        return bare_soil_albedo
+
     def compute_sea_ice_fraction(self, temperatures_c: np.ndarray) -> np.ndarray:
         """Compute sea ice fraction based on temperature.
 
@@ -109,8 +230,10 @@ class AlbedoModel:
         self,
         base_albedo: np.ndarray,
         monthly_temperatures_K: np.ndarray,
+        soil_moisture: np.ndarray | None = None,
+        vegetation_fraction: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Return an albedo field with snow and sea ice adjustments applied."""
+        """Return an albedo field with snow, sea ice, and vegetation adjustments applied."""
 
         if not self.config.enabled:
             return base_albedo
@@ -130,8 +253,35 @@ class AlbedoModel:
 
         temperatures_c = surface_temperatures - 273.15
 
-        # Land snow fraction using actual surface temperature
-        # Snow melts when surface temperature exceeds melt threshold
+        # =====================================================================
+        # 1. Compute snow-free land surface albedo from vegetation and soil moisture
+        # =====================================================================
+        if self.config.vegetation_albedo_enabled and vegetation_fraction is not None:
+            # Use default soil moisture if not provided
+            if soil_moisture is None:
+                soil_moisture = np.full_like(base_albedo, 0.3)
+
+            # Bare soil albedo depends on moisture
+            bare_soil_albedo = self.compute_bare_soil_albedo(soil_moisture)
+
+            # Vegetation has fixed low albedo
+            veg_albedo = self.config.vegetation_albedo
+
+            # Blend bare soil and vegetation
+            land_base_albedo = (
+                (1.0 - vegetation_fraction) * bare_soil_albedo
+                + vegetation_fraction * veg_albedo
+            )
+
+            # Apply only to land cells, keep base_albedo for ocean
+            snow_free_albedo = np.where(self.land_mask, land_base_albedo, base_albedo)
+        else:
+            # No vegetation tracking - use original base_albedo
+            snow_free_albedo = base_albedo
+
+        # =====================================================================
+        # 2. Compute snow fraction from temperature
+        # =====================================================================
         denom = self.config.melt_temperature_c - self.config.freeze_temperature_c
         u = (self.config.melt_temperature_c - temperatures_c) / denom
         u_clamped = np.clip(u, 0.0, 1.0)
@@ -139,9 +289,9 @@ class AlbedoModel:
         snow_fraction = np.clip(snow_fraction, 0.0, 1.0)
         land_snow_fraction = np.where(self.land_mask, snow_fraction, 0.0)
 
-        # Ice sheet vs seasonal snow discrimination
-        # Based on actual surface temperature - very cold regions get ice sheet albedo
-        # Only apply if ice_sheet_albedo differs from snow_albedo
+        # =====================================================================
+        # 3. Ice sheet vs seasonal snow discrimination
+        # =====================================================================
         if abs(self.config.ice_sheet_albedo - self.config.snow_albedo) > 1e-6:
             ice_sheet_temp = self.config.ice_sheet_temp_c
             seasonal_snow_temp = self.config.seasonal_snow_temp_c
@@ -149,26 +299,30 @@ class AlbedoModel:
             if abs(temp_range) < 1e-6:
                 ice_sheet_frac = np.zeros_like(temperatures_c)
             else:
-                # u = 1 when T <= ice_sheet_temp, u = 0 when T >= seasonal_snow_temp
                 u_ice = (seasonal_snow_temp - temperatures_c) / temp_range
                 u_ice_clamped = np.clip(u_ice, 0.0, 1.0)
-                # Smooth hermite interpolation
                 ice_sheet_frac = u_ice_clamped * u_ice_clamped * (3.0 - 2.0 * u_ice_clamped)
 
-            # Blend snow albedo: seasonal snow → ice sheet based on temperature
             effective_snow_albedo = (
                 self.config.snow_albedo
                 + (self.config.ice_sheet_albedo - self.config.snow_albedo) * ice_sheet_frac
             )
         else:
-            # No ice sheet discrimination - use uniform snow albedo
             effective_snow_albedo = self.config.snow_albedo
 
-        # Sea ice fraction (new)
+        # =====================================================================
+        # 4. Sea ice fraction
+        # =====================================================================
         sea_ice_fraction = self.compute_sea_ice_fraction(temperatures_c)
 
-        # Apply snow albedo to land (using temperature-dependent effective albedo)
-        adjusted = base_albedo + (effective_snow_albedo - base_albedo) * land_snow_fraction
+        # =====================================================================
+        # 5. Combine all effects
+        # =====================================================================
+        # Start with snow-free (vegetation + soil moisture adjusted) albedo
+        adjusted = snow_free_albedo.copy()
+
+        # Apply snow albedo to land
+        adjusted = adjusted + (effective_snow_albedo - adjusted) * land_snow_fraction
 
         # Apply sea ice albedo to ocean
         adjusted = adjusted + (self.config.sea_ice_albedo - adjusted) * sea_ice_fraction
