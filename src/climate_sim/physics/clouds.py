@@ -83,15 +83,45 @@ MARINE_SC_CLOUD_BASE_HEIGHT_M = 300.0    # Marine Sc bases ~300 m
 HIGH_CLOUD_TOP_HEIGHT_M = 12000.0    # Cirrus/anvils at ~12 km (tropopause)
 HIGH_CLOUD_BASE_HEIGHT_M = 8000.0    # High cloud bases ~8 km
 
-# High cloud optical properties
-# Cirrus/anvils are optically thin compared to low clouds
-HIGH_CLOUD_TAU = 2.0                 # Shortwave optical depth (thin ice clouds)
-HIGH_CLOUD_G = 12.0                  # Two-stream g parameter for high clouds
+# ============================================================
+# OPTICAL DEPTH CONSTANTS
+# ============================================================
+# For water clouds: τ_LW ≈ τ_SW (same value)
+# For ice clouds: τ_LW > τ_SW (ice more absorbing in IR)
 
-# Fixed optical depths for low clouds (simplified from LWP-based calculation)
-CONVECTIVE_CLOUD_TAU = 40.0          # Deep convective clouds
-STRATIFORM_CLOUD_TAU = 7.0           # Stratiform cloud decks
-MARINE_SC_CLOUD_TAU = 12.0           # Marine stratocumulus
+# Cloud type          τ_SW    τ_LW    (reason)
+CONVECTIVE_CLOUD_TAU_SW = 40.0
+CONVECTIVE_CLOUD_TAU_LW = 40.0   # Water cloud: τ_LW = τ_SW
+
+STRATIFORM_CLOUD_TAU_SW = 7.0
+STRATIFORM_CLOUD_TAU_LW = 7.0    # Water cloud: τ_LW = τ_SW
+
+MARINE_SC_CLOUD_TAU_SW = 10.0
+MARINE_SC_CLOUD_TAU_LW = 10.0    # Water cloud: τ_LW = τ_SW
+
+HIGH_CLOUD_TAU_SW = 0.8          # Ice cloud: thin in SW
+HIGH_CLOUD_TAU_LW = 1.5          # Ice cloud: thicker in LW (more absorbing)
+
+# Two-stream G parameter for albedo: α = τ/(τ+G)
+TWO_STREAM_G_WATER = 7.0         # Water clouds
+TWO_STREAM_G_ICE = 12.0          # Ice clouds (forward scattering)
+
+# Single-scattering albedo ω₀
+WATER_CLOUD_OMEGA0 = 0.99
+ICE_CLOUD_OMEGA0 = 0.97
+
+# Clear-sky SW absorptance (split between atmosphere and boundary layer)
+# Total ~20%, but water vapor is concentrated in lower troposphere
+CLEAR_SKY_SW_ABSORPTANCE_ATM = 0.12   # Free atmosphere (O3, some H2O)
+CLEAR_SKY_SW_ABSORPTANCE_BL = 0.08    # Boundary layer (H2O-rich)
+# TODO: BL absorptance should depend on humidity (range ~5-12%)
+
+# Legacy aliases for backwards compatibility
+HIGH_CLOUD_TAU = HIGH_CLOUD_TAU_SW
+HIGH_CLOUD_G = TWO_STREAM_G_ICE
+CONVECTIVE_CLOUD_TAU = CONVECTIVE_CLOUD_TAU_SW
+STRATIFORM_CLOUD_TAU = STRATIFORM_CLOUD_TAU_SW
+MARINE_SC_CLOUD_TAU = MARINE_SC_CLOUD_TAU_SW
 
 # MSE instability thresholds
 MSE_INSTABILITY_THRESHOLD = 5000.0  # J/kg - minimum instability for convection
@@ -112,6 +142,53 @@ STRATIFORM_AUTOCONVERSION_TIME = 7 * 86400  # seconds (~1 week)
 # Larger D → more transparent clouds (lower albedo for same optical depth).
 # Typical values: D ≈ 7-10 for climatological mean conditions.
 TWO_STREAM_G = 7.0  # Two-stream diffusivity factor
+
+
+def compute_cloud_emissivity(tau_lw: float | np.ndarray) -> float | np.ndarray:
+    """Compute cloud LW emissivity from optical depth using Beer-Lambert.
+
+    ε = 1 - exp(-τ_LW)
+
+    This is used for LONGWAVE radiation (thermal infrared).
+
+    Parameters
+    ----------
+    tau_lw : float or np.ndarray
+        Longwave optical depth.
+
+    Returns
+    -------
+    float or np.ndarray
+        Cloud emissivity (0-1).
+    """
+    return 1.0 - np.exp(-tau_lw)
+
+
+def compute_cloud_sw_absorptance(
+    tau_sw: float | np.ndarray,
+    omega0: float = WATER_CLOUD_OMEGA0,
+) -> float | np.ndarray:
+    """Compute cloud SW absorptance from optical depth and single-scattering albedo.
+
+    Uses simplified two-stream approximation:
+    absorptance ≈ (1 - ω₀) × τ / (1 + τ)
+
+    This is used for SHORTWAVE radiation (visible/solar).
+    Water clouds are highly scattering (ω₀≈0.99), so absorptance is low.
+
+    Parameters
+    ----------
+    tau_sw : float or np.ndarray
+        Shortwave optical depth.
+    omega0 : float
+        Single-scattering albedo. Water clouds: ~0.99, ice clouds: ~0.97.
+
+    Returns
+    -------
+    float or np.ndarray
+        Cloud SW absorptance (fraction of incident light absorbed).
+    """
+    return (1.0 - omega0) * tau_sw / (1.0 + tau_sw)
 
 
 @dataclass(frozen=True)
@@ -166,6 +243,24 @@ class CloudPrecipOutput:
     high_cloud_frac: np.ndarray      # Cloud fraction (0-1)
     high_cloud_albedo: np.ndarray    # Per-cloud albedo
     high_cloud_top_K: np.ndarray     # Cloud top temperature (K)
+
+    # ============================================================
+    # LONGWAVE OPTICAL PROPERTIES (for thermal IR emission/absorption)
+    # ============================================================
+    # Per-cloud-type emissivities derived from τ_LW via Beer-Lambert
+    eps_convective: float | np.ndarray | None = None
+    eps_stratiform: float | np.ndarray | None = None
+    eps_marine_sc: float | np.ndarray | None = None
+    eps_high: float | np.ndarray | None = None
+
+    # ============================================================
+    # SHORTWAVE OPTICAL PROPERTIES (for solar absorption)
+    # ============================================================
+    # Per-cloud-type SW absorptances derived from τ_SW and ω₀
+    abs_sw_convective: float | np.ndarray | None = None
+    abs_sw_stratiform: float | np.ndarray | None = None
+    abs_sw_marine_sc: float | np.ndarray | None = None
+    abs_sw_high: float | np.ndarray | None = None
 
     @property
     def total_frac(self) -> np.ndarray:
@@ -810,13 +905,34 @@ def compute_clouds_and_precipitation(
         T_surface_K, config
     )
 
-    # 6. Compute cloud albedos from fixed optical depths
-    # Using simplified τ values instead of LWP-based calculation
+    # ============================================================
+    # COMPUTE LONGWAVE OPTICAL PROPERTIES (emissivities from τ_LW)
+    # ============================================================
+    eps_conv = compute_cloud_emissivity(CONVECTIVE_CLOUD_TAU_LW)
+    eps_strat = compute_cloud_emissivity(STRATIFORM_CLOUD_TAU_LW)
+    eps_marine = compute_cloud_emissivity(MARINE_SC_CLOUD_TAU_LW)
+    eps_high = compute_cloud_emissivity(HIGH_CLOUD_TAU_LW)
 
-    # Fixed τ with g=7 for low clouds
-    convective_albedo = np.full_like(T_bl_K, CONVECTIVE_CLOUD_TAU / (CONVECTIVE_CLOUD_TAU + TWO_STREAM_G))
-    stratiform_albedo = np.full_like(T_bl_K, STRATIFORM_CLOUD_TAU / (STRATIFORM_CLOUD_TAU + TWO_STREAM_G))
-    marine_sc_albedo = np.full_like(T_bl_K, MARINE_SC_CLOUD_TAU / (MARINE_SC_CLOUD_TAU + TWO_STREAM_G))
+    # ============================================================
+    # COMPUTE SHORTWAVE OPTICAL PROPERTIES (absorptances from τ_SW)
+    # ============================================================
+    abs_sw_conv = compute_cloud_sw_absorptance(CONVECTIVE_CLOUD_TAU_SW, WATER_CLOUD_OMEGA0)
+    abs_sw_strat = compute_cloud_sw_absorptance(STRATIFORM_CLOUD_TAU_SW, WATER_CLOUD_OMEGA0)
+    abs_sw_marine = compute_cloud_sw_absorptance(MARINE_SC_CLOUD_TAU_SW, WATER_CLOUD_OMEGA0)
+    abs_sw_high = compute_cloud_sw_absorptance(HIGH_CLOUD_TAU_SW, ICE_CLOUD_OMEGA0)
+
+    # ============================================================
+    # COMPUTE SHORTWAVE CLOUD ALBEDOS (from τ_SW with appropriate G)
+    # ============================================================
+    convective_albedo = np.full_like(
+        T_bl_K, CONVECTIVE_CLOUD_TAU_SW / (CONVECTIVE_CLOUD_TAU_SW + TWO_STREAM_G_WATER)
+    )
+    stratiform_albedo = np.full_like(
+        T_bl_K, STRATIFORM_CLOUD_TAU_SW / (STRATIFORM_CLOUD_TAU_SW + TWO_STREAM_G_WATER)
+    )
+    marine_sc_albedo = np.full_like(
+        T_bl_K, MARINE_SC_CLOUD_TAU_SW / (MARINE_SC_CLOUD_TAU_SW + TWO_STREAM_G_WATER)
+    )
 
     # 7. Compute precipitation using moisture flux formulation
     # Convective: uses sub-grid updraft velocity (cloud fraction already encodes instability)
@@ -859,4 +975,14 @@ def compute_clouds_and_precipitation(
         high_cloud_frac=high_cloud_frac,
         high_cloud_albedo=high_cloud_albedo,
         high_cloud_top_K=high_cloud_top_K,
+        # LW emissivities (from τ_LW via Beer-Lambert)
+        eps_convective=eps_conv,
+        eps_stratiform=eps_strat,
+        eps_marine_sc=eps_marine,
+        eps_high=eps_high,
+        # SW absorptances (from τ_SW and ω₀)
+        abs_sw_convective=abs_sw_conv,
+        abs_sw_stratiform=abs_sw_strat,
+        abs_sw_marine_sc=abs_sw_marine,
+        abs_sw_high=abs_sw_high,
     )

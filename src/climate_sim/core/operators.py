@@ -140,7 +140,6 @@ def build_model_operators(
             radiation_config,
             atmosphere_heat_capacity=ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
             boundary_layer_heat_capacity=boundary_layer_cfg.heat_capacity,
-            boundary_layer_emissivity=boundary_layer_cfg.emissivity,
         )
 
     # Compute land mask
