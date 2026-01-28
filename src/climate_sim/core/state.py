@@ -13,7 +13,7 @@ from climate_sim.physics.clouds import CloudPrecipOutput
 class ModelState:
     """State variables for the climate model."""
     temperature: np.ndarray
-    albedo_field: np.ndarray
+    albedo_field: np.ndarray | None = None
     wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     humidity_field: np.ndarray | None = None
     boundary_layer_wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None

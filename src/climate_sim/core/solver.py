@@ -741,6 +741,7 @@ def monthly_step(
             stratiform_frac = cloud_output.stratiform_frac
             marine_sc_frac = cloud_output.marine_sc_frac
             high_cloud_frac = cloud_output.high_cloud_frac
+            final_precipitation = cloud_output.total_precip
 
         # Build final state with converged humidity
         final_itcz = _compute_itcz_from_temp(final_temp)
@@ -900,7 +901,21 @@ def find_periodic_climate_cycle(
 
     Finds the fixed point P(state) = state where P is the year-forward
     evolution operator, using Anderson acceleration for faster convergence.
+
+    Anderson acceleration mixes all prognostic state variables (temperature,
+    humidity, soil moisture) to ensure consistency. Diagnostic variables
+    (precipitation, clouds, albedo, wind) are recomputed from the mixed state.
     """
+
+    # Scale factors for Anderson state vector (for numerical stability)
+    T_SCALE = 300.0   # ~order of magnitude for Kelvin
+    Q_SCALE = 0.01    # ~order of magnitude for specific humidity (kg/kg)
+    SOIL_SCALE = 1.0  # already 0-1
+
+    # Determine which prognostic variables are enabled based on model configuration
+    # (not based on initial state, since initial state may not have them yet)
+    humidity_is_prognostic = latent_heat_model is not None
+    soil_is_prognostic = latent_heat_model is not None  # Soil evolves with humidity
 
     with time_block("find_periodic_climate_cycle"):
         state = initial_state
@@ -936,12 +951,49 @@ def find_periodic_climate_cycle(
                 )
 
                 advanced = advanced_states[-1]
-                residual = np.array([
+                prev_end = states[-1]
+
+                # Check what prognostic variables are actually available
+                # (may differ from config on first iteration when they're being bootstrapped)
+                has_humidity = (humidity_is_prognostic and
+                                advanced.humidity_field is not None and
+                                prev_end.humidity_field is not None)
+                has_soil = (soil_is_prognostic and
+                            advanced.soil_moisture is not None and
+                            prev_end.soil_moisture is not None)
+
+                # Compute residuals for all prognostic state variables
+                # Using end-of-year state (the state we're iterating on)
+                # Temperature: use all layers for the residual
+                temp_residual = (advanced.temperature - prev_end.temperature) / T_SCALE
+
+                # Humidity residual (if prognostic humidity is enabled)
+                if has_humidity:
+                    humidity_residual = (advanced.humidity_field - prev_end.humidity_field) / Q_SCALE
+                else:
+                    humidity_residual = np.array([])
+
+                # Soil moisture residual (if prognostic)
+                if has_soil:
+                    soil_residual = (advanced.soil_moisture - prev_end.soil_moisture) / SOIL_SCALE
+                else:
+                    soil_residual = np.array([])
+
+                # Combined residual for Anderson acceleration (scaled)
+                residual_combined = np.concatenate([
+                    temp_residual.ravel(),
+                    humidity_residual.ravel(),
+                    soil_residual.ravel(),
+                ])
+
+                # Compute month-by-month surface temperature residual for convergence diagnostics
+                # (This is separate from the Anderson residual - just for reporting)
+                monthly_temp_diff = np.array([
                     advanced_states[i].temperature[0] - states[i].temperature[0] for i in range(12)
                 ])
-                residual_rms = np.sqrt(np.mean(np.square(residual)))
-                residual_95p = np.percentile(np.abs(residual), 95)
-                residual_max = np.max(np.abs(residual))
+                residual_rms = np.sqrt(np.mean(np.square(monthly_temp_diff)))
+                residual_95p = np.percentile(np.abs(monthly_temp_diff), 95)
+                residual_max = np.max(np.abs(monthly_temp_diff))
                 print(f"iter {iter_idx:2d}: RMS={residual_rms:.3f}K  95p={residual_95p:.3f}K  max={residual_max:.3f}K")
 
                 # Compute annual precipitation and growing season for vegetation
@@ -986,14 +1038,38 @@ def find_periodic_climate_cycle(
 
                 states = advanced_states
 
-                residual_flat = residual.ravel()
-                advanced_flat = advanced.temperature.ravel()
+                # Build augmented state vector for Anderson acceleration
+                # Include all prognostic variables: temperature, humidity, soil moisture
+                # (all scaled for numerical stability)
+                advanced_temp_scaled = advanced.temperature.ravel() / T_SCALE
+
+                if has_humidity:
+                    advanced_humidity_scaled = advanced.humidity_field.ravel() / Q_SCALE
+                else:
+                    advanced_humidity_scaled = np.array([])
+
+                if has_soil:
+                    advanced_soil_scaled = advanced.soil_moisture.ravel() / SOIL_SCALE
+                else:
+                    advanced_soil_scaled = np.array([])
+
+                advanced_flat = np.concatenate([
+                    advanced_temp_scaled,
+                    advanced_humidity_scaled,
+                    advanced_soil_scaled,
+                ])
+
+                # Check for state vector shape change (e.g., humidity bootstrapped after iter 0)
+                # If shape changed, clear history to avoid size mismatch
+                if len(advanced_history) > 0 and advanced_flat.shape != advanced_history[-1].shape:
+                    residual_history = []
+                    advanced_history = []
 
                 if len(residual_history) == ANDERSON_HISTORY_LIMIT:
                     residual_history.pop(0)
                     advanced_history.pop(0)
 
-                residual_history.append(residual_flat)
+                residual_history.append(residual_combined)
                 advanced_history.append(advanced_flat)
 
                 with time_block("anderson_acceleration"):
@@ -1007,31 +1083,65 @@ def find_periodic_climate_cycle(
                             else:
                                 coefficients = coefficients / coeff_sum
 
+                    # Sizes for unpacking the combined state vector
+                    n_temp = state.temperature.size
+                    n_humidity = advanced.humidity_field.size if has_humidity else 0
+                    n_soil = advanced.soil_moisture.size if has_soil else 0
+
                     if coefficients is None:
+                        # No Anderson mixing - use advanced state directly
                         T_next = advanced.temperature
+                        q_next = advanced.humidity_field
+                        soil_next = advanced.soil_moisture
                         residual_history = residual_history[-1:]
                         advanced_history = advanced_history[-1:]
                     else:
+                        # Anderson mixing of all prognostic state variables
                         combined = np.zeros_like(advanced_flat)
                         for weight, advanced_state in zip(coefficients, advanced_history, strict=True):
                             combined += weight * advanced_state
-                        T_next = combined.reshape(state.temperature.shape)
 
+                        # Unpack and rescale the combined state
+                        T_next = combined[:n_temp].reshape(state.temperature.shape) * T_SCALE
+
+                        if has_humidity:
+                            q_next = combined[n_temp:n_temp+n_humidity].reshape(
+                                advanced.humidity_field.shape
+                            ) * Q_SCALE
+                            # Ensure humidity stays positive
+                            q_next = np.maximum(q_next, 1e-6)
+                        else:
+                            q_next = None
+
+                        if has_soil:
+                            soil_next = combined[n_temp+n_humidity:].reshape(
+                                advanced.soil_moisture.shape
+                            ) * SOIL_SCALE
+                            # Clip soil moisture to [0, 1]
+                            soil_next = np.clip(soil_next, 0.0, 1.0)
+                            # Ocean cells always saturated
+                            soil_next = np.where(surface_context.land_mask, soil_next, 1.0)
+                        else:
+                            soil_next = None
+
+                        # Validate the mixed state
                         if not np.all(np.isfinite(T_next)):
                             T_next = advanced.temperature
+                            q_next = advanced.humidity_field
+                            soil_next = advanced.soil_moisture
                             residual_history = residual_history[-1:]
                             advanced_history = advanced_history[-1:]
 
-                # Apply Anderson-accelerated state
-                # IMPORTANT: preserve humidity and soil moisture from previous iteration
-                # Otherwise prognostic humidity evolution is lost between annual cycles
-                last_state = advanced_states[-1]
+                # Apply Anderson-accelerated state with mixed prognostic variables
+                # Diagnostics (albedo, wind, precipitation, clouds) will be recomputed
+                # at the start of the next year's first monthly step
                 state = ModelState(
                     temperature=T_next,
-                    albedo_field=initial_state.albedo_field,
-                    wind_field=None,
-                    humidity_field=last_state.humidity_field,
-                    soil_moisture=last_state.soil_moisture,
+                    albedo_field=None,  # Recomputed from mixed T at start of next month
+                    wind_field=None,    # Recomputed from mixed T at start of next month
+                    humidity_field=q_next,  # Anderson-mixed humidity
+                    soil_moisture=soil_next,  # Anderson-mixed soil moisture
+                    precipitation_field=None,  # Recomputed from mixed q at start of next month
                     vegetation_fraction=current_vegetation_fraction,  # From this year's precipitation
                 )
 
