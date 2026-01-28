@@ -8,6 +8,7 @@ from typing import Callable, Dict
 
 import numpy as np
 from scipy import sparse
+from scipy.ndimage import gaussian_filter
 from scipy.sparse import linalg as splinalg
 
 from climate_sim.data.constants import R_EARTH_METERS
@@ -212,10 +213,16 @@ def compute_divergence(
     v: np.ndarray,
     lat2d: np.ndarray,
     lon2d: np.ndarray,
+    smoothing_length_km: float = 1500.0,
 ) -> np.ndarray:
     """Compute horizontal divergence on a lat-lon grid.
 
     div(V) = (1/R cos φ) * ∂u/∂λ + (1/R cos φ) * ∂(v cos φ)/∂φ
+
+    The divergence is smoothed to remove grid-scale noise. Large-scale vertical
+    motion (Hadley cell subsidence) operates on scales of ~1500+ km, so we filter
+    out smaller-scale variations that are numerical artifacts on coarse grids.
+    This makes the result resolution-independent.
     """
     R = R_EARTH_METERS
     lat_rad = np.deg2rad(lat2d)
@@ -236,5 +243,16 @@ def compute_divergence(
 
     # Divergence
     div = (1 / (R * cos_lat)) * du_dlon + (1 / (R * cos_lat)) * d_vcos_dlat
+
+    # Smooth divergence to remove grid-scale noise
+    # Convert smoothing length to grid cells
+    grid_spacing_km = np.abs(lat2d[1, 0] - lat2d[0, 0]) * 111.0  # km per degree
+    sigma_cells = smoothing_length_km / grid_spacing_km
+
+    if sigma_cells > 0.5:  # Only smooth if smoothing scale > half a grid cell
+        # Smooth in latitude (axis 0)
+        div = gaussian_filter(div, sigma=(sigma_cells, 0), mode='nearest')
+        # Smooth in longitude with wrapping
+        div = gaussian_filter(div, sigma=(0, sigma_cells), mode='wrap')
 
     return div

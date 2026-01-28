@@ -711,7 +711,9 @@ def radiative_balance_rhs(
         # BL optical depth and emissivity: humidity-dependent
         # τ_BL = 0.2 + 100 * q, then ε_BL = 1 - exp(-τ_BL)
         if humidity_q is not None:
-            tau_bl = 0.2 + 100.0 * humidity_q
+            # Floor humidity to prevent overflow in exp when q is very negative
+            q_safe = np.maximum(humidity_q, 0.0)
+            tau_bl = 0.2 + 100.0 * q_safe
             eps_bl = 1.0 - np.exp(-tau_bl)
         else:
             eps_bl = BOUNDARY_LAYER_EMISSIVITY
@@ -1138,7 +1140,9 @@ def radiative_balance_rhs_temperature_derivative(
         # BL optical depth and emissivity: humidity-dependent (must match RHS)
         # τ_BL = 0.2 + 100 * q, then ε_BL = 1 - exp(-τ_BL)
         if humidity_q is not None:
-            tau_bl = 0.2 + 100.0 * humidity_q
+            # Floor humidity to prevent overflow in exp when q is very negative
+            q_safe = np.maximum(humidity_q, 0.0)
+            tau_bl = 0.2 + 100.0 * q_safe
             eps_bl = 1.0 - np.exp(-tau_bl)
         else:
             eps_bl = BOUNDARY_LAYER_EMISSIVITY

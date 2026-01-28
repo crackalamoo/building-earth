@@ -675,8 +675,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     wind_u_q, wind_v_q = None, None
 
                 if wind_u_q is not None and wind_v_q is not None:
-                    # Humidity advection matrix (same operator as temperature, field-agnostic)
-                    _, humidity_adv_mat = inputs.advection_operator.linearised_tendency(wind_u_q, wind_v_q)
+                    # Flux-form humidity advection matrix: -∇·(uq) for conservation
+                    _, humidity_adv_mat = inputs.advection_operator.linearised_flux_tendency(wind_u_q, wind_v_q)
                     if humidity_adv_mat is not None:
                         humidity_advection_matrix = (
                             humidity_adv_mat
@@ -756,7 +756,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     # Evaporation Jacobian: surface cools when q increases (less evap)
                     dR_Tsfc_dq = -dE_dq * L_v / C_sfc
 
-                    # Precipitation heating split: 15% to BL, 85% to atmosphere
+                    # Precipitation heating split: 30% to BL, 70% to atmosphere
                     BL_LATENT_FRACTION = 0.30 if nlayers >= 3 else 0.0
                     dR_Tatm_dq = (1 - BL_LATENT_FRACTION) * dP_dq * L_v / C_atm
                     dR_Tbl_dq = BL_LATENT_FRACTION * dP_dq * L_v / C_bl if nlayers >= 3 else None

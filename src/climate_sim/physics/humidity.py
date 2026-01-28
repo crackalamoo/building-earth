@@ -194,12 +194,14 @@ def compute_saturation_specific_humidity(
 
     Uses the Magnus formula for saturation vapor pressure.
     """
-    temperature_C = temperature_K - 273.15
+    # Cap temperature to prevent overflow in exp
+    temperature_C = np.clip(temperature_K - 273.15, -100.0, 80.0)
     # Magnus formula for saturation vapor pressure (hPa)
     e_sat_hPa = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
     p_hPa = pressure_Pa / 100.0
-    # Convert to specific humidity
-    q_sat = (0.622 * e_sat_hPa) / (p_hPa - (1 - 0.622) * e_sat_hPa)
+    # Convert to specific humidity, ensuring denominator is positive
+    denom = np.maximum(p_hPa - (1 - 0.622) * e_sat_hPa, 1.0)
+    q_sat = (0.622 * e_sat_hPa) / denom
     return q_sat
 
 

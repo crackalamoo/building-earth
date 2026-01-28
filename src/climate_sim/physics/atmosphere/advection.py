@@ -131,6 +131,238 @@ class AdvectionOperator:
 
         return tendency
 
+    def flux_tendency(
+        self,
+        field: np.ndarray,
+        wind_u: np.ndarray,
+        wind_v: np.ndarray,
+        dt: float | None = None,
+    ) -> np.ndarray:
+        """Compute flux-form advection tendency -∇·(u*field) using finite volumes.
+
+        This is exactly conservative: the global area-weighted integral of the
+        tendency is exactly zero (to machine precision) because each face flux
+        appears twice with opposite signs.
+
+        Uses first-order upwind interpolation for field values at cell faces.
+        When dt is provided, applies Zalesak-style flux limiting to prevent
+        negative values while maintaining conservation.
+
+        Parameters
+        ----------
+        field : np.ndarray
+            Scalar field to advect (e.g., humidity), shape (nlat, nlon)
+        wind_u : np.ndarray
+            Zonal wind component (eastward) in m/s, shape (nlat, nlon)
+        wind_v : np.ndarray
+            Meridional wind component (northward) in m/s, shape (nlat, nlon)
+        dt : float | None
+            Timestep in seconds. If provided, fluxes are limited to prevent
+            negative values. If None, no limiting is applied.
+        """
+        if not self.enabled:
+            return np.zeros_like(field)
+
+        nlat, nlon = field.shape
+        R = R_EARTH_METERS
+        lat_rad = np.deg2rad(self._lat2d)
+        cos_lat = np.cos(lat_rad)
+
+        # Grid spacings in radians
+        dlat = np.deg2rad(self._lat2d[1, 0] - self._lat2d[0, 0]) if nlat > 1 else 0.0
+        dlon = np.deg2rad(self._lon2d[0, 1] - self._lon2d[0, 0]) if nlon > 1 else 0.0
+
+        # Cell area: A = R² * cos(lat) * dlat * dlon
+        cell_area = R**2 * cos_lat * dlat * dlon
+        # Avoid division by zero at poles
+        cell_area = np.maximum(cell_area, 1e-10)
+
+        # === ZONAL FLUXES (through east/west faces) ===
+        field_east = np.roll(field, -1, axis=1)
+        u_east_face = 0.5 * (wind_u + np.roll(wind_u, -1, axis=1))
+        q_east_face = np.where(u_east_face >= 0, field, field_east)
+        face_height = R * dlat
+        flux_east = u_east_face * q_east_face * face_height * cos_lat
+        flux_west = np.roll(flux_east, 1, axis=1)
+
+        # === MERIDIONAL FLUXES (through north/south faces) ===
+        lat_north_face = lat_rad + 0.5 * dlat
+        cos_lat_north = np.cos(lat_north_face)
+        field_north = np.roll(field, -1, axis=0)
+        v_north_face = 0.5 * (wind_v + np.roll(wind_v, -1, axis=0))
+        q_north_face = np.where(v_north_face >= 0, field, field_north)
+        face_width = R * dlon
+        flux_north = v_north_face * q_north_face * face_width * cos_lat_north
+        flux_south = np.roll(flux_north, 1, axis=0)
+
+        # Handle polar boundaries
+        flux_south[0, :] = 0.0
+        flux_north[-1, :] = 0.0
+
+        # === FLUX LIMITING ===
+        # Limit outgoing fluxes so they can't remove more than available mass
+        # This maintains conservation because each face flux is limited by the
+        # donating cell's capacity, and the receiving cell uses the same limited flux.
+        if dt is not None and dt > 0:
+            # Total mass in each cell
+            mass = field * cell_area  # [kg/kg * m²]
+
+            # For each cell, compute total outgoing flux (before limiting)
+            # East face: flux_east > 0 means flux leaving this cell eastward
+            # West face: we need flux through west face when going westward
+            #   flux_west is the flux INTO this cell from the west
+            #   flux going OUT to west = -flux_west when flux_west < 0...
+            #   Actually, let's be more careful.
+
+            # flux_east[i,j] = flux through face between (i,j) and (i,j+1)
+            #   positive = eastward = leaving cell (i,j), entering (i,j+1)
+            #   negative = westward = leaving cell (i,j+1), entering (i,j)
+
+            # For cell (i,j), outgoing fluxes are:
+            #   East: max(flux_east[i,j], 0) - positive flux_east leaves eastward
+            #   West: max(-flux_east[i,j-1], 0) - negative flux at west face leaves westward
+            #   North: max(flux_north[i,j], 0) - positive flux_north leaves northward
+            #   South: max(-flux_north[i-1,j], 0) - negative flux at south face leaves southward
+
+            # Outgoing through east face of this cell (flux_east > 0)
+            out_east = np.maximum(flux_east, 0)
+            # Outgoing through west face = negative flux_east of west neighbor's east face
+            out_west = np.maximum(-np.roll(flux_east, 1, axis=1), 0)
+            # Outgoing through north face (flux_north > 0)
+            out_north = np.maximum(flux_north, 0)
+            # Outgoing through south face = negative flux_north of south neighbor
+            out_south = np.maximum(-np.roll(flux_north, 1, axis=0), 0)
+            out_south[0, :] = 0  # No south face at south pole
+
+            total_outflux = (out_east + out_west + out_north + out_south) * dt
+
+            # Limit factor: can't remove more than 90% of mass
+            max_removable = 0.9 * np.maximum(mass, 0)
+            # Avoid division by zero
+            with np.errstate(divide='ignore', invalid='ignore'):
+                limit_factor = np.where(
+                    total_outflux > 1e-30,
+                    np.minimum(1.0, max_removable / (total_outflux + 1e-30)),
+                    1.0
+                )
+            limit_factor = np.nan_to_num(limit_factor, nan=1.0, posinf=1.0, neginf=1.0)
+
+            # Apply limits to fluxes based on donating cell
+            # East face: if flux_east > 0, limit by this cell's factor
+            #           if flux_east < 0, limit by east neighbor's factor
+            limit_east_neighbor = np.roll(limit_factor, -1, axis=1)
+            flux_east = np.where(
+                flux_east >= 0,
+                flux_east * limit_factor,  # Leaving this cell
+                flux_east * limit_east_neighbor  # Leaving east neighbor
+            )
+
+            # North face: if flux_north > 0, limit by this cell's factor
+            #            if flux_north < 0, limit by north neighbor's factor
+            limit_north_neighbor = np.roll(limit_factor, -1, axis=0)
+            flux_north = np.where(
+                flux_north >= 0,
+                flux_north * limit_factor,
+                flux_north * limit_north_neighbor
+            )
+            # Re-enforce polar boundaries
+            flux_north[-1, :] = 0.0
+
+            # Recompute flux_west and flux_south from the limited face fluxes
+            flux_west = np.roll(flux_east, 1, axis=1)
+            flux_south = np.roll(flux_north, 1, axis=0)
+            flux_south[0, :] = 0.0
+
+        # Compute tendencies
+        zonal_tendency = -(flux_east - flux_west) / cell_area
+        merid_tendency = -(flux_north - flux_south) / cell_area
+
+        return zonal_tendency + merid_tendency
+
+    def divergence_tendency(
+        self,
+        field: np.ndarray,
+        wind_u: np.ndarray,
+        wind_v: np.ndarray,
+    ) -> np.ndarray:
+        """Compute just the divergence correction term -field·∇·u.
+
+        This term accounts for moisture convergence/divergence and can be
+        applied separately from the advective term for numerical stability.
+        Uses zonal-mean divergence to avoid grid-scale instabilities.
+
+        Parameters
+        ----------
+        field : np.ndarray
+            Scalar field (e.g., humidity), shape (nlat, nlon)
+        wind_u : np.ndarray
+            Zonal wind component (eastward) in m/s, shape (nlat, nlon)
+        wind_v : np.ndarray
+            Meridional wind component (northward) in m/s, shape (nlat, nlon)
+
+        Returns
+        -------
+        np.ndarray
+            Tendency from divergence term only, shape (nlat, nlon)
+        """
+        if not self.enabled:
+            return np.zeros_like(field)
+
+        # Use zonal-mean divergence to capture large-scale pattern
+        divergence = self._compute_zonal_mean_divergence(wind_u, wind_v)
+
+        # Limit divergence magnitude using soft tanh scaling
+        # This preserves relative magnitudes better than hard clipping
+        max_div = 2e-6  # ~6 day reference timescale
+        divergence = max_div * np.tanh(divergence / max_div)
+
+        # Ensure the limited divergence integrates to zero for conservation
+        # (the original divergence should integrate to ~zero by continuity,
+        # but limiting breaks this)
+        cos_lat = np.cos(np.deg2rad(self._lat2d))
+        weighted_mean = np.sum(divergence * cos_lat) / np.sum(cos_lat)
+        divergence = divergence - weighted_mean
+
+        return -field * divergence
+
+    def _compute_zonal_mean_divergence(
+        self,
+        wind_u: np.ndarray,
+        wind_v: np.ndarray,
+    ) -> np.ndarray:
+        """Compute zonal-mean horizontal divergence.
+
+        Since the zonal-mean of ∂u/∂λ is zero (periodic BC), the zonal-mean
+        divergence is just from the meridional term:
+        [∇·V] = (1/R cos φ) * ∂([v] cos φ)/∂φ
+
+        where [] denotes zonal mean.
+        """
+        R = R_EARTH_METERS
+        lat_rad = np.deg2rad(self._lat2d)
+        cos_lat = np.cos(lat_rad)
+        cos_lat = np.maximum(cos_lat, 0.01)
+
+        # Zonal mean of v
+        v_zonal_mean = np.mean(wind_v, axis=1, keepdims=True)
+
+        # Zonal mean of v*cos(lat)
+        v_cos_zonal_mean = v_zonal_mean * cos_lat[:, :1]
+
+        # ∂(v cos φ)/∂φ using centered differences
+        inv_delta_y = 1.0 / self._delta_y
+        d_vcos_dlat = np.zeros_like(v_cos_zonal_mean)
+        d_vcos_dlat[1:-1, :] = (v_cos_zonal_mean[2:, :] - v_cos_zonal_mean[:-2, :]) * (0.5 * inv_delta_y)
+        # One-sided at boundaries
+        d_vcos_dlat[0, :] = (v_cos_zonal_mean[1, :] - v_cos_zonal_mean[0, :]) * inv_delta_y
+        d_vcos_dlat[-1, :] = (v_cos_zonal_mean[-1, :] - v_cos_zonal_mean[-2, :]) * inv_delta_y
+
+        # Zonal mean divergence (broadcast to full grid)
+        div_zonal_mean = (1.0 / (R * cos_lat[:, :1])) * d_vcos_dlat
+
+        # Broadcast to full grid
+        return np.broadcast_to(div_zonal_mean, wind_v.shape).copy()
+
     def _upwind_gradient(
         self,
         field: np.ndarray,
@@ -304,5 +536,141 @@ class AdvectionOperator:
         # Cache for reuse
         self._cached_winds = (wind_u.copy(), wind_v.copy())
         self._cached_matrix = matrix
+
+        return np.zeros((nlat, nlon)), matrix
+
+    def linearised_flux_tendency(
+        self,
+        wind_u: np.ndarray,
+        wind_v: np.ndarray,
+    ) -> tuple[np.ndarray, sparse.csr_matrix | None]:
+        """Return diagonal and off-diagonal pieces of the flux-form advection Jacobian.
+
+        The Jacobian of -∇·(u*q) with respect to q is the linear operator -∇·(u·),
+        which differs from the advective form -u·∇ by including the divergence term.
+
+        The linearization gives a sparse matrix where each row sums to zero
+        (conservation property).
+        """
+        if not self.enabled:
+            return np.zeros_like(self._lon2d), None
+
+        nlat, nlon = self._lon2d.shape
+        size = nlat * nlon
+        R = R_EARTH_METERS
+
+        lat_rad = np.deg2rad(self._lat2d)
+        cos_lat = np.cos(lat_rad)
+
+        # Grid spacings
+        dlat = np.deg2rad(self._lat2d[1, 0] - self._lat2d[0, 0]) if nlat > 1 else 0.0
+        dlon = np.deg2rad(self._lon2d[0, 1] - self._lon2d[0, 0]) if nlon > 1 else 0.0
+
+        # Cell areas
+        cell_area = R**2 * cos_lat * dlat * dlon
+        cell_area = np.maximum(cell_area, 1e-10)
+
+        # Face dimensions
+        face_height = R * dlat  # For zonal faces
+        face_width = R * dlon   # For meridional faces
+
+        # Wind at faces
+        u_east_face = 0.5 * (wind_u + np.roll(wind_u, -1, axis=1))
+        v_north_face = 0.5 * (wind_v + np.roll(wind_v, -1, axis=0))
+
+        # Latitude at north face
+        lat_north_face = lat_rad + 0.5 * dlat
+        cos_lat_north = np.cos(lat_north_face)
+
+        # Build sparse matrix
+        row_indices = []
+        col_indices = []
+        values = []
+
+        for i in range(nlat):
+            for j in range(nlon):
+                idx = i * nlon + j
+                area = cell_area[i, j]
+
+                # === ZONAL FLUXES ===
+                # East face of cell (i,j)
+                j_east = (j + 1) % nlon
+                u_e = u_east_face[i, j]
+                coeff_east = u_e * face_height * cos_lat[i, j] / area
+
+                if u_e >= 0:
+                    # Flux uses q from this cell -> contributes to diagonal
+                    # tendency[idx] -= coeff_east * q[idx]
+                    row_indices.append(idx)
+                    col_indices.append(idx)
+                    values.append(-coeff_east)
+                else:
+                    # Flux uses q from east neighbor
+                    # tendency[idx] -= coeff_east * q[idx_east]
+                    row_indices.append(idx)
+                    col_indices.append(i * nlon + j_east)
+                    values.append(-coeff_east)
+
+                # West face of cell (i,j) = East face of cell (i, j-1)
+                j_west = (j - 1) % nlon
+                u_w = u_east_face[i, j_west]
+                coeff_west = u_w * face_height * cos_lat[i, j_west] / area
+
+                if u_w >= 0:
+                    # Flux into this cell uses q from west neighbor
+                    # tendency[idx] += coeff_west * q[idx_west]
+                    row_indices.append(idx)
+                    col_indices.append(i * nlon + j_west)
+                    values.append(coeff_west)
+                else:
+                    # Flux into this cell uses q from this cell
+                    # tendency[idx] += coeff_west * q[idx]
+                    row_indices.append(idx)
+                    col_indices.append(idx)
+                    values.append(coeff_west)
+
+                # === MERIDIONAL FLUXES ===
+                if nlat > 1:
+                    # North face of cell (i,j)
+                    if i < nlat - 1:
+                        i_north = i + 1
+                        v_n = v_north_face[i, j]
+                        coeff_north = v_n * face_width * cos_lat_north[i, j] / area
+
+                        if v_n >= 0:
+                            # Flux uses q from this cell
+                            row_indices.append(idx)
+                            col_indices.append(idx)
+                            values.append(-coeff_north)
+                        else:
+                            # Flux uses q from north neighbor
+                            row_indices.append(idx)
+                            col_indices.append(i_north * nlon + j)
+                            values.append(-coeff_north)
+
+                    # South face of cell (i,j) = North face of cell (i-1, j)
+                    if i > 0:
+                        i_south = i - 1
+                        v_s = v_north_face[i_south, j]
+                        coeff_south = v_s * face_width * cos_lat_north[i_south, j] / area
+
+                        if v_s >= 0:
+                            # Flux into this cell uses q from south neighbor
+                            row_indices.append(idx)
+                            col_indices.append(i_south * nlon + j)
+                            values.append(coeff_south)
+                        else:
+                            # Flux into this cell uses q from this cell
+                            row_indices.append(idx)
+                            col_indices.append(idx)
+                            values.append(coeff_south)
+
+        # Build sparse matrix
+        rows_arr = np.asarray(row_indices, dtype=np.int64)
+        cols_arr = np.asarray(col_indices, dtype=np.int64)
+        data_arr = np.asarray(values, dtype=np.float64)
+
+        coo = sparse.coo_matrix((data_arr, (rows_arr, cols_arr)), shape=(size, size))
+        matrix = coo.tocsr()
 
         return np.zeros((nlat, nlon)), matrix

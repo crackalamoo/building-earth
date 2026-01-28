@@ -146,10 +146,13 @@ class LatentHeatExchangeModel:
         wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
 
         # Magnus formula gives e_sat in hPa, pressure is in Pa - convert to hPa
-        surface_temperature_C = surface_temperature_K - 273.15
+        # Cap temperature to prevent overflow in exp (max realistic surface T ~ 80C)
+        surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
         e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
         pressure_hPa = pressure / 100.0
-        q_sat = (0.622 * e_sat) / (pressure_hPa - (1 - 0.622) * e_sat)
+        # Ensure denominator doesn't go negative or zero
+        denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
+        q_sat = (0.622 * e_sat) / denom
 
         humidity_q = np.minimum(humidity_q, q_sat)
         heat_flux = rho * 2.5e6 * ch * wind_abs * (q_sat - humidity_q)
@@ -183,7 +186,7 @@ class LatentHeatExchangeModel:
         # Three-layer system: BL gets fraction of precipitation heating
         # This compensates for cooling from vertical ascent at the ITCZ
         if boundary_layer_temperature_K is not None:
-            BL_LATENT_FRACTION = 0.30  # 15% to BL, 85% to atmosphere
+            BL_LATENT_FRACTION = 0.30  # 30% to BL, 70% to atmosphere
             if precipitation_rate is not None:
                 precip_heating = precipitation_rate * LATENT_HEAT_VAPORIZATION_J_KG
                 boundary_tendency = BL_LATENT_FRACTION * precip_heating / self._boundary_layer_heat_capacity
@@ -257,7 +260,8 @@ class LatentHeatExchangeModel:
 
         # Compute saturation vapor pressure and its derivative
         # Magnus formula gives e_sat in hPa, pressure is in Pa - convert to hPa
-        surface_temperature_C = surface_temperature_K - 273.15
+        # Cap temperature to prevent overflow in exp
+        surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
         e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
         pressure_hPa = pressure / 100.0
 
@@ -266,18 +270,20 @@ class LatentHeatExchangeModel:
         de_sat_dT_C = e_sat * 17.67 * 243.5 / np.power(surface_temperature_C + 243.5, 2)
 
         # Compute q_sat and its derivatives (using hPa for consistency)
-        q_sat = (0.622 * e_sat) / (pressure_hPa - (1 - 0.622) * e_sat)
+        # Ensure denominator doesn't go negative or zero
+        denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
+        q_sat = (0.622 * e_sat) / denom
         humidity_q_clamped = np.minimum(humidity_q, q_sat)
         q_deficit = q_sat - humidity_q_clamped
 
         # Derivative of q_sat with respect to T_surf (via e_sat)
         # d(q_sat)/dT_surf = 0.622 * pressure * d(e_sat)/dT_surf / (pressure - (1-0.622)*e_sat)^2
-        dq_sat_dT_surf = 0.622 * pressure_hPa * de_sat_dT_C / np.power(pressure_hPa - (1 - 0.622) * e_sat, 2)
+        dq_sat_dT_surf = 0.622 * pressure_hPa * de_sat_dT_C / np.power(denom, 2)
 
         # Derivative of q_sat with respect to T_atm (via pressure)
         # Approximate dp/dT_atm ≈ -30 Pa/K = -0.30 hPa/K (from thermal wind scaling)
         dp_dT_atm_approx = -0.30  # hPa/K
-        dq_sat_dT_atm = -0.622 * e_sat * (1.0 - (1.0 - 0.622) * e_sat / np.maximum(pressure_hPa, 1.0)) * dp_dT_atm_approx / np.power(pressure_hPa - (1 - 0.622) * e_sat, 2)
+        dq_sat_dT_atm = -0.622 * e_sat * (1.0 - (1.0 - 0.622) * e_sat / np.maximum(pressure_hPa, 1.0)) * dp_dT_atm_approx / np.power(denom, 2)
 
         # Compute near-surface air temperature and its derivatives
         # For 2-layer: T_2m = T_surf
@@ -433,10 +439,12 @@ class LatentHeatExchangeModel:
         dE_dq = -rho * ch * wind_abs
 
         # Apply land factor
-        surface_temperature_C = surface_temperature_K - 273.15
+        # Cap temperature to prevent overflow in exp
+        surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
         e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
         pressure_hPa = pressure / 100.0
-        q_sat = (0.622 * e_sat) / (pressure_hPa - (1 - 0.622) * e_sat)
+        denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
+        q_sat = (0.622 * e_sat) / denom
         humidity_q_clamped = np.minimum(np.asarray(humidity_q, dtype=float), q_sat)
         rh = humidity_q_clamped / np.maximum(q_sat, 1e-10)
         land_factor = self._config.land_evapotranspiration_factor * rh

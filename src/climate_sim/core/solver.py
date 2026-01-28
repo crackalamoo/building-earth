@@ -542,7 +542,8 @@ def monthly_step(
                             evap_rate = np.zeros_like(lagged_humidity)
 
                         precip_rate = lagged_precipitation if lagged_precipitation is not None else np.zeros_like(lagged_humidity)
-                        advection_tendency = (advection_operator.tendency(lagged_humidity, wind_u_q, wind_v_q)
+                        # Use flux-form advection for humidity conservation: -∇·(uq)
+                        advection_tendency = (advection_operator.flux_tendency(lagged_humidity, wind_u_q, wind_v_q, dt=dt_seconds)
                                               if advection_operator is not None else np.zeros_like(lagged_humidity))
                         humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency
 
