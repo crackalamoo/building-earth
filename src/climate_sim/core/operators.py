@@ -30,7 +30,10 @@ from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfi
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.snow_albedo import AlbedoModel
-from climate_sim.physics.solar import compute_monthly_insolation_field
+from climate_sim.physics.solar import (
+    compute_monthly_insolation_field,
+    compute_monthly_effective_cosine_zenith,
+)
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.runtime.config import ModelConfig
 
@@ -60,6 +63,7 @@ class ModelOperators:
     lat2d: np.ndarray
     heat_capacity_field: np.ndarray
     monthly_insolation: np.ndarray
+    monthly_effective_mu: np.ndarray  # Flux-weighted cos(zenith) for albedo correction
     month_durations: np.ndarray
     diffusion_operator: LayeredDiffusionOperator
     wind_model: WindModel
@@ -112,6 +116,10 @@ def build_model_operators(
         use_elliptical_orbit=model_config.use_elliptical_orbit,
     )
     monthly_insolation = expand_latitude_field(monthly_insolation_lat, lon2d.shape[1])
+
+    # Compute effective cosine of zenith angle for albedo correction
+    monthly_mu_lat = compute_monthly_effective_cosine_zenith(lat2d)
+    monthly_effective_mu = expand_latitude_field(monthly_mu_lat, lon2d.shape[1])
 
     # Compute heat capacity field
     heat_capacity_field = compute_heat_capacity_field(
@@ -241,6 +249,7 @@ def build_model_operators(
         lat2d=lat2d,
         heat_capacity_field=heat_capacity_field,
         monthly_insolation=monthly_insolation,
+        monthly_effective_mu=monthly_effective_mu,
         month_durations=month_durations,
         diffusion_operator=diffusion_operator,
         wind_model=wind_model,

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from climate_sim.data.landmask import compute_ocean_albedo_direct, OCEAN_ALBEDO_DIFFUSE
+
 ARCTIC_CIRCLE_LATITUDE_DEG = 66.5
 
 # Seawater freezes at about -1.8°C due to salinity
@@ -232,6 +234,8 @@ class AlbedoModel:
         monthly_temperatures_K: np.ndarray,
         soil_moisture: np.ndarray | None = None,
         vegetation_fraction: np.ndarray | None = None,
+        effective_mu: np.ndarray | None = None,
+        cloud_fraction: np.ndarray | None = None,
     ) -> np.ndarray:
         """Return an albedo field with snow, sea ice, and vegetation adjustments applied."""
 
@@ -278,6 +282,27 @@ class AlbedoModel:
         else:
             # No vegetation tracking - use original base_albedo
             snow_free_albedo = base_albedo
+
+        # =====================================================================
+        # 1b. Apply zenith-angle correction to ocean albedo (Fresnel physics)
+        # =====================================================================
+        if effective_mu is not None:
+            # Compute direct-beam ocean albedo from zenith angle
+            ocean_albedo_direct = compute_ocean_albedo_direct(effective_mu)
+
+            # Under clouds, use diffuse albedo (constant ~0.06)
+            # Clear sky uses zenith-corrected direct albedo
+            if cloud_fraction is not None:
+                ocean_albedo = (
+                    cloud_fraction * OCEAN_ALBEDO_DIFFUSE
+                    + (1.0 - cloud_fraction) * ocean_albedo_direct
+                )
+            else:
+                # No cloud info - use direct albedo (conservative, higher reflection)
+                ocean_albedo = ocean_albedo_direct
+
+            # Apply to ocean cells only (where not land)
+            snow_free_albedo = np.where(self.land_mask, snow_free_albedo, ocean_albedo)
 
         # =====================================================================
         # 2. Compute snow fraction from temperature

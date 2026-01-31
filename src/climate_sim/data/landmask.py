@@ -14,10 +14,32 @@ from shapely.prepared import prep
 
 OCEAN_HEAT_CAPACITY_M2 = 2.94e8  # J m-2 K-1, 70 m mixed-layer ocean
 LAND_HEAT_CAPACITY_M2 = 3.0e6  # J m-2 K-1, 1.5 m soil skin depth
-OCEAN_ALBEDO = 0.06
+OCEAN_ALBEDO = 0.06  # Base ocean albedo (overhead sun)
+OCEAN_ALBEDO_DIFFUSE = 0.06  # Diffuse albedo under clouds
 LAND_ALBEDO = 0.18
 POLAR_LAND_ALBEDO = 0.30  # Bare rock/tundra beyond tree line
 TREE_LINE_LATITUDE_DEG = 70.0  # No vegetation poleward of this
+
+
+def compute_ocean_albedo_direct(mu: np.ndarray) -> np.ndarray:
+    """Compute direct-beam ocean albedo as a function of solar zenith angle.
+
+    Uses the CESM/CAM parameterization based on Fresnel reflection physics.
+    Ocean albedo increases dramatically at low sun angles (high zenith angles)
+    due to increased specular reflection.
+
+    Reference: Briegleb (1992), Jin et al. (2004)
+    """
+    # Ensure mu is positive to avoid numerical issues
+    mu_safe = np.maximum(mu, 0.001)
+
+    # CESM parameterization
+    alpha = (
+        0.026 / (np.power(mu_safe, 1.7) + 0.065)
+        + 0.15 * (mu_safe - 0.1) * (mu_safe - 0.5) * (mu_safe - 1.0)
+    )
+
+    return np.clip(alpha, 0.0, 1.0)
 
 _MASK_CACHE: dict[
     tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]

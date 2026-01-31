@@ -107,6 +107,7 @@ def monthly_step(
     latent_heat_model: "LatentHeatExchangeModel | None" = None,
     advection_operator: "AdvectionOperator | None" = None,
     humidity_diffusion_operator: "DiffusionOperator | None" = None,
+    effective_mu: np.ndarray | None = None,
 ) -> ModelState:
     """Advance the column temperature one implicit backward-Euler step."""
     with time_block("monthly_step"):
@@ -122,6 +123,7 @@ def monthly_step(
         lagged_albedo_field = surface_context.albedo_model.apply_snow_albedo(
             base_albedo_field,
             start_temp_capped[0],
+            effective_mu=effective_mu,
         )
         # Compute lagged wind field(s)
         lagged_wind_field = None
@@ -780,6 +782,7 @@ def monthly_step(
             final_temp[0],
             soil_moisture=new_soil,
             vegetation_fraction=state.vegetation_fraction,
+            effective_mu=effective_mu,
         )
 
         # Update wind diagnostics for output using the converged ITCZ.
@@ -824,6 +827,7 @@ def evolve_year(
     latent_heat_model: LatentHeatExchangeModel | None = None,
     advection_operator: AdvectionOperator | None = None,
     humidity_diffusion_operator: DiffusionOperator | None = None,
+    monthly_effective_mu: np.ndarray | None = None,
 ) -> list[ModelState]:
     """Propagate the state through 12 implicit steps."""
     states: list[ModelState] = []
@@ -856,6 +860,7 @@ def evolve_year(
                 latent_heat_model=latent_heat_model,
                 advection_operator=advection_operator,
                 humidity_diffusion_operator=humidity_diffusion_operator,
+                effective_mu=monthly_effective_mu[month] if monthly_effective_mu is not None else None,
             )
             states.append(state)
         return states
@@ -912,6 +917,7 @@ def find_periodic_climate_cycle(
     latent_heat_model: LatentHeatExchangeModel | None = None,
     advection_operator: AdvectionOperator | None = None,
     humidity_diffusion_operator: DiffusionOperator | None = None,
+    monthly_effective_mu: np.ndarray | None = None,
 ) -> list[ModelState]:
     """Solve for the periodic annual climate cycle using Anderson acceleration.
 
@@ -965,6 +971,7 @@ def find_periodic_climate_cycle(
                     latent_heat_model=latent_heat_model,
                     advection_operator=advection_operator,
                     humidity_diffusion_operator=humidity_diffusion_operator,
+                    monthly_effective_mu=monthly_effective_mu,
                 )
 
                 advanced = advanced_states[-1]
@@ -1042,14 +1049,16 @@ def find_periodic_climate_cycle(
                     final_states = [advanced_states[(i - 2) % 12] for i in range(12)]
                     if current_vegetation_fraction is not None:
                         base_albedo = surface_context.base_albedo
-                        for s in final_states:
+                        for month_idx, s in enumerate(final_states):
                             s.vegetation_fraction = current_vegetation_fraction
                             # Recompute albedo to be consistent with vegetation fraction
+                            month_mu = monthly_effective_mu[month_idx] if monthly_effective_mu is not None else None
                             s.albedo_field = surface_context.albedo_model.apply_snow_albedo(
                                 base_albedo,
                                 s.temperature[0],
                                 soil_moisture=s.soil_moisture,
                                 vegetation_fraction=current_vegetation_fraction,
+                                effective_mu=month_mu,
                             )
                     return final_states
 
@@ -1276,6 +1285,7 @@ def solve_periodic_climate(
         latent_heat_model=latent_heat_model,
         advection_operator=operators.advection_operator,
         humidity_diffusion_operator=humidity_diffusion_op,
+        monthly_effective_mu=operators.monthly_effective_mu,
     )
 
     # Update wind fields if wind model is enabled
