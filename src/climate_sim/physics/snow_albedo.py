@@ -36,7 +36,13 @@ class SnowAlbedoConfig:
 
     # Sea ice parameters
     sea_ice_enabled: bool = True
-    sea_ice_albedo: float = 0.60  # Multi-year ice with some melt ponds
+    sea_ice_albedo: float = 0.60  # Multi-year ice with some melt ponds (base, overhead sun)
+
+    # Zenith-angle correction for snow/ice albedo
+    # At grazing angles, snow/ice reflects more due to increased specular reflection
+    # Formula: alpha = base + zenith_correction * (1 - mu), where mu = cos(zenith)
+    # Based on Briegleb & Ramanathan (1982), Warren (1982)
+    snow_ice_zenith_correction: float = 0.10  # Adds up to 0.10 at grazing incidence
     sea_ice_max_fraction: float = 0.70  # Seasonal average (winter max ~85%, summer min ~35%)
     sea_ice_freeze_c: float = SEAWATER_FREEZE_C  # Start freezing at -1.8°C
     sea_ice_full_c: float = -8.0  # Full ice formation by -8°C
@@ -328,17 +334,35 @@ class AlbedoModel:
                 u_ice_clamped = np.clip(u_ice, 0.0, 1.0)
                 ice_sheet_frac = u_ice_clamped * u_ice_clamped * (3.0 - 2.0 * u_ice_clamped)
 
-            effective_snow_albedo = (
+            base_snow_albedo = (
                 self.config.snow_albedo
                 + (self.config.ice_sheet_albedo - self.config.snow_albedo) * ice_sheet_frac
             )
         else:
-            effective_snow_albedo = self.config.snow_albedo
+            base_snow_albedo = self.config.snow_albedo
+
+        # Apply zenith-angle correction to snow/ice albedo
+        # At low sun angles, specular reflection increases albedo
+        # Formula: alpha = base + correction * (1 - mu)
+        if effective_mu is not None and self.config.snow_ice_zenith_correction > 0:
+            zenith_boost = self.config.snow_ice_zenith_correction * (1.0 - effective_mu)
+            effective_snow_albedo = np.clip(base_snow_albedo + zenith_boost, 0.0, 0.95)
+        else:
+            effective_snow_albedo = base_snow_albedo
 
         # =====================================================================
-        # 4. Sea ice fraction
+        # 4. Sea ice fraction and albedo
         # =====================================================================
         sea_ice_fraction = self.compute_sea_ice_fraction(temperatures_c)
+
+        # Apply zenith-angle correction to sea ice albedo
+        if effective_mu is not None and self.config.snow_ice_zenith_correction > 0:
+            zenith_boost = self.config.snow_ice_zenith_correction * (1.0 - effective_mu)
+            effective_sea_ice_albedo = np.clip(
+                self.config.sea_ice_albedo + zenith_boost, 0.0, 0.95
+            )
+        else:
+            effective_sea_ice_albedo = self.config.sea_ice_albedo
 
         # =====================================================================
         # 5. Combine all effects
@@ -350,7 +374,7 @@ class AlbedoModel:
         adjusted = adjusted + (effective_snow_albedo - adjusted) * land_snow_fraction
 
         # Apply sea ice albedo to ocean
-        adjusted = adjusted + (self.config.sea_ice_albedo - adjusted) * sea_ice_fraction
+        adjusted = adjusted + (effective_sea_ice_albedo - adjusted) * sea_ice_fraction
 
         return adjusted
 
