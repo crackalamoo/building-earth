@@ -30,7 +30,11 @@ from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfi
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.snow_albedo import AlbedoModel
-from climate_sim.physics.solar import compute_monthly_insolation_field
+from climate_sim.physics.solar import (
+    compute_monthly_insolation_field,
+    compute_monthly_effective_cosine_zenith,
+)
+from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.runtime.config import ModelConfig
 
 
@@ -48,6 +52,7 @@ class SurfaceHeatCapacityContext:
     base_C_land: float
     base_C_ocean: float
     baseline_capacity: np.ndarray
+    topographic_elevation: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class ModelOperators:
     lat2d: np.ndarray
     heat_capacity_field: np.ndarray
     monthly_insolation: np.ndarray
+    monthly_effective_mu: np.ndarray  # Flux-weighted cos(zenith) for albedo correction
     month_durations: np.ndarray
     diffusion_operator: LayeredDiffusionOperator
     wind_model: WindModel
@@ -75,6 +81,7 @@ class ModelOperators:
     latent_heat_cfg: LatentHeatExchangeConfig
     boundary_layer_cfg: BoundaryLayerConfig
     ocean_advection_cfg: OceanAdvectionConfig
+    vertical_motion_cfg: VerticalMotionConfig
 
 
 def build_model_operators(
@@ -110,6 +117,10 @@ def build_model_operators(
     )
     monthly_insolation = expand_latitude_field(monthly_insolation_lat, lon2d.shape[1])
 
+    # Compute effective cosine of zenith angle for albedo correction
+    monthly_mu_lat = compute_monthly_effective_cosine_zenith(lat2d)
+    monthly_effective_mu = expand_latitude_field(monthly_mu_lat, lon2d.shape[1])
+
     # Compute heat capacity field
     heat_capacity_field = compute_heat_capacity_field(
         lon2d,
@@ -137,7 +148,6 @@ def build_model_operators(
             radiation_config,
             atmosphere_heat_capacity=ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
             boundary_layer_heat_capacity=boundary_layer_cfg.heat_capacity,
-            boundary_layer_emissivity=boundary_layer_cfg.emissivity,
         )
 
     # Compute land mask
@@ -241,6 +251,7 @@ def build_model_operators(
         lat2d=lat2d,
         heat_capacity_field=heat_capacity_field,
         monthly_insolation=monthly_insolation,
+        monthly_effective_mu=monthly_effective_mu,
         month_durations=month_durations,
         diffusion_operator=diffusion_operator,
         wind_model=wind_model,
@@ -257,4 +268,5 @@ def build_model_operators(
         latent_heat_cfg=latent_heat_cfg,
         boundary_layer_cfg=boundary_layer_cfg,
         ocean_advection_cfg=model_config.ocean_advection,
+        vertical_motion_cfg=model_config.vertical_motion,
     )

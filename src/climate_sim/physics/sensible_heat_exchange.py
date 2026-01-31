@@ -159,19 +159,14 @@ class SensibleHeatExchangeModel:
             delta_surf_bl = surface_temperature - near_surface_air_K
             heat_flux_surf_bl = g_surf * delta_surf_bl
 
-            # Boundary ↔ Atmosphere: turbulent mixing resistance
-            # Use similar formulation to 2-layer case for consistency
-            # Mixing timescale based on turbulent parameters
-            tau_bl_atm = (self._boundary_layer_heat_capacity * self._atmosphere_heat_capacity) / (
-                self._boundary_layer_heat_capacity + self._atmosphere_heat_capacity
-            ) / (rho * cp * ch * wind_abs)
-            r_mix_bl_atm = tau_bl_atm / Cbl
-
-            # Heat flux from boundary layer to free atmosphere
-            delta_bl_atm = boundary_temperature - atmosphere_temperature
-            g_mix_bl_atm = 1.0 / np.maximum(r_mix_bl_atm, 1e-9)
-            heat_flux_bl_atm = g_mix_bl_atm * delta_bl_atm
-            heat_flux_bl_atm = np.zeros_like(heat_flux_bl_atm)
+            # BL ↔ Atmosphere: No sensible heat flux here.
+            # In reality, BL-atmosphere heat exchange occurs via:
+            # 1. Vertical motion (subsidence/convection) - handled in vertical_motion.py
+            # 2. Entrainment at BL top - implicitly included in vertical motion
+            # 3. Radiation - handled in radiation.py
+            # There is no turbulent sensible heat flux at the BL top like there is
+            # at the surface, so this term is zero.
+            heat_flux_bl_atm = np.zeros_like(heat_flux_surf_bl)
 
             surface_tendency = -heat_flux_surf_bl / self._surface_heat_capacity
             boundary_tendency = (heat_flux_surf_bl - heat_flux_bl_atm) / self._boundary_layer_heat_capacity

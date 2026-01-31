@@ -7,7 +7,16 @@ from dataclasses import dataclass
 import numpy as np
 
 from climate_sim.physics.atmosphere.wind import WindModel
-from climate_sim.data.constants import GAS_CONSTANT_J_KG_K, STANDARD_LAPSE_RATE_K_PER_M, BOUNDARY_LAYER_HEIGHT_M
+from climate_sim.data.constants import (
+    GAS_CONSTANT_J_KG_K,
+    STANDARD_LAPSE_RATE_K_PER_M,
+    BOUNDARY_LAYER_HEIGHT_M,
+    LATENT_HEAT_VAPORIZATION_J_KG,
+)
+
+
+# Seawater freezes at about -1.8°C due to salinity
+SEAWATER_FREEZE_C = -1.8
 
 
 @dataclass(frozen=True)
@@ -15,12 +24,14 @@ class LatentHeatExchangeConfig:
     """Configuration for the latent heat exchange model."""
 
     enabled: bool = True
-    minimum_wind_speed_m_s: float = 0.1
+    minimum_wind_speed_m_s: float = 1.0  # Free convection velocity scale (same as sensible)
     # Land evapotranspiration is weaker than ocean evaporation due to:
     # - Limited soil moisture availability
     # - Stomatal resistance in vegetation
     # Typical values: 0.3-0.6 of ocean evaporation in humid regions
     land_evapotranspiration_factor: float = 0.4
+    # No evaporation below freezing (ice-covered surface)
+    freeze_threshold_c: float = SEAWATER_FREEZE_C
 
 
 class LatentHeatExchangeModel:
@@ -82,19 +93,28 @@ class LatentHeatExchangeModel:
         wind_speed_reference_m_s: np.ndarray | None,
         itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]:
+        precipitation_rate: np.ndarray | None = None,
+        soil_moisture: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Return surface and atmospheric tendencies from latent heat exchange.
+
+        Latent heat routing:
+        - Surface loses heat via evaporation: dT_sfc/dt = -E * Lv / C_sfc
+        - Atmosphere gains heat via precipitation (condensation): dT_atm/dt = +P * Lv / C_atm
 
         If boundary_layer_temperature_K is provided, returns 3 tendencies:
         (surface, boundary_layer, atmosphere). Latent heat only couples surface
-        and boundary layer; atmosphere gets zero tendency from latent heat.
+        and boundary layer for evaporation; atmosphere gains heat from precipitation.
+
+        Also returns the evaporation rate (kg/m²/s) as the last element for
+        prognostic humidity calculations.
         """
 
         if not self.enabled:
             zeros = np.zeros_like(surface_temperature_K, dtype=float)
             if boundary_layer_temperature_K is not None:
-                return zeros, zeros, zeros
-            return zeros, zeros
+                return zeros, zeros, zeros, zeros  # surface, BL, atm, evap_rate
+            return zeros, zeros, zeros  # surface, atm, evap_rate
 
         surface_temperature = np.asarray(surface_temperature_K, dtype=float)
         atmosphere_temperature = np.asarray(atmosphere_temperature_K, dtype=float)
@@ -120,39 +140,63 @@ class LatentHeatExchangeModel:
             # Fallback: no wind, no exchange
             zeros = np.zeros_like(surface_temperature_K, dtype=float)
             if boundary_layer_temperature_K is not None:
-                return zeros, zeros, zeros
-            return zeros, zeros
+                return zeros, zeros, zeros, zeros  # surface, BL, atm, evap_rate
+            return zeros, zeros, zeros  # surface, atm, evap_rate
 
         wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
 
-        # Magnus formula requires temperature in Celsius
-        surface_temperature_C = surface_temperature_K - 273.15
+        # Magnus formula gives e_sat in hPa, pressure is in Pa - convert to hPa
+        # Cap temperature to prevent overflow in exp (max realistic surface T ~ 80C)
+        surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
         e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
-        q_sat = (0.622 * e_sat) / (pressure - (1 - 0.622) * e_sat)
+        pressure_hPa = pressure / 100.0
+        # Ensure denominator doesn't go negative or zero
+        denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
+        q_sat = (0.622 * e_sat) / denom
 
         humidity_q = np.minimum(humidity_q, q_sat)
         heat_flux = rho * 2.5e6 * ch * wind_abs * (q_sat - humidity_q)
-        # Land evapotranspiration scales with:
-        # 1. Base factor (soil/vegetation resistance)
-        # 2. Relative humidity (proxy for soil moisture availability)
-        #    - Deserts (low RH ~0.3): factor ~0.12
-        #    - Humid tropics (high RH ~0.8): factor ~0.32
-        rh = humidity_q / np.maximum(q_sat, 1e-10)
-        land_factor = self._config.land_evapotranspiration_factor * rh
+        # Land evapotranspiration scales with soil moisture (or RH as proxy)
+        if soil_moisture is not None:
+            land_factor = self._config.land_evapotranspiration_factor * soil_moisture
+        else:
+            rh = humidity_q / np.maximum(q_sat, 1e-10)
+            land_factor = self._config.land_evapotranspiration_factor * rh
         heat_flux = np.where(self._land_mask, heat_flux * land_factor, heat_flux)
 
-        # Three-layer system: latent heat only between surface and boundary layer
-        if boundary_layer_temperature_K is not None:
-            surface_tendency = -heat_flux / self._surface_heat_capacity
-            boundary_tendency = heat_flux / self._boundary_layer_heat_capacity
-            atmosphere_tendency = np.zeros_like(surface_tendency)  # No latent heat to atmosphere
-            return surface_tendency, boundary_tendency, atmosphere_tendency
+        # No evaporation below freezing (ice-covered surface can't evaporate liquid water)
+        frozen = surface_temperature_C < self._config.freeze_threshold_c
+        heat_flux = np.where(frozen, 0.0, heat_flux)
 
-        # Two-layer system: latent heat between surface and atmosphere
+        # Evaporation rate (kg/m²/s) for prognostic humidity
+        evaporation_rate = heat_flux / LATENT_HEAT_VAPORIZATION_J_KG
+
+        # Surface always loses heat via evaporation
         surface_tendency = -heat_flux / self._surface_heat_capacity
-        atmosphere_tendency = heat_flux / self._atmosphere_heat_capacity
 
-        return surface_tendency, atmosphere_tendency
+        # Atmosphere gains heat via PRECIPITATION (condensation), not evaporation
+        # This is the key physics fix: latent heat is released where it RAINS
+        if precipitation_rate is not None:
+            precip_heating = precipitation_rate * LATENT_HEAT_VAPORIZATION_J_KG  # W/m²
+            atmosphere_tendency = precip_heating / self._atmosphere_heat_capacity
+        else:
+            # Fallback: assume local E ≈ P (old behavior for backward compatibility)
+            atmosphere_tendency = heat_flux / self._atmosphere_heat_capacity
+
+        # Three-layer system: BL gets fraction of precipitation heating
+        # This compensates for cooling from vertical ascent at the ITCZ
+        if boundary_layer_temperature_K is not None:
+            BL_LATENT_FRACTION = 0.30  # 30% to BL, 70% to atmosphere
+            if precipitation_rate is not None:
+                precip_heating = precipitation_rate * LATENT_HEAT_VAPORIZATION_J_KG
+                boundary_tendency = BL_LATENT_FRACTION * precip_heating / self._boundary_layer_heat_capacity
+                atmosphere_tendency = (1 - BL_LATENT_FRACTION) * precip_heating / self._atmosphere_heat_capacity
+            else:
+                boundary_tendency = np.zeros_like(surface_tendency)
+            return surface_tendency, boundary_tendency, atmosphere_tendency, evaporation_rate
+
+        # Two-layer system
+        return surface_tendency, atmosphere_tendency, evaporation_rate
 
     def compute_jacobian(
         self,
@@ -163,8 +207,13 @@ class LatentHeatExchangeModel:
         wind_speed_reference_m_s: np.ndarray | None,
         itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
+        precipitation_rate: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return Jacobian (diagonal and cross-coupling) for latent heat exchange.
+
+        With prognostic humidity, atmosphere heating comes from precipitation, not
+        evaporation. The atmosphere Jacobian w.r.t. temperature is zero since
+        precipitation is diagnostic (depends on humidity, not current temperature).
 
         Returns
         -------
@@ -207,33 +256,34 @@ class LatentHeatExchangeModel:
                 return diag, cross
 
         wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
-        L_v = 2.5e6  # Latent heat of vaporization (J/kg)
         R = GAS_CONSTANT_J_KG_K
 
         # Compute saturation vapor pressure and its derivative
-        surface_temperature_C = surface_temperature_K - 273.15
+        # Magnus formula gives e_sat in hPa, pressure is in Pa - convert to hPa
+        # Cap temperature to prevent overflow in exp
+        surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
         e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
+        pressure_hPa = pressure / 100.0
 
         # Derivative of e_sat with respect to T_C
         # d(e_sat)/dT_C = e_sat * 17.67 * 243.5 / (T_C + 243.5)^2
         de_sat_dT_C = e_sat * 17.67 * 243.5 / np.power(surface_temperature_C + 243.5, 2)
 
-        # Compute q_sat and its derivatives
-        q_sat = (0.622 * e_sat) / (pressure - (1 - 0.622) * e_sat)
+        # Compute q_sat and its derivatives (using hPa for consistency)
+        # Ensure denominator doesn't go negative or zero
+        denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
+        q_sat = (0.622 * e_sat) / denom
         humidity_q_clamped = np.minimum(humidity_q, q_sat)
         q_deficit = q_sat - humidity_q_clamped
 
         # Derivative of q_sat with respect to T_surf (via e_sat)
         # d(q_sat)/dT_surf = 0.622 * pressure * d(e_sat)/dT_surf / (pressure - (1-0.622)*e_sat)^2
-        dq_sat_dT_surf = 0.622 * pressure * de_sat_dT_C / np.power(pressure - (1 - 0.622) * e_sat, 2)
+        dq_sat_dT_surf = 0.622 * pressure_hPa * de_sat_dT_C / np.power(denom, 2)
 
         # Derivative of q_sat with respect to T_atm (via pressure)
-        # d(q_sat)/dT_atm = -0.622 * e_sat * (1 - (1-0.622)*e_sat/pressure) * dp/dT_atm / (pressure - (1-0.622)*e_sat)^2
-        # Approximate dp/dT_atm using hydrostatic balance: p ∝ T, so dp/dT ≈ p/T_atm
-        # More precisely, from thermal wind: dp/dT ≈ -beta * (p/T_atm) where beta ~ 30 Pa/K from pressure.py
-        # For simplicity, use: dp/dT_atm ≈ -30 Pa/K (approximate from pressure.py line 196)
-        dp_dT_atm_approx = -30.0  # Pa/K (approximate from thermal wind scaling)
-        dq_sat_dT_atm = -0.622 * e_sat * (1.0 - (1.0 - 0.622) * e_sat / np.maximum(pressure, 1.0)) * dp_dT_atm_approx / np.power(pressure - (1 - 0.622) * e_sat, 2)
+        # Approximate dp/dT_atm ≈ -30 Pa/K = -0.30 hPa/K (from thermal wind scaling)
+        dp_dT_atm_approx = -0.30  # hPa/K
+        dq_sat_dT_atm = -0.622 * e_sat * (1.0 - (1.0 - 0.622) * e_sat / np.maximum(pressure_hPa, 1.0)) * dp_dT_atm_approx / np.power(denom, 2)
 
         # Compute near-surface air temperature and its derivatives
         # For 2-layer: T_2m = T_surf
@@ -265,8 +315,8 @@ class LatentHeatExchangeModel:
         # Full derivatives:
         # ∂F/∂T_surf = L_v * ch * wind_abs * [rho * dq_sat/dT_surf + q_deficit * drho/dT_surf]
         # ∂F/∂T_atm = L_v * ch * wind_abs * [rho * dq_sat/dT_atm + q_deficit * drho/dT_atm]
-        dheat_flux_dT_surf = L_v * ch * wind_abs * (rho * dq_sat_dT_surf + q_deficit * drho_dT_surf)
-        dheat_flux_dT_atm = L_v * ch * wind_abs * (rho * dq_sat_dT_atm + q_deficit * drho_dT_atm)
+        dheat_flux_dT_surf = LATENT_HEAT_VAPORIZATION_J_KG * ch * wind_abs * (rho * dq_sat_dT_surf + q_deficit * drho_dT_surf)
+        dheat_flux_dT_atm = LATENT_HEAT_VAPORIZATION_J_KG * ch * wind_abs * (rho * dq_sat_dT_atm + q_deficit * drho_dT_atm)
 
         # Apply land factor (reduced evapotranspiration scaled by humidity)
         q_sat_safe = np.maximum(q_sat, 1e-10)
@@ -274,6 +324,11 @@ class LatentHeatExchangeModel:
         land_factor = self._config.land_evapotranspiration_factor * rh
         dheat_flux_dT_surf = np.where(self._land_mask, dheat_flux_dT_surf * land_factor, dheat_flux_dT_surf)
         dheat_flux_dT_atm = np.where(self._land_mask, dheat_flux_dT_atm * land_factor, dheat_flux_dT_atm)
+
+        # No evaporation below freezing (zero derivatives)
+        frozen = surface_temperature_C < self._config.freeze_threshold_c
+        dheat_flux_dT_surf = np.where(frozen, 0.0, dheat_flux_dT_surf)
+        dheat_flux_dT_atm = np.where(frozen, 0.0, dheat_flux_dT_atm)
 
         # Three-layer system: latent heat only between surface and boundary layer
         if boundary_layer_temperature_K is not None:
@@ -286,17 +341,19 @@ class LatentHeatExchangeModel:
             # T_2m = T_boundary + lapse_correction, so dT_2m/dT_boundary = 1
             # ∂rho/∂T_boundary = -pressure / (R * T_2m^2) * dT_2m/dT_boundary = -rho / T_2m
             drho_dT_boundary = -rho / near_surface_air_K
-            
+
             # q_sat doesn't depend on T_boundary directly, only via pressure (which depends on T_atm)
             # So ∂q_sat/∂T_boundary = 0
             dq_sat_dT_boundary = np.zeros_like(surface_temperature)
-            
+
             # ∂F/∂T_boundary = L_v * ch * wind_abs * [rho * dq_sat/dT_boundary + q_deficit * drho/dT_boundary]
-            dheat_flux_dT_boundary = L_v * ch * wind_abs * (rho * dq_sat_dT_boundary + q_deficit * drho_dT_boundary)
+            dheat_flux_dT_boundary = LATENT_HEAT_VAPORIZATION_J_KG * ch * wind_abs * (rho * dq_sat_dT_boundary + q_deficit * drho_dT_boundary)
             # Apply land factor (same as for other derivatives)
             dheat_flux_dT_boundary = np.where(self._land_mask, dheat_flux_dT_boundary * land_factor, dheat_flux_dT_boundary)
+            # No evaporation below freezing (zero derivatives)
+            dheat_flux_dT_boundary = np.where(frozen, 0.0, dheat_flux_dT_boundary)
 
-            # Surface tendency: -heat_flux / C_surf
+            # Surface tendency: -evap_heat_flux / C_surf
             # ∂/∂T_surf = -dheat_flux_dT_surf / C_surf
             # ∂/∂T_boundary = -dheat_flux_dT_boundary / C_surf
             # ∂/∂T_atm = -dheat_flux_dT_atm / C_surf
@@ -304,38 +361,34 @@ class LatentHeatExchangeModel:
             surface_boundary_coupling = -dheat_flux_dT_boundary / self._surface_heat_capacity
             surface_atm_coupling = -dheat_flux_dT_atm / self._surface_heat_capacity
 
-            # Boundary tendency: heat_flux / C_bl
-            # ∂/∂T_surf = dheat_flux_dT_surf / C_bl
-            # ∂/∂T_boundary = dheat_flux_dT_boundary / C_bl
-            # ∂/∂T_atm = dheat_flux_dT_atm / C_bl
-            boundary_diag = dheat_flux_dT_boundary / self._boundary_layer_heat_capacity
-            boundary_surface_coupling = dheat_flux_dT_surf / self._boundary_layer_heat_capacity
-            boundary_atm_coupling = dheat_flux_dT_atm / self._boundary_layer_heat_capacity
+            # Boundary tendency: 0 (BL just transports moisture)
+            boundary_diag = np.zeros_like(surface_diag)
 
-            # Atmosphere tendency: 0 (no latent heat to atmosphere)
+            # Atmosphere: precipitation-based heating has zero Jacobian (lagged diagnostic)
             atmosphere_diag = np.zeros_like(surface_diag)
+            atmosphere_surface_coupling = np.zeros_like(surface_diag)
+            atmosphere_boundary_coupling = np.zeros_like(surface_diag)
 
             diag = np.stack([surface_diag, boundary_diag, atmosphere_diag])
             cross = np.zeros((3, 3) + surface_temperature.shape)
             cross[0, 1] = surface_boundary_coupling  # Surface-boundary coupling
             cross[0, 2] = surface_atm_coupling  # Surface-atmosphere coupling
-            cross[1, 0] = boundary_surface_coupling  # Boundary-surface coupling
-            cross[1, 2] = boundary_atm_coupling  # Boundary-atmosphere coupling
+            cross[2, 0] = atmosphere_surface_coupling  # Atmosphere-surface coupling
+            cross[2, 1] = atmosphere_boundary_coupling  # Atmosphere-boundary coupling
 
             return diag, cross
 
         # Two-layer system: latent heat between surface and atmosphere
-        # Surface tendency: -heat_flux / C_surf
+        # Surface tendency: -evap_heat_flux / C_surf
         # ∂/∂T_surf = -dheat_flux_dT_surf / C_surf
         # ∂/∂T_atm = -dheat_flux_dT_atm / C_surf
         surface_diag = -dheat_flux_dT_surf / self._surface_heat_capacity
         surface_atm_coupling = -dheat_flux_dT_atm / self._surface_heat_capacity
 
-        # Atmosphere tendency: heat_flux / C_atm
-        # ∂/∂T_surf = dheat_flux_dT_surf / C_atm
-        # ∂/∂T_atm = dheat_flux_dT_atm / C_atm
-        atmosphere_diag = dheat_flux_dT_atm / self._atmosphere_heat_capacity
-        atmosphere_surface_coupling = dheat_flux_dT_surf / self._atmosphere_heat_capacity
+        # Atmosphere tendency: P * Lv / C_atm (from precipitation)
+        # Jacobian is zero since precipitation is diagnostic (lagged)
+        atmosphere_diag = np.zeros_like(surface_diag)
+        atmosphere_surface_coupling = np.zeros_like(surface_diag)
 
         diag = np.stack([surface_diag, atmosphere_diag])
         cross = np.zeros((2, 2) + surface_temperature.shape)
@@ -343,3 +396,62 @@ class LatentHeatExchangeModel:
         cross[1, 0] = atmosphere_surface_coupling  # Atmosphere-surface coupling
 
         return diag, cross
+
+    def compute_evaporation_jacobian_wrt_humidity(
+        self,
+        surface_temperature_K: np.ndarray,
+        atmosphere_temperature_K: np.ndarray,
+        humidity_q: np.ndarray,
+        *,
+        wind_speed_reference_m_s: np.ndarray | None,
+        itcz_rad: np.ndarray | None = None,
+        boundary_layer_temperature_K: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Compute derivative of evaporation rate w.r.t. specific humidity.
+
+        E = rho * Ch * |V| * (q_sat - q)
+        dE/dq = -rho * Ch * |V|
+
+        This is needed for the humidity Jacobian in the implicit solver.
+
+        Returns
+        -------
+        np.ndarray
+            dE/dq in units of (kg/m²/s) / (kg/kg) = 1/s
+        """
+        if not self.enabled or self._wind_model is None:
+            return np.zeros_like(surface_temperature_K, dtype=float)
+
+        surface_temperature = np.asarray(surface_temperature_K, dtype=float)
+        atmosphere_temperature = np.asarray(atmosphere_temperature_K, dtype=float)
+
+        pressure, rho, wind_speed_10m, ch = self._wind_model.compute_atmospheric_properties(
+            surface_temperature,
+            atmosphere_temperature,
+            wind_speed_reference_m_s,
+            itcz_rad=itcz_rad,
+        )
+
+        wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
+
+        # E = rho * Ch * |V| * (q_sat - q)
+        # dE/dq = -rho * Ch * |V| (negative: higher q means less evaporation)
+        dE_dq = -rho * ch * wind_abs
+
+        # Apply land factor
+        # Cap temperature to prevent overflow in exp
+        surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
+        e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
+        pressure_hPa = pressure / 100.0
+        denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
+        q_sat = (0.622 * e_sat) / denom
+        humidity_q_clamped = np.minimum(np.asarray(humidity_q, dtype=float), q_sat)
+        rh = humidity_q_clamped / np.maximum(q_sat, 1e-10)
+        land_factor = self._config.land_evapotranspiration_factor * rh
+        dE_dq = np.where(self._land_mask, dE_dq * land_factor, dE_dq)
+
+        # No evaporation below freezing
+        frozen = surface_temperature_C < self._config.freeze_threshold_c
+        dE_dq = np.where(frozen, 0.0, dE_dq)
+
+        return dE_dq

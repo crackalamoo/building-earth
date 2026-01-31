@@ -7,9 +7,9 @@ from typing import Dict
 import numpy as np
 
 from climate_sim.physics.atmosphere.atmosphere import compute_two_meter_temperature, log_law_map_wind_speed
-from climate_sim.physics.atmosphere.wind import WindConfig, WindModel
+from climate_sim.physics.atmosphere.wind import WindConfig
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.core.state import ModelState, select_wind_temperature
+from climate_sim.core.state import ModelState
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.data.elevation import compute_cell_roughness_length, load_elevation_data
 
@@ -165,6 +165,12 @@ def postprocess_periodic_cycle_results(
         humidity_q = np.stack([humidity for humidity in humidity_fields if humidity is not None], axis=0)
         layers_map["humidity"] = humidity_q
 
+    # Extract precipitation fields from state
+    precipitation_fields = [state.precipitation_field for state in monthly_states]
+    if all(precip is not None for precip in precipitation_fields):
+        precipitation = np.stack([precip for precip in precipitation_fields if precip is not None], axis=0)
+        layers_map["precipitation"] = precipitation
+
     # Extract ocean current fields from state
     ocean_current_fields = [state.ocean_current_field for state in monthly_states]
     if all(current is not None for current in ocean_current_fields):
@@ -172,6 +178,39 @@ def postprocess_periodic_cycle_results(
         ocean_v = np.stack([current[1] for current in ocean_current_fields if current is not None], axis=0)
         layers_map["ocean_u"] = ocean_u
         layers_map["ocean_v"] = ocean_v
+
+    # Extract soil moisture from state
+    soil_moisture_fields = [state.soil_moisture for state in monthly_states]
+    if all(sm is not None for sm in soil_moisture_fields):
+        soil_moisture = np.stack([sm for sm in soil_moisture_fields if sm is not None], axis=0)
+        layers_map["soil_moisture"] = soil_moisture
+
+    # Extract cloud fraction fields from state
+    convective_frac_fields = [state.convective_cloud_frac for state in monthly_states]
+    if all(cf is not None for cf in convective_frac_fields):
+        convective_frac = np.stack([cf for cf in convective_frac_fields if cf is not None], axis=0)
+        layers_map["convective_cloud_frac"] = convective_frac
+
+    stratiform_frac_fields = [state.stratiform_cloud_frac for state in monthly_states]
+    if all(sf is not None for sf in stratiform_frac_fields):
+        stratiform_frac = np.stack([sf for sf in stratiform_frac_fields if sf is not None], axis=0)
+        layers_map["stratiform_cloud_frac"] = stratiform_frac
+
+    marine_sc_frac_fields = [state.marine_sc_cloud_frac for state in monthly_states]
+    if all(mf is not None for mf in marine_sc_frac_fields):
+        marine_sc_frac = np.stack([mf for mf in marine_sc_frac_fields if mf is not None], axis=0)
+        layers_map["marine_sc_cloud_frac"] = marine_sc_frac
+
+    high_cloud_frac_fields = [state.high_cloud_frac for state in monthly_states]
+    if all(hf is not None for hf in high_cloud_frac_fields):
+        high_cloud_frac = np.stack([hf for hf in high_cloud_frac_fields if hf is not None], axis=0)
+        layers_map["high_cloud_frac"] = high_cloud_frac
+
+    # Extract vegetation fraction from state
+    vegetation_frac_fields = [state.vegetation_fraction for state in monthly_states]
+    if all(vf is not None for vf in vegetation_frac_fields):
+        vegetation_frac = np.stack([vf for vf in vegetation_frac_fields if vf is not None], axis=0)
+        layers_map["vegetation_fraction"] = vegetation_frac
 
     if return_layer_map:
         return lon2d, lat2d, layers_map

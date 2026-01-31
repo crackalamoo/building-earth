@@ -11,7 +11,21 @@ from scipy.sparse import linalg as splinalg
 
 import climate_sim.physics.radiation as radiation
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.physics.humidity import compute_humidity_q
+from climate_sim.physics.humidity import (
+    compute_humidity_and_precipitation,
+    compute_saturation_specific_humidity,
+    specific_humidity_to_relative_humidity,
+    COLUMN_MASS_KG_M2,
+)
+from climate_sim.physics.clouds import (
+    compute_clouds_and_precipitation,
+    compute_vertical_velocity_from_divergence,
+    compute_vertical_velocity_from_pressure,
+)
+from climate_sim.core.math_core import compute_divergence
+from climate_sim.physics.atmosphere.advection import AdvectionOperator
+from climate_sim.physics.diffusion import DiffusionOperator
+from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeModel
 from climate_sim.core.timing import time_block, get_profiler, reset_profiler
 from climate_sim.core.math_core import (
     LinearSolveCache,
@@ -37,10 +51,10 @@ PERIODIC_FIXED_POINT_TOLERANCE_K_95P = 1.0
 NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
-FIXED_POINT_MAX_ITERS = 100
+FIXED_POINT_MAX_ITERS = 50
 
 # Anderson acceleration parameters for periodic cycle solver
-ANDERSON_HISTORY_LIMIT = 3
+ANDERSON_HISTORY_LIMIT = 12
 
 # Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
 INEXACT_NEWTON_REFACTORIZE_EVERY = 4
@@ -90,6 +104,10 @@ def monthly_step(
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext,
     ocean_advection_enabled: bool = True,
+    latent_heat_model: "LatentHeatExchangeModel | None" = None,
+    advection_operator: "AdvectionOperator | None" = None,
+    humidity_diffusion_operator: "DiffusionOperator | None" = None,
+    effective_mu: np.ndarray | None = None,
 ) -> ModelState:
     """Advance the column temperature one implicit backward-Euler step."""
     with time_block("monthly_step"):
@@ -100,18 +118,12 @@ def monthly_step(
         base_capacity = surface_context.baseline_capacity
         base_albedo_field = surface_context.base_albedo
 
-        # Lag diagnostic fields during the Newton solve.
-        #
-        # The Newton Jacobian does not include derivatives of diagnostic closures
-        # (snow albedo, humidity, winds) with respect to temperature. If we update
-        # these fields on every residual evaluation, the solve becomes inconsistent
-        # and can stall with a persistent residual. We therefore compute them once
-        # from the previous (start-of-step) state and keep them fixed across
-        # Newton/backtracking iterations.
+        # Lag albedo and wind during Newton iterations for Jacobian consistency
         start_temp_capped = np.maximum(start_temp, temperature_floor)
         lagged_albedo_field = surface_context.albedo_model.apply_snow_albedo(
             base_albedo_field,
             start_temp_capped[0],
+            effective_mu=effective_mu,
         )
         # Compute lagged wind field(s)
         lagged_wind_field = None
@@ -170,6 +182,66 @@ def monthly_step(
             surface_context.lon2d, surface_context.lat2d, earth_radius_m=R_EARTH_METERS
         )
 
+        # Humidity is prognostic - carried from previous month, evolved after Newton converges
+        lagged_humidity = state.humidity_field
+        lagged_precipitation = state.precipitation_field
+
+        # Compute frozen cloud output for Jacobian consistency
+        # Cloud fractions are frozen during Newton iterations, but cloud temperatures
+        # (used in radiation) are recomputed from current surface temperature.
+        #
+        # Use pressure-based vertical velocity to avoid lag from wind divergence.
+        # Pressure depends on temperature via the thermal wind relation, so vertical
+        # velocity is implicitly a function of temperature. However, we freeze the
+        # cloud fractions computed at the start of each monthly step.
+        lagged_cloud_output = None
+        nlayers = start_temp_capped.shape[0]
+        if lagged_humidity is not None and nlayers >= 2:
+            # Use lagged temperatures for cloud computation
+            if nlayers == 3:
+                T_bl_cloud = start_temp_capped[1]
+                T_atm_cloud = start_temp_capped[2]
+            else:
+                T_bl_cloud = start_temp_capped[0]
+                T_atm_cloud = start_temp_capped[1] if nlayers >= 2 else start_temp_capped[0]
+
+            # Compute pressure anomaly from lagged surface temperature
+            from climate_sim.physics.atmosphere.pressure import compute_pressure
+            pressure = compute_pressure(
+                start_temp_capped[0],
+                itcz_rad=itcz_rad,
+                lat2d=surface_context.lat2d,
+                lon2d=surface_context.lon2d
+            )
+            nlat, nlon = start_temp_capped[0].shape
+            lat_spacing = 180.0 / nlat
+            lat_centers = -90.0 + (np.arange(nlat) + 0.5) * lat_spacing
+            cos_lat = np.clip(np.cos(np.deg2rad(lat_centers)), 1.0e-6, None)
+            weights = np.broadcast_to(cos_lat[:, None], (nlat, nlon))
+            mean_pressure = np.sum(pressure * weights) / np.sum(weights)
+            dp = pressure - mean_pressure
+            dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
+
+            # Compute vertical velocity from pressure anomaly
+            # Low pressure (ITCZ) → rising motion → convection
+            # High pressure (subtropical highs) → sinking motion → subsidence
+            vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
+
+            rh = specific_humidity_to_relative_humidity(
+                lagged_humidity, T_bl_cloud,
+                itcz_rad=itcz_rad, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d
+            )
+
+            lagged_cloud_output = compute_clouds_and_precipitation(
+                T_bl_K=T_bl_cloud,
+                T_atm_K=T_atm_cloud,
+                q=lagged_humidity,
+                rh=rh,
+                vertical_velocity=vertical_velocity,
+                T_surface_K=start_temp_capped[0],
+                ocean_mask=~surface_context.land_mask,
+            )
+
         def _effective_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
             return surface_context.albedo_model.effective_heat_capacity_surface(
                 temp_surface,
@@ -191,38 +263,24 @@ def monthly_step(
             )
 
         def _init_state(temp: np.ndarray) -> tuple[ModelState, np.ndarray]:
-            """Create model state with freshly computed ITCZ and humidity.
+            """Create model state for RHS evaluation during Newton iterations.
 
-            Returns the state and the computed ITCZ for use in RHS evaluation.
+            Uses lagged fields (albedo, wind, humidity, clouds) for Jacobian consistency.
+            Returns the state and the computed ITCZ.
             """
             with time_block("_init_state"):
-                # Compute ITCZ dynamically from current temperature
                 current_itcz = _compute_itcz_from_temp(temp)
-
-                # Compute humidity dynamically using current temp and ITCZ
-                humidity_field = compute_humidity_q(
-                    surface_context.lat2d,
-                    temp[0],
-                    land_mask=surface_context.land_mask,
-                    lon_2d=surface_context.lon2d,
-                    itcz_rad=current_itcz,
-                )
-
-                # Keep albedo, wind, and ocean currents lagged
-                albedo_field = lagged_albedo_field
-                wind_field = lagged_wind_field
-                boundary_layer_wind_field = lagged_boundary_layer_wind_field
-                ocean_current_field = lagged_ocean_current_field
-                ocean_current_psi = lagged_ocean_current_psi
 
                 return ModelState(
                     temperature=temp,
-                    albedo_field=albedo_field,
-                    wind_field=wind_field,
-                    humidity_field=humidity_field,
-                    boundary_layer_wind_field=boundary_layer_wind_field,
-                    ocean_current_field=ocean_current_field,
-                    ocean_current_psi=ocean_current_psi,
+                    albedo_field=lagged_albedo_field,
+                    wind_field=lagged_wind_field,
+                    humidity_field=lagged_humidity,
+                    boundary_layer_wind_field=lagged_boundary_layer_wind_field,
+                    ocean_current_field=lagged_ocean_current_field,
+                    ocean_current_psi=lagged_ocean_current_psi,
+                    precipitation_field=lagged_precipitation,
+                    cloud_output=lagged_cloud_output,  # Unified clouds (frozen for Jacobian consistency)
                 ), current_itcz
 
         # implicit solver loop
@@ -236,14 +294,7 @@ def monthly_step(
             preconditioner_matrix: sparse.csc_matrix | None = None,
             newton_iter: int,
         ) -> np.ndarray:
-            """Inexact Newton linear solve: GMRES with a reused LU preconditioner.
-
-            Notes
-            -----
-            - We refresh the LU preconditioner occasionally (and on GMRES failure).
-            - We do NOT cache factorisations across iterations in the global cache,
-              because Jacobian values change each iteration.
-            """
+            """Inexact Newton linear solve: GMRES with a reused LU preconditioner."""
             nonlocal preconditioner_solve, preconditioner_age
 
             if (preconditioner_solve is None) or (preconditioner_age >= INEXACT_NEWTON_REFACTORIZE_EVERY):
@@ -295,10 +346,14 @@ def monthly_step(
                 ceff_surface = _effective_surface_capacity(temp_capped[0])
                 flux_surface = base_capacity * rhs_value[0]
                 residual_surface = ceff_surface * (temp_capped[0] - start_temp[0]) - dt_seconds * flux_surface
-                
+
                 nlat, nlon = surface_diag.shape
                 size = nlat * nlon
-                
+
+                # Default: no implicit humidity for non-3-layer cases
+                include_implicit_humidity = False
+                correction_humidity = None
+
                 if nlayers == 1:
                     # Single-layer: only surface residual and jacobian
                     residual = residual_surface[np.newaxis, :, :]
@@ -364,14 +419,20 @@ def monthly_step(
                     correction = np.stack([correction_surface, correction_atmosphere])
                 elif nlayers == 3:
                     # Three-layer: surface + boundary layer + atmosphere with adjacent coupling only
+                    # Optionally includes humidity as 4th prognostic field
                     boundary_diag = linearization.diag[1]
                     atmosphere_diag = linearization.diag[2]
                     residual_boundary = temp_capped[1] - start_temp[1] - dt_seconds * rhs_value[1]
                     residual_atmosphere = temp_capped[2] - start_temp[2] - dt_seconds * rhs_value[2]
-                    residual = np.stack([residual_surface, residual_boundary, residual_atmosphere])
 
                     identity = get_identity_matrix(size, cache=cache)
                     zero_matrix = sparse.csc_matrix((size, size))
+
+                    # Include humidity in implicit solver when available
+                    include_implicit_humidity = (
+                        lagged_humidity is not None
+                        and linearization.humidity_advection_matrix is not None
+                    )
 
                     with time_block("jacobian_assembly"):
                         surface_block = _build_surface_jacobian_block(
@@ -406,22 +467,106 @@ def monthly_step(
                         else:
                             coupling_01 = coupling_02 = coupling_10 = coupling_12 = coupling_20 = coupling_21 = zero_matrix
 
-                        jacobian = sparse.bmat([
-                            [surface_block, coupling_01, coupling_02],
-                            [coupling_10, boundary_block, coupling_12],
-                            [coupling_20, coupling_21, atmosphere_block]
-                        ], format="csc")
+                        if include_implicit_humidity:
+                            # Build 4×4 block Jacobian including humidity
+                            # Humidity block: I - dt * (dE/dq/M - dP/dq/M + advection_matrix + diffusion_matrix)
+                            humidity_block = identity.copy()
+                            if linearization.humidity_diag is not None:
+                                humidity_block -= dt_seconds * sparse.diags(linearization.humidity_diag.ravel(), format="csc")
+                            if linearization.humidity_advection_matrix is not None and linearization.humidity_advection_matrix.nnz > 0:
+                                humidity_block -= dt_seconds * linearization.humidity_advection_matrix
+                            if linearization.humidity_diffusion_matrix is not None and linearization.humidity_diffusion_matrix.nnz > 0:
+                                humidity_block -= dt_seconds * linearization.humidity_diffusion_matrix
+
+                            # Temperature-humidity coupling (dR_T/dq)
+                            if linearization.temp_humidity_coupling is not None:
+                                dR_Tsfc_dq, dR_Tbl_dq, dR_Tatm_dq = linearization.temp_humidity_coupling
+                                coupling_0q = -dt_seconds * sparse.diags((base_capacity * dR_Tsfc_dq).ravel(), format="csc")
+                                coupling_1q = -dt_seconds * sparse.diags(dR_Tbl_dq.ravel(), format="csc") if dR_Tbl_dq is not None else zero_matrix
+                                coupling_2q = -dt_seconds * sparse.diags(dR_Tatm_dq.ravel(), format="csc")
+                            else:
+                                coupling_0q = coupling_1q = coupling_2q = zero_matrix
+
+                            # Humidity-temperature coupling (dR_q/dT)
+                            if linearization.humidity_temp_coupling is not None:
+                                dR_q_dTsfc, dR_q_dTbl, dR_q_dTatm = linearization.humidity_temp_coupling
+                                coupling_q0 = -dt_seconds * sparse.diags(dR_q_dTsfc.ravel(), format="csc")
+                                coupling_q1 = -dt_seconds * sparse.diags(dR_q_dTbl.ravel(), format="csc")
+                                coupling_q2 = -dt_seconds * sparse.diags(dR_q_dTatm.ravel(), format="csc")
+                            else:
+                                coupling_q0 = coupling_q1 = coupling_q2 = zero_matrix
+
+                            jacobian = sparse.bmat([
+                                [surface_block, coupling_01, coupling_02, coupling_0q],
+                                [coupling_10, boundary_block, coupling_12, coupling_1q],
+                                [coupling_20, coupling_21, atmosphere_block, coupling_2q],
+                                [coupling_q0, coupling_q1, coupling_q2, humidity_block]
+                            ], format="csc")
+                        else:
+                            jacobian = sparse.bmat([
+                                [surface_block, coupling_01, coupling_02],
+                                [coupling_10, boundary_block, coupling_12],
+                                [coupling_20, coupling_21, atmosphere_block]
+                            ], format="csc")
                         assert isinstance(jacobian, sparse.csc_matrix)
 
-                    residual_flat = np.concatenate([
-                        residual_surface.ravel(),
-                        residual_boundary.ravel(),
-                        residual_atmosphere.ravel()
-                    ], axis=0)
-                    preconditioner_matrix = sparse.block_diag(
-                        [surface_block, boundary_block, atmosphere_block],
-                        format="csc",
-                    )
+                    # Build residual and preconditioner
+                    residual = np.stack([residual_surface, residual_boundary, residual_atmosphere])
+                    temp_residuals = [residual_surface.ravel(), residual_boundary.ravel(), residual_atmosphere.ravel()]
+                    temp_blocks = [surface_block, boundary_block, atmosphere_block]
+
+                    if include_implicit_humidity:
+                        # Compute humidity residual
+                        # R_q = q_new - q_old - dt * (dq_evap + dq_precip + dq_advection)
+                        # Get wind for advection (prefer boundary layer wind)
+                        if lagged_boundary_layer_wind_field is not None:
+                            wind_u_q, wind_v_q = lagged_boundary_layer_wind_field[:2]
+                        elif lagged_wind_field is not None:
+                            wind_u_q, wind_v_q = lagged_wind_field[:2]
+                        else:
+                            wind_u_q = wind_v_q = np.zeros_like(temp_capped[0])
+
+                        # Compute humidity tendency
+                        t_bl, t_atm = temp_capped[1], temp_capped[2]
+
+                        # Evaporation rate from latent heat model
+                        if latent_heat_model is not None:
+                            wind_speed_ref = (lagged_boundary_layer_wind_field[2] if lagged_boundary_layer_wind_field is not None
+                                              else lagged_wind_field[2] if lagged_wind_field is not None else None)
+                            tendencies = latent_heat_model.compute_tendencies(
+                                surface_temperature_K=temp_capped[0],
+                                atmosphere_temperature_K=t_atm,
+                                humidity_q=lagged_humidity,
+                                wind_speed_reference_m_s=wind_speed_ref,
+                                itcz_rad=itcz_rad,
+                                boundary_layer_temperature_K=t_bl,
+                                precipitation_rate=lagged_precipitation,
+                                soil_moisture=state.soil_moisture,
+                            )
+                            evap_rate = tendencies[-1]
+                        else:
+                            evap_rate = np.zeros_like(lagged_humidity)
+
+                        precip_rate = lagged_precipitation if lagged_precipitation is not None else np.zeros_like(lagged_humidity)
+                        # Use flux-form advection for humidity conservation: -∇·(uq)
+                        advection_tendency = (advection_operator.flux_tendency(lagged_humidity, wind_u_q, wind_v_q, dt=dt_seconds)
+                                              if advection_operator is not None else np.zeros_like(lagged_humidity))
+                        # Humidity diffusion for turbulent mixing (stabilizes implicit solver)
+                        diffusion_tendency = (humidity_diffusion_operator.tendency(lagged_humidity)
+                                              if humidity_diffusion_operator is not None and humidity_diffusion_operator.enabled
+                                              else np.zeros_like(lagged_humidity))
+                        humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency + diffusion_tendency
+
+                        # Humidity residual: q_new - q_old - dt * tendency
+                        start_humidity = state.humidity_field if state.humidity_field is not None else lagged_humidity
+                        residual_humidity = lagged_humidity - start_humidity - dt_seconds * humidity_tendency
+
+                        residual_flat = np.concatenate(temp_residuals + [residual_humidity.ravel()], axis=0)
+                        preconditioner_matrix = sparse.block_diag(temp_blocks + [humidity_block], format="csc")
+                    else:
+                        residual_flat = np.concatenate(temp_residuals, axis=0)
+                        preconditioner_matrix = sparse.block_diag(temp_blocks, format="csc")
+
                     with time_block("linear_solve"):
                         correction_flat = _solve_linear_system(
                             jacobian,
@@ -429,9 +574,15 @@ def monthly_step(
                             preconditioner_matrix=preconditioner_matrix,
                             newton_iter=newton_iter,
                         )
+
                     correction_surface = correction_flat[:size].reshape(surface_diag.shape)
                     correction_boundary = correction_flat[size:2*size].reshape(boundary_diag.shape)
-                    correction_atmosphere = correction_flat[2*size:].reshape(atmosphere_diag.shape)
+                    if include_implicit_humidity:
+                        correction_atmosphere = correction_flat[2*size:3*size].reshape(atmosphere_diag.shape)
+                        correction_humidity = correction_flat[3*size:].reshape(surface_diag.shape)
+                    else:
+                        correction_atmosphere = correction_flat[2*size:].reshape(atmosphere_diag.shape)
+                        correction_humidity = None
                     correction = np.stack([correction_surface, correction_boundary, correction_atmosphere])
                 else:
                     raise ValueError(f"Unsupported number of layers: {nlayers}")
@@ -478,17 +629,162 @@ def monthly_step(
                     temp_next = temp_candidate
                     residual = residual_candidate
 
+                # Apply humidity correction from implicit solve
+                if nlayers == 3 and include_implicit_humidity and correction_humidity is not None:
+                    lagged_humidity = np.maximum(lagged_humidity - damping * correction_humidity, 1e-6)
+
                 step = prev_temp - temp_next
                 if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
                     break
 
-
         # Return a state that is internally consistent with the converged temperature.
-        # Humidity and ITCZ are already computed fresh by _init_state.
-        # Only albedo and wind need to be updated (wind uses the fresh ITCZ).
         final_temp = np.maximum(temp_next, temperature_floor)
-        final_state, final_itcz = _init_state(final_temp)
-        final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(base_albedo_field, final_temp[0])
+        nlayers_final = final_temp.shape[0]
+
+        # Get wind for final precipitation/soil calculation
+        if lagged_boundary_layer_wind_field is not None:
+            wind_u, wind_v = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+            wind_speed_ref = lagged_boundary_layer_wind_field[2]
+        elif lagged_wind_field is not None:
+            wind_u, wind_v = lagged_wind_field[0], lagged_wind_field[1]
+            wind_speed_ref = lagged_wind_field[2]
+        else:
+            wind_u = wind_v = np.zeros_like(final_temp[0])
+            wind_speed_ref = None
+
+        # Initialize humidity if not yet available (first timestep bootstrap)
+        if lagged_humidity is None:
+            t_for_humidity = final_temp[1] if nlayers_final == 3 else final_temp[0]
+            t_atm = final_temp[2] if nlayers_final == 3 else None
+            current_itcz_init = _compute_itcz_from_temp(final_temp)
+            lagged_humidity, lagged_precipitation = compute_humidity_and_precipitation(
+                wind_u, wind_v,
+                surface_context.land_mask,
+                surface_context.lat2d,
+                surface_context.lon2d,
+                t_for_humidity,
+                itcz_rad=current_itcz_init,
+                atmosphere_temperature=t_atm,
+            )
+
+        # Humidity is evolved in the implicit Newton solver with diffusion for stability.
+        # Apply saturation cap only AFTER Newton converges (not inside loop) to avoid
+        # breaking Newton convergence. Allow supersaturation for numerical stability.
+        if lagged_humidity is not None:
+            t_for_cap = final_temp[1] if nlayers_final == 3 else final_temp[0]
+            q_sat = compute_saturation_specific_humidity(t_for_cap)
+            q_max = 1.1 * q_sat  # Allow 10% supersaturation for numerical stability
+            lagged_humidity = np.clip(lagged_humidity, 1e-6, q_max)
+
+        # Compute final precipitation from converged humidity using unified cloud physics
+        # This ensures precipitation is consistent with cloud coverage
+        t_for_humidity = final_temp[1] if nlayers_final == 3 else final_temp[0]
+        t_atm = final_temp[2] if nlayers_final == 3 else None
+        _, final_precipitation = compute_humidity_and_precipitation(
+            wind_u, wind_v,
+            surface_context.land_mask,
+            surface_context.lat2d,
+            surface_context.lon2d,
+            t_for_humidity,
+            itcz_rad=itcz_rad,
+            atmosphere_temperature=t_atm,
+        )
+        if final_precipitation is None:
+            final_precipitation = np.zeros_like(lagged_humidity)
+
+        # Update soil moisture based on P-E balance
+        lagged_soil = state.soil_moisture
+        if lagged_soil is None:
+            q_sat_init = compute_saturation_specific_humidity(t_for_humidity)
+            rh_init = np.clip(lagged_humidity / np.maximum(q_sat_init, 1e-10), 0, 1)
+            lagged_soil = np.where(surface_context.land_mask, rh_init, 1.0)
+
+        # Compute evaporation for soil moisture update
+        if latent_heat_model is not None:
+            boundary_temp = final_temp[1] if nlayers_final == 3 else None
+            tendencies = latent_heat_model.compute_tendencies(
+                surface_temperature_K=final_temp[0],
+                atmosphere_temperature_K=final_temp[-1],
+                humidity_q=lagged_humidity,
+                wind_speed_reference_m_s=wind_speed_ref,
+                itcz_rad=itcz_rad,
+                boundary_layer_temperature_K=boundary_temp,
+                precipitation_rate=final_precipitation,
+                soil_moisture=lagged_soil,
+            )
+            evaporation_rate = tendencies[-1]
+        else:
+            q_sat = compute_saturation_specific_humidity(t_for_humidity)
+            tau_evap = 7 * 86400.0
+            evaporation_rate = np.maximum(q_sat - lagged_humidity, 0) * COLUMN_MASS_KG_M2 / tau_evap
+
+        # Soil moisture evolution
+        # Soil capacity: 300mm root zone depth (more realistic than 100mm)
+        SOIL_CAPACITY_KG_M2 = 300.0  # mm = kg/m²
+        TAU_DRAIN_SECONDS = 60 * 86400.0  # ~2 months baseflow drainage
+        p_minus_e = final_precipitation - evaporation_rate
+        soil_tendency = p_minus_e / SOIL_CAPACITY_KG_M2 - lagged_soil / TAU_DRAIN_SECONDS
+        new_soil = lagged_soil + dt_seconds * soil_tendency
+        new_soil = np.clip(new_soil, 0.0, 1.0)
+        new_soil = np.where(surface_context.land_mask, new_soil, 1.0)
+
+        # Compute cloud fractions for diagnostics
+        convective_frac = None
+        stratiform_frac = None
+        marine_sc_frac = None
+        if lagged_humidity is not None and nlayers_final >= 2:
+            # Compute relative humidity
+            rh = specific_humidity_to_relative_humidity(
+                lagged_humidity, t_for_humidity,
+                itcz_rad=itcz_rad, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d
+            )
+            # Compute vertical velocity from wind divergence
+            divergence = compute_divergence(wind_u, wind_v, surface_context.lat2d, surface_context.lon2d)
+            vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+
+            # Compute cloud output
+            cloud_output = compute_clouds_and_precipitation(
+                T_bl_K=t_for_humidity,
+                T_atm_K=t_atm if t_atm is not None else t_for_humidity,
+                q=lagged_humidity,
+                rh=rh,
+                vertical_velocity=vertical_velocity,
+                T_surface_K=final_temp[0],
+                ocean_mask=~surface_context.land_mask,
+            )
+            convective_frac = cloud_output.convective_frac
+            stratiform_frac = cloud_output.stratiform_frac
+            marine_sc_frac = cloud_output.marine_sc_frac
+            high_cloud_frac = cloud_output.high_cloud_frac
+            final_precipitation = cloud_output.total_precip
+
+        # Build final state with converged humidity
+        final_itcz = _compute_itcz_from_temp(final_temp)
+        final_state = ModelState(
+            temperature=final_temp,
+            albedo_field=lagged_albedo_field,
+            wind_field=lagged_wind_field,
+            humidity_field=lagged_humidity,
+            boundary_layer_wind_field=lagged_boundary_layer_wind_field,
+            ocean_current_field=lagged_ocean_current_field,
+            ocean_current_psi=lagged_ocean_current_psi,
+            precipitation_field=final_precipitation,
+            soil_moisture=new_soil,
+            vegetation_fraction=state.vegetation_fraction,  # Carry forward from input state
+            convective_cloud_frac=convective_frac,
+            stratiform_cloud_frac=stratiform_frac,
+            marine_sc_cloud_frac=marine_sc_frac,
+            high_cloud_frac=high_cloud_frac,
+        )
+
+        final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(
+            base_albedo_field,
+            final_temp[0],
+            soil_moisture=new_soil,
+            vegetation_fraction=state.vegetation_fraction,
+            effective_mu=effective_mu,
+        )
+
         # Update wind diagnostics for output using the converged ITCZ.
         if surface_context.wind_model:
             if final_temp.shape[0] == 3:
@@ -514,7 +810,7 @@ def monthly_step(
                 final_state.wind_field = surface_context.wind_model.wind_field(
                     final_temp[0], itcz_rad=final_itcz, ekman_drag=True
                 )
-        # Humidity is already computed fresh by _init_state, no need to recompute
+
         return final_state
 
 def evolve_year(
@@ -528,8 +824,12 @@ def evolve_year(
     solver_cache: LinearSolveCache | None = None,
     surface_context: SurfaceHeatCapacityContext,
     ocean_advection_enabled: bool = True,
+    latent_heat_model: LatentHeatExchangeModel | None = None,
+    advection_operator: AdvectionOperator | None = None,
+    humidity_diffusion_operator: DiffusionOperator | None = None,
+    monthly_effective_mu: np.ndarray | None = None,
 ) -> list[ModelState]:
-    """Propagate the state through 12 implicit steps"""
+    """Propagate the state through 12 implicit steps."""
     states: list[ModelState] = []
     with time_block("evolve_year"):
         for month_n in range(12):
@@ -557,6 +857,10 @@ def evolve_year(
                 solver_cache=solver_cache,
                 surface_context=surface_context,
                 ocean_advection_enabled=ocean_advection_enabled,
+                latent_heat_model=latent_heat_model,
+                advection_operator=advection_operator,
+                humidity_diffusion_operator=humidity_diffusion_operator,
+                effective_mu=monthly_effective_mu[month] if monthly_effective_mu is not None else None,
             )
             states.append(state)
         return states
@@ -610,12 +914,30 @@ def find_periodic_climate_cycle(
     temperature_floor: float,
     solver_cache: LinearSolveCache | None = None,
     ocean_advection_enabled: bool = True,
+    latent_heat_model: LatentHeatExchangeModel | None = None,
+    advection_operator: AdvectionOperator | None = None,
+    humidity_diffusion_operator: DiffusionOperator | None = None,
+    monthly_effective_mu: np.ndarray | None = None,
 ) -> list[ModelState]:
     """Solve for the periodic annual climate cycle using Anderson acceleration.
 
     Finds the fixed point P(state) = state where P is the year-forward
     evolution operator, using Anderson acceleration for faster convergence.
+
+    Anderson acceleration mixes all prognostic state variables (temperature,
+    humidity, soil moisture) to ensure consistency. Diagnostic variables
+    (precipitation, clouds, albedo, wind) are recomputed from the mixed state.
     """
+
+    # Scale factors for Anderson state vector (for numerical stability)
+    T_SCALE = 300.0   # ~order of magnitude for Kelvin
+    Q_SCALE = 0.01    # ~order of magnitude for specific humidity (kg/kg)
+    SOIL_SCALE = 1.0  # already 0-1
+
+    # Determine which prognostic variables are enabled based on model configuration
+    # (not based on initial state, since initial state may not have them yet)
+    humidity_is_prognostic = latent_heat_model is not None
+    soil_is_prognostic = latent_heat_model is not None  # Soil evolves with humidity
 
     with time_block("find_periodic_climate_cycle"):
         state = initial_state
@@ -626,8 +948,16 @@ def find_periodic_climate_cycle(
         advanced_history: list[np.ndarray] = []
         residual_max = 0.0
 
+        # Track vegetation fraction - computed from annual precipitation (lagged by 1 year)
+        # Use 50% initial vegetation fraction for first year
+        current_vegetation_fraction: np.ndarray | None = None
+
         for iter_idx in range(FIXED_POINT_MAX_ITERS):
             with time_block("periodic_iteration"):
+                # Set vegetation fraction on input state for this year
+                # (computed from previous year's precipitation)
+                state.vegetation_fraction = current_vegetation_fraction
+
                 advanced_states = evolve_year(
                     state,
                     monthly_insolation,
@@ -638,30 +968,134 @@ def find_periodic_climate_cycle(
                     solver_cache=solver_cache,
                     surface_context=surface_context,
                     ocean_advection_enabled=ocean_advection_enabled,
+                    latent_heat_model=latent_heat_model,
+                    advection_operator=advection_operator,
+                    humidity_diffusion_operator=humidity_diffusion_operator,
+                    monthly_effective_mu=monthly_effective_mu,
                 )
 
                 advanced = advanced_states[-1]
-                residual = np.array([
+                prev_end = states[-1]
+
+                # Check what prognostic variables are actually available
+                # (may differ from config on first iteration when they're being bootstrapped)
+                has_humidity = (humidity_is_prognostic and
+                                advanced.humidity_field is not None and
+                                prev_end.humidity_field is not None)
+                has_soil = (soil_is_prognostic and
+                            advanced.soil_moisture is not None and
+                            prev_end.soil_moisture is not None)
+
+                # Compute residuals for all prognostic state variables
+                # Using end-of-year state (the state we're iterating on)
+                # Temperature: use all layers for the residual
+                temp_residual = (advanced.temperature - prev_end.temperature) / T_SCALE
+
+                # Humidity residual (if prognostic humidity is enabled)
+                if has_humidity:
+                    humidity_residual = (advanced.humidity_field - prev_end.humidity_field) / Q_SCALE
+                else:
+                    humidity_residual = np.array([])
+
+                # Soil moisture residual (if prognostic)
+                if has_soil:
+                    soil_residual = (advanced.soil_moisture - prev_end.soil_moisture) / SOIL_SCALE
+                else:
+                    soil_residual = np.array([])
+
+                # Combined residual for Anderson acceleration (scaled)
+                residual_combined = np.concatenate([
+                    temp_residual.ravel(),
+                    humidity_residual.ravel(),
+                    soil_residual.ravel(),
+                ])
+
+                # Compute month-by-month surface temperature residual for convergence diagnostics
+                # (This is separate from the Anderson residual - just for reporting)
+                monthly_temp_diff = np.array([
                     advanced_states[i].temperature[0] - states[i].temperature[0] for i in range(12)
                 ])
-                residual_rms = np.sqrt(np.mean(np.square(residual)))
-                residual_95p = np.percentile(np.abs(residual), 95)
-                residual_max = np.max(np.abs(residual))
-                print(residual_rms, residual_95p, residual_max)
+                residual_rms = np.sqrt(np.mean(np.square(monthly_temp_diff)))
+                residual_95p = np.percentile(np.abs(monthly_temp_diff), 95)
+                residual_max = np.max(np.abs(monthly_temp_diff))
+                print(f"iter {iter_idx:2d}: RMS={residual_rms:.3f}K  95p={residual_95p:.3f}K  max={residual_max:.3f}K")
+
+                # Compute annual precipitation and growing season for vegetation
+                # Sum monthly precipitation rates (kg/m²/s) weighted by month duration
+                precip_fields = [s.precipitation_field for s in advanced_states]
+                if all(p is not None for p in precip_fields):
+                    annual_precip_kg_m2 = sum(
+                        p * month_durations[i] for i, p in enumerate(precip_fields)
+                    )
+                    # Convert kg/m² to mm (1 kg/m² = 1 mm)
+                    annual_precip_mm = annual_precip_kg_m2
+
+                    # Get monthly temperatures for growing season calculation
+                    # Use boundary layer temperature (more representative of vegetation conditions)
+                    # For 3-layer: use BL temp; for 2-layer or 1-layer: use surface temp
+                    monthly_temps_c = np.array([
+                        (s.temperature[1] if s.temperature.shape[0] >= 3 else s.temperature[0]) - 273.15
+                        for s in advanced_states
+                    ])
+
+                    # Compute vegetation fraction from precipitation and growing season
+                    current_vegetation_fraction = surface_context.albedo_model.compute_vegetation_fraction(
+                        annual_precip_mm,
+                        monthly_temperatures_c=monthly_temps_c,
+                    )
 
                 if residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K and residual_95p < PERIODIC_FIXED_POINT_TOLERANCE_K_95P:
-                    return [advanced_states[(i - 2) % 12] for i in range(12)]
+                    # Ensure vegetation fraction and consistent albedo on all returned states
+                    final_states = [advanced_states[(i - 2) % 12] for i in range(12)]
+                    if current_vegetation_fraction is not None:
+                        base_albedo = surface_context.base_albedo
+                        for month_idx, s in enumerate(final_states):
+                            s.vegetation_fraction = current_vegetation_fraction
+                            # Recompute albedo to be consistent with vegetation fraction
+                            month_mu = monthly_effective_mu[month_idx] if monthly_effective_mu is not None else None
+                            s.albedo_field = surface_context.albedo_model.apply_snow_albedo(
+                                base_albedo,
+                                s.temperature[0],
+                                soil_moisture=s.soil_moisture,
+                                vegetation_fraction=current_vegetation_fraction,
+                                effective_mu=month_mu,
+                            )
+                    return final_states
 
                 states = advanced_states
 
-                residual_flat = residual.ravel()
-                advanced_flat = advanced.temperature.ravel()
+                # Build augmented state vector for Anderson acceleration
+                # Include all prognostic variables: temperature, humidity, soil moisture
+                # (all scaled for numerical stability)
+                advanced_temp_scaled = advanced.temperature.ravel() / T_SCALE
+
+                if has_humidity:
+                    advanced_humidity_scaled = advanced.humidity_field.ravel() / Q_SCALE
+                else:
+                    advanced_humidity_scaled = np.array([])
+
+                if has_soil:
+                    advanced_soil_scaled = advanced.soil_moisture.ravel() / SOIL_SCALE
+                else:
+                    advanced_soil_scaled = np.array([])
+
+                advanced_flat = np.concatenate([
+                    advanced_temp_scaled,
+                    advanced_humidity_scaled,
+                    advanced_soil_scaled,
+                ])
+
+                # Check for state vector shape change (e.g., humidity bootstrapped after iter 0)
+                # If shape changed, clear history to avoid size mismatch
+                if len(advanced_history) > 0 and advanced_flat.shape != advanced_history[-1].shape:
+                    residual_history = []
+                    advanced_history = []
 
                 if len(residual_history) == ANDERSON_HISTORY_LIMIT:
                     residual_history.pop(0)
                     advanced_history.pop(0)
 
-                residual_history.append(residual_flat)
+                residual_history.append(residual_combined)
                 advanced_history.append(advanced_flat)
 
                 with time_block("anderson_acceleration"):
@@ -675,27 +1109,66 @@ def find_periodic_climate_cycle(
                             else:
                                 coefficients = coefficients / coeff_sum
 
+                    # Sizes for unpacking the combined state vector
+                    n_temp = state.temperature.size
+                    n_humidity = advanced.humidity_field.size if has_humidity else 0
+                    n_soil = advanced.soil_moisture.size if has_soil else 0
+
                     if coefficients is None:
+                        # No Anderson mixing - use advanced state directly
                         T_next = advanced.temperature
+                        q_next = advanced.humidity_field
+                        soil_next = advanced.soil_moisture
                         residual_history = residual_history[-1:]
                         advanced_history = advanced_history[-1:]
                     else:
+                        # Anderson mixing of all prognostic state variables
                         combined = np.zeros_like(advanced_flat)
                         for weight, advanced_state in zip(coefficients, advanced_history, strict=True):
                             combined += weight * advanced_state
-                        T_next = combined.reshape(state.temperature.shape)
 
+                        # Unpack and rescale the combined state
+                        T_next = combined[:n_temp].reshape(state.temperature.shape) * T_SCALE
+
+                        if has_humidity:
+                            q_next = combined[n_temp:n_temp+n_humidity].reshape(
+                                advanced.humidity_field.shape
+                            ) * Q_SCALE
+                            # Ensure humidity stays positive
+                            q_next = np.maximum(q_next, 1e-6)
+                        else:
+                            q_next = None
+
+                        if has_soil:
+                            soil_next = combined[n_temp+n_humidity:].reshape(
+                                advanced.soil_moisture.shape
+                            ) * SOIL_SCALE
+                            # Clip soil moisture to [0, 1]
+                            soil_next = np.clip(soil_next, 0.0, 1.0)
+                            # Ocean cells always saturated
+                            soil_next = np.where(surface_context.land_mask, soil_next, 1.0)
+                        else:
+                            soil_next = None
+
+                        # Validate the mixed state
                         if not np.all(np.isfinite(T_next)):
                             T_next = advanced.temperature
+                            q_next = advanced.humidity_field
+                            soil_next = advanced.soil_moisture
                             residual_history = residual_history[-1:]
                             advanced_history = advanced_history[-1:]
 
-                # Apply Anderson-accelerated state
+                # Apply Anderson-accelerated state with mixed prognostic variables
+                # Diagnostics (albedo, wind, precipitation, clouds) will be recomputed
+                # at the start of the next year's first monthly step
                 state = ModelState(
                     temperature=T_next,
-                    albedo_field=initial_state.albedo_field,
-                    wind_field=None,
-                    humidity_field=None,
+                    albedo_field=None,  # Recomputed from mixed T at start of next month
+                    wind_field=None,    # Recomputed from mixed T at start of next month
+                    humidity_field=q_next,  # Anderson-mixed humidity
+                    soil_moisture=soil_next,  # Anderson-mixed soil moisture
+                    precipitation_field=None,  # Recomputed from mixed q at start of next month
+                    vegetation_fraction=current_vegetation_fraction,  # From this year's precipitation
                 )
 
         raise RuntimeError(
@@ -738,6 +1211,10 @@ def solve_periodic_climate(
     with time_block("build_operators"):
         operators = build_model_operators(resolution_deg, model_config)
 
+    # Use same diffusion operator for humidity as atmosphere (Lewis number ≈ 1)
+    # Turbulent eddies transport both heat and moisture equally
+    humidity_diffusion_op = operators.diffusion_operator.atmosphere if operators.latent_heat_cfg.enabled else None
+
     # Build RHS functions from operators
     with time_block("build_rhs"):
         rhs_inputs = RhsBuildInputs(
@@ -755,6 +1232,8 @@ def solve_periodic_climate(
             lon2d=operators.lon2d,
             lat2d=operators.lat2d,
             ocean_advection_cfg=operators.ocean_advection_cfg,
+            vertical_motion_cfg=operators.vertical_motion_cfg,
+            humidity_diffusion_operator=humidity_diffusion_op,
         )
         rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
 
@@ -775,8 +1254,24 @@ def solve_periodic_climate(
             humidity_field=None,
         )
 
+    # Build latent heat model for prognostic humidity
+    latent_heat_model = None
+    if operators.latent_heat_cfg.enabled:
+        bl_heat_cap = None
+        if operators.boundary_layer_cfg.enabled:
+            bl_heat_cap = operators.radiation_config.boundary_layer_heat_capacity
+        latent_heat_model = LatentHeatExchangeModel(
+            land_mask=operators.land_mask,
+            surface_heat_capacity_J_m2_K=operators.heat_capacity_field,
+            atmosphere_heat_capacity_J_m2_K=operators.radiation_config.atmosphere_heat_capacity,
+            wind_model=operators.wind_model,
+            config=operators.latent_heat_cfg,
+            boundary_layer_heat_capacity_J_m2_K=bl_heat_cap,
+        )
+
     # Solve for periodic cycle
     ocean_advection_enabled = operators.ocean_advection_cfg.enabled
+
     monthly_states = find_periodic_climate_cycle(
         initial_state=initial_state,
         monthly_insolation=operators.monthly_insolation,
@@ -787,6 +1282,10 @@ def solve_periodic_climate(
         temperature_floor=operators.radiation_config.temperature_floor,
         solver_cache=operators.solver_cache,
         ocean_advection_enabled=ocean_advection_enabled,
+        latent_heat_model=latent_heat_model,
+        advection_operator=operators.advection_operator,
+        humidity_diffusion_operator=humidity_diffusion_op,
+        monthly_effective_mu=operators.monthly_effective_mu,
     )
 
     # Update wind fields if wind model is enabled
@@ -843,6 +1342,13 @@ def solve_periodic_climate(
                         boundary_layer_wind_field=bl_wind,
                         ocean_current_field=ocean_current_field,
                         ocean_current_psi=ocean_current_psi,
+                        precipitation_field=month_state.precipitation_field,
+                        soil_moisture=month_state.soil_moisture,
+                        vegetation_fraction=month_state.vegetation_fraction,
+                        convective_cloud_frac=month_state.convective_cloud_frac,
+                        stratiform_cloud_frac=month_state.stratiform_cloud_frac,
+                        marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,
+                        high_cloud_frac=month_state.high_cloud_frac,
                     )
                 else:
                     # Two-layer or one-layer: single wind field with drag
@@ -869,8 +1375,16 @@ def solve_periodic_climate(
                         albedo_field=month_state.albedo_field,
                         wind_field=wind_field,
                         humidity_field=month_state.humidity_field,
+                        boundary_layer_wind_field=month_state.boundary_layer_wind_field,
                         ocean_current_field=ocean_current_field,
                         ocean_current_psi=ocean_current_psi,
+                        precipitation_field=month_state.precipitation_field,
+                        soil_moisture=month_state.soil_moisture,
+                        vegetation_fraction=month_state.vegetation_fraction,
+                        convective_cloud_frac=month_state.convective_cloud_frac,
+                        stratiform_cloud_frac=month_state.stratiform_cloud_frac,
+                        marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,
+                        high_cloud_frac=month_state.high_cloud_frac,
                     )
 
     # Post-process results (convert to Celsius, reshape layers)

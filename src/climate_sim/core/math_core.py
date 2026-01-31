@@ -8,7 +8,29 @@ from typing import Callable, Dict
 
 import numpy as np
 from scipy import sparse
+from scipy.ndimage import gaussian_filter
 from scipy.sparse import linalg as splinalg
+
+from climate_sim.data.constants import R_EARTH_METERS
+
+
+def sigmoid(x: np.ndarray, scale: float = 1.0) -> np.ndarray:
+    """Smooth sigmoid transition: 0 for x << 0, 1 for x >> 0.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Input values.
+    scale : float
+        Controls transition width. Larger scale = smoother transition.
+
+    Returns
+    -------
+    np.ndarray
+        Values in (0, 1).
+    """
+    z = np.clip(x / scale, -20.0, 20.0)
+    return 1.0 / (1.0 + np.exp(-z))
 
 
 def harmonic_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -184,3 +206,53 @@ def get_factorized_solver(
         solver = splinalg.factorized(matrix)
         cache.factorized_solvers[key] = solver
     return solver
+
+
+def compute_divergence(
+    u: np.ndarray,
+    v: np.ndarray,
+    lat2d: np.ndarray,
+    lon2d: np.ndarray,
+    smoothing_length_km: float = 1500.0,
+) -> np.ndarray:
+    """Compute horizontal divergence on a lat-lon grid.
+
+    div(V) = (1/R cos φ) * ∂u/∂λ + (1/R cos φ) * ∂(v cos φ)/∂φ
+
+    The divergence is smoothed to remove grid-scale noise. Large-scale vertical
+    motion (Hadley cell subsidence) operates on scales of ~1500+ km, so we filter
+    out smaller-scale variations that are numerical artifacts on coarse grids.
+    This makes the result resolution-independent.
+    """
+    R = R_EARTH_METERS
+    lat_rad = np.deg2rad(lat2d)
+
+    cos_lat = np.cos(lat_rad)
+    cos_lat = np.maximum(cos_lat, 0.01)  # Avoid division by zero at poles
+
+    # Grid spacings (assumes uniform grid)
+    dlat = np.deg2rad(lat2d[1, 0] - lat2d[0, 0])
+    dlon = np.deg2rad(lon2d[0, 1] - lon2d[0, 0])
+
+    # ∂u/∂λ
+    du_dlon = np.gradient(u, axis=1) / dlon
+
+    # ∂(v cos φ)/∂φ
+    v_cos_lat = v * cos_lat
+    d_vcos_dlat = np.gradient(v_cos_lat, axis=0) / dlat
+
+    # Divergence
+    div = (1 / (R * cos_lat)) * du_dlon + (1 / (R * cos_lat)) * d_vcos_dlat
+
+    # Smooth divergence to remove grid-scale noise
+    # Convert smoothing length to grid cells
+    grid_spacing_km = np.abs(lat2d[1, 0] - lat2d[0, 0]) * 111.0  # km per degree
+    sigma_cells = smoothing_length_km / grid_spacing_km
+
+    if sigma_cells > 0.5:  # Only smooth if smoothing scale > half a grid cell
+        # Smooth in latitude (axis 0)
+        div = gaussian_filter(div, sigma=(sigma_cells, 0), mode='nearest')
+        # Smooth in longitude with wrapping
+        div = gaussian_filter(div, sigma=(0, sigma_cells), mode='wrap')
+
+    return div

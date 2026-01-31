@@ -103,7 +103,8 @@ def _assemble_sparse_matrix(
 @dataclass(frozen=True)
 class DiffusionConfig:
     # Ocean mesoscale eddy diffusivity: ~500-2000 m²/s typical
-    surface_kappa_ref_m2_s: float = 2.0e3
+    # Reduced from 2000 since we now have explicit ocean currents for advective transport
+    surface_kappa_ref_m2_s: float = 1.0e3
 
     surface_resolution_ref_deg: float = 1.0
 
@@ -114,9 +115,8 @@ class DiffusionConfig:
     surface_meridional_midlat_scale: float = 1.5      # 30-60°: Western boundary currents
     surface_meridional_polar_scale: float = 1.5       # 60-90°: Strong MOC/deep convection
 
-    # Atmospheric eddy diffusivity: ~1-5e6 m²/s for individual eddies, but
-    # our EBM is tuned with lower effective value for some reason.
-    atmosphere_kappa_ref_m2_s: float = 5.0e4
+    # Atmospheric eddy diffusivity: ~1-5e6 m²/s for mid-latitude storm tracks
+    atmosphere_kappa_ref_m2_s: float = 5.0e5
 
     atmosphere_resolution_ref_deg: float = 1.0
     enabled: bool = True
@@ -125,7 +125,7 @@ class DiffusionConfig:
     # Peak at midlatitudes where baroclinic storm tracks dominate
     use_latitude_dependent_atmosphere: bool = True
     atmosphere_meridional_tropical_scale: float = 0.5   # 0-30°: Hadley cell dominates, weak eddy mixing
-    atmosphere_meridional_midlat_scale: float = 8.0     # 30-60°: Storm tracks, peak eddy transport
+    atmosphere_meridional_midlat_scale: float = 2.0     # 30-60°: Storm tracks, moderate eddy transport
     atmosphere_meridional_polar_scale: float = 0.5      # 60-90°: Polar vortex isolation, but still significant transport
     atmosphere_zonal_tropical_scale: float = 1.5        # 0-30°: Trade winds mix zonally
     atmosphere_zonal_midlat_scale: float = 2.5          # 30-60°: Westerlies enhance zonal mixing

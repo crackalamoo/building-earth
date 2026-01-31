@@ -16,8 +16,7 @@ class BoundaryLayerConfig:
     """Configuration for the atmospheric boundary layer.
 
     When enabled, adds a third layer between surface and free atmosphere.
-    The boundary layer is optically thin (low emissivity, zero albedo) and
-    exchanges heat with adjacent layers through radiation and sensible heat.
+    The boundary layer emissivity is computed from humidity via τ = 0.2 + 100q.
 
     Requires `RadiationConfig.include_atmosphere=True`.
     """
@@ -25,4 +24,3 @@ class BoundaryLayerConfig:
     enabled: bool = True
     height_m: float = BOUNDARY_LAYER_HEIGHT_M
     heat_capacity: float = BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K
-    emissivity: float = BOUNDARY_LAYER_EMISSIVITY

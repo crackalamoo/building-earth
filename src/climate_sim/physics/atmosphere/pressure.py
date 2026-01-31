@@ -14,11 +14,10 @@ LAT_SUBTROPICS_BASE = np.deg2rad(29.0)
 SUBTROPICS_ITCZ_COUPLING = 0.325
 
 # Hadley cell pressure anomalies (Pa)
-# Low pressure at ITCZ (rising air), high pressure at subtropics (descending air)
-DP_ITCZ = -800.0  # Low pressure at equatorial trough
-DP_SUBTROPICS = 800.0  # High pressure at subtropical highs (ITCZ ± DELTA_SUBTROPICS)
-DP_SUBPOLAR = -500.0  # Low pressure at subpolar lows (~60°)
-DP_POLES = 300.0  # Weak high pressure at polar highs
+DP_ITCZ = -800.0  # Low pressure at equatorial trough (rising air)
+DP_SUBTROPICS = 800.0  # High pressure at subtropical highs (descending air)
+DP_SUBPOLAR = -300.0  # Low pressure at subpolar lows (~60 deg)
+DP_POLES = 0.0  # No explicit polar high (prevents excessive polar easterlies)
 
 # Width of pressure features (radians) - controls smoothness of transitions
 SIGMA_ITCZ = np.deg2rad(8.0)       # ITCZ trough width
@@ -273,15 +272,28 @@ def compute_geopotential_height(
     """Compute geopotential height (m) of a pressure surface.
 
     For a given pressure level p₀, computes the altitude where pressure equals p₀.
-    Uses hydrostatic balance with isothermal atmosphere assumption:
-        Z = (RT/g) * ln(p_surface/p₀)
+    Uses hydrostatic balance: Z = (RT_ref/g) * ln(p_surface/p₀)
+
+    We use a global reference temperature for the scale height rather than local
+    temperature. This ensures the geopotential height gradient reflects only
+    the pressure gradient, not local temperature variations. Using local T would
+    cause thermal lows (hot + low pressure) to have artificially high Z due to
+    the larger scale height, partially canceling the low pressure effect and
+    giving incorrect wind directions.
     """
     temperature = np.asarray(temperature_K, dtype=float)
     if temperature.ndim != 2:
         raise ValueError("temperature_K must be a 2-D latitude/longitude field")
 
-    T_safe = np.maximum(temperature, 150.0)
-    scale_height = GAS_CONSTANT_J_KG_K * T_safe / gravity_m_s2
+    # Use global mean temperature for scale height to isolate pressure effect
+    # This gives geopotential that reflects pressure pattern, not local T
+    nlat, nlon = temperature.shape
+    lat_deg = _get_latitude_centers(nlat)
+    cos_lat = np.clip(np.cos(np.deg2rad(lat_deg)), 1.0e-6, None)
+    weights = np.broadcast_to(cos_lat[:, None], temperature.shape)
+    T_ref = area_weighted_mean(temperature, weights)
+    T_ref = max(T_ref, 150.0)
+    scale_height = GAS_CONSTANT_J_KG_K * T_ref / gravity_m_s2
 
     # Where surface pressure < reference pressure (e.g., high mountains), the
     # reference pressure level doesn't exist. Clip to avoid log of values < 1.

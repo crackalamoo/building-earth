@@ -96,6 +96,44 @@ def orbital_distance_correction(day_of_year: np.ndarray) -> np.ndarray:
     return 1.0 + ECCENTRICITY_AMPLITUDE * np.cos(anomaly)
 
 
+def _compute_effective_cosine_zenith(
+    lat_rad: np.ndarray,
+    declination_rad: np.ndarray,
+) -> np.ndarray:
+    tan_lat = np.tan(lat_rad)
+    tan_dec = np.tan(declination_rad)
+    cos_hour_angle = -tan_lat[:, None] * tan_dec[None, :]
+
+    cos_hour_angle = np.clip(cos_hour_angle, -1.0, 1.0)
+    hour_angle = np.arccos(cos_hour_angle)
+
+    polar_night = cos_hour_angle >= 1.0
+    polar_day = cos_hour_angle <= -1.0
+    hour_angle[polar_night] = 0.0
+    hour_angle[polar_day] = np.pi
+
+    sin_lat = np.sin(lat_rad)[:, None]
+    cos_lat = np.cos(lat_rad)[:, None]
+    sin_dec = np.sin(declination_rad)[None, :]
+    cos_dec = np.cos(declination_rad)[None, :]
+
+    # This is Q/S0, i.e., the flux-weighted mean cos(zenith)
+    mu_eff = (
+        (1.0 / np.pi)
+        * (hour_angle * sin_lat * sin_dec + cos_lat * cos_dec * np.sin(hour_angle))
+    )
+
+    # Clip to avoid division issues in albedo formulas
+    return np.clip(mu_eff, 0.001, 1.0)
+
+
+def compute_monthly_effective_cosine_zenith(lat2d: np.ndarray) -> np.ndarray:
+    lat_rad = np.deg2rad(lat2d[:, 0])
+    declinations = solar_declination(monthly_midpoint_days())
+    mu_eff = _compute_effective_cosine_zenith(lat_rad, declinations)
+    return mu_eff.T  # (nmonth, nlat)
+
+
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
