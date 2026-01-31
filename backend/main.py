@@ -1204,41 +1204,54 @@ def main() -> None:
         )
         print(f"  Wind speed 10 m mean (land/ocean) [m/s]: N/A ({reason})")
 
+    # Apply interpolation if requested (works in both headless and interactive mode)
+    plot_lon2d = lon2d
+    plot_lat2d = lat2d
+    plot_layer_cycles = layer_cycles
+
+    if args.interpolate:
+        output_resolution = 0.25
+        print(f"Interpolating temperature fields to {output_resolution}° resolution...")
+        with time_block("interpolation"):
+            # Build layer map for interpolation (need lowercase keys)
+            interp_layers = {
+                "surface": layer_cycles["Surface"],
+            }
+            if "Atmosphere (2 m)" in layer_cycles:
+                interp_layers["temperature_2m"] = layer_cycles["Atmosphere (2 m)"]
+
+            plot_lon2d, plot_lat2d, interpolated = interpolate_layer_map(
+                interp_layers,
+                lon2d,
+                lat2d,
+                output_resolution_deg=output_resolution,
+                apply_lapse_rate_to_2m=True,
+            )
+
+            # Rebuild layer_cycles with interpolated data
+            plot_layer_cycles = {}
+            if "surface" in interpolated:
+                plot_layer_cycles["Surface"] = interpolated["surface"]
+            if "temperature_2m" in interpolated:
+                plot_layer_cycles["Atmosphere (2 m)"] = interpolated["temperature_2m"]
+
+        get_profiler().print_summary()
+        print(f"Interpolation complete. Output grid: {plot_lat2d.shape}")
+
+        # Save interpolated data to npz
+        data_dir_value = os.getenv("DATA_DIR")
+        if data_dir_value:
+            data_dir = Path(data_dir_value).expanduser()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            interp_path = data_dir / "interpolated.npz"
+            np.savez(
+                interp_path,
+                surface=interpolated.get("surface"),
+                temperature_2m=interpolated.get("temperature_2m"),
+            )
+            print(f"Saved interpolated data to {interp_path}")
+
     if not args.headless:
-        # Apply interpolation if requested
-        plot_lon2d = lon2d
-        plot_lat2d = lat2d
-        plot_layer_cycles = layer_cycles
-
-        if args.interpolate:
-            output_resolution = 0.25
-            print(f"Interpolating temperature fields to {output_resolution}° resolution...")
-            with time_block("interpolation"):
-                # Build layer map for interpolation (need lowercase keys)
-                interp_layers = {
-                    "surface": layer_cycles["Surface"],
-                }
-                if "Atmosphere (2 m)" in layer_cycles:
-                    interp_layers["temperature_2m"] = layer_cycles["Atmosphere (2 m)"]
-
-                plot_lon2d, plot_lat2d, interpolated = interpolate_layer_map(
-                    interp_layers,
-                    lon2d,
-                    lat2d,
-                    output_resolution_deg=output_resolution,
-                    apply_lapse_rate_to_2m=True,
-                )
-
-                # Rebuild layer_cycles with interpolated data
-                plot_layer_cycles = {}
-                if "surface" in interpolated:
-                    plot_layer_cycles["Surface"] = interpolated["surface"]
-                if "temperature_2m" in interpolated:
-                    plot_layer_cycles["Atmosphere (2 m)"] = interpolated["temperature_2m"]
-
-            get_profiler().print_summary()
-            print(f"Interpolation complete. Output grid: {plot_lat2d.shape}")
-
         # Save GIFs using the (potentially interpolated) data
         data_dir_value = os.getenv("DATA_DIR")
         if data_dir_value:
