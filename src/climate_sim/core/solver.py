@@ -630,9 +630,6 @@ def monthly_step(
                 # Apply humidity correction from implicit solve
                 if nlayers == 3 and include_implicit_humidity and correction_humidity is not None:
                     lagged_humidity = np.maximum(lagged_humidity - damping * correction_humidity, 1e-6)
-                    # Clip to saturation
-                    q_sat = compute_saturation_specific_humidity(temp_next[1])  # Use BL temp
-                    lagged_humidity = np.minimum(lagged_humidity, q_sat)
 
                 step = prev_temp - temp_next
                 if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
@@ -669,12 +666,13 @@ def monthly_step(
             )
 
         # Humidity is evolved in the implicit Newton solver with diffusion for stability.
-        # Apply final cap to ensure humidity stays below saturation
+        # Apply saturation cap only AFTER Newton converges (not inside loop) to avoid
+        # breaking Newton convergence. Allow supersaturation for numerical stability.
         if lagged_humidity is not None:
             t_for_cap = final_temp[1] if nlayers_final == 3 else final_temp[0]
             q_sat = compute_saturation_specific_humidity(t_for_cap)
-            lagged_humidity = np.minimum(lagged_humidity, q_sat)
-            lagged_humidity = np.maximum(lagged_humidity, 1e-6)
+            q_max = 1.1 * q_sat  # Allow 10% supersaturation for numerical stability
+            lagged_humidity = np.clip(lagged_humidity, 1e-6, q_max)
 
         # Compute final precipitation from converged humidity using unified cloud physics
         # This ensures precipitation is consistent with cloud coverage
