@@ -41,7 +41,7 @@ SIGMA_RH_POLES = np.deg2rad(10.0)      # Polar humid zone width
 # Penetration length is longer for q advection (conserved quantity) vs RH
 # ~2500 km allows monsoon moisture to reach interior continents
 MOISTURE_PENETRATION_LENGTH = 2500e3  # meters, e-folding distance for moisture decay over land
-RH_OCEAN_SOURCE = 0.80  # Relative humidity over ocean (moisture source)
+RH_OCEAN_SOURCE = 0.85  # Relative humidity over ocean (moisture source)
 MOISTURE_ADVECTION_ITERATIONS = 15  # Number of iterations for convergence
 
 
@@ -82,7 +82,7 @@ def advect_moisture_from_ocean(
     q_sat = (0.622 * e_sat) / (p_hPa - (1 - 0.622) * e_sat)
 
     # Ocean boundary layer humidity: set based on AIR temperature q_sat, not SST
-    # The marine BL maintains ~78% RH due to rapid mixing with the surface.
+    # The marine BL maintains ~85% RH due to rapid mixing with the surface.
     # Using a FIXED RH (not latitude-dependent) lets the evaporation physics
     # determine the actual moisture flux based on the q_sat(SST) - q deficit.
     #
@@ -91,8 +91,7 @@ def advect_moisture_from_ocean(
     # humidity in the marine BL is set by air temperature. This allows evaporative
     # cooling to work: hot SST → large q_sat(SST) - q_air deficit → strong evaporation
     # → cooling. If we set q = f(SST), this feedback breaks.
-    rh_ocean = 0.78  # Fixed marine BL relative humidity
-    q_ocean = rh_ocean * q_sat
+    q_ocean = RH_OCEAN_SOURCE * q_sat
 
     # Initialize: ocean = source q, land = 0
     q = np.where(ocean_mask, q_ocean, 0.0)

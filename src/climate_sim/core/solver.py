@@ -24,6 +24,7 @@ from climate_sim.physics.clouds import (
 )
 from climate_sim.core.math_core import compute_divergence
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
+from climate_sim.physics.diffusion import DiffusionOperator
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeModel
 from climate_sim.core.timing import time_block, get_profiler, reset_profiler
 from climate_sim.core.math_core import (
@@ -105,6 +106,7 @@ def monthly_step(
     ocean_advection_enabled: bool = True,
     latent_heat_model: "LatentHeatExchangeModel | None" = None,
     advection_operator: "AdvectionOperator | None" = None,
+    humidity_diffusion_operator: "DiffusionOperator | None" = None,
 ) -> ModelState:
     """Advance the column temperature one implicit backward-Euler step."""
     with time_block("monthly_step"):
@@ -465,12 +467,14 @@ def monthly_step(
 
                         if include_implicit_humidity:
                             # Build 4×4 block Jacobian including humidity
-                            # Humidity block: I - dt * (dE/dq/M - dP/dq/M + advection_matrix)
+                            # Humidity block: I - dt * (dE/dq/M - dP/dq/M + advection_matrix + diffusion_matrix)
                             humidity_block = identity.copy()
                             if linearization.humidity_diag is not None:
                                 humidity_block -= dt_seconds * sparse.diags(linearization.humidity_diag.ravel(), format="csc")
                             if linearization.humidity_advection_matrix is not None and linearization.humidity_advection_matrix.nnz > 0:
                                 humidity_block -= dt_seconds * linearization.humidity_advection_matrix
+                            if linearization.humidity_diffusion_matrix is not None and linearization.humidity_diffusion_matrix.nnz > 0:
+                                humidity_block -= dt_seconds * linearization.humidity_diffusion_matrix
 
                             # Temperature-humidity coupling (dR_T/dq)
                             if linearization.temp_humidity_coupling is not None:
@@ -545,7 +549,11 @@ def monthly_step(
                         # Use flux-form advection for humidity conservation: -∇·(uq)
                         advection_tendency = (advection_operator.flux_tendency(lagged_humidity, wind_u_q, wind_v_q, dt=dt_seconds)
                                               if advection_operator is not None else np.zeros_like(lagged_humidity))
-                        humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency
+                        # Humidity diffusion for turbulent mixing (stabilizes implicit solver)
+                        diffusion_tendency = (humidity_diffusion_operator.tendency(lagged_humidity)
+                                              if humidity_diffusion_operator is not None and humidity_diffusion_operator.enabled
+                                              else np.zeros_like(lagged_humidity))
+                        humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency + diffusion_tendency
 
                         # Humidity residual: q_new - q_old - dt * tendency
                         start_humidity = state.humidity_field if state.humidity_field is not None else lagged_humidity
@@ -630,7 +638,6 @@ def monthly_step(
                 if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
                     break
 
-
         # Return a state that is internally consistent with the converged temperature.
         final_temp = np.maximum(temp_next, temperature_floor)
         nlayers_final = final_temp.shape[0]
@@ -660,6 +667,14 @@ def monthly_step(
                 itcz_rad=current_itcz_init,
                 atmosphere_temperature=t_atm,
             )
+
+        # Humidity is evolved in the implicit Newton solver with diffusion for stability.
+        # Apply final cap to ensure humidity stays below saturation
+        if lagged_humidity is not None:
+            t_for_cap = final_temp[1] if nlayers_final == 3 else final_temp[0]
+            q_sat = compute_saturation_specific_humidity(t_for_cap)
+            lagged_humidity = np.minimum(lagged_humidity, q_sat)
+            lagged_humidity = np.maximum(lagged_humidity, 1e-6)
 
         # Compute final precipitation from converged humidity using unified cloud physics
         # This ensures precipitation is consistent with cloud coverage
@@ -810,6 +825,7 @@ def evolve_year(
     ocean_advection_enabled: bool = True,
     latent_heat_model: LatentHeatExchangeModel | None = None,
     advection_operator: AdvectionOperator | None = None,
+    humidity_diffusion_operator: DiffusionOperator | None = None,
 ) -> list[ModelState]:
     """Propagate the state through 12 implicit steps."""
     states: list[ModelState] = []
@@ -841,6 +857,7 @@ def evolve_year(
                 ocean_advection_enabled=ocean_advection_enabled,
                 latent_heat_model=latent_heat_model,
                 advection_operator=advection_operator,
+                humidity_diffusion_operator=humidity_diffusion_operator,
             )
             states.append(state)
         return states
@@ -896,6 +913,7 @@ def find_periodic_climate_cycle(
     ocean_advection_enabled: bool = True,
     latent_heat_model: LatentHeatExchangeModel | None = None,
     advection_operator: AdvectionOperator | None = None,
+    humidity_diffusion_operator: DiffusionOperator | None = None,
 ) -> list[ModelState]:
     """Solve for the periodic annual climate cycle using Anderson acceleration.
 
@@ -948,6 +966,7 @@ def find_periodic_climate_cycle(
                     ocean_advection_enabled=ocean_advection_enabled,
                     latent_heat_model=latent_heat_model,
                     advection_operator=advection_operator,
+                    humidity_diffusion_operator=humidity_diffusion_operator,
                 )
 
                 advanced = advanced_states[-1]
@@ -1185,6 +1204,10 @@ def solve_periodic_climate(
     with time_block("build_operators"):
         operators = build_model_operators(resolution_deg, model_config)
 
+    # Use same diffusion operator for humidity as atmosphere (Lewis number ≈ 1)
+    # Turbulent eddies transport both heat and moisture equally
+    humidity_diffusion_op = operators.diffusion_operator.atmosphere if operators.latent_heat_cfg.enabled else None
+
     # Build RHS functions from operators
     with time_block("build_rhs"):
         rhs_inputs = RhsBuildInputs(
@@ -1203,6 +1226,7 @@ def solve_periodic_climate(
             lat2d=operators.lat2d,
             ocean_advection_cfg=operators.ocean_advection_cfg,
             vertical_motion_cfg=operators.vertical_motion_cfg,
+            humidity_diffusion_operator=humidity_diffusion_op,
         )
         rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
 
@@ -1240,6 +1264,7 @@ def solve_periodic_climate(
 
     # Solve for periodic cycle
     ocean_advection_enabled = operators.ocean_advection_cfg.enabled
+
     monthly_states = find_periodic_climate_cycle(
         initial_state=initial_state,
         monthly_insolation=operators.monthly_insolation,
@@ -1252,6 +1277,7 @@ def solve_periodic_climate(
         ocean_advection_enabled=ocean_advection_enabled,
         latent_heat_model=latent_heat_model,
         advection_operator=operators.advection_operator,
+        humidity_diffusion_operator=humidity_diffusion_op,
     )
 
     # Update wind fields if wind model is enabled

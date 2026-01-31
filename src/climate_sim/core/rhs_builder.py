@@ -16,7 +16,7 @@ from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
-from climate_sim.physics.diffusion import LayeredDiffusionOperator
+from climate_sim.physics.diffusion import LayeredDiffusionOperator, DiffusionOperator
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.vertical_motion import VerticalMotionConfig, compute_vertical_motion_tendency, compute_vertical_motion_tendencies
 from climate_sim.physics.precipitation import compute_precipitation_jacobian
@@ -48,6 +48,7 @@ class Linearization:
     solver_fingerprint: str | None = None
     # Humidity Jacobian components (for prognostic humidity in Newton solver)
     humidity_advection_matrix: sparse.csc_matrix | None = None  # -V·∇q operator
+    humidity_diffusion_matrix: sparse.csc_matrix | None = None  # Humidity diffusion operator
     humidity_diag: np.ndarray | None = None  # dE/dq - dP/dq diagonal
     humidity_temp_coupling: tuple[np.ndarray, ...] | None = None  # dR_q/dT terms (dR_q/dTsfc, dR_q/dTbl, dR_q/dTatm)
     temp_humidity_coupling: tuple[np.ndarray, ...] | None = None  # dR_T/dq terms (dR_Tsfc/dq, dR_Tbl/dq, dR_Tatm/dq)
@@ -75,6 +76,7 @@ class RhsBuildInputs:
     lat2d: FloatArray
     ocean_advection_cfg: OceanAdvectionConfig | None = None
     vertical_motion_cfg: VerticalMotionConfig | None = None
+    humidity_diffusion_operator: DiffusionOperator | None = None
 
 def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
     """Build RHS and Jacobian functions from physics configuration.
@@ -657,9 +659,21 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             # Humidity Jacobian components (for prognostic humidity in Newton solver)
             # =========================================================================
             humidity_advection_matrix = None
+            humidity_diffusion_matrix = None
             humidity_diag = None
             humidity_temp_coupling = None
             temp_humidity_coupling = None
+
+            # Build humidity diffusion matrix if operator is provided
+            # Use the full matrix (not just off-diagonal) for proper Jacobian
+            if inputs.humidity_diffusion_operator is not None and inputs.humidity_diffusion_operator.enabled:
+                full_matrix = inputs.humidity_diffusion_operator.matrix
+                if full_matrix is not None:
+                    humidity_diffusion_matrix = (
+                        full_matrix
+                        if sparse.isspmatrix_csc(full_matrix)
+                        else full_matrix.tocsc()
+                    )
 
             # Physical constants for humidity Jacobian
             L_v = LATENT_HEAT_VAPORIZATION_J_KG
@@ -773,6 +787,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 boundary_layer_diffusion_matrix=boundary_layer_matrix,
                 boundary_layer_advection_matrix=boundary_layer_advection_matrix,
                 humidity_advection_matrix=humidity_advection_matrix,
+                humidity_diffusion_matrix=humidity_diffusion_matrix,
                 humidity_diag=humidity_diag,
                 humidity_temp_coupling=humidity_temp_coupling,
                 temp_humidity_coupling=temp_humidity_coupling,
