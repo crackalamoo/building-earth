@@ -1,91 +1,96 @@
 # Climate Simulator
 
-I’m developing a real-time, visually beautiful, educational climate simulator that explains the “why” behind local climate patterns and future warming.
+A real-time, visually beautiful, educational climate simulator that explains the "why" behind local climate patterns.
 
-The concept:
-- A 2-D monthly energy-balance model (1.0° global grid).
-- Light physics: radiative balance, meridional diffusion, water-vapor and ice feedbacks, simple orographic/lapse effects. Everything based on first principles.
-- Eventually, wind and precipitation diagnostics (thermal-wind scaling, Clausius-Clapeyron moisture).
-- Backend-authoritative (Python + SciPy/NumPy) for 1° tiles.
-- Frontend: Three.js for animation; LLM layer for “natural-language explanation” of local results.
+**The emotional core**: You live inside a machine made of sunlight, water, and wind. It took 4 billion years to tune itself. This app shows you how it works — and what you're part of.
 
-The goal is an app that’s physically honest, first-principles, and emotionally engaging — a small masterpiece of climate storytelling.
+## Quick reference
+
+| Task | Command |
+|------|---------|
+| Setup | `uv sync` |
+| Run simulation | `uv run python backend/main.py --resolution 5 --headless` |
+| Evaluate vs NOAA | `uv run python backend/eval.py --cache --headless --resolution 5` |
+| Export for frontend | `uv run python backend/export_frontend_data.py --cache --resolution 5 --interpolate` |
+
+## Vision
+
+The goal is wonder combined with understanding: make people *feel* why climate works the way it does, not just see data on a globe.
+
+**What we're building**:
+- A 2-D monthly energy-balance model (1°-5° global grid)
+- First-principles physics: radiation, diffusion, humidity, clouds, wind, ocean currents
+- Backend-authoritative (Python + NumPy/SciPy)
+- Frontend: Three.js globe with layered visualization
+- LLM layer for natural-language "why?" explanations of any location
+
+**What we're NOT building**:
+- A research-grade GCM (we sacrifice some accuracy for clarity)
+- A data visualization tool (we tell stories, not just show numbers)
+- A doom-and-gloom climate warning (we inspire curiosity first)
 
 ## Repository tour
-- `src/climate_sim/core/`: grid generation, solver infrastructure, and shared numerical utilities. Includes:
-  - `operators.py`: builds spatial operators (diffusion, advection, wind) and grids from configuration
-  - `rhs_builder.py`: assembles physics tendencies into right-hand-side functions
-  - `solver.py`: core numerical algorithms (Newton solver, Anderson acceleration, timestep evolution)
-- `src/climate_sim/data/`: static datasets, constants, and loaders for elevation and calendar information.
-- `src/climate_sim/physics/`: parameterization modules for radiation, diffusion, advection, heat exchange, and related processes.
-- `src/climate_sim/runtime/`: command-line plumbing shared across entry points.
-- `src/climate_sim/plotting.py`: rendering helpers for global temperature and diagnostic plots.
-- **Entry points**
-   - `src/main.py`: interactive visualization driver for a single model configuration.
-   - `src/eval.py`: compares simulation results to ground truth data.
-   - `src/scenario_compare.py`: for contrasting physics toggles and producing anomaly outputs.
 
-When testing, you should run entry points with the `--headless` flag and `--resolution 5` to avoid getting stuck on plotting or taking too long to compute.
+### Backend (`backend/`)
+- `climate_sim/core/`: solver infrastructure
+  - `operators.py`: builds spatial operators (diffusion, advection, wind) from config
+  - `rhs_builder.py`: assembles physics tendencies into RHS functions
+  - `solver.py`: Newton solver with Anderson acceleration for periodic annual cycle
+  - `postprocess.py`: extracts output layers from solver state
+- `climate_sim/data/`: static datasets, constants, elevation, land mask
+- `climate_sim/physics/`: parameterization modules (see Physics Status below)
+- `climate_sim/runtime/`: CLI plumbing and config dataclasses
+- **Entry points** (run from project root):
+  - `backend/main.py`: run simulation, save to `data/main.npz`
+  - `backend/eval.py`: compare against NOAA climatology
+  - `backend/export_frontend_data.py`: export JSON for frontend
 
-### Core architecture
+### Frontend (`frontend/`)
+- Svelte + Three.js globe visualization
+- `src/App.svelte`: main app with month animation controls
+- `src/lib/Globe.svelte`: Three.js globe with temperature coloring
+- `src/lib/colormap.ts`: temperature-to-color mapping
 
-The solver pipeline has three clear stages:
+When testing, run from project root with `--headless --resolution 5` to avoid plotting delays.
 
-1. **Operator construction** (`operators.py`):
-   - Takes `ModelConfig` as input
-   - Builds grids, masks, and all spatial operators (diffusion, advection, wind)
-   - Returns `ModelOperators` dataclass containing everything needed for physics
+### Solver architecture
 
-2. **Physics assembly** (`rhs_builder.py`):
-   - Takes `ModelOperators` as input
-   - Combines individual physics operators into complete RHS tendency functions
-   - Returns functions: `rhs(state) -> tendencies` and `rhs_derivative(state) -> Jacobian`
+The solver finds a periodic annual cycle (12 monthly states that repeat year-to-year):
 
-3. **Numerical solver** (`solver.py`):
-   - Takes RHS functions as input
-   - Executes Newton iterations for monthly timesteps
-   - Uses Anderson acceleration to find the periodic annual cycle
-   - Main entry point: `solve_periodic_climate(resolution, config)`
+1. **Operator construction** (`operators.py`): config → grids, masks, spatial operators
+2. **Physics assembly** (`rhs_builder.py`): operators → RHS tendency functions + Jacobian
+3. **Newton solver** (`solver.py`): iterates each month to steady state, uses Anderson acceleration across months
 
-Also of note: `src/climate_sim/data/landmask.py` computes which cells are land vs water, including heat capacities in each case.
+Entry point: `solve_periodic_climate(resolution_deg, model_config, return_layer_map=True)`
 
-The main goal at the current stage of development is to extend this with new models while maintaining good performance.
+### Physics modules
 
-## Local development workflow
-1. **Install dependencies**
-Use [uv](https://docs.astral.sh/uv/) (lockfile already checked in)
-```bash
-uv sync
-```
-2. **Run commands via uv** (keeps dependencies isolated):
-- Launch the primary CLI with defaults:
-```bash
-uv run python -m main
-```
-- Compare scenarios (example toggling diffusion):
-```bash
-uv run python -m scenario_compare --no-base-diffusion
-```
-3. **Execute tests**:
-```bash
-uv run pytest
-```
+Located in `climate_sim/physics/`. Each module has a config dataclass and implements `tendency()` for the solver. Key modules: `radiation.py`, `diffusion.py`, `humidity.py`, `clouds.py`, `snow_albedo.py`, `sensible_heat_exchange.py`, `latent_heat_exchange.py`, `atmosphere/wind.py`, `atmosphere/advection.py`, `ocean_currents.py`.
 
-In general, when iterating, use a larger resolution (like 5 degrees) for local tests to keep runtime fast.
+Run `backend/eval.py` to check current model performance against NOAA climatology.
+
+## Development notes
+
+Use `--resolution 5` for fast iteration, `--resolution 1` for production quality.
 
 ## Coding guidelines
-- **Type hints everywhere**: all public functions and methods include precise type annotations.
-- **Dataclass configs**: keep model configuration inputs grouped into frozen dataclasses (`RadiationConfig`, `DiffusionConfig`, etc.) and thread them through the solver. Extend these objects instead of proliferating kwargs.
-- **Vectorized math**: the solver assumes array-oriented operations. Avoid Python loops over grid points; leverage broadcasting and `numpy` utilities.
 
-## Adding new physics operators
+- **Type hints everywhere**: precise annotations on all public functions
+- **Dataclass configs**: group parameters in frozen dataclasses, extend rather than add kwargs
+- **Vectorized math**: no Python loops over grid points; use broadcasting and NumPy
 
-New physics processes follow a standard pipeline: create the physics module in `src/climate_sim/physics/` with a config dataclass and operator class implementing `tendency()` and optionally `linearised_tendency()` for the Jacobian. Add the config to `ModelConfig`, then wire it through: construct the operator in `operators.py` (adding to `ModelOperators`), pass it via `RhsBuildInputs` to `rhs_builder.py`, and integrate the tendencies into the `rhs()` and `rhs_derivative()` functions. The flow is: config → `build_model_operators()` → `ModelOperators` → `RhsBuildInputs` → `create_rhs_functions()` → solver.
+### Adding new physics
 
-## Testing philosophy
-- Expensive experiment scripts (`main.py`, `scenario_compare.py`) are exercised manually; keep them thin wrappers around tested utilities.
-- For now, focus on improving the core functionality rather than writing tests unless specifically instructed. The code is in an early stage, and still iterating too quickly for tests to be very useful.
+Pipeline: `physics/` module with config dataclass + operator class (`tendency()`, optionally `linearised_tendency()`) → add to `ModelConfig` → wire through `operators.py` → `rhs_builder.py` → solver picks it up.
 
-## Debugging workflow
-- **Run simulations via scripts**: Prefer running scripts such as `uv run python src/main.py --headless --resolution 5` and analyzing the resulting `data/main.npz` file, rather than running the simulation directly in Python. The scripts handle setup correctly and cache results.
-- **Physics parameters should match observations**: When adjusting physical constants (pressure anomalies, diffusivities, etc.), first establish what the correct value should be based on correct physics. Don't tune parameters to fit model output on a particular paramter to observed data - that masks underlying bugs.
+### Debugging physics
+
+- Run simulations via scripts, analyze `data/main.npz`
+- Physics parameters should match observations from first principles — don't tune to fit output
+- Use `backend/eval.py` to check RMSE/bias/correlation against NOAA
+
+## Visualization design philosophy
+
+The story we're telling is not "here's climate data" but rather: "Here's the machine you live inside."
+
+Every design choice should serve **wonder at the system** + **understanding of the mechanism**.
