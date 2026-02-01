@@ -41,24 +41,46 @@ STOMMEL_FRICTION = 5.0e-6  # 1/s, Rayleigh friction coefficient
 EKMAN_DEPTH = 50.0  # meters, typical Ekman layer depth
 MIN_EKMAN_LATITUDE_DEG = 3.0  # Exclude very near-equator (f→0 singularity)
 
+# Antarctic Circumpolar Current (ACC) parameters
+# At circumpolar latitudes, there are no land barriers so Sverdrup-Stommel breaks down.
+# Instead, use wind-friction balance: τ_x = ρ * r * H * u → u = τ_x / (ρ * r * H)
+ACC_FRICTION_COEFF = 5.0e-6  # 1/s, gives realistic ACC speeds (~0.2 m/s)
+
+# Equatorial current parameters
+# At equatorial latitudes (|lat| < 5°), Coriolis is negligible so Sverdrup breaks down.
+# Use wind-friction balance like ACC: u = τ_x / (ρ * r * H)
+# Trade winds are easterly (τ_x < 0), giving westward South/North Equatorial Currents.
+EQUATORIAL_FRICTION_COEFF = 1.0e-5  # 1/s, higher friction due to strong vertical mixing
+EQUATORIAL_MIXED_LAYER_DEPTH = 50.0  # meters, shallower than mid-latitude
+
 
 def compute_beta(lat_deg: np.ndarray) -> np.ndarray:
-    """Compute the meridional gradient of the Coriolis parameter.
+    """Compute β = df/dy = (2Ω/R) cos(lat), the meridional Coriolis gradient."""
+    return (2.0 * OMEGA / R_EARTH_METERS) * np.cos(np.deg2rad(lat_deg))
 
-    β = df/dy = (2Ω/R) cos(lat)
 
-    Parameters
-    ----------
-    lat_deg : np.ndarray
-        Latitude in degrees.
+def compute_coriolis_parameter(lat_deg: np.ndarray) -> np.ndarray:
+    """Compute Coriolis parameter f = 2Ω sin(lat)."""
+    return 2.0 * OMEGA * np.sin(np.deg2rad(lat_deg))
 
-    Returns
-    -------
-    np.ndarray
-        Beta in 1/(m·s), same shape as input.
+
+def compute_wind_friction_velocity(
+    tau_x: np.ndarray,
+    tau_y: np.ndarray,
+    ocean_mask: np.ndarray,
+    friction_coeff: float,
+    layer_depth: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute velocity from wind-friction balance: τ = ρ * r * H * u.
+
+    Used for circumpolar (ACC) and equatorial currents where Sverdrup breaks down.
     """
-    lat_rad = np.deg2rad(lat_deg)
-    return (2.0 * OMEGA / R_EARTH_METERS) * np.cos(lat_rad)
+    u = tau_x / (RHO_WATER * friction_coeff * layer_depth)
+    v = tau_y / (RHO_WATER * friction_coeff * layer_depth)
+    return (
+        np.where(ocean_mask, u, np.nan),
+        np.where(ocean_mask, v, np.nan),
+    )
 
 
 def compute_wind_stress(
@@ -67,30 +89,9 @@ def compute_wind_stress(
     rho_air: float = RHO_AIR,
     c_d: float = C_D,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute wind stress from 10m wind components.
-
-    Uses bulk formula: τ = ρ_air × C_D × |U| × U
-
-    Parameters
-    ----------
-    u : np.ndarray
-        Zonal wind component (m/s), shape (nlat, nlon).
-    v : np.ndarray
-        Meridional wind component (m/s), shape (nlat, nlon).
-    rho_air : float
-        Air density in kg/m³.
-    c_d : float
-        Drag coefficient (dimensionless).
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        (tau_x, tau_y) wind stress components in N/m² (Pa).
-    """
+    """Compute wind stress using bulk formula: τ = ρ_air × C_D × |U| × U."""
     wind_speed = np.sqrt(u**2 + v**2)
-    tau_x = rho_air * c_d * u * wind_speed
-    tau_y = rho_air * c_d * v * wind_speed
-    return tau_x, tau_y
+    return rho_air * c_d * u * wind_speed, rho_air * c_d * v * wind_speed
 
 
 def compute_wind_stress_curl(
@@ -99,56 +100,16 @@ def compute_wind_stress_curl(
     lat_deg: np.ndarray,
     resolution_deg: float,
 ) -> np.ndarray:
-    """Compute wind stress curl on a spherical grid.
-
-    curl(τ) = ∂τ_y/∂x - ∂τ_x/∂y + τ_y tan(lat)/R
-
-    Parameters
-    ----------
-    tau_x : np.ndarray
-        Zonal wind stress (N/m²), shape (nlat, nlon).
-    tau_y : np.ndarray
-        Meridional wind stress (N/m²), shape (nlat, nlon).
-    lat_deg : np.ndarray
-        Latitude centers (degrees), shape (nlat,).
-    resolution_deg : float
-        Grid resolution in degrees.
-
-    Returns
-    -------
-    np.ndarray
-        Wind stress curl (N/m³), shape (nlat, nlon).
-    """
-    # Grid spacing in meters
+    """Compute wind stress curl: curl(τ) = ∂τ_y/∂x - ∂τ_x/∂y + τ_y tan(lat)/R."""
+    lat_rad = np.deg2rad(lat_deg)
     dy = R_EARTH_METERS * np.deg2rad(resolution_deg)
-    dx = R_EARTH_METERS * np.deg2rad(resolution_deg) * np.cos(np.deg2rad(lat_deg))[:, np.newaxis]
+    dx = R_EARTH_METERS * np.deg2rad(resolution_deg) * np.cos(lat_rad)[:, np.newaxis]
 
-    # Spatial derivatives
     dtau_y_dx = np.gradient(tau_y, axis=1) / dx
     dtau_x_dy = np.gradient(tau_x, axis=0) / dy
-
-    # Spherical metric correction
-    lat_rad = np.deg2rad(lat_deg)[:, np.newaxis]
-    metric_term = tau_y * np.tan(lat_rad) / R_EARTH_METERS
+    metric_term = tau_y * np.tan(lat_rad)[:, np.newaxis] / R_EARTH_METERS
 
     return dtau_y_dx - dtau_x_dy + metric_term
-
-
-def compute_coriolis_parameter(lat_deg: np.ndarray) -> np.ndarray:
-    """Compute the Coriolis parameter f = 2Ω sin(lat).
-
-    Parameters
-    ----------
-    lat_deg : np.ndarray
-        Latitude in degrees.
-
-    Returns
-    -------
-    np.ndarray
-        Coriolis parameter f in 1/s, same shape as input.
-    """
-    lat_rad = np.deg2rad(lat_deg)
-    return 2.0 * OMEGA * np.sin(lat_rad)
 
 
 def compute_ekman_transport(
@@ -163,40 +124,15 @@ def compute_ekman_transport(
         M_x = τ_y / (ρf)
         M_y = -τ_x / (ρf)
 
-    Parameters
-    ----------
-    tau_x : np.ndarray
-        Zonal wind stress (N/m²), shape (nlat, nlon).
-    tau_y : np.ndarray
-        Meridional wind stress (N/m²), shape (nlat, nlon).
-    lat_deg : np.ndarray
-        Latitude centers (degrees), shape (nlat,).
-    rho_water : float
-        Seawater density in kg/m³.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        (M_x, M_y) Ekman mass transport in kg/(m·s) or equivalently m²/s.
-        M_x is zonal transport, M_y is meridional transport.
-        NaN where |lat| < MIN_EKMAN_LATITUDE_DEG.
     """
     # Compute Coriolis parameter
     f = compute_coriolis_parameter(lat_deg)[:, np.newaxis]
-
-    # Mask near-equator where f→0
     lat_2d = np.broadcast_to(lat_deg[:, np.newaxis], tau_x.shape)
     valid = np.abs(lat_2d) >= MIN_EKMAN_LATITUDE_DEG
-
-    # Safe division (avoid f=0)
     f_safe = np.where(valid, f, np.nan)
 
-    # Ekman transport: perpendicular to stress, to the right in NH
-    # M_x = τ_y / (ρf)
-    # M_y = -τ_x / (ρf)
     M_x = tau_y / (rho_water * f_safe)
     M_y = -tau_x / (rho_water * f_safe)
-
     return np.where(valid, M_x, np.nan), np.where(valid, M_y, np.nan)
 
 
@@ -206,32 +142,11 @@ def ekman_transport_to_velocity(
     ocean_mask: np.ndarray,
     ekman_depth: float = EKMAN_DEPTH,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert Ekman transport to velocity by distributing over Ekman depth.
-
-    Parameters
-    ----------
-    M_x : np.ndarray
-        Zonal Ekman transport (m²/s), shape (nlat, nlon).
-    M_y : np.ndarray
-        Meridional Ekman transport (m²/s), shape (nlat, nlon).
-    ocean_mask : np.ndarray
-        Boolean mask, True for ocean cells.
-    ekman_depth : float
-        Ekman layer depth (meters).
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        (u_ekman, v_ekman) Ekman velocities in m/s.
-    """
-    u_ekman = M_x / ekman_depth
-    v_ekman = M_y / ekman_depth
-
-    # Apply ocean mask
-    u_ekman = np.where(ocean_mask, u_ekman, np.nan)
-    v_ekman = np.where(ocean_mask, v_ekman, np.nan)
-
-    return u_ekman, v_ekman
+    """Convert Ekman transport to velocity by distributing over Ekman depth."""
+    return (
+        np.where(ocean_mask, M_x / ekman_depth, np.nan),
+        np.where(ocean_mask, M_y / ekman_depth, np.nan),
+    )
 
 
 def compute_sverdrup_transport(
@@ -239,37 +154,13 @@ def compute_sverdrup_transport(
     lat_deg: np.ndarray,
     rho_water: float = RHO_WATER,
 ) -> np.ndarray:
-    """Compute Sverdrup meridional transport from wind stress curl.
-
-    Sverdrup balance: β V = curl(τ) / ρ
-    Therefore: V = curl(τ) / (ρ β)
-
-    Parameters
-    ----------
-    curl_tau : np.ndarray
-        Wind stress curl (N/m³), shape (nlat, nlon).
-    lat_deg : np.ndarray
-        Latitude centers (degrees), shape (nlat,).
-    rho_water : float
-        Seawater density in kg/m³.
-
-    Returns
-    -------
-    np.ndarray
-        Meridional volume transport per unit width (m²/s), shape (nlat, nlon).
-        Positive = northward. NaN outside valid latitude range.
-    """
+    """Compute Sverdrup transport: V = curl(τ) / (ρβ). NaN outside valid latitude range."""
     beta = compute_beta(lat_deg)[:, np.newaxis]
-
-    # Mask invalid latitudes
     lat_2d = np.broadcast_to(lat_deg[:, np.newaxis], curl_tau.shape)
     valid = (np.abs(lat_2d) >= MIN_LATITUDE_DEG) & (np.abs(lat_2d) <= MAX_LATITUDE_DEG)
-
-    # Avoid division by zero (beta is small near poles, but we exclude those)
     beta_safe = np.where(valid, beta, np.nan)
 
-    V = curl_tau / (rho_water * beta_safe)
-    return np.where(valid, V, np.nan)
+    return np.where(valid, curl_tau / (rho_water * beta_safe), np.nan)
 
 
 def sverdrup_transport_to_velocity(
@@ -277,58 +168,19 @@ def sverdrup_transport_to_velocity(
     ocean_mask: np.ndarray,
     mixed_layer_depth: float = 100.0,
 ) -> np.ndarray:
-    """Convert Sverdrup transport to meridional velocity.
-
-    Parameters
-    ----------
-    V_transport : np.ndarray
-        Meridional transport per unit width (m²/s), shape (nlat, nlon).
-    ocean_mask : np.ndarray
-        Boolean mask, True for ocean cells.
-    mixed_layer_depth : float
-        Depth over which transport is distributed (meters).
-
-    Returns
-    -------
-    np.ndarray
-        Meridional velocity (m/s), positive northward.
-    """
-    v = V_transport / mixed_layer_depth
-    return np.where(ocean_mask, v, np.nan)
+    """Convert Sverdrup transport to meridional velocity."""
+    return np.where(ocean_mask, V_transport / mixed_layer_depth, np.nan)
 
 
-def find_basin_boundaries(
-    ocean_mask: np.ndarray,
-    lat_idx: int,
-) -> list[tuple[int, int]]:
-    """Find ocean basin boundaries at a given latitude.
-
-    Returns list of (west_idx, east_idx) pairs for each contiguous ocean segment.
-    Handles periodic longitude wrapping.
-
-    Parameters
-    ----------
-    ocean_mask : np.ndarray
-        Boolean mask, True for ocean cells, shape (nlat, nlon).
-    lat_idx : int
-        Latitude index to analyze.
-
-    Returns
-    -------
-    list[tuple[int, int]]
-        List of (west_boundary_idx, east_boundary_idx) for each basin.
-        Indices are in the range [0, nlon).
-    """
+def find_basin_boundaries(ocean_mask: np.ndarray, lat_idx: int) -> list[tuple[int, int]]:
+    """Find (west_idx, east_idx) pairs for each contiguous ocean segment at a latitude."""
     row = ocean_mask[lat_idx, :]
     nlon = len(row)
 
     if not np.any(row):
         return []
 
-    # Find transitions from land to ocean and ocean to land
-    # Extend row to handle wraparound
     row_ext = np.concatenate([row[-1:], row, row[:1]])
-
     basins = []
     in_ocean = False
     west_idx = 0
@@ -452,52 +304,17 @@ def compute_stommel_boundary(
     resolution_deg: float,
     friction: float = STOMMEL_FRICTION,
 ) -> np.ndarray:
-    """Add Stommel western boundary layer to close the gyre.
-
-    The boundary layer width is L = r/β, and the streamfunction decays
-    exponentially from the western boundary inward.
-
-    The total streamfunction is: ψ_total = ψ_interior + ψ_boundary
-    where ψ_boundary ensures mass conservation (no flow through coasts).
-
-    Parameters
-    ----------
-    psi_interior : np.ndarray
-        Interior (Sverdrup) streamfunction in Sv, shape (nlat, nlon).
-    ocean_mask : np.ndarray
-        Boolean mask, True for ocean cells.
-    lon_deg : np.ndarray
-        Longitude centers (degrees), shape (nlon,).
-    lat_deg : np.ndarray
-        Latitude centers (degrees), shape (nlat,).
-    resolution_deg : float
-        Grid resolution in degrees.
-    friction : float
-        Stommel friction coefficient r (1/s).
-
-    Returns
-    -------
-    np.ndarray
-        Total streamfunction with boundary layer closure (Sv).
-    """
+    """Add Stommel western boundary layer closure: ψ_boundary = -ψ_west * exp(-dist/L)."""
     nlat, nlon = psi_interior.shape
     psi_total = psi_interior.copy()
 
     for j in range(nlat):
         lat = lat_deg[j]
-
-        # Skip invalid latitudes
         if abs(lat) < MIN_LATITUDE_DEG or abs(lat) > MAX_LATITUDE_DEG:
             continue
 
-        # Compute boundary layer width L = r/β
-        beta = compute_beta(np.array([lat]))[0]
-        L = friction / beta  # meters
-
-        # Grid spacing at this latitude
+        L = friction / compute_beta(np.array([lat]))[0]
         dx = R_EARTH_METERS * np.deg2rad(resolution_deg) * np.cos(np.deg2rad(lat))
-
-        # Find basin boundaries
         basins = find_basin_boundaries(ocean_mask, j)
 
         for west_idx, east_idx in basins:
@@ -511,22 +328,16 @@ def compute_stommel_boundary(
             # So ψ_boundary = -ψ_west × exp(-distance/L)
 
             if west_idx <= east_idx:
-                # Normal basin
                 for i in range(west_idx, east_idx + 1):
-                    # Distance from western boundary (in meters)
-                    dist = (i - west_idx) * dx
-                    decay = np.exp(-dist / L)
+                    decay = np.exp(-(i - west_idx) * dx / L)
                     psi_total[j, i] = psi_interior[j, i] - psi_west * decay
             else:
-                # Wrapped basin
                 for i in range(west_idx, nlon):
-                    dist = (i - west_idx) * dx
-                    decay = np.exp(-dist / L)
+                    decay = np.exp(-(i - west_idx) * dx / L)
                     if not np.isnan(psi_interior[j, i]):
                         psi_total[j, i] = psi_interior[j, i] - psi_west * decay
                 for i in range(0, east_idx + 1):
-                    dist = (nlon - west_idx + i) * dx
-                    decay = np.exp(-dist / L)
+                    decay = np.exp(-(nlon - west_idx + i) * dx / L)
                     if not np.isnan(psi_interior[j, i]):
                         psi_total[j, i] = psi_interior[j, i] - psi_west * decay
 
@@ -541,46 +352,16 @@ def streamfunction_to_velocity(
     mixed_layer_depth: float = 100.0,
     friction: float = STOMMEL_FRICTION,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Derive velocity components from streamfunction.
+    """Derive velocity from streamfunction: u = -∂ψ/∂y, v = ∂ψ/∂x (scaled by depth).
 
-    u = -(1/R) ∂ψ/∂lat  (scaled by depth)
-    v = (1/(R cos lat)) ∂ψ/∂lon  (scaled by depth)
-
-    For western boundary currents, the velocity is computed using the true
-    Stommel boundary layer width (L = r/β) rather than the grid spacing,
-    to correctly represent the narrow, fast WBC at coarse resolution.
-
-    Parameters
-    ----------
-    psi : np.ndarray
-        Streamfunction in Sverdrups, shape (nlat, nlon).
-    ocean_mask : np.ndarray
-        Boolean mask, True for ocean cells.
-    lat_deg : np.ndarray
-        Latitude centers (degrees), shape (nlat,).
-    resolution_deg : float
-        Grid resolution in degrees.
-    mixed_layer_depth : float
-        Depth over which transport is distributed (meters).
-    friction : float
-        Stommel friction coefficient r (1/s), used for boundary layer width.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        (u, v) velocity components in m/s.
+    Western boundary currents are scaled by dx/L_stommel to correct for coarse resolution.
     """
-    nlat, nlon = psi.shape
-
-    # Convert from Sv to m³/s
+    nlat = psi.shape[0]
     psi_m3s = psi * 1.0e6
-
-    # Grid spacing
     dy = R_EARTH_METERS * np.deg2rad(resolution_deg)
     cos_lat = np.cos(np.deg2rad(lat_deg))[:, np.newaxis]
     dx = R_EARTH_METERS * np.deg2rad(resolution_deg) * cos_lat
 
-    # Compute derivatives (handle NaN by filling temporarily)
     psi_filled = np.where(np.isnan(psi_m3s), 0.0, psi_m3s)
 
     # ∂ψ/∂lat (axis 0) - for zonal velocity
@@ -590,7 +371,6 @@ def streamfunction_to_velocity(
     # Use central differences for interior
     dpsi_dx = np.gradient(psi_filled, axis=1) / dx
 
-    # Velocities from interior gradients
     u = -dpsi_dy / mixed_layer_depth
     v = dpsi_dx / mixed_layer_depth
 
@@ -607,37 +387,17 @@ def streamfunction_to_velocity(
         if abs(lat) < MIN_LATITUDE_DEG or abs(lat) > MAX_LATITUDE_DEG:
             continue
 
-        # Stommel boundary layer width at this latitude
-        beta = compute_beta(np.array([lat]))[0]
-        L_stommel = friction / beta  # meters
-
-        # Grid spacing at this latitude
+        L_stommel = friction / compute_beta(np.array([lat]))[0]
         dx_local = R_EARTH_METERS * np.deg2rad(resolution_deg) * np.cos(np.deg2rad(lat))
-
-        # Scale factor: how much faster the true WBC is than the grid-resolved one
         wbc_scale = dx_local / L_stommel
 
-        # Find western boundary cells (first ocean cell from west in each basin)
-        basins = find_basin_boundaries(ocean_mask, j)
-        for west_idx, east_idx in basins:
-            if not ocean_mask[j, west_idx]:
-                continue
+        for west_idx, _ in find_basin_boundaries(ocean_mask, j):
+            if ocean_mask[j, west_idx] and not np.isnan(v[j, west_idx]):
+                v[j, west_idx] *= wbc_scale
 
-            # Scale up the WBC velocity at the western boundary cell
-            if not np.isnan(v[j, west_idx]):
-                v[j, west_idx] = v[j, west_idx] * wbc_scale
-
-    # Apply ocean mask
-    u = np.where(ocean_mask, u, np.nan)
-    v = np.where(ocean_mask, v, np.nan)
-
-    # Apply latitude exclusion mask (Sverdrup theory invalid near equator/poles)
     lat_2d = np.broadcast_to(lat_deg[:, np.newaxis], u.shape)
-    valid_lat = (np.abs(lat_2d) >= MIN_LATITUDE_DEG) & (np.abs(lat_2d) <= MAX_LATITUDE_DEG)
-    u = np.where(valid_lat, u, np.nan)
-    v = np.where(valid_lat, v, np.nan)
-
-    return u, v
+    valid = ocean_mask & (np.abs(lat_2d) >= MIN_LATITUDE_DEG) & (np.abs(lat_2d) <= MAX_LATITUDE_DEG)
+    return np.where(valid, u, np.nan), np.where(valid, v, np.nan)
 
 
 def compute_ocean_currents(
@@ -649,94 +409,45 @@ def compute_ocean_currents(
     include_stommel: bool = True,
     include_ekman: bool = True,
 ) -> dict[str, np.ndarray]:
-    """Compute ocean currents from wind field using Sverdrup-Stommel balance + Ekman.
+    """Compute ocean currents from wind using Sverdrup-Stommel balance + Ekman.
 
-    Computes:
-    1. Wind stress and curl from 10m winds
-    2. Sverdrup interior transport: V = curl(τ) / (ρβ)
-    3. Interior streamfunction by integrating from east coast
-    4. Stommel western boundary layer closure (optional)
-    5. Velocity field derived from streamfunction
-    6. Ekman transport (optional): surface layer transport perpendicular to wind
-
-    The Ekman transport allows heat exchange between otherwise isolated gyres,
-    particularly enabling poleward heat transport at high latitudes where
-    polar easterlies drive poleward Ekman flow.
-
-    Parameters
-    ----------
-    u_wind : np.ndarray
-        Zonal 10m wind (m/s), shape (nlat, nlon).
-    v_wind : np.ndarray
-        Meridional 10m wind (m/s), shape (nlat, nlon).
-    lon2d : np.ndarray
-        Longitude grid (degrees), shape (nlat, nlon).
-    lat2d : np.ndarray
-        Latitude grid (degrees), shape (nlat, nlon).
-    land_mask : np.ndarray
-        Boolean mask, True for land cells, shape (nlat, nlon).
-    include_stommel : bool
-        If True, include Stommel western boundary closure.
-        If False, return interior Sverdrup solution only.
-    include_ekman : bool
-        If True, include Ekman surface layer transport.
-        This provides cross-gyre exchange that Sverdrup circulation lacks.
-
-    Returns
-    -------
-    dict[str, np.ndarray]
-        Dictionary containing:
-        - 'tau_x': Zonal wind stress (N/m²)
-        - 'tau_y': Meridional wind stress (N/m²)
-        - 'curl_tau': Wind stress curl (N/m³)
-        - 'sverdrup_transport': Sverdrup meridional transport (m²/s)
-        - 'psi_interior': Interior streamfunction (Sv)
-        - 'psi': Total streamfunction with boundary closure (Sv)
-        - 'u_gyre': Zonal gyre velocity from streamfunction (m/s)
-        - 'v_gyre': Meridional gyre velocity from streamfunction (m/s)
-        - 'u_ekman': Zonal Ekman velocity (m/s), if include_ekman=True
-        - 'v_ekman': Meridional Ekman velocity (m/s), if include_ekman=True
-        - 'u_velocity': Total zonal velocity (m/s), positive eastward
-        - 'v_velocity': Total meridional velocity (m/s), positive northward
+    Returns dict with tau_x/y, curl_tau, sverdrup_transport, psi_interior, psi,
+    u/v_gyre, u/v_ekman, and u/v_velocity (total).
     """
-    nlat, nlon = u_wind.shape
+    nlat = u_wind.shape[0]
     resolution_deg = 180.0 / nlat
-
-    # Extract 1D coordinate arrays
-    lat_deg = lat2d[:, 0]
-    lon_deg = lon2d[0, :]
-
-    # Ocean mask (invert land mask)
+    lat_deg, lon_deg = lat2d[:, 0], lon2d[0, :]
     ocean_mask = ~land_mask
 
-    # Compute wind stress
     tau_x, tau_y = compute_wind_stress(u_wind, v_wind)
-
-    # Compute wind stress curl
     curl_tau = compute_wind_stress_curl(tau_x, tau_y, lat_deg, resolution_deg)
-
-    # Compute Sverdrup transport (m²/s)
     sverdrup_transport = compute_sverdrup_transport(curl_tau, lat_deg)
-
-    # Integrate to get interior streamfunction
     psi_interior = compute_streamfunction(
         sverdrup_transport, ocean_mask, lon_deg, lat_deg, resolution_deg
     )
 
-    # Add Stommel boundary closure
     if include_stommel:
-        psi = compute_stommel_boundary(
-            psi_interior, ocean_mask, lon_deg, lat_deg, resolution_deg
-        )
+        psi = compute_stommel_boundary(psi_interior, ocean_mask, lon_deg, lat_deg, resolution_deg)
     else:
         psi = psi_interior
 
-    # Derive gyre velocity from streamfunction
-    u_gyre, v_gyre = streamfunction_to_velocity(
-        psi, ocean_mask, lat_deg, resolution_deg
-    )
+    u_gyre, v_gyre = streamfunction_to_velocity(psi, ocean_mask, lat_deg, resolution_deg)
 
-    # Compute Ekman transport and velocity
+    # Handle regions where Sverdrup breaks down using wind-friction balance
+    mixed_layer_depth = 100.0
+    for j in range(nlat):
+        row_mask = ocean_mask[j:j+1, :]
+        if np.all(ocean_mask[j, :]):  # Circumpolar (ACC)
+            u_gyre[j, :], _ = compute_wind_friction_velocity(
+                tau_x[j:j+1, :], tau_y[j:j+1, :], row_mask, ACC_FRICTION_COEFF, mixed_layer_depth
+            )
+            v_gyre[j, :] = 0.0
+        elif np.abs(lat_deg[j]) < MIN_LATITUDE_DEG:  # Equatorial
+            u_gyre[j, :], v_gyre[j, :] = compute_wind_friction_velocity(
+                tau_x[j:j+1, :], tau_y[j:j+1, :], row_mask,
+                EQUATORIAL_FRICTION_COEFF, EQUATORIAL_MIXED_LAYER_DEPTH
+            )
+
     if include_ekman:
         M_x, M_y = compute_ekman_transport(tau_x, tau_y, lat_deg)
         u_ekman, v_ekman = ekman_transport_to_velocity(M_x, M_y, ocean_mask)
@@ -744,17 +455,8 @@ def compute_ocean_currents(
         u_ekman = np.full_like(u_gyre, np.nan)
         v_ekman = np.full_like(v_gyre, np.nan)
 
-    # Combine gyre and Ekman velocities for total ocean current
-    # Use nan-safe addition: treat NaN as 0 for combination
-    u_gyre_safe = np.where(np.isnan(u_gyre), 0.0, u_gyre)
-    v_gyre_safe = np.where(np.isnan(v_gyre), 0.0, v_gyre)
-    u_ekman_safe = np.where(np.isnan(u_ekman), 0.0, u_ekman)
-    v_ekman_safe = np.where(np.isnan(v_ekman), 0.0, v_ekman)
-
-    u_velocity = u_gyre_safe + u_ekman_safe
-    v_velocity = v_gyre_safe + v_ekman_safe
-
-    # Re-apply ocean mask (land cells should be NaN)
+    u_velocity = np.nan_to_num(u_gyre, nan=0.0) + np.nan_to_num(u_ekman, nan=0.0)
+    v_velocity = np.nan_to_num(v_gyre, nan=0.0) + np.nan_to_num(v_ekman, nan=0.0)
     u_velocity = np.where(ocean_mask, u_velocity, np.nan)
     v_velocity = np.where(ocean_mask, v_velocity, np.nan)
 

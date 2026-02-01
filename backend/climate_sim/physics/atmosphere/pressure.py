@@ -4,7 +4,13 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.timing import time_block
-from climate_sim.data.constants import ATMOSPHERE_MASS, EARTH_SURFACE_AREA_M2, GAS_CONSTANT_J_KG_K, R_EARTH_METERS
+from climate_sim.data.constants import (
+    ATMOSPHERE_MASS,
+    EARTH_SURFACE_AREA_M2,
+    GAS_CONSTANT_J_KG_K,
+    GRAVITY_M_S2,
+    R_EARTH_METERS,
+)
 from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, compute_itcz_latitude
 
 # Base latitude of subtropical highs (radians) - relatively fixed at ~30°
@@ -14,16 +20,22 @@ LAT_SUBTROPICS_BASE = np.deg2rad(29.0)
 SUBTROPICS_ITCZ_COUPLING = 0.325
 
 # Hadley cell pressure anomalies (Pa)
-DP_ITCZ = -800.0  # Low pressure at equatorial trough (rising air)
+# These represent CIRCULATION-ONLY effects, separate from thermal pressure.
+# Thermal effects (dp = -β*dT) are computed separately from temperature anomalies.
+DP_ITCZ = -800.0  # Low pressure at ITCZ (rising air in Hadley cell)
 DP_SUBTROPICS = 800.0  # High pressure at subtropical highs (descending air)
-DP_SUBPOLAR = -300.0  # Low pressure at subpolar lows (~60 deg)
+DP_SUBPOLAR = -1500.0  # Low pressure at subpolar lows (must overcome thermal high from cold)
 DP_POLES = 0.0  # No explicit polar high (prevents excessive polar easterlies)
 
 # Width of pressure features (radians) - controls smoothness of transitions
 SIGMA_ITCZ = np.deg2rad(8.0)       # ITCZ trough width
 SIGMA_SUBTROPICS = np.deg2rad(12.0)  # Subtropical high width
-SIGMA_SUBPOLAR = np.deg2rad(10.0)   # Subpolar low width
+SIGMA_SUBPOLAR = np.deg2rad(8.0)    # Subpolar low width
 SIGMA_POLES = np.deg2rad(8.0)       # Polar high width
+
+# Thermal pressure coefficient: δp = -β δT
+# From ideal gas law and hydrostatic balance: β = R_air / g
+THERMAL_PRESSURE_COEFFICIENT = GAS_CONSTANT_J_KG_K / GRAVITY_M_S2  # ~29.3 Pa/K
 
 def _get_latitude_centers(nlat: int) -> np.ndarray:
     """Return latitude centers (deg) for a grid with nlat latitude points."""
@@ -223,8 +235,7 @@ def compute_pressure(
 
     dT = temp_smooth - area_weighted_mean(temp_smooth, weights)
 
-    beta = 30.0
-    dp_th = -beta * dT
+    dp_th = -THERMAL_PRESSURE_COEFFICIENT * dT
     dp_th = dp_th - area_weighted_mean(dp_th, weights)
 
     t_ref_lat = area_weighted_mean(temp_smooth, weights, axis=1)
