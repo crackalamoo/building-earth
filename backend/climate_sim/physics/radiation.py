@@ -418,14 +418,14 @@ def radiative_balance_rhs(
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
 
-    # Clear-sky emissivity: humidity-dependent with higher dry floor and lower
-    # saturation threshold for free atmosphere vs boundary layer
+    # Clear-sky emissivity: humidity-dependent with dry floor from CO2/O3
+    # and moist limit calibrated to Prata/Brutsaert at tropical humidity
     if humidity_q is not None:
         eps_clear = compute_humidity_emissivity(
             humidity_q,
-            eps_dry=0.55,
-            eps_moist=0.80,
-            q_reference=0.008,
+            eps_dry=0.52,
+            eps_moist=0.78,
+            q_reference=0.010,
         )
     else:
         eps_clear = config.emissivity_atmosphere
@@ -439,7 +439,7 @@ def radiative_balance_rhs(
     # Effective emission temperatures with up/down asymmetry due to lapse rate.
     # Clouds emit separately, so atmosphere uses eps_clear only.
     T_atm_up, T_atm_down = compute_effective_emission_temperatures(
-        atmosphere, eps_clear, ATMOSPHERE_LAYER_HEIGHT_M, emissivity_dry=0.55
+        atmosphere, eps_clear, ATMOSPHERE_LAYER_HEIGHT_M, emissivity_dry=0.52
     )
     atm_own_emission_up = eps_clear * sigma * np.power(T_atm_up, 4)
     atm_own_emission_down = eps_clear * sigma * np.power(T_atm_down, 4)
@@ -709,11 +709,12 @@ def radiative_balance_rhs(
         )
 
         # BL optical depth and emissivity: humidity-dependent
-        # τ_BL = 0.2 + 100 * q, then ε_BL = 1 - exp(-τ_BL)
+        # τ_BL = τ_CO2 + τ_H2O, where τ_CO2 ≈ 0.18 for 1km path, τ_H2O = 70 * q
+        # Calibrated to match Prata/Brutsaert clear-sky emissivity
         if humidity_q is not None:
             # Floor humidity to prevent overflow in exp when q is very negative
             q_safe = np.maximum(humidity_q, 0.0)
-            tau_bl = 0.2 + 100.0 * q_safe
+            tau_bl = 0.18 + 70.0 * q_safe
             eps_bl = 1.0 - np.exp(-tau_bl)
         else:
             eps_bl = BOUNDARY_LAYER_EMISSIVITY
@@ -961,9 +962,9 @@ def radiative_balance_rhs_temperature_derivative(
     if humidity_q is not None:
         eps_clear = compute_humidity_emissivity(
             humidity_q,
-            eps_dry=0.55,
-            eps_moist=0.80,
-            q_reference=0.008,
+            eps_dry=0.52,
+            eps_moist=0.78,
+            q_reference=0.010,
         )
     else:
         eps_clear = config.emissivity_atmosphere
@@ -975,7 +976,7 @@ def radiative_balance_rhs_temperature_derivative(
     ) / heat_capacity_field
 
     T_atm_up, T_atm_down = compute_effective_emission_temperatures(
-        atmosphere, eps_atm, ATMOSPHERE_LAYER_HEIGHT_M, emissivity_dry=0.55
+        atmosphere, eps_atm, ATMOSPHERE_LAYER_HEIGHT_M, emissivity_dry=0.52
     )
 
     # Clear fraction (must match RHS calculation)
@@ -1138,11 +1139,11 @@ def radiative_balance_rhs_temperature_derivative(
         boundary = _with_floor(temperature_K[1], floor)
 
         # BL optical depth and emissivity: humidity-dependent (must match RHS)
-        # τ_BL = 0.2 + 100 * q, then ε_BL = 1 - exp(-τ_BL)
+        # τ_BL = τ_CO2 + τ_H2O, where τ_CO2 ≈ 0.18 for 1km path, τ_H2O = 70 * q
         if humidity_q is not None:
             # Floor humidity to prevent overflow in exp when q is very negative
             q_safe = np.maximum(humidity_q, 0.0)
-            tau_bl = 0.2 + 100.0 * q_safe
+            tau_bl = 0.18 + 70.0 * q_safe
             eps_bl = 1.0 - np.exp(-tau_bl)
         else:
             eps_bl = BOUNDARY_LAYER_EMISSIVITY

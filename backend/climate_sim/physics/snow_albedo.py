@@ -1,4 +1,4 @@
-"""Snow albedo parameterisation utilities."""
+"""Snow and surface albedo parameterisation utilities."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from climate_sim.data.landmask import compute_ocean_albedo_direct, OCEAN_ALBEDO_DIFFUSE
+from climate_sim.physics.solar import solar_declination, monthly_midpoint_days
 
 ARCTIC_CIRCLE_LATITUDE_DEG = 66.5
 
@@ -242,6 +243,7 @@ class AlbedoModel:
         vegetation_fraction: np.ndarray | None = None,
         effective_mu: np.ndarray | None = None,
         cloud_fraction: np.ndarray | None = None,
+        ocean_albedo: np.ndarray | None = None,
     ) -> np.ndarray:
         """Return an albedo field with snow, sea ice, and vegetation adjustments applied."""
 
@@ -290,25 +292,21 @@ class AlbedoModel:
             snow_free_albedo = base_albedo
 
         # =====================================================================
-        # 1b. Apply zenith-angle correction to ocean albedo (Fresnel physics)
+        # 1b. Apply ocean albedo (properly flux-weighted)
         # =====================================================================
-        if effective_mu is not None:
-            # Compute direct-beam ocean albedo from zenith angle
-            ocean_albedo_direct = compute_ocean_albedo_direct(effective_mu)
-
-            # Under clouds, use diffuse albedo (constant ~0.06)
-            # Clear sky uses zenith-corrected direct albedo
+        if ocean_albedo is not None:
+            # Use precomputed flux-weighted ocean albedo
+            # Blend with diffuse albedo under clouds if cloud_fraction provided
             if cloud_fraction is not None:
-                ocean_albedo = (
+                effective_ocean_albedo = (
                     cloud_fraction * OCEAN_ALBEDO_DIFFUSE
-                    + (1.0 - cloud_fraction) * ocean_albedo_direct
+                    + (1.0 - cloud_fraction) * ocean_albedo
                 )
             else:
-                # No cloud info - use direct albedo (conservative, higher reflection)
-                ocean_albedo = ocean_albedo_direct
+                effective_ocean_albedo = ocean_albedo
 
             # Apply to ocean cells only (where not land)
-            snow_free_albedo = np.where(self.land_mask, snow_free_albedo, ocean_albedo)
+            snow_free_albedo = np.where(self.land_mask, snow_free_albedo, effective_ocean_albedo)
 
         # =====================================================================
         # 2. Compute snow fraction from temperature
@@ -427,3 +425,83 @@ class AlbedoModel:
         ceff = ceff.copy()
         ceff[in_band] += added_capacity
         return ceff
+
+
+def _compute_flux_weighted_ocean_albedo(
+    lat_rad: np.ndarray,
+    declination_rad: np.ndarray,
+    n_hour_angles: int = 48,
+) -> np.ndarray:
+    """Compute flux-weighted daily mean ocean albedo by integrating over the day.
+
+    The CESM ocean albedo formula is nonlinear in cos(zenith), so we cannot
+    simply apply it to the mean cos(zenith). Instead, we integrate:
+
+        albedo_mean = ∫ albedo(μ(h)) × μ(h) dh / ∫ μ(h) dh
+
+    where μ(h) = cos(zenith) at hour angle h, and the integrals are over
+    the sunlit portion of the day.
+    """
+    nlat = lat_rad.shape[0]
+    nmonth = declination_rad.shape[0]
+
+    # Precompute trig values
+    sin_lat = np.sin(lat_rad)[:, None]  # (nlat, 1)
+    cos_lat = np.cos(lat_rad)[:, None]
+    sin_dec = np.sin(declination_rad)[None, :]  # (1, nmonth)
+    cos_dec = np.cos(declination_rad)[None, :]
+
+    # Compute hour angle at sunrise/sunset for each lat/month
+    tan_lat = np.tan(lat_rad)[:, None]
+    tan_dec = np.tan(declination_rad)[None, :]
+    cos_H0 = np.clip(-tan_lat * tan_dec, -1.0, 1.0)
+    H0 = np.arccos(cos_H0)  # (nlat, nmonth)
+
+    # Handle polar night (H0 = 0) and polar day (H0 = π)
+    polar_night = cos_H0 >= 1.0
+    polar_day = cos_H0 <= -1.0
+    H0[polar_night] = 0.0
+    H0[polar_day] = np.pi
+
+    # Integrate over hour angles
+    result = np.zeros((nlat, nmonth))
+
+    for i_lat in range(nlat):
+        for i_month in range(nmonth):
+            h0 = H0[i_lat, i_month]
+            if h0 < 1e-6:
+                # Polar night: use diffuse albedo
+                result[i_lat, i_month] = OCEAN_ALBEDO_DIFFUSE
+                continue
+
+            # Integration points from -H0 to +H0
+            h = np.linspace(-h0, h0, n_hour_angles)
+
+            # cos(zenith) at each hour angle
+            mu = (
+                sin_lat[i_lat, 0] * sin_dec[0, i_month]
+                + cos_lat[i_lat, 0] * cos_dec[0, i_month] * np.cos(h)
+            )
+            mu = np.maximum(mu, 0.001)
+
+            # Albedo at each point
+            albedo = compute_ocean_albedo_direct(mu)
+
+            # Flux-weighted mean: ∫(α × μ)dh / ∫μ dh
+            flux_weighted_albedo = np.sum(albedo * mu) / np.sum(mu)
+            result[i_lat, i_month] = flux_weighted_albedo
+
+    return result
+
+
+def compute_monthly_flux_weighted_ocean_albedo(lat2d: np.ndarray) -> np.ndarray:
+    """Compute monthly flux-weighted mean ocean albedo for each latitude.
+
+    This properly accounts for the nonlinearity of the CESM ocean albedo
+    formula by integrating over the diurnal cycle rather than applying
+    the formula to the mean cos(zenith).
+    """
+    lat_rad = np.deg2rad(lat2d[:, 0])
+    declinations = solar_declination(monthly_midpoint_days())
+    albedo = _compute_flux_weighted_ocean_albedo(lat_rad, declinations)
+    return albedo.T  # (nmonth, nlat)
