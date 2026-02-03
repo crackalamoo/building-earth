@@ -19,7 +19,6 @@ from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfi
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.atmosphere.wind import WindConfig
-from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
 
@@ -100,7 +99,6 @@ def main() -> None:
         )
         advection_config = AdvectionConfig(enabled=args.advection)
         wind_config = WindConfig()
-        boundary_layer_config = BoundaryLayerConfig(enabled=args.boundary_layer)
         ocean_advection_config = OceanAdvectionConfig(enabled=args.ocean_advection)
         vertical_motion_config = VerticalMotionConfig(enabled=args.vertical_motion)
 
@@ -112,7 +110,6 @@ def main() -> None:
             snow=snow_config,
             sensible_heat=sensible_heat_config,
             latent_heat=latent_heat_config,
-            boundary_layer=boundary_layer_config,
             ocean_advection=ocean_advection_config,
             vertical_motion=vertical_motion_config,
             solar_constant=args.solar_constant,

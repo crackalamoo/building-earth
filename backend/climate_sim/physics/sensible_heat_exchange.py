@@ -213,8 +213,7 @@ class SensibleHeatExchangeModel:
 
         Returns
         -------
-        For 2-layer: (diag, cross) where diag is (2, nlat, nlon), cross is (2, 2, nlat, nlon)
-        For 3-layer: (diag, cross) where diag is (3, nlat, nlon), cross is (3, 3, nlat, nlon)
+        (diag, cross) where diag is (3, nlat, nlon), cross is (3, 3, nlat, nlon)
         """
         if not self.enabled:
             if boundary_layer_temperature_K is not None:

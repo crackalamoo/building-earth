@@ -20,7 +20,6 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
-from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.plotting import (
@@ -98,7 +97,6 @@ def main() -> None:
     )
     advection_config = AdvectionConfig(enabled=args.advection)
     wind_config = WindConfig()
-    boundary_layer_config = BoundaryLayerConfig(enabled=args.boundary_layer)
     ocean_advection_config = OceanAdvectionConfig(enabled=args.ocean_advection)
     vertical_motion_config = VerticalMotionConfig(enabled=args.vertical_motion)
 
@@ -110,7 +108,6 @@ def main() -> None:
         snow=snow_config,
         sensible_heat=sensible_heat_config,
         latent_heat=latent_heat_config,
-        boundary_layer=boundary_layer_config,
         ocean_advection=ocean_advection_config,
         vertical_motion=vertical_motion_config,
         solar_constant=args.solar_constant,
@@ -191,7 +188,7 @@ def main() -> None:
 
     # Wind fields at different levels:
     # - geostrophic: free atmosphere, no drag
-    # - ekman (wind_u/v/speed): boundary layer with drag (or atmosphere for 2-layer)
+    # - ekman (wind_u/v/speed): boundary layer with drag
     # - 10m: ekman wind scaled to 10m via log law
     wind_u_geo = layers.get("wind_u_geostrophic")
     wind_v_geo = layers.get("wind_v_geostrophic")
@@ -219,7 +216,7 @@ def main() -> None:
     # Get boundary layer temperature if available (3-layer model)
     boundary_layer_cycle = layers.get("boundary_layer")
 
-    # Compute ITCZ from boundary layer temp (3-layer) or surface temp (2-layer)
+    # Compute ITCZ from boundary layer temp
     # Using boundary layer avoids cold high-elevation surfaces (e.g., Tibet) biasing ITCZ
     slp_cycle_hpa: np.ndarray | None = None
     if Tatm_cycle_K is not None:
@@ -261,7 +258,7 @@ def main() -> None:
             lon_sort_idx = np.argsort(lon_wrapped)
             lon_sorted = lon_wrapped[lon_sort_idx]
 
-            # Ekman wind (boundary layer with drag, or atmosphere for 2-layer)
+            # Ekman wind (boundary layer with drag)
             wind_u_sorted = wind_u[:, :, lon_sort_idx]
             wind_v_sorted = wind_v[:, :, lon_sort_idx]
             wind_speed_sorted = wind_speed[:, :, lon_sort_idx]
@@ -481,7 +478,7 @@ def main() -> None:
     if humidity_q_cycle is not None and not args.headless:
             # Use stored humidity from solver state
             # Compute relative humidity from stored specific humidity
-            # Use boundary layer temperature if available (3-layer), fall back to surface (2-layer)
+            # Use boundary layer temperature if available, fall back to surface
             if boundary_layer_cycle is not None:
                 temp_for_humidity = boundary_layer_cycle + 273.15  # Convert to Kelvin
             else:

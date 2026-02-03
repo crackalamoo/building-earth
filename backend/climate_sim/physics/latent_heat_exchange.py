@@ -217,8 +217,7 @@ class LatentHeatExchangeModel:
 
         Returns
         -------
-        For 2-layer: (diag, cross) where diag is (2, nlat, nlon), cross is (2, 2, nlat, nlon)
-        For 3-layer: (diag, cross) where diag is (3, nlat, nlon), cross is (3, 3, nlat, nlon)
+        (diag, cross) where diag is (3, nlat, nlon), cross is (3, 3, nlat, nlon)
         """
         if not self.enabled:
             if boundary_layer_temperature_K is not None:
@@ -286,11 +285,8 @@ class LatentHeatExchangeModel:
         dq_sat_dT_atm = -0.622 * e_sat * (1.0 - (1.0 - 0.622) * e_sat / np.maximum(pressure_hPa, 1.0)) * dp_dT_atm_approx / np.power(denom, 2)
 
         # Compute near-surface air temperature and its derivatives
-        # For 2-layer: T_2m = T_surf
-        # For 3-layer: T_2m = T_boundary + lapse_correction (constant correction)
+        # T_2m = T_boundary + lapse_correction (constant correction)
         if boundary_layer_temperature_K is not None:
-            # 3-layer: T_2m doesn't depend on T_surf or T_atm directly, only T_boundary
-            # But we're computing latent heat between surface and boundary, so T_2m = T_boundary + constant
             boundary_temperature = np.asarray(boundary_layer_temperature_K, dtype=float)
             mid_layer_height_m = BOUNDARY_LAYER_HEIGHT_M / 2.0  # 375m
             height_difference_m = mid_layer_height_m - 2.0  # 373m
@@ -299,7 +295,6 @@ class LatentHeatExchangeModel:
             dT_2m_dT_surf = np.zeros_like(surface_temperature)
             dT_2m_dT_atm = np.zeros_like(surface_temperature)
         else:
-            # 2-layer: T_2m = T_surf
             near_surface_air_K = surface_temperature.copy()
             dT_2m_dT_surf = np.ones_like(surface_temperature)
             dT_2m_dT_atm = np.zeros_like(surface_temperature)
