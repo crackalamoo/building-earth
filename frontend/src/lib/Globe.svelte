@@ -291,32 +291,38 @@
     );
   }
 
-  function createLineFromCoords(coords: number[][], r: number, color: number): THREE.Line {
+  function createLineFromCoords(coords: number[][], r: number, darkColor: number, lightColor: number): THREE.Line[] {
     const points: THREE.Vector3[] = [];
     for (const [lon, lat] of coords) {
       points.push(latLonToVector3(lat, lon, r));
     }
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-    const material = new THREE.LineBasicMaterial({
-      color,
+    // Two passes: dark outline visible on bright/day side, light outline visible on dark/night side
+    const geom = new THREE.BufferGeometry().setFromPoints(points);
+    const dark = new THREE.Line(geom, new THREE.LineBasicMaterial({
+      color: darkColor,
       transparent: true,
-      opacity: 0.4,
-    });
-    return new THREE.Line(geometry, material);
+      opacity: 0.8,
+    }));
+    const light = new THREE.Line(geom.clone(), new THREE.LineBasicMaterial({
+      color: lightColor,
+      transparent: true,
+      opacity: 0.3,
+    }));
+    return [dark, light];
   }
 
-  function processMultiLineString(coords: number[][][], r: number, color: number): THREE.Line[] {
-    return coords.map(lineCoords => createLineFromCoords(lineCoords, r, color));
+  function processMultiLineString(coords: number[][][], r: number, darkColor: number, lightColor: number): THREE.Line[] {
+    return coords.flatMap(lineCoords => createLineFromCoords(lineCoords, r, darkColor, lightColor));
   }
 
-  function processPolygon(coords: number[][][], r: number, color: number): THREE.Line[] {
-    return coords.map(ring => createLineFromCoords(ring, r, color));
+  function processPolygon(coords: number[][][], r: number, darkColor: number, lightColor: number): THREE.Line[] {
+    return coords.flatMap(ring => createLineFromCoords(ring, r, darkColor, lightColor));
   }
 
-  function processMultiPolygon(coords: number[][][][], r: number, color: number): THREE.Line[] {
+  function processMultiPolygon(coords: number[][][][], r: number, darkColor: number, lightColor: number): THREE.Line[] {
     const lines: THREE.Line[] = [];
     for (const polygon of coords) {
-      lines.push(...processPolygon(polygon, r, color));
+      lines.push(...processPolygon(polygon, r, darkColor, lightColor));
     }
     return lines;
   }
@@ -333,7 +339,7 @@
       const mesh = topojson.mesh(topology, countries);
 
       if (mesh.type === 'MultiLineString') {
-        const lines = processMultiLineString(mesh.coordinates, radius, 0x666666);
+        const lines = processMultiLineString(mesh.coordinates, radius, 0x333333, 0xcccccc);
         lines.forEach(line => bordersGroup!.add(line));
       }
 
@@ -343,25 +349,17 @@
       const land = landTopology.objects.land as GeometryCollection;
       const landFeature = topojson.feature(landTopology, land);
 
-      if (landFeature.type === 'Feature') {
-        const geom = landFeature.geometry;
+      const features = 'features' in landFeature
+        ? landFeature.features
+        : [landFeature as GeoJSON.Feature];
+      for (const feature of features) {
+        const geom = feature.geometry;
         if (geom.type === 'Polygon') {
-          const lines = processPolygon(geom.coordinates, radius, 0x888888);
+          const lines = processPolygon(geom.coordinates, radius, 0x000000, 0xffffff);
           lines.forEach(line => bordersGroup!.add(line));
         } else if (geom.type === 'MultiPolygon') {
-          const lines = processMultiPolygon(geom.coordinates, radius, 0x888888);
+          const lines = processMultiPolygon(geom.coordinates, radius, 0x000000, 0xffffff);
           lines.forEach(line => bordersGroup!.add(line));
-        }
-      } else if (landFeature.type === 'FeatureCollection') {
-        for (const feature of landFeature.features) {
-          const geom = feature.geometry;
-          if (geom.type === 'Polygon') {
-            const lines = processPolygon(geom.coordinates, radius, 0x888888);
-            lines.forEach(line => bordersGroup!.add(line));
-          } else if (geom.type === 'MultiPolygon') {
-            const lines = processMultiPolygon(geom.coordinates, radius, 0x888888);
-            lines.forEach(line => bordersGroup!.add(line));
-          }
         }
       }
 
