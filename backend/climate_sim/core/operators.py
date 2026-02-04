@@ -83,7 +83,6 @@ class ModelOperators:
     radiation_config: RadiationConfig
     sensible_heat_cfg: SensibleHeatExchangeConfig
     latent_heat_cfg: LatentHeatExchangeConfig
-    boundary_layer_cfg: BoundaryLayerConfig
     ocean_advection_cfg: OceanAdvectionConfig
     vertical_motion_cfg: VerticalMotionConfig
 
@@ -141,17 +140,14 @@ def build_model_operators(
     snow_cfg = model_config.snow
     sensible_heat_cfg = model_config.sensible_heat
     latent_heat_cfg = model_config.latent_heat
-    boundary_layer_cfg = model_config.boundary_layer
+    boundary_layer_cfg = BoundaryLayerConfig()
     radiation_config = model_config.radiation
     diffusion_config = model_config.diffusion
     wind_config = model_config.wind
     advection_config = model_config.advection
 
-    # Update radiation config with boundary layer if enabled
-    if boundary_layer_cfg.enabled:
-        if not radiation_config.include_atmosphere:
-            raise ValueError("Boundary layer requires include_atmosphere=True in radiation config")
-
+    # Update radiation config with boundary layer heat capacities
+    if radiation_config.include_atmosphere:
         radiation_config = replace(
             radiation_config,
             atmosphere_heat_capacity=ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
@@ -189,17 +185,13 @@ def build_model_operators(
         topographic_elevation = np.zeros_like(lon2d, dtype=float)
 
     # Build diffusion operator
-    bl_heat_cap = None
-    if boundary_layer_cfg.enabled:
-        bl_heat_cap = radiation_config.boundary_layer_heat_capacity
-
     diffusion_operator = create_diffusion_operator(
         lon2d,
         lat2d,
         heat_capacity_field,
         land_mask=land_mask,
         atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
-        boundary_layer_heat_capacity=bl_heat_cap,
+        boundary_layer_heat_capacity=radiation_config.boundary_layer_heat_capacity if radiation_config.include_atmosphere else None,
         config=diffusion_config,
     )
 
@@ -275,7 +267,6 @@ def build_model_operators(
         radiation_config=radiation_config,
         sensible_heat_cfg=sensible_heat_cfg,
         latent_heat_cfg=latent_heat_cfg,
-        boundary_layer_cfg=boundary_layer_cfg,
         ocean_advection_cfg=model_config.ocean_advection,
         vertical_motion_cfg=model_config.vertical_motion,
     )

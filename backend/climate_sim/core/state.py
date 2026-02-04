@@ -36,8 +36,6 @@ def select_wind_temperature(temperature: np.ndarray) -> np.ndarray:
     nlayers = temperature.shape[0]
     if nlayers == 1:
         return temperature[0]
-    if nlayers == 2:
-        return temperature[1]  # Atmosphere layer
     if nlayers == 3:
         return temperature[2]  # Free atmosphere layer (not boundary layer)
     raise ValueError(f"Unsupported number of layers: {nlayers}")

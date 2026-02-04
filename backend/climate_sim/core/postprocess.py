@@ -53,19 +53,6 @@ def postprocess_periodic_cycle_results(
         # Single-layer (no atmosphere)
         monthly_surface_K = monthly_T
         layers_map = {"surface": monthly_surface_K - 273.15}
-    elif monthly_T.shape[1] == 2:
-        # Two-layer (surface + atmosphere)
-        monthly_surface_K = monthly_T[:, 0]
-        monthly_atmosphere_K = monthly_T[:, 1]
-        temperature_2m_c = compute_two_meter_temperature(
-            None,
-            monthly_surface_K,
-            topographic_elevation=topographic_elevation,
-        ) - 273.15
-        layers_map = {
-            "surface": monthly_surface_K - 273.15,
-            "atmosphere": monthly_atmosphere_K - 273.15,
-        }
     elif monthly_T.shape[1] == 3:
         # Three-layer (surface + boundary layer + atmosphere)
         monthly_surface_K = monthly_T[:, 0]
@@ -94,12 +81,11 @@ def postprocess_periodic_cycle_results(
     layers_map["albedo"] = np.array([state.albedo_field for state in monthly_states])
 
     # Extract wind fields from state
-    # For 3-layer: state.wind_field = geostrophic (free atmosphere), state.boundary_layer_wind_field = Ekman (BL)
-    # For 2-layer: state.wind_field = Ekman (atmosphere), state.boundary_layer_wind_field = None
+    # wind_field = geostrophic (free atmosphere), boundary_layer_wind_field = Ekman (BL)
     wind_fields_geostrophic = [state.wind_field for state in monthly_states]
     wind_fields_ekman = []
     for state in monthly_states:
-        # Use boundary layer wind if available (3-layer), otherwise use atmosphere wind (2-layer)
+        # Use boundary layer wind if available, otherwise fall back to atmosphere wind
         if state.boundary_layer_wind_field is not None:
             wind_fields_ekman.append(state.boundary_layer_wind_field)
         else:
@@ -115,7 +101,7 @@ def postprocess_periodic_cycle_results(
         layers_map["wind_speed_geostrophic"] = geostrophic_speed
 
     if all(wind is not None for wind in wind_fields_ekman):
-        # Ekman wind (boundary layer with drag, or atmosphere for 2-layer)
+        # Ekman wind (boundary layer with drag)
         ekman_u = np.stack([wind[0] for wind in wind_fields_ekman if wind is not None], axis=0)
         ekman_v = np.stack([wind[1] for wind in wind_fields_ekman if wind is not None], axis=0)
         ekman_speed = np.stack([wind[2] for wind in wind_fields_ekman if wind is not None], axis=0)
