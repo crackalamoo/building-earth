@@ -805,6 +805,16 @@ def radiative_balance_rhs(
         # Total outgoing longwave radiation (OLR) at TOA
         olr_total = emitted_toa + trans_atm * emitted_bl_up + trans_atm * trans_bl * emitted_surface
 
+        # Decompose atmosphere LW absorption by source:
+        # lw_absorbed_from_below absorbs from upwelling_lw = transmitted_surface_to_atm + emitted_bl_up
+        # The same absorption coefficients apply to both components, so decompose proportionally.
+        _upwelling_safe = np.where(upwelling_lw > 0, upwelling_lw, 1.0)
+        _surface_fraction = np.where(upwelling_lw > 0, transmitted_surface_to_atm / _upwelling_safe, 0.5)
+        absorbed_from_surface_atm = lw_absorbed_from_below * _surface_fraction
+        absorbed_from_boundary_atm = lw_absorbed_from_below * (1.0 - _surface_fraction)
+
+        absorbed_shortwave_atm_total = absorbed_shortwave_atm_upper + absorbed_shortwave_bl
+
         print("\n=== Radiation Diagnostics (W/m²) ===")
         print("\nLayer Temperatures (K):")
         print(f"  Surface:                         {area_weighted_mean(surface, cell_area_m2):7.2f}")
@@ -813,7 +823,7 @@ def radiative_balance_rhs(
         print("\nShortwave Fluxes:")
         print(f"Incoming solar (TOA):              {area_weighted_mean(insolation_W_m2, cell_area_m2):7.2f}")
         print(f"Reflected by atmosphere:           {area_weighted_mean(reflected_by_atm, cell_area_m2):7.2f}")
-        print(f"Absorbed by atmosphere (SW total): {area_weighted_mean(absorbed_shortwave_atm, cell_area_m2):7.2f}")
+        print(f"Absorbed by atmosphere (SW total): {area_weighted_mean(absorbed_shortwave_atm_total, cell_area_m2):7.2f}")
         print(f"  - absorbed by boundary layer:    {area_weighted_mean(absorbed_shortwave_bl, cell_area_m2):7.2f}")
         print(f"  - absorbed by free atmosphere:   {area_weighted_mean(absorbed_shortwave_atm_upper, cell_area_m2):7.2f}")
         print(f"SW reaching surface:               {area_weighted_mean(sw_down_surface, cell_area_m2):7.2f}")
@@ -834,7 +844,7 @@ def radiative_balance_rhs(
         print(f"  - atmosphere (LW):               {area_weighted_mean(absorbed_from_atm_bl, cell_area_m2):7.2f}")
         print("Atmosphere absorbs from:")
         print(f"  - surface emission (absorbed):   {area_weighted_mean(absorbed_from_surface_atm, cell_area_m2):7.2f}")
-        print(f"  - boundary layer emission:       {area_weighted_mean(absorbed_from_boundary_atm, weights=cell_area_m2):7.2f}")
+        print(f"  - boundary layer emission:       {area_weighted_mean(absorbed_from_boundary_atm, cell_area_m2):7.2f}")
         print("\nNet Radiation Balances:")
         print(f"Net surface radiation balance:     {area_weighted_mean(absorbed_shortwave_sfc + downward_longwave_to_surface - emitted_surface, cell_area_m2):7.2f}")
         print(f"Net boundary layer balance:        {area_weighted_mean(absorbed_shortwave_bl + absorbed_from_surface_bl + absorbed_from_atm_bl - emitted_bl_up - emitted_bl_down, cell_area_m2):7.2f}")

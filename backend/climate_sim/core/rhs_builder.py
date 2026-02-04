@@ -121,7 +121,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
     boundary_layer_diffusion_diag: np.ndarray | None = None
     boundary_layer_matrix = None
-    if inputs.diffusion_operator.boundary_layer is not None and inputs.diffusion_operator.boundary_layer.enabled:
+    if inputs.diffusion_operator.boundary_layer is not None:
         boundary_layer_diffusion_diag, boundary_layer_offdiag = (
             inputs.diffusion_operator.boundary_layer.linearised_tendency()
         )
@@ -270,7 +270,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 boundary_temperature = state.temperature[1]
                 atmosphere_temperature = state.temperature[2]
 
-                if inputs.diffusion_operator.boundary_layer is not None and inputs.diffusion_operator.boundary_layer.enabled:
+                if inputs.diffusion_operator.boundary_layer is not None:
                     radiative[1] += inputs.diffusion_operator.boundary_layer.tendency(boundary_temperature)
                 if inputs.diffusion_operator.atmosphere.enabled:
                     radiative[2] += inputs.diffusion_operator.atmosphere.tendency(atmosphere_temperature)
