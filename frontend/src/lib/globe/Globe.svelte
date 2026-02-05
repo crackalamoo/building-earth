@@ -149,7 +149,7 @@
     const colors = geometry.attributes.color;
     const surfaceData = ld.surface.data as Float32Array;
     const landMaskData = ld.land_mask.data as Uint8Array;
-    const vegData = ld.vegetation_fraction?.data as Float32Array | undefined;
+    const soilData = ld.soil_moisture?.data as Float32Array | undefined;
     const coarseLandMask = ld.land_mask_native?.data as Uint8Array | undefined;
 
     // High-res grid dimensions (from land_mask, 0.25deg)
@@ -168,21 +168,21 @@
         // Land mask: direct high-res lookup
         const isLand = landMaskData[dataLatIdx * hiNlon + j] === 1;
 
-        // Surface temp and vegetation: type-aware bilinear from low-res
+        // Surface temp and soil moisture: type-aware bilinear from low-res
         const surfaceTemp = sampleBilinear(
           surfaceData, lowNlat, lowNlon, monthOffset,
           dataLatIdx, j, hiNlat, hiNlon,
           isLand, coarseLandMask,
         );
-        const vegFrac = vegData
+        const soilMoisture = soilData
           ? sampleBilinear(
-              vegData, lowNlat, lowNlon, monthOffset,
+              soilData, lowNlat, lowNlon, monthOffset,
               dataLatIdx, j, hiNlat, hiNlon,
               isLand, coarseLandMask,
             )
           : 0;
 
-        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, vegFrac);
+        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture);
 
         for (let v = 0; v < 6; v++) {
           colors.setXYZ(idx, r, g, b);

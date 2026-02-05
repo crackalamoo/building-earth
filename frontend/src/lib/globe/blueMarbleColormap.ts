@@ -12,11 +12,11 @@
 const OCEAN_DEEP: [number, number, number] = [0.04, 0.10, 0.30];
 const OCEAN_SHALLOW: [number, number, number] = [0.06, 0.18, 0.42];
 
-// Land vegetation gradient
-const DESERT_TAN: [number, number, number] = [0.76, 0.65, 0.45];
-const SAVANNA: [number, number, number] = [0.55, 0.58, 0.28];
-const TEMPERATE_GREEN: [number, number, number] = [0.22, 0.48, 0.18];
-const TROPICAL_GREEN: [number, number, number] = [0.10, 0.38, 0.12];
+// Land soil-moisture gradient (dry → wet)
+const ARID_SAND: [number, number, number] = [0.82, 0.72, 0.50];
+const DRY_SCRUB: [number, number, number] = [0.62, 0.58, 0.32];
+const TEMPERATE_GREEN: [number, number, number] = [0.28, 0.50, 0.20];
+const LUSH_GREEN: [number, number, number] = [0.10, 0.40, 0.12];
 
 // Snow/ice colors
 const SEASONAL_SNOW: [number, number, number] = [0.88, 0.90, 0.92];
@@ -85,15 +85,15 @@ function iceSheetFraction(tempC: number): number {
 /**
  * Compute Blue Marble color for a single vertex.
  *
- * @param isLand      - true if land cell
+ * @param isLand       - true if land cell
  * @param surfaceTempC - surface temperature in Celsius (native 5deg)
- * @param vegFraction  - vegetation fraction 0-1 (native 5deg)
+ * @param soilMoisture - soil moisture 0-1 fraction of field capacity (native 5deg)
  * @returns [r, g, b] normalized 0-1
  */
 export function blueMarbleColor(
   isLand: boolean,
   surfaceTempC: number,
-  vegFraction: number,
+  soilMoisture: number,
 ): [number, number, number] {
   if (!isLand) {
     // ── Ocean ──
@@ -111,20 +111,23 @@ export function blueMarbleColor(
   }
 
   // ── Land ──
-  // Base color from vegetation fraction
+  // Base color from soil moisture (0 = bone dry → 1 = saturated)
   let baseColor: [number, number, number];
 
-  if (vegFraction < 0.15) {
-    // Desert/bare soil
-    baseColor = lerp3(DESERT_TAN, SAVANNA, vegFraction / 0.15);
-  } else if (vegFraction < 0.45) {
-    // Savanna to temperate
-    const t = (vegFraction - 0.15) / 0.30;
-    baseColor = lerp3(SAVANNA, TEMPERATE_GREEN, t);
+  if (soilMoisture < 0.1) {
+    // Arid desert (sandy tan)
+    baseColor = lerp3(ARID_SAND, DRY_SCRUB, soilMoisture / 0.1);
+  } else if (soilMoisture < 0.3) {
+    // Dry scrubland (muted yellow-brown)
+    const t = (soilMoisture - 0.1) / 0.2;
+    baseColor = lerp3(DRY_SCRUB, TEMPERATE_GREEN, t);
+  } else if (soilMoisture < 0.6) {
+    // Temperate grassland/soil (olive → green)
+    const t = (soilMoisture - 0.3) / 0.3;
+    baseColor = lerp3(TEMPERATE_GREEN, LUSH_GREEN, t);
   } else {
-    // Temperate to tropical
-    const t = clamp01((vegFraction - 0.45) / 0.50);
-    baseColor = lerp3(TEMPERATE_GREEN, TROPICAL_GREEN, t);
+    // Lush/wet (rich green)
+    baseColor = LUSH_GREEN;
   }
 
   // Snow overlay

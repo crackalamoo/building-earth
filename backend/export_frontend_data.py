@@ -128,6 +128,11 @@ def _write_binary_export(
         fields.append(("vegetation_fraction", native_layers["vegetation_fraction"], "float16"))
         print(f"  vegetation_fraction: {native_layers['vegetation_fraction'].shape}")
 
+    # soil_moisture: native resolution (drives Blue Marble land color)
+    if "soil_moisture" in native_layers:
+        fields.append(("soil_moisture", native_layers["soil_moisture"], "float16"))
+        print(f"  soil_moisture: {native_layers['soil_moisture'].shape}")
+
     # Wind fields: native resolution
     for wind_key in ("wind_u_10m", "wind_v_10m", "wind_speed_10m"):
         if wind_key in native_layers:

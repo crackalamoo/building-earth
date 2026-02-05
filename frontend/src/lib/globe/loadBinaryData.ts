@@ -30,6 +30,8 @@ export interface ClimateLayerData {
   land_mask_native?: FieldData;
   /** Native 5deg vegetation fraction [12, 36, 72] */
   vegetation_fraction?: FieldData;
+  /** Native 5deg soil moisture fraction [12, 36, 72] */
+  soil_moisture?: FieldData;
   /** Native 5deg wind fields [12, 36, 72] */
   wind_u_10m?: FieldData;
   wind_v_10m?: FieldData;
