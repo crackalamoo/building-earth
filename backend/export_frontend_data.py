@@ -1,4 +1,4 @@
-"""Export climate simulation data to JSON for the frontend visualization."""
+"""Export climate simulation data as binary for the frontend visualization."""
 
 import argparse
 import json
@@ -10,6 +10,7 @@ import numpy as np
 from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.core.interpolation import interpolate_layer_map
 from climate_sim.core.solver import solve_periodic_climate
+from climate_sim.data.landmask import compute_land_mask
 from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.runtime.config import ModelConfig
 from climate_sim.physics.radiation import RadiationConfig
@@ -29,7 +30,7 @@ load_dotenv()
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Export climate simulation data to JSON for frontend visualization."
+        description="Export climate simulation data as binary for frontend visualization."
     )
     parser.add_argument(
         "--cache",
@@ -41,7 +42,7 @@ def _parse_args() -> argparse.Namespace:
         "--output",
         type=str,
         default=None,
-        help="Output path for JSON file (default: frontend/public/main.json)",
+        help="Output directory (default: frontend/public/)",
     )
     add_common_model_arguments(
         parser,
@@ -50,21 +51,132 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _write_binary_export(
+    output_dir: Path,
+    layers: dict[str, np.ndarray],
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    interpolate: bool,
+) -> None:
+    """Write main.bin + main.manifest.json to output_dir."""
+
+    # Keep native-resolution copies before interpolation
+    native_layers = dict(layers)
+
+    # Interpolate temperature_2m if requested
+    if interpolate:
+        output_resolution = 0.25
+        print(f"Interpolating temperature fields to {output_resolution}° resolution...")
+
+        interp_layers: dict[str, np.ndarray] = {}
+        if "surface" in layers:
+            interp_layers["surface"] = layers["surface"]
+        if "temperature_2m" in layers:
+            interp_layers["temperature_2m"] = layers["temperature_2m"]
+
+        _, _, interpolated = interpolate_layer_map(
+            interp_layers,
+            lon2d,
+            lat2d,
+            output_resolution_deg=output_resolution,
+            apply_lapse_rate_to_2m=True,
+        )
+        print("Interpolation complete.")
+    else:
+        interpolated = {}
+
+    # Compute land_mask at native resolution
+    land_mask = compute_land_mask(lon2d, lat2d).astype(np.uint8)
+
+    # Assemble fields for export
+    # Each entry: (array, dtype_str) — dtype_str is 'float16' or 'uint8'
+    fields: list[tuple[str, np.ndarray, str]] = []
+
+    # temperature_2m: interpolated (0.25deg) or native
+    if "temperature_2m" in interpolated:
+        fields.append(("temperature_2m", interpolated["temperature_2m"], "float16"))
+        print(f"  temperature_2m: {interpolated['temperature_2m'].shape} (interpolated)")
+    elif "temperature_2m" in native_layers:
+        fields.append(("temperature_2m", native_layers["temperature_2m"], "float16"))
+        print(f"  temperature_2m: {native_layers['temperature_2m'].shape} (native)")
+    elif "surface" in native_layers:
+        fields.append(("temperature_2m", native_layers["surface"], "float16"))
+        print(f"  temperature_2m: {native_layers['surface'].shape} (from surface)")
+
+    # surface: always native resolution (for Blue Marble snow/ice detection)
+    if "surface" in native_layers:
+        fields.append(("surface", native_layers["surface"], "float16"))
+        print(f"  surface: {native_layers['surface'].shape}")
+
+    # land_mask: static, native resolution
+    fields.append(("land_mask", land_mask, "uint8"))
+    print(f"  land_mask: {land_mask.shape}")
+
+    # vegetation_fraction: native resolution
+    if "vegetation_fraction" in native_layers:
+        fields.append(("vegetation_fraction", native_layers["vegetation_fraction"], "float16"))
+        print(f"  vegetation_fraction: {native_layers['vegetation_fraction'].shape}")
+
+    # Wind fields: native resolution
+    for wind_key in ("wind_u_10m", "wind_v_10m", "wind_speed_10m"):
+        if wind_key in native_layers:
+            fields.append((wind_key, native_layers[wind_key], "float16"))
+            print(f"  {wind_key}: {native_layers[wind_key].shape}")
+
+    # Build binary blob and manifest
+    manifest: dict = {"fields": []}
+    blobs: list[bytes] = []
+    offset = 0
+
+    for name, arr, dtype_str in fields:
+        # Convert to target dtype
+        if dtype_str == "float16":
+            encoded = arr.astype(np.float16)
+        elif dtype_str == "uint8":
+            encoded = arr.astype(np.uint8)
+        else:
+            encoded = arr.astype(np.float32)
+
+        raw = encoded.tobytes()
+        manifest["fields"].append({
+            "name": name,
+            "shape": list(arr.shape),
+            "dtype": dtype_str,
+            "offset": offset,
+            "bytes": len(raw),
+        })
+        blobs.append(raw)
+        offset += len(raw)
+
+    # Write files
+    bin_path = output_dir / "main.bin"
+    manifest_path = output_dir / "main.manifest.json"
+
+    with open(bin_path, "wb") as f:
+        for blob in blobs:
+            f.write(blob)
+
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    bin_size = bin_path.stat().st_size / (1024 * 1024)
+    print(f"Wrote {bin_path} ({bin_size:.2f} MB)")
+    print(f"Wrote {manifest_path}")
+
+
 def main() -> None:
     args = _parse_args()
 
-    # Determine output path
+    # Determine output directory
     if args.output:
-        output_path = Path(args.output)
+        output_dir = Path(args.output)
     else:
-        # Default to frontend/public/main.json relative to this script
         script_dir = Path(__file__).parent
-        output_path = script_dir.parent / "frontend" / "public" / "main.json"
+        output_dir = script_dir.parent / "frontend" / "public"
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.cache:
-        # Load from cached npz file
         data_dir = os.getenv("DATA_DIR")
         if not data_dir:
             raise ValueError("DATA_DIR environment variable must be set to use --cache")
@@ -77,13 +189,10 @@ def main() -> None:
         print(f"Loading from cache: {cache_path}")
         with np.load(cache_path) as cached:
             layers = {k: cached[k] for k in cached}
-        # Infer resolution from cached data shape
-        # Shape is (12, nlat, nlon), resolution = 180 / nlat
         sample_field = layers.get("temperature_2m", layers.get("surface"))
         simulation_resolution = 180.0 / sample_field.shape[1]
         lon2d, lat2d = create_lat_lon_grid(simulation_resolution)
     else:
-        # Run simulation
         print(f"Running climate simulation at {args.resolution}° resolution...")
         radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
         diffusion_config = DiffusionConfig(enabled=args.diffusion)
@@ -125,57 +234,10 @@ def main() -> None:
             return_layer_map=True,
         )
         assert isinstance(layers, dict)
-        simulation_resolution = args.resolution
 
-    # Interpolate if requested (follows main.py pattern: 0.25° output resolution)
-    if args.interpolate:
-        output_resolution = 0.25
-        print(f"Interpolating temperature fields to {output_resolution}° resolution...")
-
-        # Build layer map for interpolation
-        interp_layers = {}
-        if "surface" in layers:
-            interp_layers["surface"] = layers["surface"]
-        if "temperature_2m" in layers:
-            interp_layers["temperature_2m"] = layers["temperature_2m"]
-
-        _, _, interpolated = interpolate_layer_map(
-            interp_layers,
-            lon2d,
-            lat2d,
-            output_resolution_deg=output_resolution,
-            apply_lapse_rate_to_2m=True,  # Always apply lapse rate for 2m temp
-        )
-
-        # Use interpolated data
-        layers = interpolated
-        print(f"Interpolation complete.")
-
-    # Build JSON output
-    # The frontend expects temperature_2m as [month][lat][lon] in Celsius
-    output_data: dict[str, list] = {}
-
-    if "temperature_2m" in layers:
-        output_data["temperature_2m"] = layers["temperature_2m"].tolist()
-        print(f"Exported temperature_2m: shape {layers['temperature_2m'].shape}")
-    elif "surface" in layers:
-        # Fall back to surface temperature if 2m not available
-        output_data["temperature_2m"] = layers["surface"].tolist()
-        print(f"Exported surface as temperature_2m: shape {layers['surface'].shape}")
-    else:
-        raise ValueError("No temperature data found in simulation output")
-
-    # Optionally include other fields
-    if "surface" in layers:
-        output_data["surface"] = layers["surface"].tolist()
-
-    # Write JSON
-    print(f"Writing to {output_path}...")
-    with open(output_path, "w") as f:
-        json.dump(output_data, f)
-
-    file_size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"Done! Output size: {file_size_mb:.2f} MB")
+    print("Exporting fields:")
+    _write_binary_export(output_dir, layers, lon2d, lat2d, interpolate=args.interpolate)
+    print("Done!")
 
 
 if __name__ == "__main__":

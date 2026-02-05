@@ -1,14 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import GIF from 'gif.js-upgrade';
-  import Globe from './lib/Globe.svelte';
+  import Globe from './lib/globe/Globe.svelte';
+  import { loadBinaryData, fieldToNestedArray } from './lib/globe/loadBinaryData';
+  import type { ClimateLayerData } from './lib/globe/loadBinaryData';
 
-  interface ClimateData {
-    surface: number[][][]; // [month][lat][lon]
-    [key: string]: number[][][];
-  }
-
-  let data: ClimateData | null = null;
+  let temperatureData: number[][][] | null = null;
+  let layerData: ClimateLayerData | null = null;
+  let activeLayer: 'temperature' | 'blue-marble' = 'temperature';
   let monthProgress = 0; // Continuous 0-12 value
   let loading = true;
   let error: string | null = null;
@@ -139,11 +138,9 @@
 
   onMount(async () => {
     try {
-      const response = await fetch('/main.json');
-      if (!response.ok) {
-        throw new Error(`Failed to load data: ${response.status}`);
-      }
-      data = await response.json();
+      const binData = await loadBinaryData('');
+      layerData = binData;
+      temperatureData = fieldToNestedArray(binData.temperature_2m);
       loading = false;
       startPlaying();
     } catch (e) {
@@ -162,11 +159,33 @@
     <div class="loading">Loading climate data...</div>
   {:else if error}
     <div class="error">Error: {error}</div>
-  {:else if data}
+  {:else if temperatureData}
     <div class="globe-wrapper">
-      <Globe bind:this={globeComponent} data={data.temperature_2m} {monthProgress} on:interact={stopAutoRotate} />
+      <Globe
+        bind:this={globeComponent}
+        data={temperatureData}
+        {monthProgress}
+        {activeLayer}
+        {layerData}
+        on:interact={stopAutoRotate}
+      />
     </div>
     <div class="controls">
+      <div class="layer-tabs">
+        <button
+          class="layer-tab"
+          class:active={activeLayer === 'temperature'}
+          on:click={() => activeLayer = 'temperature'}
+          disabled={recording}
+        >Temperature</button>
+        <button
+          class="layer-tab"
+          class:active={activeLayer === 'blue-marble'}
+          on:click={() => activeLayer = 'blue-marble'}
+          disabled={recording || !layerData}
+        >Blue Marble</button>
+      </div>
+      <div class="separator"></div>
       <label>
         <span class="month-label">{MONTH_NAMES[displayMonth]}</span>
         <input
@@ -178,7 +197,7 @@
           on:input={stopPlaying}
         />
       </label>
-      <button class="play-button" on:click={togglePlay} disabled={recording}>
+      <button on:click={togglePlay} disabled={recording}>
         {#if playing}
           Pause
         {:else}
@@ -186,7 +205,7 @@
         {/if}
       </button>
       <button on:click={resetView} disabled={recording}>
-        Reset View
+        Reset
       </button>
       <button on:click={recordGif} disabled={recording}>
         {#if recording}
@@ -227,13 +246,54 @@
   }
 
   .controls {
-    padding: 1rem;
-    padding-bottom: 2rem;
+    padding: 0.75rem 1rem;
+    padding-bottom: 1.5rem;
     display: flex;
     justify-content: center;
     align-items: center;
-    gap: 2rem;
+    gap: 1.5rem;
     background: rgba(0, 0, 0, 0.8);
+  }
+
+  .layer-tabs {
+    display: flex;
+    gap: 0;
+  }
+
+  .layer-tab {
+    padding: 0.4rem 0.8rem;
+    background: #222;
+    color: #999;
+    border: 1px solid #444;
+    cursor: pointer;
+    font-size: 0.85rem;
+    min-width: auto;
+  }
+
+  .layer-tab:first-child {
+    border-radius: 4px 0 0 4px;
+  }
+
+  .layer-tab:last-child {
+    border-radius: 0 4px 4px 0;
+    border-left: none;
+  }
+
+  .layer-tab.active {
+    background: #444;
+    color: #fff;
+    border-color: #666;
+  }
+
+  .layer-tab:hover:not(:disabled):not(.active) {
+    background: #333;
+    color: #ccc;
+  }
+
+  .separator {
+    width: 1px;
+    height: 24px;
+    background: #444;
   }
 
   .controls label {
@@ -259,7 +319,7 @@
     border: 1px solid #555;
     border-radius: 4px;
     cursor: pointer;
-    min-width: 120px;
+    min-width: 80px;
   }
 
   button:hover:not(:disabled) {

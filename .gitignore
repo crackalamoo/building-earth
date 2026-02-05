@@ -215,4 +215,5 @@ utils/*
 # Frontend
 frontend/node_modules/
 frontend/dist/
-frontend/public/main.json
+frontend/public/main.bin
+frontend/public/main.manifest.json
