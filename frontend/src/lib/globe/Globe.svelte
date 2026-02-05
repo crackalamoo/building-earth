@@ -161,14 +161,13 @@
     const lowNlon = ld.surface.shape[2];
     const monthOffset = monthIdx * lowNlat * lowNlon;
 
-    let idx = 0;
+    // First pass: compute per-cell RGB into a flat buffer
+    const rgbBuf = new Float32Array(hiNlat * hiNlon * 3);
     for (let i = 0; i < hiNlat; i++) {
       const dataLatIdx = hiNlat - 1 - i;
       for (let j = 0; j < hiNlon; j++) {
-        // Land mask: direct high-res lookup
         const isLand = landMaskData[dataLatIdx * hiNlon + j] === 1;
 
-        // Surface temp and soil moisture: type-aware bilinear from low-res
         const surfaceTemp = sampleBilinear(
           surfaceData, lowNlat, lowNlon, monthOffset,
           dataLatIdx, j, hiNlat, hiNlon,
@@ -183,7 +182,54 @@
           : 0;
 
         const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture);
+        const base = (i * hiNlon + j) * 3;
+        rgbBuf[base] = r;
+        rgbBuf[base + 1] = g;
+        rgbBuf[base + 2] = b;
+      }
+    }
 
+    // Second pass: polar smoothing on the high-res RGB rows (same logic as averagePolarTemps)
+    const latStep = 180 / hiNlat;
+    for (let i = 0; i < hiNlat; i++) {
+      const lat = 90 - (i + 0.5) * latStep; // i=0 is north pole in render order
+      const absLat = Math.abs(lat);
+      if (absLat <= 75) continue;
+
+      const t = (absLat - 75) / 15;
+      const maxWindow = hiNlon / 24;
+      let windowSize = 1 + t * t * maxWindow;
+      windowSize = Math.floor(windowSize);
+      if (windowSize < 2) continue;
+      if (windowSize % 2 === 0) windowSize++;
+      const halfWindow = Math.floor(windowSize / 2);
+      const rowBase = i * hiNlon * 3;
+
+      // Smooth each channel independently using a temp buffer for the row
+      for (let ch = 0; ch < 3; ch++) {
+        const tmp = new Float32Array(hiNlon);
+        for (let j = 0; j < hiNlon; j++) {
+          let sum = 0;
+          for (let k = -halfWindow; k <= halfWindow; k++) {
+            const idx = ((j + k) % hiNlon + hiNlon) % hiNlon;
+            sum += rgbBuf[rowBase + idx * 3 + ch];
+          }
+          tmp[j] = sum / windowSize;
+        }
+        for (let j = 0; j < hiNlon; j++) {
+          rgbBuf[rowBase + j * 3 + ch] = tmp[j];
+        }
+      }
+    }
+
+    // Write smoothed RGB to vertex colors
+    let idx = 0;
+    for (let i = 0; i < hiNlat; i++) {
+      for (let j = 0; j < hiNlon; j++) {
+        const base = (i * hiNlon + j) * 3;
+        const r = rgbBuf[base];
+        const g = rgbBuf[base + 1];
+        const b = rgbBuf[base + 2];
         for (let v = 0; v < 6; v++) {
           colors.setXYZ(idx, r, g, b);
           idx++;
