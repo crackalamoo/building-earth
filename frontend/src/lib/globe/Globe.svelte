@@ -1,15 +1,13 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import * as THREE from 'three';
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-  import * as topojson from 'topojson-client';
-  import type { Topology, GeometryCollection } from 'topojson-specification';
   import { temperatureToColorNormalized } from './colormap';
   import { blueMarbleColor } from './blueMarbleColormap';
+  import { sampleBilinear, averagePolarTemps } from './gridSampling';
+  import { loadBorders } from './borders';
   import { WindParticles } from './WindParticles';
   import type { ClimateLayerData } from './loadBinaryData';
-
-  import { createEventDispatcher } from 'svelte';
 
   export let data: number[][][] | null = null; // [month][lat][lon] temperature in Celsius
   export let monthProgress: number = 0; // Continuous 0-12 (wraps), controls sun position
@@ -152,21 +150,37 @@
     const surfaceData = ld.surface.data as Float32Array;
     const landMaskData = ld.land_mask.data as Uint8Array;
     const vegData = ld.vegetation_fraction?.data as Float32Array | undefined;
+    const coarseLandMask = ld.land_mask_native?.data as Uint8Array | undefined;
 
-    const bmNlat = ld.surface.shape[1];
-    const bmNlon = ld.surface.shape[2];
-    const monthOffset = monthIdx * bmNlat * bmNlon;
-    // vegetation_fraction may be monthly or absent
-    const vegMonthOffset = vegData ? monthIdx * bmNlat * bmNlon : 0;
+    // High-res grid dimensions (from land_mask, 0.25deg)
+    const hiNlat = ld.land_mask.shape[0];
+    const hiNlon = ld.land_mask.shape[1];
+
+    // Low-res grid dimensions (from surface, 5deg)
+    const lowNlat = ld.surface.shape[1];
+    const lowNlon = ld.surface.shape[2];
+    const monthOffset = monthIdx * lowNlat * lowNlon;
 
     let idx = 0;
-    for (let i = 0; i < bmNlat; i++) {
-      const dataLatIdx = bmNlat - 1 - i;
-      for (let j = 0; j < bmNlon; j++) {
-        const flatIdx = dataLatIdx * bmNlon + j;
-        const surfaceTemp = surfaceData[monthOffset + flatIdx];
-        const isLand = landMaskData[flatIdx] === 1;
-        const vegFrac = vegData ? vegData[vegMonthOffset + flatIdx] : 0;
+    for (let i = 0; i < hiNlat; i++) {
+      const dataLatIdx = hiNlat - 1 - i;
+      for (let j = 0; j < hiNlon; j++) {
+        // Land mask: direct high-res lookup
+        const isLand = landMaskData[dataLatIdx * hiNlon + j] === 1;
+
+        // Surface temp and vegetation: type-aware bilinear from low-res
+        const surfaceTemp = sampleBilinear(
+          surfaceData, lowNlat, lowNlon, monthOffset,
+          dataLatIdx, j, hiNlat, hiNlon,
+          isLand, coarseLandMask,
+        );
+        const vegFrac = vegData
+          ? sampleBilinear(
+              vegData, lowNlat, lowNlon, monthOffset,
+              dataLatIdx, j, hiNlat, hiNlon,
+              isLand, coarseLandMask,
+            )
+          : 0;
 
         const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, vegFrac);
 
@@ -177,49 +191,6 @@
       }
     }
     colors.needsUpdate = true;
-  }
-
-  function averagePolarTemps(monthData: number[][], latCount: number, lonCount: number): number[][] {
-    // Reduce longitude resolution near poles to avoid artifacts.
-    // Use a moving average window that grows as we approach the poles.
-    const latStep = 180 / latCount;
-    const result = monthData.map(row => [...row]);
-
-    function smoothRow(row: number[], windowSize: number): number[] {
-      if (windowSize <= 1) return row;
-      windowSize = Math.floor(windowSize);
-      if (windowSize % 2 === 0) windowSize++; // make odd for symmetric window
-      const halfWindow = Math.floor(windowSize / 2);
-      const newRow = new Array(row.length);
-
-      for (let j = 0; j < row.length; j++) {
-        let sum = 0;
-        for (let k = -halfWindow; k <= halfWindow; k++) {
-          // Wrap around for longitude
-          const idx = (j + k + row.length) % row.length;
-          sum += row[idx];
-        }
-        newRow[j] = sum / windowSize;
-      }
-      return newRow;
-    }
-
-    for (let i = 0; i < latCount; i++) {
-      // Calculate latitude in degrees (-90 to 90)
-      const lat = -90 + (i + 0.5) * latStep;
-      const absLat = Math.abs(lat);
-
-      // Above 75° latitude, apply progressively stronger smoothing
-      if (absLat > 75) {
-        // Window size grows from 1 at 75° to cover ~15° of longitude at the pole
-        const t = (absLat - 75) / 15; // 0 at 75°, 1 at 90°
-        const maxWindow = lonCount / 24; // ~15° of longitude
-        const windowSize = 1 + t * t * maxWindow; // quadratic growth
-        result[i] = smoothRow(result[i], windowSize);
-      }
-    }
-
-    return result;
   }
 
   function createGlobeMesh(latCount: number, lonCount: number, radius: number): THREE.Mesh {
@@ -288,8 +259,9 @@
   }
 
   function createBlueMarbleGlobe(ld: ClimateLayerData) {
-    const bmNlat = ld.surface.shape[1];
-    const bmNlon = ld.surface.shape[2];
+    // Use land_mask resolution (0.25deg, same as temperature) for crisp coastlines
+    const bmNlat = ld.land_mask.shape[0];
+    const bmNlon = ld.land_mask.shape[1];
     const mesh = createGlobeMesh(bmNlat, bmNlon, 1);
     return mesh;
   }
@@ -345,95 +317,6 @@
     ).normalize();
 
     sunLight.position.copy(sunDir.multiplyScalar(distance));
-  }
-
-  function latLonToVector3(lat: number, lon: number, r: number): THREE.Vector3 {
-    // Must match the coordinate system used in createGlobeMesh
-    const phi = (90 - lat) * (Math.PI / 180);
-    const theta = lon * (Math.PI / 180);
-    return new THREE.Vector3(
-      -r * Math.sin(phi) * Math.cos(theta),
-      r * Math.cos(phi),
-      r * Math.sin(phi) * Math.sin(theta)
-    );
-  }
-
-  function createLineFromCoords(coords: number[][], r: number, darkColor: number, lightColor: number): THREE.Line[] {
-    const points: THREE.Vector3[] = [];
-    for (const [lon, lat] of coords) {
-      points.push(latLonToVector3(lat, lon, r));
-    }
-    // Two passes: dark outline visible on bright/day side, light outline visible on dark/night side
-    const geom = new THREE.BufferGeometry().setFromPoints(points);
-    const dark = new THREE.Line(geom, new THREE.LineBasicMaterial({
-      color: darkColor,
-      transparent: true,
-      opacity: 0.8,
-    }));
-    const light = new THREE.Line(geom.clone(), new THREE.LineBasicMaterial({
-      color: lightColor,
-      transparent: true,
-      opacity: 0.3,
-    }));
-    return [dark, light];
-  }
-
-  function processMultiLineString(coords: number[][][], r: number, darkColor: number, lightColor: number): THREE.Line[] {
-    return coords.flatMap(lineCoords => createLineFromCoords(lineCoords, r, darkColor, lightColor));
-  }
-
-  function processPolygon(coords: number[][][], r: number, darkColor: number, lightColor: number): THREE.Line[] {
-    return coords.flatMap(ring => createLineFromCoords(ring, r, darkColor, lightColor));
-  }
-
-  function processMultiPolygon(coords: number[][][][], r: number, darkColor: number, lightColor: number): THREE.Line[] {
-    const lines: THREE.Line[] = [];
-    for (const polygon of coords) {
-      lines.push(...processPolygon(polygon, r, darkColor, lightColor));
-    }
-    return lines;
-  }
-
-  async function loadBorders() {
-    bordersGroup = new THREE.Group();
-    const radius = 1.002; // Slightly above globe surface
-
-    try {
-      // Load countries for borders
-      const response = await fetch('/countries-110m.json');
-      const topology = await response.json() as Topology;
-      const countries = topology.objects.countries as GeometryCollection;
-      const mesh = topojson.mesh(topology, countries);
-
-      if (mesh.type === 'MultiLineString') {
-        const lines = processMultiLineString(mesh.coordinates, radius, 0x333333, 0xcccccc);
-        lines.forEach(line => bordersGroup!.add(line));
-      }
-
-      // Load land for coastlines
-      const landResponse = await fetch('/land-110m.json');
-      const landTopology = await landResponse.json() as Topology;
-      const land = landTopology.objects.land as GeometryCollection;
-      const landFeature = topojson.feature(landTopology, land);
-
-      const features = 'features' in landFeature
-        ? landFeature.features
-        : [landFeature as GeoJSON.Feature];
-      for (const feature of features) {
-        const geom = feature.geometry;
-        if (geom.type === 'Polygon') {
-          const lines = processPolygon(geom.coordinates, radius, 0x000000, 0xffffff);
-          lines.forEach(line => bordersGroup!.add(line));
-        } else if (geom.type === 'MultiPolygon') {
-          const lines = processMultiPolygon(geom.coordinates, radius, 0x000000, 0xffffff);
-          lines.forEach(line => bordersGroup!.add(line));
-        }
-      }
-
-      scene.add(bordersGroup);
-    } catch (e) {
-      console.error('Failed to load borders:', e);
-    }
   }
 
   function initWindParticles() {
@@ -524,7 +407,10 @@
 
     // Load borders
     if (showBorders) {
-      loadBorders();
+      loadBorders().then(group => {
+        bordersGroup = group;
+        scene.add(bordersGroup);
+      }).catch(e => console.error('Failed to load borders:', e));
     }
 
     // Handle resize

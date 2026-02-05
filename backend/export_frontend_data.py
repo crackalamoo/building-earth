@@ -1,3 +1,4 @@
+# type: ignore[attr-defined]
 """Export climate simulation data as binary for the frontend visualization."""
 
 import argparse
@@ -85,8 +86,13 @@ def _write_binary_export(
     else:
         interpolated = {}
 
-    # Compute land_mask at native resolution
-    land_mask = compute_land_mask(lon2d, lat2d).astype(np.uint8)
+    # Compute land masks
+    native_land_mask = compute_land_mask(lon2d, lat2d).astype(np.uint8)
+    if interpolate:
+        fine_lon2d, fine_lat2d = create_lat_lon_grid(output_resolution)
+        land_mask = compute_land_mask(fine_lon2d, fine_lat2d).astype(np.uint8)
+    else:
+        land_mask = native_land_mask
 
     # Assemble fields for export
     # Each entry: (array, dtype_str) — dtype_str is 'float16' or 'uint8'
@@ -108,9 +114,14 @@ def _write_binary_export(
         fields.append(("surface", native_layers["surface"], "float16"))
         print(f"  surface: {native_layers['surface'].shape}")
 
-    # land_mask: static, native resolution
+    # land_mask: high-res (0.25deg when interpolated) for rendering
     fields.append(("land_mask", land_mask, "uint8"))
     print(f"  land_mask: {land_mask.shape}")
+
+    # land_mask_native: native 5deg for type-aware interpolation of low-res fields
+    if interpolate and native_land_mask is not land_mask:
+        fields.append(("land_mask_native", native_land_mask, "uint8"))
+        print(f"  land_mask_native: {native_land_mask.shape}")
 
     # vegetation_fraction: native resolution
     if "vegetation_fraction" in native_layers:

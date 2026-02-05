@@ -24,8 +24,10 @@ export interface ClimateLayerData {
   temperature_2m: FieldData;
   /** Native 5deg surface temp [12, 36, 72] */
   surface: FieldData;
-  /** Native 5deg land mask [36, 72] */
+  /** 0.25deg land mask [720, 1440] — matches temperature_2m resolution */
   land_mask: FieldData;
+  /** Native 5deg land mask [36, 72] — for type-aware interpolation */
+  land_mask_native?: FieldData;
   /** Native 5deg vegetation fraction [12, 36, 72] */
   vegetation_fraction?: FieldData;
   /** Native 5deg wind fields [12, 36, 72] */
