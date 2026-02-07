@@ -7,6 +7,7 @@
   import { sampleBilinear, averagePolarTemps } from './gridSampling';
   import { loadBorders } from './borders';
   import { WindParticles } from './WindParticles';
+  import { TreeInstances } from './TreeInstances';
   import type { ClimateLayerData } from './loadBinaryData';
 
   export let data: number[][][] | null = null; // [month][lat][lon] temperature in Celsius
@@ -31,6 +32,7 @@
   let sunOrbitAngle = 0; // Rotates sun when camera is not auto-rotating
   let lastAnimateTime: number | null = null;
   let windParticles: WindParticles | null = null;
+  let treeInstances: TreeInstances | null = null;
 
   // Derive discrete month for temperature display (nearest month)
   $: displayMonth = Math.round(displayMonthProgress) % 12;
@@ -59,6 +61,9 @@
     if (windParticles) {
       windParticles.getObject().rotation.y += radians;
     }
+    if (treeInstances) {
+      treeInstances.getObject().rotation.y += radians;
+    }
   }
 
   export function resetView(): void {
@@ -77,6 +82,9 @@
     }
     if (windParticles) {
       windParticles.getObject().rotation.y = 0;
+    }
+    if (treeInstances) {
+      treeInstances.getObject().rotation.y = 0;
     }
     sunOrbitAngle = 0;
   }
@@ -113,6 +121,7 @@
       if (globe) globe.visible = layer === 'temperature';
       if (blueMarbleGlobe) blueMarbleGlobe.visible = layer === 'blue-marble';
       if (windParticles) windParticles.getObject().visible = layer === 'blue-marble';
+      if (treeInstances) treeInstances.getObject().visible = layer === 'blue-marble';
     }
   }
 
@@ -384,6 +393,20 @@
     scene.add(obj);
   }
 
+  function initTreeInstances() {
+    if (!layerData?.vegetation_fraction || !layerData?.soil_moisture || !layerData?.land_mask_native) return;
+    if (treeInstances) {
+      scene.remove(treeInstances.getObject());
+      treeInstances.dispose();
+    }
+    treeInstances = new TreeInstances(layerData);
+    const obj = treeInstances.getObject();
+    obj.visible = activeLayer === 'blue-marble';
+    if (globe) obj.rotation.y = globe.rotation.y;
+    else if (blueMarbleGlobe) obj.rotation.y = blueMarbleGlobe.rotation.y;
+    scene.add(obj);
+  }
+
   function init() {
     // Scene
     scene = new THREE.Scene();
@@ -449,6 +472,7 @@
       scene.add(blueMarbleGlobe);
       updateBlueMarbleColors(layerData, displayMonth);
       initWindParticles();
+      initTreeInstances();
     }
 
     // Load borders
@@ -527,6 +551,7 @@
     scene.add(blueMarbleGlobe);
     updateBlueMarbleColors(layerData, displayMonth);
     initWindParticles();
+    initTreeInstances();
   }
 
   onMount(() => {
@@ -540,6 +565,9 @@
     controls?.dispose();
     if (windParticles) {
       windParticles.dispose();
+    }
+    if (treeInstances) {
+      treeInstances.dispose();
     }
     if (bordersGroup) {
       bordersGroup.traverse((obj) => {
