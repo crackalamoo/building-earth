@@ -323,6 +323,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         itcz_rad=itcz_rad,
                         boundary_layer_temperature_K=boundary_temperature,
                         precipitation_rate=precip_rate,
+                        soil_moisture=state.soil_moisture,
                     )
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 4  # surface, BL, atm, evap_rate
@@ -492,6 +493,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     itcz_rad=None,
                     boundary_layer_temperature_K=state.temperature[1],
                     precipitation_rate=precip_rate,
+                    soil_moisture=state.soil_moisture,
                 )
                 # Add latent heat directly to diagonal and cross terms
                 diag = diag + lh_diag
@@ -614,6 +616,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
                             itcz_rad=None,
                             boundary_layer_temperature_K=state.temperature[1],
+                            soil_moisture=state.soil_moisture,
                         )
                     else:
                         dE_dq = np.zeros_like(state.humidity_field)

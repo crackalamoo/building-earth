@@ -25,11 +25,10 @@ class LatentHeatExchangeConfig:
 
     enabled: bool = True
     minimum_wind_speed_m_s: float = 1.0  # Free convection velocity scale (same as sensible)
-    # Land evapotranspiration is weaker than ocean evaporation due to:
-    # - Limited soil moisture availability
-    # - Stomatal resistance in vegetation
-    # Typical values: 0.3-0.6 of ocean evaporation in humid regions
-    land_evapotranspiration_factor: float = 0.4
+    # Manabe (1969) beta function: β = min(θ/θ_crit, 1)
+    # Below field capacity, evapotranspiration scales linearly with soil moisture.
+    # Above field capacity, evapotranspiration is at full potential rate.
+    manabe_theta_crit: float = 0.75
     # No evaporation below freezing (ice-covered surface)
     freeze_threshold_c: float = SEAWATER_FREEZE_C
 
@@ -156,12 +155,14 @@ class LatentHeatExchangeModel:
 
         humidity_q = np.minimum(humidity_q, q_sat)
         heat_flux = rho * 2.5e6 * ch * wind_abs * (q_sat - humidity_q)
-        # Land evapotranspiration scales with soil moisture (or RH as proxy)
+        # Manabe (1969) beta: β = min(θ/θ_crit, 1)
+        theta_crit = self._config.manabe_theta_crit
         if soil_moisture is not None:
-            land_factor = self._config.land_evapotranspiration_factor * soil_moisture
+            land_factor = np.minimum(soil_moisture / theta_crit, 1.0)
         else:
+            # Fallback when soil moisture not yet initialized: use RH as proxy
             rh = humidity_q / np.maximum(q_sat, 1e-10)
-            land_factor = self._config.land_evapotranspiration_factor * rh
+            land_factor = np.minimum(rh / theta_crit, 1.0)
         heat_flux = np.where(self._land_mask, heat_flux * land_factor, heat_flux)
 
         # No evaporation below freezing (ice-covered surface can't evaporate liquid water)
@@ -208,6 +209,7 @@ class LatentHeatExchangeModel:
         itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
         precipitation_rate: np.ndarray | None = None,
+        soil_moisture: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return Jacobian (diagonal and cross-coupling) for latent heat exchange.
 
@@ -313,10 +315,14 @@ class LatentHeatExchangeModel:
         dheat_flux_dT_surf = LATENT_HEAT_VAPORIZATION_J_KG * ch * wind_abs * (rho * dq_sat_dT_surf + q_deficit * drho_dT_surf)
         dheat_flux_dT_atm = LATENT_HEAT_VAPORIZATION_J_KG * ch * wind_abs * (rho * dq_sat_dT_atm + q_deficit * drho_dT_atm)
 
-        # Apply land factor (reduced evapotranspiration scaled by humidity)
-        q_sat_safe = np.maximum(q_sat, 1e-10)
-        rh = humidity_q_clamped / q_sat_safe
-        land_factor = self._config.land_evapotranspiration_factor * rh
+        # Apply Manabe beta land factor (frozen during Newton iterations)
+        theta_crit = self._config.manabe_theta_crit
+        if soil_moisture is not None:
+            land_factor = np.minimum(soil_moisture / theta_crit, 1.0)
+        else:
+            q_sat_safe = np.maximum(q_sat, 1e-10)
+            rh = humidity_q_clamped / q_sat_safe
+            land_factor = np.minimum(rh / theta_crit, 1.0)
         dheat_flux_dT_surf = np.where(self._land_mask, dheat_flux_dT_surf * land_factor, dheat_flux_dT_surf)
         dheat_flux_dT_atm = np.where(self._land_mask, dheat_flux_dT_atm * land_factor, dheat_flux_dT_atm)
 
@@ -401,6 +407,7 @@ class LatentHeatExchangeModel:
         wind_speed_reference_m_s: np.ndarray | None,
         itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
+        soil_moisture: np.ndarray | None = None,
     ) -> np.ndarray:
         """Compute derivative of evaporation rate w.r.t. specific humidity.
 
@@ -433,16 +440,19 @@ class LatentHeatExchangeModel:
         # dE/dq = -rho * Ch * |V| (negative: higher q means less evaporation)
         dE_dq = -rho * ch * wind_abs
 
-        # Apply land factor
-        # Cap temperature to prevent overflow in exp
+        # Apply Manabe beta land factor
         surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
-        e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
-        pressure_hPa = pressure / 100.0
-        denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
-        q_sat = (0.622 * e_sat) / denom
-        humidity_q_clamped = np.minimum(np.asarray(humidity_q, dtype=float), q_sat)
-        rh = humidity_q_clamped / np.maximum(q_sat, 1e-10)
-        land_factor = self._config.land_evapotranspiration_factor * rh
+        theta_crit = self._config.manabe_theta_crit
+        if soil_moisture is not None:
+            land_factor = np.minimum(soil_moisture / theta_crit, 1.0)
+        else:
+            e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
+            pressure_hPa = pressure / 100.0
+            denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
+            q_sat = (0.622 * e_sat) / denom
+            humidity_q_clamped = np.minimum(np.asarray(humidity_q, dtype=float), q_sat)
+            rh = humidity_q_clamped / np.maximum(q_sat, 1e-10)
+            land_factor = np.minimum(rh / theta_crit, 1.0)
         dE_dq = np.where(self._land_mask, dE_dq * land_factor, dE_dq)
 
         # No evaporation below freezing

@@ -110,32 +110,35 @@ class DiffusionConfig:
 
     # Ocean latitude-dependent scaling to represent thermohaline circulation
     # MOC transports ~2 PW poleward, requiring strong effective diffusivity
-    use_latitude_dependent_surface: bool = True
+    use_latitude_dependent_surface: bool = False
     surface_meridional_tropical_scale: float = 0.5    # 0-30°: Weak cross-equatorial
     surface_meridional_midlat_scale: float = 1.5      # 30-60°: Western boundary currents
     surface_meridional_polar_scale: float = 1.5       # 60-90°: Strong MOC/deep convection
 
     # Atmospheric eddy diffusivity: ~1-5e6 m²/s for mid-latitude storm tracks
-    atmosphere_kappa_ref_m2_s: float = 5.0e5
+    atmosphere_kappa_ref_m2_s: float = 1.2e6
 
     atmosphere_resolution_ref_deg: float = 1.0
     enabled: bool = True
 
-    # Latitude-dependent atmospheric diffusivity scaling
-    # Peak at midlatitudes where baroclinic storm tracks dominate
+    # Latitude-dependent atmospheric eddy diffusivity scaling
+    # Eddies are roughly isotropic — same scaling for meridional and zonal.
+    # Mean wind transport (trade winds, westerlies) is handled by advection, not diffusion.
     use_latitude_dependent_atmosphere: bool = True
     atmosphere_meridional_tropical_scale: float = 0.5   # 0-30°: Hadley cell dominates, weak eddy mixing
-    atmosphere_meridional_midlat_scale: float = 2.0     # 30-60°: Storm tracks, moderate eddy transport
-    atmosphere_meridional_polar_scale: float = 0.5      # 60-90°: Polar vortex isolation, but still significant transport
-    atmosphere_zonal_tropical_scale: float = 1.5        # 0-30°: Trade winds mix zonally
-    atmosphere_zonal_midlat_scale: float = 2.5          # 30-60°: Westerlies enhance zonal mixing
-    atmosphere_zonal_polar_scale: float = 1.0           # 60-90°: Polar vortex limits mixing
+    atmosphere_meridional_midlat_scale: float = 2.5     # 30-60°: Baroclinic storm tracks peak
+    atmosphere_meridional_polar_scale: float = 1.0      # 60-90°: Still significant eddy transport
+    atmosphere_zonal_tropical_scale: float = 0.5        # Isotropic with meridional
+    atmosphere_zonal_midlat_scale: float = 2.5          # Isotropic with meridional
+    atmosphere_zonal_polar_scale: float = 1.0           # Isotropic with meridional
 
-    # Boundary layer diffusivity scaling relative to free atmosphere
-    # BL is thin (~1km) and its heat transport is mostly vertical (convection),
-    # not the large-scale eddies that transport across latitudes.
-    # BL feels meridional transport indirectly via coupling to free atm above.
-    boundary_layer_diffusivity_scale: float = 0.1  # 10% of free atmosphere
+    # Boundary layer diffusivity scaling relative to free atmosphere.
+    # Baroclinic eddies are troposphere-deep — the same storms that mix the
+    # free atmosphere also mix the BL (Jansen & Ferrari 2013: eddy PV
+    # diffusivity is largest at the surface). Observed v'T' peaks at ~850 hPa.
+    # Same κ for both layers preserves total column transport and gives the
+    # BL its correct ~12% share (via its smaller heat capacity).
+    boundary_layer_diffusivity_scale: float = 1.0
 
     @staticmethod
     def _scaled_diffusivity(
@@ -151,18 +154,10 @@ class DiffusionConfig:
         return kappa_ref * scale
 
     def surface_diffusivity(self, grid_resolution_deg: float) -> float:
-        return self._scaled_diffusivity(
-            grid_resolution_deg,
-            self.surface_kappa_ref_m2_s,
-            self.surface_resolution_ref_deg,
-        )
+        return self.surface_kappa_ref_m2_s
 
     def atmosphere_diffusivity(self, grid_resolution_deg: float) -> float:
-        return self._scaled_diffusivity(
-            grid_resolution_deg,
-            self.atmosphere_kappa_ref_m2_s,
-            self.atmosphere_resolution_ref_deg,
-        )
+        return self.atmosphere_kappa_ref_m2_s
 
     def compute_latitude_scaling(
         self,

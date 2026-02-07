@@ -187,6 +187,7 @@ def monthly_step(
         # Humidity is prognostic - carried from previous month, evolved after Newton converges
         lagged_humidity = state.humidity_field
         lagged_precipitation = state.precipitation_field
+        lagged_soil_moisture = state.soil_moisture
 
         # Compute frozen cloud output for Jacobian consistency
         # Cloud fractions are frozen during Newton iterations, but cloud temperatures
@@ -278,6 +279,7 @@ def monthly_step(
                     ocean_current_psi=lagged_ocean_current_psi,
                     precipitation_field=lagged_precipitation,
                     cloud_output=lagged_cloud_output,  # Unified clouds (frozen for Jacobian consistency)
+                    soil_moisture=lagged_soil_moisture,
                 ), current_itcz
 
         # implicit solver loop
