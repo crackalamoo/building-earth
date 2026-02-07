@@ -36,6 +36,8 @@ export interface ClimateLayerData {
   wind_u_10m?: FieldData;
   wind_v_10m?: FieldData;
   wind_speed_10m?: FieldData;
+  /** 0.25deg elevation in meters [720, 1440] */
+  elevation?: FieldData;
 }
 
 /** Decode a Float16 buffer into Float32Array. */

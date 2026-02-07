@@ -9,6 +9,7 @@
   import { WindParticles } from './WindParticles';
   import { TreeInstances } from './TreeInstances';
   import type { ClimateLayerData } from './loadBinaryData';
+  import { ELEVATION_SCALE, NORMAL_BLEND, sampleElevation, displacedNormal, computeHillshadeGrid } from './elevation';
 
   export let data: number[][][] | null = null; // [month][lat][lon] temperature in Celsius
   export let monthProgress: number = 0; // Continuous 0-12 (wraps), controls sun position
@@ -231,14 +232,21 @@
       }
     }
 
-    // Write smoothed RGB to vertex colors
+    // Write smoothed RGB to vertex colors, applying hillshade
+    const hsGrid = (blueMarbleGlobe as any)?._hillshadeGrid as Float32Array | undefined;
     let idx = 0;
     for (let i = 0; i < hiNlat; i++) {
       for (let j = 0; j < hiNlon; j++) {
         const base = (i * hiNlon + j) * 3;
-        const r = rgbBuf[base];
-        const g = rgbBuf[base + 1];
-        const b = rgbBuf[base + 2];
+        let r = rgbBuf[base];
+        let g = rgbBuf[base + 1];
+        let b = rgbBuf[base + 2];
+        if (hsGrid) {
+          const hs = hsGrid[i * hiNlon + j];
+          r = Math.min(1, r * hs);
+          g = Math.min(1, g * hs);
+          b = Math.min(1, b * hs);
+        }
         for (let v = 0; v < 6; v++) {
           colors.setXYZ(idx, r, g, b);
           idx++;
@@ -248,29 +256,61 @@
     colors.needsUpdate = true;
   }
 
-  function createGlobeMesh(latCount: number, lonCount: number, radius: number): THREE.Mesh {
+  function createGlobeMesh(
+    latCount: number, lonCount: number, radius: number,
+    elevationData?: Float32Array, elevNlat?: number, elevNlon?: number,
+  ): THREE.Mesh {
     // Build geometry manually with per-face colors (no interpolation)
     const positions: number[] = [];
     const colors: number[] = [];
 
     function getVertex(lat: number, lon: number): [number, number, number] {
+      let r = radius;
+      if (elevationData && elevNlat && elevNlon) {
+        const elev = sampleElevation(elevationData, elevNlat, elevNlon, lat, lon);
+        r += elev * ELEVATION_SCALE;
+      }
       const phi = (90 - lat) * (Math.PI / 180);
       const theta = lon * (Math.PI / 180);
       return [
-        -radius * Math.sin(phi) * Math.cos(theta),
-        radius * Math.cos(phi),
-        radius * Math.sin(phi) * Math.sin(theta)
+        -r * Math.sin(phi) * Math.cos(theta),
+        r * Math.cos(phi),
+        r * Math.sin(phi) * Math.sin(theta)
       ];
     }
+
+    const blendedNormals: number[] = [];
 
     function addVertex(lat: number, lon: number, r: number, g: number, b: number) {
       const [x, y, z] = getVertex(lat, lon);
       positions.push(x, y, z);
       colors.push(r, g, b);
+
+      const phi = (90 - lat) * (Math.PI / 180);
+      const theta = lon * (Math.PI / 180);
+      const snx = -Math.sin(phi) * Math.cos(theta);
+      const sny = Math.cos(phi);
+      const snz = Math.sin(phi) * Math.sin(theta);
+
+      if (elevationData && elevNlat && elevNlon) {
+        const [dnx, dny, dnz] = displacedNormal(elevationData, elevNlat, elevNlon, lat, lon, radius);
+        let nx = snx + NORMAL_BLEND * (dnx - snx);
+        let ny = sny + NORMAL_BLEND * (dny - sny);
+        let nz = snz + NORMAL_BLEND * (dnz - snz);
+        const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        blendedNormals.push(nx / len, ny / len, nz / len);
+      } else {
+        blendedNormals.push(snx, sny, snz);
+      }
     }
 
     const latStep = 180 / latCount;
     const lonStep = 360 / lonCount;
+
+    // Pre-compute per-cell hillshade if elevation data provided
+    const hillshadeGrid = (elevationData && elevNlat && elevNlon)
+      ? computeHillshadeGrid(elevationData, elevNlat, elevNlon, latCount, lonCount)
+      : null;
 
     for (let i = 0; i < latCount; i++) {
       const lat0 = 90 - i * latStep;
@@ -295,15 +335,20 @@
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(blendedNormals, 3));
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    geometry.computeVertexNormals();
 
     const material = new THREE.MeshLambertMaterial({
       vertexColors: true,
       side: THREE.FrontSide,
     });
 
-    return new THREE.Mesh(geometry, material);
+    const mesh = new THREE.Mesh(geometry, material);
+    // Attach hillshade grid for use in color updates
+    if (hillshadeGrid) {
+      (mesh as any)._hillshadeGrid = hillshadeGrid;
+    }
+    return mesh;
   }
 
   function createTemperatureGlobe(climateData: number[][][]) {
@@ -317,7 +362,10 @@
     // Use land_mask resolution (0.25deg, same as temperature) for crisp coastlines
     const bmNlat = ld.land_mask.shape[0];
     const bmNlon = ld.land_mask.shape[1];
-    const mesh = createGlobeMesh(bmNlat, bmNlon, 1);
+    const elevData = ld.elevation?.data as Float32Array | undefined;
+    const elevNlat = ld.elevation?.shape[0];
+    const elevNlon = ld.elevation?.shape[1];
+    const mesh = createGlobeMesh(bmNlat, bmNlon, 1, elevData, elevNlat, elevNlon);
     return mesh;
   }
 

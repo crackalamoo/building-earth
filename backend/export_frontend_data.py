@@ -11,6 +11,7 @@ import numpy as np
 from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.core.interpolation import interpolate_layer_map
 from climate_sim.core.solver import solve_periodic_climate
+from climate_sim.data.elevation import compute_cell_elevation
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.runtime.config import ModelConfig
@@ -132,6 +133,15 @@ def _write_binary_export(
     if "soil_moisture" in native_layers:
         fields.append(("soil_moisture", native_layers["soil_moisture"], "float16"))
         print(f"  soil_moisture: {native_layers['soil_moisture'].shape}")
+
+    # Elevation: high-res (0.25deg) for 3D terrain displacement
+    if interpolate:
+        elevation = compute_cell_elevation(fine_lon2d, fine_lat2d, cache=False)
+    else:
+        elevation = compute_cell_elevation(lon2d, lat2d, cache=False)
+    elevation = np.maximum(elevation, 0.0)
+    fields.append(("elevation", elevation, "float16"))
+    print(f"  elevation: {elevation.shape}")
 
     # Wind fields: native resolution
     for wind_key in ("wind_u_10m", "wind_v_10m", "wind_speed_10m"):

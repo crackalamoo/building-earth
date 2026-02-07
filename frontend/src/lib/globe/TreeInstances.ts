@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { ClimateLayerData } from './loadBinaryData';
+import { ELEVATION_SCALE, sampleElevation } from './elevation';
 
 const GLOBE_RADIUS = 1.001;
 const TREE_HEIGHT = 0.017;
@@ -276,6 +277,15 @@ export class TreeInstances {
 
           const normal = latLonToNormal(lat!, lon!);
           const position = normal.clone().multiplyScalar(GLOBE_RADIUS);
+
+          // Offset tree to match terrain displacement
+          if (layerData.elevation) {
+            const ed = layerData.elevation.data as Float32Array;
+            const enl = layerData.elevation.shape[0];
+            const eno = layerData.elevation.shape[1];
+            const elev = sampleElevation(ed, enl, eno, lat!, lon!);
+            position.addScaledVector(normal, elev * ELEVATION_SCALE);
+          }
 
           // Orient: Y_UP → surface normal, plus random twist
           const quaternion = new THREE.Quaternion();
