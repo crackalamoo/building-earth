@@ -113,7 +113,9 @@ class DiffusionConfig:
     surface_meridional_midlat_scale: float = 1.5      # 30-60°: Western boundary currents
     surface_meridional_polar_scale: float = 1.5       # 60-90°: Strong MOC/deep convection
 
-    # Atmospheric eddy diffusivity: ~1-5e6 m²/s for mid-latitude storm tracks
+    # Atmospheric eddy diffusivity: represents baroclinic eddy transport.
+    # Transient eddies carry 60-80% of midlat heat transport (~2-3e6 m²/s).
+    # Tropics: eddies are ~5-10% of transport (Hadley dominates).
     atmosphere_kappa_ref_m2_s: float = 1.2e6
 
     enabled: bool = True
@@ -122,12 +124,12 @@ class DiffusionConfig:
     # Eddies are roughly isotropic — same scaling for meridional and zonal.
     # Mean wind transport (trade winds, westerlies) is handled by advection, not diffusion.
     use_latitude_dependent_atmosphere: bool = True
-    atmosphere_meridional_tropical_scale: float = 0.5   # 0-30°: Hadley cell dominates, weak eddy mixing
+    atmosphere_meridional_tropical_scale: float = 0.3   # 0-30°: Hadley cell dominates, weak eddy mixing
     atmosphere_meridional_midlat_scale: float = 2.5     # 30-60°: Baroclinic storm tracks peak
-    atmosphere_meridional_polar_scale: float = 1.0      # 60-90°: Still significant eddy transport
-    atmosphere_zonal_tropical_scale: float = 0.5        # Isotropic with meridional
+    atmosphere_meridional_polar_scale: float = 0.7      # 60-90°: Moderate eddy transport
+    atmosphere_zonal_tropical_scale: float = 0.3        # Isotropic with meridional
     atmosphere_zonal_midlat_scale: float = 2.5          # Isotropic with meridional
-    atmosphere_zonal_polar_scale: float = 1.0           # Isotropic with meridional
+    atmosphere_zonal_polar_scale: float = 0.7           # Isotropic with meridional
 
     # Boundary layer diffusivity scaling relative to free atmosphere.
     # Baroclinic eddies are troposphere-deep — the same storms that mix the
