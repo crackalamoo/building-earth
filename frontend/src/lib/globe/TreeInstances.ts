@@ -316,6 +316,7 @@ export class TreeInstances {
   private broadleafCellIndex: Uint16Array = new Uint16Array(0);     // per-instance cell index
   private broadleafEvergreen: Uint8Array = new Uint8Array(0);       // 1 = tropical evergreen
   private lastMonthProgress: number = -1;
+  private sunDirUniform: { value: THREE.Vector3 } = { value: new THREE.Vector3(1, 0, 0) };
 
   constructor(layerData: ClimateLayerData) {
     this.group = new THREE.Group();
@@ -436,6 +437,25 @@ export class TreeInstances {
     const palmGeom = buildPalmGeometry();
 
     const material = new THREE.MeshLambertMaterial({ vertexColors: true });
+    // Darken trees on the night side of the globe by modulating vColor.
+    // We pass the sun direction as a uniform and compute
+    // dot(globeSurfaceNormal, sunDir) to dim night-side trees.
+    this.sunDirUniform = { value: new THREE.Vector3(1, 0, 0) };
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.sunDir = this.sunDirUniform;
+      shader.vertexShader = 'uniform vec3 sunDir;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <color_vertex>',
+        `
+        #include <color_vertex>
+        vec3 treeWorldPos = (modelMatrix * instanceMatrix * vec4(position, 1.0)).xyz;
+        vec3 globeNormal = normalize(treeWorldPos);
+        float surfaceDot = dot(globeNormal, sunDir);
+        float surfaceLight = smoothstep(-0.05, 0.15, surfaceDot);
+        vColor.rgb *= mix(0.08, 1.0, surfaceLight);
+        `
+      );
+    };
 
     // --- Conifer mesh (type 0) ---
     const coniferList = instances[0];
@@ -454,6 +474,7 @@ export class TreeInstances {
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.frustumCulled = false;
+
       this.meshes.push(mesh);
       this.group.add(mesh);
     }
@@ -549,7 +570,9 @@ export class TreeInstances {
       if (trunkMesh.instanceColor) trunkMesh.instanceColor.needsUpdate = true;
       if (foliageMesh.instanceColor) foliageMesh.instanceColor.needsUpdate = true;
       trunkMesh.frustumCulled = false;
+
       foliageMesh.frustumCulled = false;
+
 
       this.broadleafFoliageMesh = foliageMesh;
       this.meshes.push(trunkMesh);
@@ -575,6 +598,7 @@ export class TreeInstances {
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.frustumCulled = false;
+
       this.meshes.push(mesh);
       this.group.add(mesh);
     }
@@ -677,6 +701,10 @@ export class TreeInstances {
 
     foliage.instanceMatrix.needsUpdate = true;
     if (foliage.instanceColor) foliage.instanceColor.needsUpdate = true;
+  }
+
+  setSunDirection(dir: THREE.Vector3): void {
+    this.sunDirUniform.value.copy(dir);
   }
 
   getObject(): THREE.Object3D {

@@ -390,7 +390,9 @@
       // "Always Day": place sun directly behind camera so visible side is always lit
       const cameraDir = new THREE.Vector3();
       camera.getWorldDirection(cameraDir);
-      sunLight.position.copy(cameraDir.negate().multiplyScalar(distance));
+      const dir = cameraDir.negate();
+      if (treeInstances) treeInstances.setSunDirection(dir.clone().normalize());
+      sunLight.position.copy(dir.multiplyScalar(distance));
       return;
     }
 
@@ -431,6 +433,7 @@
       horizontalDir.z * Math.cos(declination)
     ).normalize();
 
+    if (treeInstances) treeInstances.setSunDirection(sunDir);
     sunLight.position.copy(sunDir.multiplyScalar(distance));
   }
 
