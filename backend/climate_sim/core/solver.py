@@ -186,58 +186,6 @@ def monthly_step(
         lagged_precipitation = state.precipitation_field
         lagged_soil_moisture = state.soil_moisture
 
-        # Compute frozen cloud output for Jacobian consistency
-        # Cloud fractions are frozen during Newton iterations, but cloud temperatures
-        # (used in radiation) are recomputed from current surface temperature.
-        #
-        # Use pressure-based vertical velocity to avoid lag from wind divergence.
-        # Pressure depends on temperature via the thermal wind relation, so vertical
-        # velocity is implicitly a function of temperature. However, we freeze the
-        # cloud fractions computed at the start of each monthly step.
-        lagged_cloud_output = None
-        nlayers = start_temp_capped.shape[0]
-        if lagged_humidity is not None and nlayers >= 2:
-            # Use lagged temperatures for cloud computation
-            T_bl_cloud = start_temp_capped[1]
-            T_atm_cloud = start_temp_capped[2]
-
-            # Compute pressure anomaly from lagged surface temperature
-            from climate_sim.physics.atmosphere.pressure import compute_pressure
-            pressure = compute_pressure(
-                start_temp_capped[0],
-                itcz_rad=itcz_rad,
-                lat2d=surface_context.lat2d,
-                lon2d=surface_context.lon2d
-            )
-            nlat, nlon = start_temp_capped[0].shape
-            lat_spacing = 180.0 / nlat
-            lat_centers = -90.0 + (np.arange(nlat) + 0.5) * lat_spacing
-            cos_lat = np.clip(np.cos(np.deg2rad(lat_centers)), 1.0e-6, None)
-            weights = np.broadcast_to(cos_lat[:, None], (nlat, nlon))
-            mean_pressure = np.sum(pressure * weights) / np.sum(weights)
-            dp = pressure - mean_pressure
-            dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
-
-            # Compute vertical velocity from pressure anomaly
-            # Low pressure (ITCZ) → rising motion → convection
-            # High pressure (subtropical highs) → sinking motion → subsidence
-            vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
-
-            rh = specific_humidity_to_relative_humidity(
-                lagged_humidity, T_bl_cloud,
-                itcz_rad=itcz_rad, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d
-            )
-
-            lagged_cloud_output = compute_clouds_and_precipitation(
-                T_bl_K=T_bl_cloud,
-                T_atm_K=T_atm_cloud,
-                q=lagged_humidity,
-                rh=rh,
-                vertical_velocity=vertical_velocity,
-                T_surface_K=start_temp_capped[0],
-                ocean_mask=~surface_context.land_mask,
-            )
-
         def _effective_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
             return surface_context.albedo_model.effective_heat_capacity_surface(
                 temp_surface,
@@ -245,7 +193,6 @@ def monthly_step(
                 base_C_land=surface_context.base_C_land,
                 base_C_ocean=surface_context.base_C_ocean,
             )
-
 
         def _compute_itcz_from_temp(temp: np.ndarray) -> np.ndarray:
             """Compute ITCZ from current temperature iterate."""
@@ -256,6 +203,52 @@ def monthly_step(
                 surface_context.lat2d,
                 cell_areas,
             )
+
+        # Helper to compute cloud fractions from current temperature and humidity.
+        # Called both for the initial bootstrap and inside the Newton loop so that
+        # cloud fractions track the evolving humidity (eliminates month-to-month
+        # oscillation caused by frozen clouds lagging behind humidity changes).
+        from climate_sim.physics.atmosphere.pressure import compute_pressure
+
+        def _compute_cloud_fractions(temp: np.ndarray, humidity: np.ndarray):
+            """Recompute cloud output from current temperature and humidity."""
+            T_bl_cloud = temp[1]
+            T_atm_cloud = temp[2]
+            current_itcz_cf = _compute_itcz_from_temp(temp)
+            pressure = compute_pressure(
+                temp[0],
+                itcz_rad=current_itcz_cf,
+                lat2d=surface_context.lat2d,
+                lon2d=surface_context.lon2d,
+            )
+            nlat, nlon = temp[0].shape
+            lat_spacing = 180.0 / nlat
+            lat_centers = -90.0 + (np.arange(nlat) + 0.5) * lat_spacing
+            cos_lat = np.clip(np.cos(np.deg2rad(lat_centers)), 1.0e-6, None)
+            weights = np.broadcast_to(cos_lat[:, None], (nlat, nlon))
+            mean_pressure = np.sum(pressure * weights) / np.sum(weights)
+            dp = pressure - mean_pressure
+            dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
+            vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
+            rh = specific_humidity_to_relative_humidity(
+                humidity, T_bl_cloud,
+                itcz_rad=current_itcz_cf, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d,
+            )
+            return compute_clouds_and_precipitation(
+                T_bl_K=T_bl_cloud,
+                T_atm_K=T_atm_cloud,
+                q=humidity,
+                rh=rh,
+                vertical_velocity=vertical_velocity,
+                T_surface_K=temp[0],
+                ocean_mask=~surface_context.land_mask,
+            )
+
+        # Bootstrap cloud output from start-of-month state
+        lagged_cloud_output = None
+        nlayers = start_temp_capped.shape[0]
+        if lagged_humidity is not None and nlayers >= 2:
+            lagged_cloud_output = _compute_cloud_fractions(start_temp_capped, lagged_humidity)
 
         def _init_state(temp: np.ndarray) -> tuple[ModelState, np.ndarray]:
             """Create model state for RHS evaluation during Newton iterations.
@@ -329,6 +322,12 @@ def monthly_step(
         for newton_iter in range(NEWTON_MAX_ITERS):
             with time_block("newton_iteration"):
                 temp_capped = np.maximum(temp_next, temperature_floor)
+
+                # Update cloud fractions from current iterate so clouds track
+                # the evolving humidity (prevents month-to-month oscillation).
+                if lagged_humidity is not None and temp_capped.shape[0] >= 2:
+                    lagged_cloud_output = _compute_cloud_fractions(temp_capped, lagged_humidity)
+
                 state_capped, current_itcz = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
                     rhs_value = rhs_fn(state_capped, insolation_W_m2, current_itcz)
@@ -499,7 +498,14 @@ def monthly_step(
                         else:
                             evap_rate = np.zeros_like(lagged_humidity)
 
-                        precip_rate = lagged_precipitation if lagged_precipitation is not None else np.zeros_like(lagged_humidity)
+                        # Use precipitation from current cloud output (updated inside Newton)
+                        # rather than lagged start-of-month value, to avoid lag oscillation.
+                        if lagged_cloud_output is not None:
+                            precip_rate = lagged_cloud_output.total_precip
+                        elif lagged_precipitation is not None:
+                            precip_rate = lagged_precipitation
+                        else:
+                            precip_rate = np.zeros_like(lagged_humidity)
                         # Use flux-form advection for humidity conservation: -∇·(uq)
                         advection_tendency = (advection_operator.flux_tendency(lagged_humidity, wind_u_q, wind_v_q, dt=dt_seconds)
                                               if advection_operator is not None else np.zeros_like(lagged_humidity))

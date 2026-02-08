@@ -68,7 +68,7 @@ RH_EXPONENT_STRATIFORM = 1.0   # Stratiform: linear RH sensitivity
 # Below this threshold, the atmosphere is too dry for deep moist convection to
 # produce surface precipitation (sub-cloud evaporation, insufficient moisture depth).
 RH_CRIT_CONVECTIVE = 0.65      # Critical RH for convective onset
-RH_EXPONENT_CONVECTIVE = 2.0   # Quadratic above threshold (sharp nonlinear onset)
+RH_EXPONENT_CONVECTIVE = 1.5   # Super-linear above threshold (smoother than quadratic)
 
 # High cloud parameters
 # Increase factors to get ~20-30% high cloud coverage
@@ -423,7 +423,7 @@ def compute_convective_clouds(
     # Below RH_CRIT, air is too dry — any condensate re-evaporates (virga).
     # Use sigmoid for smooth transition (solver convergence).
     rh_clipped = np.clip(rh, 0.0, 1.0)
-    rh_factor = sigmoid(rh_clipped - RH_CRIT_CONVECTIVE, scale=0.08) ** RH_EXPONENT_CONVECTIVE
+    rh_factor = sigmoid(rh_clipped - RH_CRIT_CONVECTIVE, scale=0.12) ** RH_EXPONENT_CONVECTIVE
 
     # Rising motion factor: sigma(w - w_crit)
     # w > w_crit → factor approaches 1
