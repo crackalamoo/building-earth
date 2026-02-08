@@ -20,6 +20,7 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.vertical_motion import (
     VerticalMotionConfig,
     compute_vertical_motion_tendencies,
+    compute_bl_atm_mixing_tendencies,
     compute_hadley_subsidence_velocity,
     hadley_subsidence_drying_jacobian,
 )
@@ -351,6 +352,21 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     radiative[1] += bl_tendency
                     radiative[2] += atm_tendency
 
+                # Background BL-atmosphere mixing (global subsidence/entrainment)
+                tau_mix = (
+                    inputs.vertical_motion_cfg.tau_bl_atm_mixing_s
+                    if inputs.vertical_motion_cfg is not None
+                    else 0.0
+                )
+                if tau_mix > 0:
+                    bl_mix, atm_mix = compute_bl_atm_mixing_tendencies(
+                        boundary_temperature, atmosphere_temperature, tau_mix,
+                        C_bl=inputs.radiation_config.boundary_layer_heat_capacity,
+                        C_atm=inputs.radiation_config.atmosphere_heat_capacity,
+                    )
+                    radiative[1] += bl_mix
+                    radiative[2] += atm_mix
+
             return radiative
         if inputs.diffusion_operator.surface.enabled:
             radiative = radiative + inputs.diffusion_operator.surface.tendency(state.temperature)
@@ -556,6 +572,23 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 # Q_asc = coeff_asc*(α*T_atm - T_bl), coeff_asc < 0 where ascending
                 diag[2] += -coeff_sub * alpha / C_atm + coeff_asc * alpha / C_atm
                 cross[2, 1] += coeff_sub / C_atm - coeff_asc / C_atm
+
+            # Background BL-atmosphere mixing Jacobian
+            tau_mix = (
+                inputs.vertical_motion_cfg.tau_bl_atm_mixing_s
+                if inputs.vertical_motion_cfg is not None
+                else 0.0
+            )
+            if tau_mix > 0 and nlayers == 3:
+                from climate_sim.physics.vertical_motion import _ALPHA
+                C_bl = inputs.radiation_config.boundary_layer_heat_capacity
+                C_atm = inputs.radiation_config.atmosphere_heat_capacity
+                # dT_bl/dt = (α*T_atm - T_bl) / τ
+                diag[1] += -1.0 / tau_mix
+                cross[1, 2] += _ALPHA / tau_mix
+                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ
+                diag[2] += -(C_bl / C_atm) * _ALPHA / tau_mix
+                cross[2, 1] += (C_bl / C_atm) / tau_mix
 
             # Use updated surface diffusion matrix if ocean ψ was applied
             actual_surface_diffusion_matrix = surface_matrix

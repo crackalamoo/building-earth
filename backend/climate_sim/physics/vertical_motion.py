@@ -60,6 +60,11 @@ class VerticalMotionConfig:
     # How dry the descending air is relative to boundary layer.
     upper_troposphere_q_fraction: float = 0.20
 
+    # Background BL-atmosphere mixing timescale (seconds).
+    # Represents subsidence, entrainment, and turbulent exchange that
+    # returns latent heat from the free atmosphere back to the BL.
+    tau_bl_atm_mixing_s: float = 20.0 * 86400.0  # 20 days (Cronin 2013)
+
 
 def compute_vertical_motion_heating(
     divergence: np.ndarray,
@@ -282,3 +287,35 @@ def hadley_subsidence_drying_jacobian(
     Always negative (stabilizing).
     """
     return w_descent / boundary_layer_height_m * (upper_troposphere_q_fraction - 1.0)
+
+# Potential temperature factor: θ_atm = T_atm × (P0/P_ATM)^κ
+_P0 = 1013.25  # hPa
+_P_ATM = 500.0  # hPa
+_KAPPA = 0.286  # R/cp
+_ALPHA = (_P0 / _P_ATM) ** _KAPPA  # ≈ 1.219
+
+
+def compute_bl_atm_mixing_tendencies(
+    T_bl: np.ndarray,
+    T_atm: np.ndarray,
+    tau_s: float,
+    C_bl: float = BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
+    C_atm: float = ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Background BL-atmosphere heat exchange via subsidence and mixing.
+
+    The free atmosphere has high potential temperature from latent heating.
+    Air descending adiabatically arrives warmer than the BL.  This term
+    relaxes the BL toward the potential temperature of the free atmosphere,
+    closing the energy loop: surface → evaporation → condensation aloft →
+    subsidence warming back to BL.
+
+    Energy-conserving: C_bl dT_bl + C_atm dT_atm = 0.
+    """
+    theta_atm = T_atm * _ALPHA  # Potential temperature of free atm at surface
+    heat_flux = C_bl * (theta_atm - T_bl) / tau_s  # W/m²
+
+    dT_bl = heat_flux / C_bl      # = (θ_atm - T_bl) / τ
+    dT_atm = -heat_flux / C_atm   # Energy conservation
+
+    return dT_bl, dT_atm
