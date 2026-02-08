@@ -145,6 +145,14 @@ def _write_binary_export(
         fields.append(("cloud_fraction", total_cloud, "float16"))
         print(f"  cloud_fraction: {total_cloud.shape}")
 
+        fields.append(("cloud_high", high, "float16"))
+        print(f"  cloud_high: {high.shape}")
+        low_nonconv = np.clip(1 - (1 - strat) * (1 - marine), 0, 1)
+        fields.append(("cloud_low", low_nonconv, "float16"))
+        print(f"  cloud_low: {low_nonconv.shape}")
+        fields.append(("cloud_convective", conv, "float16"))
+        print(f"  cloud_convective: {conv.shape}")
+
     # Elevation: high-res (0.25deg) for 3D terrain displacement
     if interpolate:
         elevation = compute_cell_elevation(fine_lon2d, fine_lat2d, cache=False)

@@ -8,6 +8,7 @@
   import { loadBorders } from './borders';
   import { WindParticles } from './WindParticles';
   import { TreeInstances } from './TreeInstances';
+  import { CloudInstances } from './CloudInstances';
   import type { ClimateLayerData } from './loadBinaryData';
   import { ELEVATION_SCALE, NORMAL_BLEND, sampleElevation, displacedNormal, computeHillshadeGrid } from './elevation';
 
@@ -35,6 +36,7 @@
   let lastAnimateTime: number | null = null;
   let windParticles: WindParticles | null = null;
   let treeInstances: TreeInstances | null = null;
+  let cloudInstances: CloudInstances | null = null;
 
   // Derive discrete month for temperature display (nearest month)
   $: displayMonth = Math.round(displayMonthProgress) % 12;
@@ -66,6 +68,9 @@
     if (treeInstances) {
       treeInstances.getObject().rotation.y += radians;
     }
+    if (cloudInstances) {
+      cloudInstances.getObject().rotation.y += radians;
+    }
   }
 
   export function resetView(): void {
@@ -87,6 +92,9 @@
     }
     if (treeInstances) {
       treeInstances.getObject().rotation.y = 0;
+    }
+    if (cloudInstances) {
+      cloudInstances.getObject().rotation.y = 0;
     }
     sunOrbitAngle = 0;
   }
@@ -126,6 +134,7 @@
       if (blueMarbleGlobe) blueMarbleGlobe.visible = layer === 'blue-marble';
       if (windParticles) windParticles.getObject().visible = layer === 'blue-marble';
       if (treeInstances) treeInstances.getObject().visible = layer === 'blue-marble';
+      if (cloudInstances) cloudInstances.getObject().visible = layer === 'blue-marble';
     }
   }
 
@@ -391,7 +400,9 @@
       const cameraDir = new THREE.Vector3();
       camera.getWorldDirection(cameraDir);
       const dir = cameraDir.negate();
-      if (treeInstances) treeInstances.setSunDirection(dir.clone().normalize());
+      const normalizedDir = dir.clone().normalize();
+      if (treeInstances) treeInstances.setSunDirection(normalizedDir);
+      if (cloudInstances) cloudInstances.setSunDirection(normalizedDir);
       sunLight.position.copy(dir.multiplyScalar(distance));
       return;
     }
@@ -434,6 +445,7 @@
     ).normalize();
 
     if (treeInstances) treeInstances.setSunDirection(sunDir);
+    if (cloudInstances) cloudInstances.setSunDirection(sunDir.clone());
     sunLight.position.copy(sunDir.multiplyScalar(distance));
   }
 
@@ -451,6 +463,20 @@
     const obj = windParticles.getObject();
     obj.visible = activeLayer === 'blue-marble';
     // Sync rotation with globe
+    if (globe) obj.rotation.y = globe.rotation.y;
+    else if (blueMarbleGlobe) obj.rotation.y = blueMarbleGlobe.rotation.y;
+    scene.add(obj);
+  }
+
+  function initCloudInstances() {
+    if (!layerData?.cloud_convective && !layerData?.cloud_low && !layerData?.cloud_high) return;
+    if (cloudInstances) {
+      scene.remove(cloudInstances.getObject());
+      cloudInstances.dispose();
+    }
+    cloudInstances = new CloudInstances(layerData!);
+    const obj = cloudInstances.getObject();
+    obj.visible = activeLayer === 'blue-marble';
     if (globe) obj.rotation.y = globe.rotation.y;
     else if (blueMarbleGlobe) obj.rotation.y = blueMarbleGlobe.rotation.y;
     scene.add(obj);
@@ -536,6 +562,7 @@
       updateBlueMarbleColors(layerData, displayMonth);
       initWindParticles();
       initTreeInstances();
+      initCloudInstances();
     }
 
     // Load borders
@@ -590,6 +617,15 @@
       treeInstances.setMonth(displayMonthProgress, layerData);
     }
 
+    // Update clouds: setMonth for target opacity, update for drift + fade animation
+    if (cloudInstances && layerData && activeLayer === 'blue-marble') {
+      cloudInstances.setMonth(displayMonthProgress, layerData);
+      if (time !== undefined && lastAnimateTime !== null) {
+        const cdt = (time - lastAnimateTime) / 1000;
+        cloudInstances.update(cdt);
+      }
+    }
+
     lastAnimateTime = time ?? null;
 
     // Update sun position
@@ -636,6 +672,9 @@
     }
     if (treeInstances) {
       treeInstances.dispose();
+    }
+    if (cloudInstances) {
+      cloudInstances.dispose();
     }
     if (bordersGroup) {
       bordersGroup.traverse((obj) => {

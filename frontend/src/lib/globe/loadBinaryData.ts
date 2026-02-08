@@ -38,6 +38,12 @@ export interface ClimateLayerData {
   wind_speed_10m?: FieldData;
   /** Native 5deg cloud fraction [12, 36, 72] */
   cloud_fraction?: FieldData;
+  /** Native 5deg high cloud fraction [12, 36, 72] */
+  cloud_high?: FieldData;
+  /** Native 5deg low (stratiform+marine) cloud fraction [12, 36, 72] */
+  cloud_low?: FieldData;
+  /** Native 5deg convective cloud fraction [12, 36, 72] */
+  cloud_convective?: FieldData;
   /** 0.25deg elevation in meters [720, 1440] */
   elevation?: FieldData;
 }
