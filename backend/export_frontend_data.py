@@ -134,6 +134,17 @@ def _write_binary_export(
         fields.append(("soil_moisture", native_layers["soil_moisture"], "float16"))
         print(f"  soil_moisture: {native_layers['soil_moisture'].shape}")
 
+    # cloud_fraction: native resolution (combined from cloud components)
+    conv = native_layers.get("convective_cloud_frac")
+    strat = native_layers.get("stratiform_cloud_frac")
+    marine = native_layers.get("marine_sc_cloud_frac")
+    high = native_layers.get("high_cloud_frac")
+    if all(x is not None for x in [conv, strat, marine, high]):
+        low = 1 - (1 - conv) * (1 - strat) * (1 - marine)
+        total_cloud = np.clip(low + high * (1 - low), 0, 1)
+        fields.append(("cloud_fraction", total_cloud, "float16"))
+        print(f"  cloud_fraction: {total_cloud.shape}")
+
     # Elevation: high-res (0.25deg) for 3D terrain displacement
     if interpolate:
         elevation = compute_cell_elevation(fine_lon2d, fine_lat2d, cache=False)

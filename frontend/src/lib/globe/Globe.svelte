@@ -16,6 +16,7 @@
   export let showBorders: boolean = true;
   export let activeLayer: 'temperature' | 'blue-marble' = 'temperature';
   export let layerData: ClimateLayerData | null = null;
+  export let uniformLighting: boolean = false;
 
   const dispatch = createEventDispatcher();
 
@@ -113,6 +114,8 @@
   $: if (blueMarbleGlobe && layerData && activeLayer === 'blue-marble') {
     updateBlueMarbleColors(layerData, displayMonth);
   }
+
+  let ambientLight: THREE.AmbientLight;
 
   // Toggle visibility when activeLayer changes
   // Reference activeLayer before the if so Svelte tracks it as a dependency
@@ -381,8 +384,17 @@
   function updateSunPosition(isAutoRotating: boolean) {
     if (!sunLight || !camera) return;
 
-    const declination = getSunDeclination(displayMonthProgress);
     const distance = 50;
+
+    if (uniformLighting) {
+      // "Always Day": place sun directly behind camera so visible side is always lit
+      const cameraDir = new THREE.Vector3();
+      camera.getWorldDirection(cameraDir);
+      sunLight.position.copy(cameraDir.negate().multiplyScalar(distance));
+      return;
+    }
+
+    const declination = getSunDeclination(displayMonthProgress);
 
     let horizontalDir: THREE.Vector3;
 
@@ -461,7 +473,7 @@
     scene.background = new THREE.Color(0x000000);
 
     // Dim ambient light so night side is slightly visible
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.15);
+    ambientLight = new THREE.AmbientLight(0xffffff, 0.15);
     scene.add(ambientLight);
 
     // Directional light as sun - position updated each frame relative to camera
@@ -568,6 +580,11 @@
       if (activeLayer === 'blue-marble') {
         windParticles.update(dt);
       }
+    }
+
+    // Update seasonal tree foliage
+    if (treeInstances && layerData && activeLayer === 'blue-marble') {
+      treeInstances.setMonth(displayMonthProgress, layerData);
     }
 
     lastAnimateTime = time ?? null;

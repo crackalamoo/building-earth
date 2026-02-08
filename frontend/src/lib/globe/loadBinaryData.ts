@@ -36,6 +36,8 @@ export interface ClimateLayerData {
   wind_u_10m?: FieldData;
   wind_v_10m?: FieldData;
   wind_speed_10m?: FieldData;
+  /** Native 5deg cloud fraction [12, 36, 72] */
+  cloud_fraction?: FieldData;
   /** 0.25deg elevation in meters [720, 1440] */
   elevation?: FieldData;
 }

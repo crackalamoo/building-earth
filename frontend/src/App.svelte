@@ -17,6 +17,7 @@
   let globeComponent: Globe;
   let recording = false;
   let recordingProgress = '';
+  let uniformLighting = false;
 
   // Derive discrete month for UI display
   $: displayMonth = Math.round(monthProgress) % 12;
@@ -167,6 +168,7 @@
         {monthProgress}
         {activeLayer}
         {layerData}
+        {uniformLighting}
         on:interact={stopAutoRotate}
       />
     </div>
@@ -184,6 +186,20 @@
           on:click={() => activeLayer = 'blue-marble'}
           disabled={recording || !layerData}
         >Blue Marble</button>
+      </div>
+      <div class="layer-tabs">
+        <button
+          class="layer-tab"
+          class:active={!uniformLighting}
+          on:click={() => uniformLighting = false}
+          disabled={recording}
+        >Day/Night</button>
+        <button
+          class="layer-tab"
+          class:active={uniformLighting}
+          on:click={() => uniformLighting = true}
+          disabled={recording}
+        >Always Day</button>
       </div>
       <div class="separator"></div>
       <label>
