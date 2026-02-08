@@ -84,6 +84,7 @@
     if (recording || !globeComponent) return;
 
     stopPlaying();
+    globeComponent.resetView();
     recording = true;
     recordingProgress = 'Initializing...';
 
