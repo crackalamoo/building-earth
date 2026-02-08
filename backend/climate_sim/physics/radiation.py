@@ -166,44 +166,6 @@ def compute_emission_asymmetry_factor(emissivity: np.ndarray | float) -> np.ndar
     return np.clip(f, 0.0, 1.0)
 
 
-def compute_effective_emission_height(
-    emissivity: np.ndarray | float,
-    layer_height_m: float,
-    emissivity_dry: float = 0.0,
-) -> np.ndarray | float:
-    """Compute effective emission height for asymmetry calculation.
-
-    The atmosphere has two IR absorber types with different vertical profiles:
-    1. Well-mixed gases (CO2, O3): uniform, H_eff = 0.16 * tau * layer_height
-    2. Water vapor: exponential (scale height ~2 km), H_eff = 0.5 * tau * H_wv
-
-    If emissivity_dry <= 0, uses geometric height (appropriate for boundary layer).
-    Otherwise computes emissivity-weighted average of both components.
-    """
-    eps_total = np.asarray(emissivity)
-
-    if emissivity_dry <= 0:
-        return layer_height_m
-
-    # Decompose into well-mixed (CO2) and water vapor components
-    eps_dry = np.minimum(emissivity_dry, eps_total - 1e-6)
-    eps_H2O = np.maximum(eps_total - eps_dry, 1e-6)
-
-    # Well-mixed component: uniform absorber formula
-    eps_dry_safe = np.clip(eps_dry, 1e-6, 1.0 - 1e-6)
-    tau_dry = -np.log(1.0 - eps_dry_safe)
-    H_eff_dry = layer_height_m * 0.16 * tau_dry
-
-    # Water vapor component: exponential absorber formula
-    eps_H2O_safe = np.clip(eps_H2O, 1e-6, 1.0 - 1e-6)
-    tau_H2O = -np.log(1.0 - eps_H2O_safe)
-    H_eff_H2O = WATER_VAPOR_SCALE_HEIGHT_M * 0.5 * tau_H2O
-
-    # Emissivity-weighted average
-    eps_total_safe = np.maximum(eps_total, 1e-6)
-    return (eps_dry * H_eff_dry + eps_H2O * H_eff_H2O) / eps_total_safe
-
-
 def compute_effective_emission_temperatures(
     temperature_mid: np.ndarray,
     emissivity: np.ndarray | float,
@@ -213,17 +175,85 @@ def compute_effective_emission_temperatures(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute effective emission temperatures for upward and downward radiation.
 
-    Due to lapse rate within the layer, upward emission comes from colder upper
-    levels and downward emission from warmer lower levels. Set emissivity_dry=0
-    for boundary layer (uses geometric height), or ~0.55 for free atmosphere
-    (combines CO2 + H2O absorbers).
-    """
-    H_eff = compute_effective_emission_height(emissivity, layer_height_m, emissivity_dry)
-    delta_T = lapse_rate_K_per_m * H_eff
-    f = compute_emission_asymmetry_factor(emissivity)
+    For the boundary layer (emissivity_dry=0): H2O is well-mixed by turbulence,
+    so uses standard grey-slab asymmetry with geometric height.
 
-    T_eff_up = temperature_mid - 0.5 * delta_T * f
-    T_eff_down = temperature_mid + 0.5 * delta_T * f
+    For the free atmosphere (emissivity_dry>0): decomposes emission into
+    well-mixed gases (CO2/O3) and water vapor. CO2 uses standard grey-slab
+    asymmetry. H2O uses an absorption-weighted centroid that accounts for the
+    exponential concentration of water vapor near the layer base (scale height
+    ~2 km). This gives much stronger emission asymmetry because 88% of the
+    free atmosphere's emissivity comes from H2O, and H2O is concentrated in the
+    warm lower part of the layer.
+    """
+    if emissivity_dry <= 0:
+        # Boundary layer: well-mixed H2O, standard grey-slab asymmetry
+        H_eff = layer_height_m
+        delta_T = lapse_rate_K_per_m * H_eff
+        f = compute_emission_asymmetry_factor(emissivity)
+        T_eff_up = temperature_mid - 0.5 * delta_T * f
+        T_eff_down = temperature_mid + 0.5 * delta_T * f
+        return T_eff_up, T_eff_down
+
+    # Free atmosphere: split into uniform (dry) and exponential (H2O) components
+    eps_total = np.asarray(emissivity, dtype=np.float64)
+    eps_dry_val = np.minimum(emissivity_dry, eps_total - 1e-6)
+    eps_H2O = np.maximum(eps_total - eps_dry_val, 1e-6)
+
+    half_height = layer_height_m / 2.0  # distance from midpoint to base
+
+    # --- Component 1: Well-mixed gases (CO2/O3) — standard grey-slab ---
+    eps_dry_safe = np.clip(eps_dry_val, 1e-6, 1.0 - 1e-6)
+    tau_dry = -np.log(1.0 - eps_dry_safe)
+    H_eff_dry = layer_height_m * 0.16 * tau_dry
+    delta_T_dry = lapse_rate_K_per_m * H_eff_dry
+    f_dry = compute_emission_asymmetry_factor(eps_dry_val)
+    T_up_dry = temperature_mid - 0.5 * delta_T_dry * f_dry
+    T_down_dry = temperature_mid + 0.5 * delta_T_dry * f_dry
+
+    # --- Component 2: Water vapor — exponential profile ---
+    # H2O density decreases as exp(-z/H_wv) with scale height ~2 km.
+    # In a 7500m layer, 63% of H2O is in the bottom 2 km, 86% in bottom 4 km.
+    # The absorption-weighted centroid is well below the geometric midpoint.
+    H_wv = WATER_VAPOR_SCALE_HEIGHT_M  # 2000m
+    U = layer_height_m / H_wv  # layer height in scale heights (3.75)
+    exp_neg_U = np.exp(-U)
+
+    # Absorption-weighted centroid: mean height above layer base
+    # For exponential profile exp(-z/H) integrated from 0 to L:
+    #   <z> = H × [1 - (U+1)×e^(-U)] / [1 - e^(-U)]
+    centroid_above_base = H_wv * (1.0 - (U + 1.0) * exp_neg_U) / (1.0 - exp_neg_U)
+
+    # Centroid temperature (warmer than midpoint because centroid is below mid)
+    d_centroid_below_mid = half_height - centroid_above_base
+    T_centroid = temperature_mid + lapse_rate_K_per_m * d_centroid_below_mid
+
+    # Grey-slab asymmetry factor for H2O: interpolates between
+    # centroid (thin limit, τ→0) and layer boundary (thick limit, τ→∞)
+    f_H2O = compute_emission_asymmetry_factor(eps_H2O)
+
+    # Layer boundary temperatures
+    T_base = temperature_mid + lapse_rate_K_per_m * half_height
+    T_top = temperature_mid - lapse_rate_K_per_m * half_height
+
+    # Interpolate: thin → centroid, thick → boundary
+    T_down_H2O = T_centroid + f_H2O * (T_base - T_centroid)
+    T_up_H2O = T_centroid - f_H2O * (T_centroid - T_top)
+
+    # --- Combine: effective T that reproduces correct split flux ---
+    # eps_total × σ × T_eff⁴ = eps_dry × σ × T_dry⁴ + eps_H2O × σ × T_H2O⁴
+    eps_total_safe = np.maximum(eps_total, 1e-6)
+
+    T_eff_up = np.power(
+        (eps_dry_val * np.power(T_up_dry, 4) + eps_H2O * np.power(T_up_H2O, 4))
+        / eps_total_safe,
+        0.25,
+    )
+    T_eff_down = np.power(
+        (eps_dry_val * np.power(T_down_dry, 4) + eps_H2O * np.power(T_down_H2O, 4))
+        / eps_total_safe,
+        0.25,
+    )
 
     return T_eff_up, T_eff_down
 

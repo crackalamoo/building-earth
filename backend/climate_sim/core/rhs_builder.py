@@ -23,6 +23,7 @@ from climate_sim.physics.vertical_motion import (
     compute_bl_atm_mixing_tendencies,
     compute_hadley_subsidence_velocity,
     hadley_subsidence_drying_jacobian,
+    _ALPHA,
 )
 from climate_sim.physics.precipitation import compute_precipitation_jacobian
 from climate_sim.physics.humidity import (
@@ -37,7 +38,10 @@ from climate_sim.physics.clouds import (
 )
 from climate_sim.core.state import ModelState
 from climate_sim.core.math_core import spherical_cell_area, compute_divergence
-from climate_sim.data.constants import R_EARTH_METERS, LATENT_HEAT_VAPORIZATION_J_KG, GAS_CONSTANT_WATER_VAPOR_J_KG_K
+from climate_sim.data.constants import (
+    R_EARTH_METERS, LATENT_HEAT_VAPORIZATION_J_KG, GAS_CONSTANT_WATER_VAPOR_J_KG_K,
+    STEFAN_BOLTZMANN_W_M2_K4, HEAT_CAPACITY_AIR_J_KG_K, BOUNDARY_LAYER_HEIGHT_M,
+)
 from typing import Callable
 
 @dataclass
@@ -360,7 +364,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 )
                 if tau_mix > 0:
                     bl_mix, atm_mix = compute_bl_atm_mixing_tendencies(
-                        boundary_temperature, atmosphere_temperature, tau_mix,
+                        boundary_temperature, atmosphere_temperature,
                         C_bl=inputs.radiation_config.boundary_layer_heat_capacity,
                         C_atm=inputs.radiation_config.atmosphere_heat_capacity,
                     )
@@ -536,7 +540,6 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 and nlayers == 3
             )
             if vertical_motion_enabled and state.boundary_layer_wind_field is not None:
-                from climate_sim.data.constants import HEAT_CAPACITY_AIR_J_KG_K, BOUNDARY_LAYER_HEIGHT_M
                 wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
                 divergence = compute_divergence(wind_u_bl, wind_v_bl, inputs.lat2d, inputs.lon2d)
 
@@ -580,15 +583,16 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 else 0.0
             )
             if tau_mix > 0 and nlayers == 3:
-                from climate_sim.physics.vertical_motion import _ALPHA
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
-                # dT_bl/dt = (α*T_atm - T_bl) / τ
-                diag[1] += -1.0 / tau_mix
-                cross[1, 2] += _ALPHA / tau_mix
-                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ
-                diag[2] += -(C_bl / C_atm) * _ALPHA / tau_mix
-                cross[2, 1] += (C_bl / C_atm) / tau_mix
+                # τ_rad = C_atm / (4σT_atm³), treat as locally constant for Jacobian
+                tau_rad = C_atm / (4.0 * STEFAN_BOLTZMANN_W_M2_K4 * state.temperature[2]**3)
+                # dT_bl/dt = (α*T_atm - T_bl) / τ_rad
+                diag[1] += -1.0 / tau_rad
+                cross[1, 2] += _ALPHA / tau_rad
+                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ_rad
+                diag[2] += -(C_bl / C_atm) * _ALPHA / tau_rad
+                cross[2, 1] += (C_bl / C_atm) / tau_rad
 
             # Use updated surface diffusion matrix if ocean ψ was applied
             actual_surface_diffusion_matrix = surface_matrix

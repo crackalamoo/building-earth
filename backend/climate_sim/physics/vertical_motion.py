@@ -31,6 +31,7 @@ from climate_sim.data.constants import (
     BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
     STANDARD_LAPSE_RATE_K_PER_M,
     HEAT_CAPACITY_AIR_J_KG_K,
+    STEFAN_BOLTZMANN_W_M2_K4,
 )
 from climate_sim.physics.atmosphere.pressure import (
     LAT_SUBTROPICS_BASE,
@@ -298,24 +299,29 @@ _ALPHA = (_P0 / _P_ATM) ** _KAPPA  # ≈ 1.219
 def compute_bl_atm_mixing_tendencies(
     T_bl: np.ndarray,
     T_atm: np.ndarray,
-    tau_s: float,
     C_bl: float = BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
     C_atm: float = ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Background BL-atmosphere heat exchange via subsidence and mixing.
 
-    The free atmosphere has high potential temperature from latent heating.
-    Air descending adiabatically arrives warmer than the BL.  This term
-    relaxes the BL toward the potential temperature of the free atmosphere,
-    closing the energy loop: surface → evaporation → condensation aloft →
-    subsidence warming back to BL.
+    Relaxes the BL toward the potential temperature of the free atmosphere,
+    closing the latent heat return loop: surface evaporation -> condensation
+    aloft -> radiative cooling -> subsidence warming back to BL.
 
-    Energy-conserving: C_bl dT_bl + C_atm dT_atm = 0.
+    The timescale is the radiative-subsidence timescale (Cronin 2013):
+    tau_rad = C_atm / (4*sigma*T_atm^3), computed per grid cell from model
+    state. Varies ~22d (tropics) to ~27d (poles).
+
+    Energy-conserving: C_bl * dT_bl + C_atm * dT_atm = 0.
     """
     theta_atm = T_atm * _ALPHA  # Potential temperature of free atm at surface
-    heat_flux = C_bl * (theta_atm - T_bl) / tau_s  # W/m²
 
-    dT_bl = heat_flux / C_bl      # = (θ_atm - T_bl) / τ
+    # Radiative-subsidence timescale (seconds, per grid cell)
+    tau_rad = C_atm / (4.0 * STEFAN_BOLTZMANN_W_M2_K4 * T_atm**3)
+
+    heat_flux = C_bl * (theta_atm - T_bl) / tau_rad  # W/m²
+
+    dT_bl = heat_flux / C_bl      # = (theta_atm - T_bl) / tau_rad
     dT_atm = -heat_flux / C_atm   # Energy conservation
 
     return dT_bl, dT_atm
