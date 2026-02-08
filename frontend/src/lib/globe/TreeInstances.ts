@@ -155,31 +155,54 @@ function buildPalmGeometry(): THREE.BufferGeometry {
 }
 
 function computeTypeProbabilities(
-  annualTemp: number,
+  coldestMonth: number,
+  warmestMonth: number,
   annualSoilMoisture: number,
 ): [number, number, number] {
-  // Palm: tropical, needs warmth (>20°C) and moisture
+  // Palm: frost-free tropics — coldest month > 10°C, warmest > 24°C
   let palm = 0;
-  if (annualTemp > 20) {
-    palm = ((annualTemp - 20) / 10) * (0.2 + 0.8 * annualSoilMoisture);
+  if (coldestMonth > 10 && warmestMonth > 24) {
+    // Ramps from coldest 10→18°C
+    const frostFree = Math.min((coldestMonth - 10) / 8, 1);
+    palm = frostFree * (0.3 + 0.7 * annualSoilMoisture) * 1.5;
   }
 
-  // Conifer: dominates boreal/cold zones, strong below 10°C, fades by 18°C
+  // Conifer: boreal/montane — cold winters or cool summers
+  // Boreal (Siberia, Canada): harsh winters, can have warm summers
+  // Maritime (PNW, Scandinavia): mild winters but cool wet summers
+  // Also present in mild-winter temperate zones (W. Europe, NE US)
   let conifer = 0;
-  if (annualTemp < 18) {
-    const t = Math.max(0, Math.min(1, (18 - annualTemp) / 18));
-    // Quadratic ramp — heavy dominance when cold
-    conifer = t * t * 2.0;
+  {
+    // Cold winters → strong conifer signal. Ramps from +8°C down to -25°C
+    // Starts mild — even 5°C winters have some conifers (central Europe)
+    const coldWinter = coldestMonth < 8
+      ? Math.min((8 - coldestMonth) / 30, 1)
+      : 0;
+    // Cool summers → dominant conifer (maritime/montane PNW, Scandinavia)
+    const coolSummer = warmestMonth < 24
+      ? Math.min((24 - warmestMonth) / 8, 1)
+      : 0;
+    // Fades in truly tropical warmth (coldest > 15°C)
+    const tropicalFade = coldestMonth > 15
+      ? Math.max(0, 1 - (coldestMonth - 15) / 5)
+      : 1;
+    conifer = (coldWinter + coolSummer * 1.2) * tropicalFade;
+    // Moisture boost (PNW, Scandinavia)
+    conifer *= (0.4 + 0.6 * annualSoilMoisture);
   }
 
-  // Broadleaf: temperate sweet spot, peaks 12–22°C, needs some warmth and moisture
+  // Broadleaf: temperate deciduous or tropical evergreen
   let broadleaf = 0;
-  if (annualTemp > 2) {
-    // Ramps up from 2°C, peaks around 18°C
-    const warmth = Math.min((annualTemp - 2) / 16, 1);
-    // Falls off in very hot (>25°C) tropical zones where palm takes over
-    const heatFade = annualTemp > 25 ? Math.max(0, 1 - (annualTemp - 25) / 10) : 1;
-    broadleaf = warmth * heatFade * (0.4 + 0.6 * annualSoilMoisture);
+  // Temperate deciduous: distinct seasons, warm enough summer to grow
+  if (warmestMonth > 15 && coldestMonth > -15) {
+    const summerWarmth = Math.min((warmestMonth - 15) / 10, 1);
+    const winterSurvival = Math.min((coldestMonth + 15) / 15, 1);
+    broadleaf = summerWarmth * winterSurvival * (0.4 + 0.6 * annualSoilMoisture);
+  }
+  // Tropical broadleaf: warm year-round, high moisture (rainforest)
+  if (coldestMonth > 18 && annualSoilMoisture > 0.4) {
+    const tropicalBroad = Math.min((coldestMonth - 18) / 5, 1) * annualSoilMoisture;
+    broadleaf = Math.max(broadleaf, tropicalBroad * 1.2);
   }
 
   // Normalize
@@ -219,15 +242,17 @@ export class TreeInstances {
         // Skip ocean cells
         if (landMaskNative[i * nativeNlon + j] === 0) continue;
 
-        // Compute annual averages
-        let tempSum = 0, vegSum = 0, soilSum = 0;
+        // Compute monthly stats
+        let vegSum = 0, soilSum = 0;
+        let coldestMonth = Infinity, warmestMonth = -Infinity;
         for (let m = 0; m < 12; m++) {
           const offset = m * nativeNlat * nativeNlon + i * nativeNlon + j;
-          tempSum += surfaceData[offset];
+          const temp = surfaceData[offset];
+          if (temp < coldestMonth) coldestMonth = temp;
+          if (temp > warmestMonth) warmestMonth = temp;
           vegSum += vegData[offset];
           soilSum += soilData[offset];
         }
-        const annualTemp = tempSum / 12;
         const annualVeg = vegSum / 12;
         const annualSoil = Math.min(soilSum / 12, 1);
 
@@ -238,7 +263,7 @@ export class TreeInstances {
         const treeCount = Math.floor(annualVeg * 15 + rand());
         if (treeCount <= 0) continue;
 
-        const [pConifer, pBroadleaf, pPalm] = computeTypeProbabilities(annualTemp, annualSoil);
+        const [pConifer, pBroadleaf, pPalm] = computeTypeProbabilities(coldestMonth, warmestMonth, annualSoil);
 
         // Cell lat/lon bounds (native grid: i=0 is south pole row)
         const cellLatSouth = -90 + i * latStep;
