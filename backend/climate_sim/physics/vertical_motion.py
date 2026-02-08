@@ -32,7 +32,11 @@ from climate_sim.data.constants import (
     STANDARD_LAPSE_RATE_K_PER_M,
     HEAT_CAPACITY_AIR_J_KG_K,
 )
-
+from climate_sim.physics.atmosphere.pressure import (
+    LAT_SUBTROPICS_BASE,
+    SUBTROPICS_ITCZ_COUPLING,
+    SIGMA_SUBTROPICS,
+)
 
 # Physical constants
 GAMMA_DRY = 0.0098  # K/m, dry adiabatic lapse rate (for subsidence)
@@ -49,6 +53,12 @@ class VerticalMotionConfig:
     """Configuration for vertical motion physics."""
 
     enabled: bool = True
+
+    # Hadley subsidence: large-scale descent at subtropical highs
+    hadley_descent_velocity_m_s: float = 0.0003
+
+    # How dry the descending air is relative to boundary layer.
+    upper_troposphere_q_fraction: float = 0.20
 
 
 def compute_vertical_motion_heating(
@@ -223,3 +233,52 @@ def compute_subsidence_drying(
     dq_dt = mixing_rate * delta_q
 
     return dq_dt
+
+
+def compute_hadley_subsidence_velocity(
+    lat_rad: np.ndarray,
+    itcz_rad: np.ndarray,
+    peak_velocity_m_s: float = 0.003,
+) -> np.ndarray:
+    """Compute downward vertical velocity from Hadley cell overturning.
+
+    Returns vertical velocity (m/s), positive = descent.
+    """
+    lat_subtrop_north = LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
+    lat_subtrop_south = -LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
+
+    w = peak_velocity_m_s * (
+        np.exp(-((lat_rad - lat_subtrop_south) / SIGMA_SUBTROPICS) ** 2)
+        + np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_SUBTROPICS) ** 2)
+    )
+
+    return w
+
+
+def compute_hadley_subsidence_drying(
+    w_descent: np.ndarray,
+    humidity_field: np.ndarray,
+    upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
+    boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
+) -> np.ndarray:
+    """Compute humidity tendency from Hadley subsidence mixing dry air into BL.
+
+    dq/dt = (w / h_BL) * (q_upper - q_BL)
+    """
+    q_upper = humidity_field * upper_troposphere_q_fraction
+    delta_q = q_upper - humidity_field  # Always negative
+    mixing_rate = w_descent / boundary_layer_height_m
+    return mixing_rate * delta_q
+
+
+def hadley_subsidence_drying_jacobian(
+    w_descent: np.ndarray,
+    upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
+    boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
+) -> np.ndarray:
+    """Diagonal of the humidity Jacobian from Hadley subsidence drying.
+
+    d(dq/dt)/dq = (w / h_BL) * (f_upper - 1) = -(1 - f_upper) * w / h_BL
+    Always negative (stabilizing).
+    """
+    return w_descent / boundary_layer_height_m * (upper_troposphere_q_fraction - 1.0)

@@ -17,7 +17,12 @@ from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.diffusion import LayeredDiffusionOperator, DiffusionOperator
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.physics.vertical_motion import VerticalMotionConfig, compute_vertical_motion_tendencies
+from climate_sim.physics.vertical_motion import (
+    VerticalMotionConfig,
+    compute_vertical_motion_tendencies,
+    compute_hadley_subsidence_velocity,
+    hadley_subsidence_drying_jacobian,
+)
 from climate_sim.physics.precipitation import compute_precipitation_jacobian
 from climate_sim.physics.humidity import (
     COLUMN_MASS_KG_M2,
@@ -647,9 +652,24 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         state.humidity_field, w_largescale, t_bl
                     )
 
-                    # Humidity diagonal: dE/dq / M - dP/dq / M
+                    # Humidity diagonal: dE/dq / M - dP/dq / M + Hadley subsidence
                     # (dE/dq is negative, dP/dq is positive)
                     humidity_diag = dE_dq / COLUMN_MASS_KG_M2 - dP_dq / COLUMN_MASS_KG_M2
+
+                    # Hadley subsidence drying Jacobian (stabilizing: always negative)
+                    if (inputs.vertical_motion_cfg is not None
+                            and inputs.vertical_motion_cfg.enabled
+                            and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0):
+                        lat_rad = np.deg2rad(inputs.lat2d)
+                        # Use itcz_rad from the current state evaluation
+                        w_hadley = compute_hadley_subsidence_velocity(
+                            lat_rad, itcz_rad,
+                            peak_velocity_m_s=inputs.vertical_motion_cfg.hadley_descent_velocity_m_s,
+                        )
+                        humidity_diag += hadley_subsidence_drying_jacobian(
+                            w_hadley,
+                            upper_troposphere_q_fraction=inputs.vertical_motion_cfg.upper_troposphere_q_fraction,
+                        )
 
                     # Humidity-temperature coupling terms already computed above
 

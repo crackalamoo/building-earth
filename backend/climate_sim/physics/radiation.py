@@ -35,6 +35,36 @@ if TYPE_CHECKING:
 # emission height since water vapor is exponentially distributed.
 WATER_VAPOR_SCALE_HEIGHT_M = 2000.0
 
+# ---------------------------------------------------------------------------
+# Two-band water vapor greenhouse (Geen/Isca gray radiation scheme)
+# Splits LW spectrum into absorption bands (logarithmic in q) and
+# atmospheric window (linear + quadratic continuum in q).
+# ---------------------------------------------------------------------------
+_R_WINDOW = 0.3732   # Window fraction of LW spectrum
+
+# Non-window band: line absorption saturates logarithmically
+_A_NW = 0.10         # Well-mixed gases (CO2, O3)
+_B_NW = 23.8         # H2O line absorption
+_C_NW = 254.0        # Offset to prevent log(0)
+
+# Window band: continuum absorption (linear foreign + quadratic self)
+_A_WIN = 0.215       # Well-mixed gases in window
+_B_WIN = 147.11      # H2O-N2 foreign continuum
+_C_WIN = 1.0814e4    # H2O-H2O self-continuum
+
+# Layer pressure thicknesses (fraction of surface pressure)
+_DP_P0_BL = 0.15     # BL: 1000-850 hPa
+_DP_P0_ATM = 0.65    # Free atm: 850-200 hPa
+
+# Free atmosphere humidity as fraction of BL humidity
+# H2O scale height ~2 km, integrated over 1-8.5 km
+_Q_ATM_FRACTION = 0.26
+
+_EPS_DRY_ATM = (
+    (1 - _R_WINDOW) * (1 - np.exp(-_DP_P0_ATM * _A_NW))
+    + _R_WINDOW * (1 - np.exp(-_DP_P0_ATM * _A_WIN))
+)
+
 # Import cloud height constants from clouds module
 from climate_sim.physics.clouds import (
     CONVECTIVE_CLOUD_BASE_HEIGHT_M,
@@ -92,6 +122,23 @@ def compute_humidity_emissivity(
     """
     humidity_fraction = np.clip(humidity_q / q_reference, 0.0, 1.0)
     return eps_dry + (eps_moist - eps_dry) * humidity_fraction
+
+
+def compute_two_band_emissivity(
+    humidity_q: np.ndarray,
+    dp_p0: float,
+) -> np.ndarray:
+    """Compute layer emissivity using two-band gray radiation (Geen/Isca).
+
+    Non-window band (~63%): line absorption saturates logarithmically.
+    Window band (~37%): continuum absorption, linear + quadratic in q.
+    """
+    q = np.maximum(humidity_q, 0.0)
+    tau_nw = dp_p0 * (_A_NW + _B_NW * np.log(_C_NW * q + 1.0))
+    tau_win = dp_p0 * (_A_WIN + _B_WIN * q + _C_WIN * q**2)
+    eps_nw = 1.0 - np.exp(-tau_nw)
+    eps_win = 1.0 - np.exp(-tau_win)
+    return (1.0 - _R_WINDOW) * eps_nw + _R_WINDOW * eps_win
 
 
 def compute_emission_asymmetry_factor(emissivity: np.ndarray | float) -> np.ndarray | float:
@@ -412,14 +459,11 @@ def radiative_balance_rhs(
     sigma = config.stefan_boltzmann
     eps_sfc = config.emissivity_surface
 
-    # Clear-sky emissivity: humidity-dependent with dry floor from CO2/O3
-    # and moist limit calibrated to Prata/Brutsaert at tropical humidity
+    # Clear-sky emissivity: two-band (logarithmic line + quadratic continuum)
+    # Free atmosphere uses q_atm ≈ 26% of BL humidity (H2O scale height ~2 km)
     if humidity_q is not None:
-        eps_clear = compute_humidity_emissivity(
-            humidity_q,
-            eps_dry=0.52,
-            eps_moist=0.78,
-            q_reference=0.010,
+        eps_clear = compute_two_band_emissivity(
+            humidity_q * _Q_ATM_FRACTION, _DP_P0_ATM
         )
     else:
         eps_clear = config.emissivity_atmosphere
@@ -433,7 +477,7 @@ def radiative_balance_rhs(
     # Effective emission temperatures with up/down asymmetry due to lapse rate.
     # Clouds emit separately, so atmosphere uses eps_clear only.
     T_atm_up, T_atm_down = compute_effective_emission_temperatures(
-        atmosphere, eps_clear, ATMOSPHERE_LAYER_HEIGHT_M, emissivity_dry=0.52
+        atmosphere, eps_clear, ATMOSPHERE_LAYER_HEIGHT_M, emissivity_dry=_EPS_DRY_ATM
     )
     atm_own_emission_up = eps_clear * sigma * np.power(T_atm_up, 4)
     atm_own_emission_down = eps_clear * sigma * np.power(T_atm_down, 4)
@@ -672,14 +716,9 @@ def radiative_balance_rhs(
         + high_effective_frac * high_down_effective
     )
 
-    # BL optical depth and emissivity: humidity-dependent
-    # τ_BL = τ_CO2 + τ_H2O, where τ_CO2 ≈ 0.18 for 1km path, τ_H2O = 70 * q
-    # Calibrated to match Prata/Brutsaert clear-sky emissivity
+    # BL emissivity: two-band (same physics as free atm, using BL humidity directly)
     if humidity_q is not None:
-        # Floor humidity to prevent overflow in exp when q is very negative
-        q_safe = np.maximum(humidity_q, 0.0)
-        tau_bl = 0.18 + 70.0 * q_safe
-        eps_bl = 1.0 - np.exp(-tau_bl)
+        eps_bl = compute_two_band_emissivity(humidity_q, _DP_P0_BL)
     else:
         eps_bl = BOUNDARY_LAYER_EMISSIVITY
 
@@ -925,13 +964,10 @@ def radiative_balance_rhs_temperature_derivative(
         marine_sc_frac = np.zeros_like(surface)
         high_frac = np.zeros_like(surface)
 
-    # Clear-sky emissivity (same parameters as RHS)
+    # Clear-sky emissivity (must match RHS)
     if humidity_q is not None:
-        eps_clear = compute_humidity_emissivity(
-            humidity_q,
-            eps_dry=0.52,
-            eps_moist=0.78,
-            q_reference=0.010,
+        eps_clear = compute_two_band_emissivity(
+            humidity_q * _Q_ATM_FRACTION, _DP_P0_ATM
         )
     else:
         eps_clear = config.emissivity_atmosphere
@@ -943,7 +979,7 @@ def radiative_balance_rhs_temperature_derivative(
     ) / heat_capacity_field
 
     T_atm_up, T_atm_down = compute_effective_emission_temperatures(
-        atmosphere, eps_atm, ATMOSPHERE_LAYER_HEIGHT_M, emissivity_dry=0.52
+        atmosphere, eps_atm, ATMOSPHERE_LAYER_HEIGHT_M, emissivity_dry=_EPS_DRY_ATM
     )
 
     # Clear fraction (must match RHS calculation)
@@ -1067,13 +1103,9 @@ def radiative_balance_rhs_temperature_derivative(
 
     boundary = _with_floor(temperature_K[1], floor)
 
-    # BL optical depth and emissivity: humidity-dependent (must match RHS)
-    # τ_BL = τ_CO2 + τ_H2O, where τ_CO2 ≈ 0.18 for 1km path, τ_H2O = 70 * q
+    # BL emissivity: two-band (must match RHS)
     if humidity_q is not None:
-        # Floor humidity to prevent overflow in exp when q is very negative
-        q_safe = np.maximum(humidity_q, 0.0)
-        tau_bl = 0.18 + 70.0 * q_safe
-        eps_bl = 1.0 - np.exp(-tau_bl)
+        eps_bl = compute_two_band_emissivity(humidity_q, _DP_P0_BL)
     else:
         eps_bl = BOUNDARY_LAYER_EMISSIVITY
 

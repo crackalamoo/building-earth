@@ -36,6 +36,11 @@ from climate_sim.core.state import (
 )
 from climate_sim.core.postprocess import postprocess_periodic_cycle_results
 from climate_sim.core.rhs_builder import create_rhs_functions, RhsFn, RhsDerivativeFn, RhsBuildInputs
+from climate_sim.physics.vertical_motion import (
+    VerticalMotionConfig,
+    compute_hadley_subsidence_velocity,
+    compute_hadley_subsidence_drying,
+)
 from climate_sim.core.operators import SurfaceHeatCapacityContext, build_model_operators
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
 from climate_sim.physics.ocean_currents import compute_ocean_currents
@@ -98,6 +103,7 @@ def monthly_step(
     latent_heat_model: "LatentHeatExchangeModel | None" = None,
     advection_operator: "AdvectionOperator | None" = None,
     humidity_diffusion_operator: "DiffusionOperator | None" = None,
+    vertical_motion_cfg: VerticalMotionConfig | None = None,
     effective_mu: np.ndarray | None = None,
     ocean_albedo: np.ndarray | None = None,
 ) -> ModelState:
@@ -501,7 +507,21 @@ def monthly_step(
                         diffusion_tendency = (humidity_diffusion_operator.tendency(lagged_humidity)
                                               if humidity_diffusion_operator is not None and humidity_diffusion_operator.enabled
                                               else np.zeros_like(lagged_humidity))
-                        humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency + diffusion_tendency
+                        # Hadley subsidence drying: large-scale descent mixes dry upper-tropospheric air into BL
+                        if (vertical_motion_cfg is not None and vertical_motion_cfg.enabled
+                                and vertical_motion_cfg.hadley_descent_velocity_m_s > 0):
+                            lat_rad = np.deg2rad(surface_context.lat2d)
+                            w_hadley = compute_hadley_subsidence_velocity(
+                                lat_rad, itcz_rad,
+                                peak_velocity_m_s=vertical_motion_cfg.hadley_descent_velocity_m_s,
+                            )
+                            hadley_drying = compute_hadley_subsidence_drying(
+                                w_hadley, lagged_humidity,
+                                upper_troposphere_q_fraction=vertical_motion_cfg.upper_troposphere_q_fraction,
+                            )
+                        else:
+                            hadley_drying = np.zeros_like(lagged_humidity)
+                        humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency + diffusion_tendency + hadley_drying
 
                         # Humidity residual: q_new - q_old - dt * tendency
                         start_humidity = state.humidity_field if state.humidity_field is not None else lagged_humidity
@@ -766,6 +786,7 @@ def evolve_year(
     latent_heat_model: LatentHeatExchangeModel | None = None,
     advection_operator: AdvectionOperator | None = None,
     humidity_diffusion_operator: DiffusionOperator | None = None,
+    vertical_motion_cfg: VerticalMotionConfig | None = None,
     monthly_effective_mu: np.ndarray | None = None,
     monthly_ocean_albedo: np.ndarray | None = None,
 ) -> list[ModelState]:
@@ -799,6 +820,7 @@ def evolve_year(
                 latent_heat_model=latent_heat_model,
                 advection_operator=advection_operator,
                 humidity_diffusion_operator=humidity_diffusion_operator,
+                vertical_motion_cfg=vertical_motion_cfg,
                 effective_mu=monthly_effective_mu[month] if monthly_effective_mu is not None else None,
                 ocean_albedo=monthly_ocean_albedo[month] if monthly_ocean_albedo is not None else None,
             )
@@ -857,6 +879,7 @@ def find_periodic_climate_cycle(
     latent_heat_model: LatentHeatExchangeModel | None = None,
     advection_operator: AdvectionOperator | None = None,
     humidity_diffusion_operator: DiffusionOperator | None = None,
+    vertical_motion_cfg: VerticalMotionConfig | None = None,
     monthly_effective_mu: np.ndarray | None = None,
     monthly_ocean_albedo: np.ndarray | None = None,
 ) -> list[ModelState]:
@@ -912,6 +935,7 @@ def find_periodic_climate_cycle(
                     latent_heat_model=latent_heat_model,
                     advection_operator=advection_operator,
                     humidity_diffusion_operator=humidity_diffusion_operator,
+                    vertical_motion_cfg=vertical_motion_cfg,
                     monthly_effective_mu=monthly_effective_mu,
                     monthly_ocean_albedo=monthly_ocean_albedo,
                 )
@@ -1225,6 +1249,7 @@ def solve_periodic_climate(
         latent_heat_model=latent_heat_model,
         advection_operator=operators.advection_operator,
         humidity_diffusion_operator=humidity_diffusion_op,
+        vertical_motion_cfg=operators.vertical_motion_cfg,
         monthly_effective_mu=operators.monthly_effective_mu,
         monthly_ocean_albedo=operators.monthly_ocean_albedo,
     )
