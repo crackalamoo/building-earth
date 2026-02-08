@@ -5,12 +5,10 @@ from __future__ import annotations
 from typing import Callable, Dict
 
 import numpy as np
-from numpy.typing import NDArray
 from scipy import sparse
 from scipy.sparse import linalg as splinalg
 
 import climate_sim.physics.radiation as radiation
-from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.humidity import (
     compute_humidity_and_precipitation,
     compute_saturation_specific_humidity,
@@ -64,13 +62,6 @@ INEXACT_NEWTON_GMRES_ATOL = 0.0
 INEXACT_NEWTON_GMRES_RESTART = 50
 INEXACT_NEWTON_GMRES_MAXITER = 50
 
-
-type FloatArray = NDArray[np.floating]
-
-type RhsFactory = Callable[[RhsBuildInputs], tuple[RhsFn, RhsDerivativeFn]]
-type InitialGuessFn = Callable[[FloatArray, FloatArray, RadiationConfig, FloatArray], FloatArray]
-type MonthlyInsolationLatFn = Callable[[FloatArray], FloatArray]
-type HeatCapacityFieldFn = Callable[[FloatArray, FloatArray], FloatArray]
 
 
 def _build_surface_jacobian_block(

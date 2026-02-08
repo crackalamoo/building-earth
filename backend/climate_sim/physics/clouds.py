@@ -61,8 +61,14 @@ W_CRIT = 0.005  # m/s - threshold for rising/sinking discrimination
 # RH exponents for cloud types
 # Lower exponents = less sensitivity to RH (clouds form at lower RH)
 RH_EXPONENT_MARINE_SC = 0.5    # Marine Sc: weak RH sensitivity (inversion traps moisture)
-RH_EXPONENT_CONVECTIVE = 1.0   # Convective: linear RH sensitivity
 RH_EXPONENT_STRATIFORM = 1.0   # Stratiform: linear RH sensitivity
+
+# Convective precipitation onset threshold (Bretherton et al. 2004, Rushley et al. 2018)
+# Precipitation picks up sharply at column RH ~ 0.7-0.8 over tropical oceans.
+# Below this threshold, the atmosphere is too dry for deep moist convection to
+# produce surface precipitation (sub-cloud evaporation, insufficient moisture depth).
+RH_CRIT_CONVECTIVE = 0.65      # Critical RH for convective onset
+RH_EXPONENT_CONVECTIVE = 2.0   # Quadratic above threshold (sharp nonlinear onset)
 
 # High cloud parameters
 # Increase factors to get ~20-30% high cloud coverage
@@ -412,9 +418,12 @@ def compute_convective_clouds(
     tuple[np.ndarray, np.ndarray]
         (convective_frac, convective_albedo)
     """
-    # RH factor: need moist boundary layer for convection
-    # RH^2 gives stronger moisture dependence
-    rh_factor = np.power(np.clip(rh, 0.0, 1.0), RH_EXPONENT_CONVECTIVE)
+    # RH factor: need moist boundary layer for deep moist convection.
+    # Bretherton et al. (2004): precipitation onset at CRH ~ 0.7.
+    # Below RH_CRIT, air is too dry — any condensate re-evaporates (virga).
+    # Use sigmoid for smooth transition (solver convergence).
+    rh_clipped = np.clip(rh, 0.0, 1.0)
+    rh_factor = sigmoid(rh_clipped - RH_CRIT_CONVECTIVE, scale=0.08) ** RH_EXPONENT_CONVECTIVE
 
     # Rising motion factor: sigma(w - w_crit)
     # w > w_crit → factor approaches 1

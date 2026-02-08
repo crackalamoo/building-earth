@@ -106,8 +106,6 @@ class DiffusionConfig:
     # Reduced from 2000 since we now have explicit ocean currents for advective transport
     surface_kappa_ref_m2_s: float = 1.0e3
 
-    surface_resolution_ref_deg: float = 1.0
-
     # Ocean latitude-dependent scaling to represent thermohaline circulation
     # MOC transports ~2 PW poleward, requiring strong effective diffusivity
     use_latitude_dependent_surface: bool = False
@@ -118,7 +116,6 @@ class DiffusionConfig:
     # Atmospheric eddy diffusivity: ~1-5e6 m²/s for mid-latitude storm tracks
     atmosphere_kappa_ref_m2_s: float = 1.2e6
 
-    atmosphere_resolution_ref_deg: float = 1.0
     enabled: bool = True
 
     # Latitude-dependent atmospheric eddy diffusivity scaling
@@ -139,19 +136,6 @@ class DiffusionConfig:
     # Same κ for both layers preserves total column transport and gives the
     # BL its correct ~12% share (via its smaller heat capacity).
     boundary_layer_diffusivity_scale: float = 1.0
-
-    @staticmethod
-    def _scaled_diffusivity(
-        grid_resolution_deg: float, kappa_ref: float, resolution_ref_deg: float
-    ) -> float:
-        if grid_resolution_deg <= 0.0:
-            raise ValueError("Grid resolution must be positive to scale diffusivity")
-        if resolution_ref_deg <= 0.0:
-            raise ValueError(
-                "Reference resolution must be positive to scale diffusivity"
-            )
-        scale = grid_resolution_deg / resolution_ref_deg
-        return kappa_ref * scale
 
     def surface_diffusivity(self, grid_resolution_deg: float) -> float:
         return self.surface_kappa_ref_m2_s

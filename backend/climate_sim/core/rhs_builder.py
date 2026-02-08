@@ -17,7 +17,7 @@ from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.diffusion import LayeredDiffusionOperator, DiffusionOperator
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.physics.vertical_motion import VerticalMotionConfig, compute_vertical_motion_tendency, compute_vertical_motion_tendencies
+from climate_sim.physics.vertical_motion import VerticalMotionConfig, compute_vertical_motion_tendencies
 from climate_sim.physics.precipitation import compute_precipitation_jacobian
 from climate_sim.physics.humidity import (
     COLUMN_MASS_KG_M2,
