@@ -687,14 +687,32 @@ def monthly_step(
             tau_evap = 7 * 86400.0
             evaporation_rate = np.maximum(q_sat - lagged_humidity, 0) * COLUMN_MASS_KG_M2 / tau_evap
 
-        # Soil moisture evolution
-        # Soil capacity: 300mm root zone depth (more realistic than 100mm)
+        # Soil moisture evolution (semi-implicit two-component drainage)
+        # Soil capacity: 300mm root zone depth
         SOIL_CAPACITY_KG_M2 = 300.0  # mm = kg/m²
-        TAU_DRAIN_SECONDS = 60 * 86400.0  # ~2 months baseflow drainage
+        THETA_FC = 0.35  # field capacity
+        TAU_FAST_SECONDS = 3 * 86400.0  # fast gravitational drainage above field capacity
+        TAU_SLOW_SECONDS = 365 * 86400.0  # slow baseflow below field capacity
         p_minus_e = final_precipitation - evaporation_rate
-        soil_tendency = p_minus_e / SOIL_CAPACITY_KG_M2 - lagged_soil / TAU_DRAIN_SECONDS
-        new_soil = lagged_soil + dt_seconds * soil_tendency
-        new_soil = np.clip(new_soil, 0.0, 1.0)
+        source = p_minus_e / SOIL_CAPACITY_KG_M2  # θ/s from P-E
+
+        # Semi-implicit: solve dθ/dt = source - drainage(θ) analytically
+        # Below field capacity: dθ/dt = source - θ/τ_slow
+        #   θ(t) = (θ_0 - S*τ_s)*exp(-t/τ_s) + S*τ_s
+        # Above field capacity: fast-drain the excess, then slow-drain the rest
+        #   θ_excess decays as exp(-t/τ_fast), base drains at τ_slow
+
+        # Step 1: Apply slow drainage + source to full θ (analytic solution)
+        decay_slow = np.exp(-dt_seconds / TAU_SLOW_SECONDS)
+        equilibrium_slow = source * TAU_SLOW_SECONDS  # θ at which source = slow drainage
+        theta_after_slow = (lagged_soil - equilibrium_slow) * decay_slow + equilibrium_slow
+
+        # Step 2: Fast-drain any excess above field capacity
+        excess = np.maximum(theta_after_slow - THETA_FC, 0.0)
+        decay_fast = np.exp(-dt_seconds / TAU_FAST_SECONDS)
+        theta_after_fast = np.minimum(theta_after_slow, THETA_FC) + excess * decay_fast
+
+        new_soil = np.clip(theta_after_fast, 0.0, 1.0)
         new_soil = np.where(surface_context.land_mask, new_soil, 1.0)
 
         # Compute cloud fractions for diagnostics

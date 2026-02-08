@@ -1242,7 +1242,7 @@ def radiative_equilibrium_initial_guess(
 
     surface, atmosphere = radiative_equilibrium_temps(coverage, albedo, top_height)
 
-    boundary = 0.7 * surface + 0.3 * atmosphere
+    boundary = surface - STANDARD_LAPSE_RATE_K_PER_M * (BOUNDARY_LAYER_HEIGHT_M / 2.0)
     first_pass_temp = np.stack([surface, boundary, atmosphere])
 
     first_pass_temp = _with_floor(first_pass_temp, config.temperature_floor)
@@ -1251,7 +1251,7 @@ def radiative_equilibrium_initial_guess(
     coverage, albedo, top_height = compute_cloud_properties(first_pass_temp[0])
     surface, atmosphere = radiative_equilibrium_temps(coverage, albedo, top_height)
 
-    boundary = 0.7 * surface + 0.3 * atmosphere
+    boundary = surface - STANDARD_LAPSE_RATE_K_PER_M * (BOUNDARY_LAYER_HEIGHT_M / 2.0)
     stacked = np.stack([surface, boundary, atmosphere])
 
     return _with_floor(stacked, config.temperature_floor)

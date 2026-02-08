@@ -187,7 +187,7 @@ class LatentHeatExchangeModel:
         # Three-layer system: BL gets fraction of precipitation heating
         # This compensates for cooling from vertical ascent at the ITCZ
         if boundary_layer_temperature_K is not None:
-            BL_LATENT_FRACTION = 0.30  # 30% to BL, 70% to atmosphere
+            BL_LATENT_FRACTION = 0.05  # 5% to BL, 95% to atmosphere (condensation occurs above BL)
             if precipitation_rate is not None:
                 precip_heating = precipitation_rate * LATENT_HEAT_VAPORIZATION_J_KG
                 boundary_tendency = BL_LATENT_FRACTION * precip_heating / self._boundary_layer_heat_capacity
