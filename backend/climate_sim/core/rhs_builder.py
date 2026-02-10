@@ -528,12 +528,10 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     cross = lh_cross
 
             # Vertical motion Jacobian (3-layer only)
-            # Tendency: Q = ρ*cp*w*f*(θ_atm - θ_bl) where θ_atm = T_atm*(P0/P_ATM)^κ
-            #
-            # True Jacobian has signed w, but ascent (w<0) creates destabilizing
-            # positive diagonal terms. We use max(w,0) to only include subsidence
-            # in the Jacobian - this keeps diagonals negative (stabilizing) while
-            # still capturing the dominant subtropical subsidence coupling.
+            # Tendency: Q = ρ*cp*w*f*(θ_atm - θ_bl), symmetric for ascent/descent.
+            # dT_bl = Q/C_bl, dT_atm = -Q/C_atm (energy conserving).
+            # Note: ascent (w<0) gives positive BL diagonal (destabilizing),
+            # but total diagonal remains negative from radiation + other terms.
             vertical_motion_enabled = (
                 inputs.vertical_motion_cfg is not None
                 and inputs.vertical_motion_cfg.enabled
@@ -545,8 +543,6 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
                 h_bl = BOUNDARY_LAYER_HEIGHT_M
                 w = divergence * h_bl  # m/s, positive = subsidence
-                w_subsidence = np.maximum(w, 0)  # Only subsidence for BL
-                w_ascent = np.minimum(w, 0)      # Only ascent (negative)
 
                 rho = 1.0  # kg/m³
                 cp = HEAT_CAPACITY_AIR_J_KG_K
@@ -559,22 +555,18 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 f = (np.log(P0) - np.log(P_EXCHANGE)) / (np.log(P0) - np.log(P_ATM))
                 alpha = (P0 / P_ATM) ** KAPPA  # ≈ 1.22
 
-                coeff_sub = rho * cp * w_subsidence * f
-                coeff_asc = rho * cp * w_ascent * f  # negative where ascending
+                coeff = rho * cp * w * f  # signed: positive for subsidence, negative for ascent
 
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
 
-                # BL Jacobian: only subsidence (ascent replacement via advection)
-                # dT_bl = Q_sub/C_bl where Q_sub = coeff_sub*(α*T_atm - T_bl)
-                diag[1] += -coeff_sub / C_bl
-                cross[1, 2] += coeff_sub * alpha / C_bl
+                # BL: dT_bl = coeff*(α*T_atm - T_bl) / C_bl
+                diag[1] += -coeff / C_bl
+                cross[1, 2] += coeff * alpha / C_bl
 
-                # Atm Jacobian: subsidence (loses heat) + ascent (gains cool BL air)
-                # dT_atm = -Q_sub/C_atm + Q_asc/C_atm
-                # Q_asc = coeff_asc*(α*T_atm - T_bl), coeff_asc < 0 where ascending
-                diag[2] += -coeff_sub * alpha / C_atm + coeff_asc * alpha / C_atm
-                cross[2, 1] += coeff_sub / C_atm - coeff_asc / C_atm
+                # Atm: dT_atm = -coeff*(α*T_atm - T_bl) / C_atm
+                diag[2] += -coeff * alpha / C_atm
+                cross[2, 1] += coeff / C_atm
 
             # Background BL-atmosphere mixing Jacobian
             tau_mix = (

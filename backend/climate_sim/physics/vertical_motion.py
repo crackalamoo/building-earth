@@ -166,27 +166,13 @@ def compute_vertical_motion_tendencies(
 
     theta_exchange = theta_bl + f * (theta_atm - theta_bl)
 
-    # Split into subsidence and ascent
-    w_subsidence = np.maximum(w, 0)  # positive where sinking
-    w_ascent = np.minimum(w, 0)      # negative where rising
+    # Vertical heat exchange between BL and atmosphere.
+    # Q > 0 when w > 0 (subsidence warms BL), Q < 0 when w < 0 (ascent cools BL).
+    # Energy conserving: BL gains Q/C_bl, atmosphere loses Q/C_atm.
+    Q_vertical = rho * cp * w * (theta_exchange - theta_bl)
 
-    # SUBSIDENCE (w > 0): Energy-conserving exchange between atm and BL
-    # Air at θ_exchange descends into BL, warming it
-    Q_subsidence = rho * cp * w_subsidence * (theta_exchange - theta_bl)
-
-    # ASCENT (w < 0): BL unchanged (replacement from advection), but
-    # atmosphere receives air at θ_bl. Since θ_bl < θ_exchange typically,
-    # this "cools" the atmosphere (adds relatively cool air).
-    # Q_ascent is the heat flux INTO atmosphere from rising BL air
-    # w_ascent is negative, and we want positive flux when θ_bl < θ_exchange
-    Q_ascent = rho * cp * w_ascent * (theta_exchange - theta_bl)
-    # When w < 0 and θ_exchange > θ_bl: Q_ascent < 0 (atmosphere cools)
-
-    # BL tendency: only from subsidence (ascent replacement via advection)
-    dT_bl = Q_subsidence / C_bl
-
-    # Atmosphere tendency: from both subsidence (loses heat) and ascent (gains cool air)
-    dT_atm = -Q_subsidence / C_atm + Q_ascent / C_atm
+    dT_bl = Q_vertical / C_bl
+    dT_atm = -Q_vertical / C_atm
 
     return dT_bl, dT_atm
 

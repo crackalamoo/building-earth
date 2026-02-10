@@ -132,11 +132,8 @@ class DiffusionConfig:
     atmosphere_zonal_polar_scale: float = 0.7           # Isotropic with meridional
 
     # Boundary layer diffusivity scaling relative to free atmosphere.
-    # Baroclinic eddies are troposphere-deep — the same storms that mix the
-    # free atmosphere also mix the BL (Jansen & Ferrari 2013: eddy PV
-    # diffusivity is largest at the surface). Observed v'T' peaks at ~850 hPa.
-    # Same κ for both layers preserves total column transport and gives the
-    # BL its correct ~12% share (via its smaller heat capacity).
+    # Same κ as atmosphere; the smaller heat capacity (C_bl/C_atm ≈ 1/7.5)
+    # already ensures BL carries only ~12% of total diffusive transport.
     boundary_layer_diffusivity_scale: float = 1.0
 
     def surface_diffusivity(self, grid_resolution_deg: float) -> float:
