@@ -7,7 +7,7 @@
 
   let temperatureData: number[][][] | null = null;
   let layerData: ClimateLayerData | null = null;
-  let activeLayer: 'temperature' | 'blue-marble' = 'temperature';
+  let activeLayer: 'temperature' | 'blue-marble' = 'blue-marble';
   let monthProgress = 0; // Continuous 0-12 value
   let loading = true;
   let error: string | null = null;

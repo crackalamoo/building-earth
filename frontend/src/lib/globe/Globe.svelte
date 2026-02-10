@@ -9,6 +9,7 @@
   import { WindParticles } from './WindParticles';
   import { TreeInstances } from './TreeInstances';
   import { CloudInstances } from './CloudInstances';
+  import { createAtmosphere, updateAtmosphereSunDirection } from './Atmosphere';
   import type { ClimateLayerData } from './loadBinaryData';
   import { ELEVATION_SCALE, NORMAL_BLEND, sampleElevation, displacedNormal, computeHillshadeGrid } from './elevation';
 
@@ -37,6 +38,7 @@
   let windParticles: WindParticles | null = null;
   let treeInstances: TreeInstances | null = null;
   let cloudInstances: CloudInstances | null = null;
+  let atmosphereMesh: THREE.Mesh | null = null;
 
   // Derive discrete month for temperature display (nearest month)
   $: displayMonth = Math.round(displayMonthProgress) % 12;
@@ -135,6 +137,7 @@
       if (windParticles) windParticles.getObject().visible = layer === 'blue-marble';
       if (treeInstances) treeInstances.getObject().visible = layer === 'blue-marble';
       if (cloudInstances) cloudInstances.getObject().visible = layer === 'blue-marble';
+      if (atmosphereMesh) atmosphereMesh.visible = layer === 'blue-marble';
     }
   }
 
@@ -403,6 +406,7 @@
       const normalizedDir = dir.clone().normalize();
       if (treeInstances) treeInstances.setSunDirection(normalizedDir);
       if (cloudInstances) cloudInstances.setSunDirection(normalizedDir);
+      if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, normalizedDir);
       sunLight.position.copy(dir.multiplyScalar(distance));
       return;
     }
@@ -446,6 +450,7 @@
 
     if (treeInstances) treeInstances.setSunDirection(sunDir);
     if (cloudInstances) cloudInstances.setSunDirection(sunDir.clone());
+    if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, sunDir);
     sunLight.position.copy(sunDir.multiplyScalar(distance));
   }
 
@@ -564,6 +569,11 @@
       initTreeInstances();
       initCloudInstances();
     }
+
+    // Atmosphere glow
+    atmosphereMesh = createAtmosphere();
+    atmosphereMesh.visible = activeLayer === 'blue-marble';
+    scene.add(atmosphereMesh);
 
     // Load borders
     if (showBorders) {
