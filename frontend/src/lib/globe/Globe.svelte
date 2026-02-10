@@ -10,6 +10,7 @@
   import { TreeInstances } from './TreeInstances';
   import { CloudInstances } from './CloudInstances';
   import { createAtmosphere, updateAtmosphereSunDirection } from './Atmosphere';
+  import { createStarField, updateStarRotation, type StarField } from './Stars';
   import type { ClimateLayerData } from './loadBinaryData';
   import { ELEVATION_SCALE, NORMAL_BLEND, sampleElevation, displacedNormal, computeHillshadeGrid } from './elevation';
 
@@ -41,6 +42,7 @@
   let atmosphereMesh: THREE.Mesh | null = null;
   let sunOrb: THREE.Mesh | null = null;
   let sunGlow: THREE.Sprite | null = null;
+  let starField: StarField | null = null;
 
   // Derive discrete month for temperature display (nearest month)
   $: displayMonth = Math.round(displayMonthProgress) % 12;
@@ -533,8 +535,8 @@
       if (cloudInstances) cloudInstances.setSunDirection(normalizedDir);
       if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, normalizedDir);
       if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(normalizedDir);
-      sunLight.position.copy(dir.multiplyScalar(distance));
-      if (sunOrb) sunOrb.position.copy(sunLight.position);
+      sunLight.position.copy(normalizedDir).multiplyScalar(distance);
+      if (sunOrb) sunOrb.position.copy(normalizedDir).multiplyScalar(180);
       return;
     }
 
@@ -582,8 +584,9 @@
     // Update ocean specular shader sun direction (in world space, pre-scaling)
     if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(sunDir);
 
-    sunLight.position.copy(sunDir.multiplyScalar(distance));
-    if (sunOrb) sunOrb.position.copy(sunLight.position);
+    const sunDirNorm = sunDir.clone().normalize();
+    sunLight.position.copy(sunDirNorm).multiplyScalar(distance);
+    if (sunOrb) sunOrb.position.copy(sunDirNorm).multiplyScalar(180);
   }
 
   function initWindParticles() {
@@ -646,8 +649,8 @@
     sunLight = new THREE.DirectionalLight(0xffffff, 2.0);
     scene.add(sunLight);
 
-    // Visible sun orb with limb darkening
-    const sunOrbGeo = new THREE.SphereGeometry(1.0, 32, 32);
+    // Visible sun orb with limb darkening — placed far from globe to minimize parallax
+    const sunOrbGeo = new THREE.SphereGeometry(3.6, 32, 32);
     const sunOrbMat = new THREE.ShaderMaterial({
       vertexShader: `
         varying vec3 vNormal;
@@ -697,7 +700,7 @@
       depthWrite: false,
     });
     sunGlow = new THREE.Sprite(glowMat);
-    sunGlow.scale.set(8, 8, 1);
+    sunGlow.scale.set(28, 28, 1);
     sunOrb.add(sunGlow);
 
     // Initialize display month progress
@@ -760,6 +763,13 @@
     atmosphereMesh = createAtmosphere();
     atmosphereMesh.visible = activeLayer === 'blue-marble';
     scene.add(atmosphereMesh);
+
+    // Load star field
+    createStarField().then(sf => {
+      starField = sf;
+      scene.add(sf.group);     // star points (rotated by group)
+      scene.add(sf.milkyWay);  // milky way (rotated via shader uniform)
+    }).catch(e => console.error('Failed to load stars:', e));
 
     // Load borders
     if (showBorders) {
@@ -827,6 +837,14 @@
     // Update sun position
     updateSunPosition(isAutoRotating);
 
+    // Rotate stars to match sun's RA with its world-space orbit angle.
+    // Use sunOrbitAngle (not the camera-relative sun position) so stars
+    // stay fixed in world space during auto-rotate — they drift past
+    // naturally as the camera orbits, just like the real night sky.
+    if (starField) {
+      updateStarRotation(starField, sunOrbitAngle, displayMonthProgress);
+    }
+
     renderer.render(scene, camera);
   }
 
@@ -879,6 +897,9 @@
     }
     if (cloudInstances) {
       cloudInstances.dispose();
+    }
+    if (starField) {
+      starField.dispose();
     }
     if (bordersGroup) {
       bordersGroup.traverse((obj) => {
