@@ -206,15 +206,6 @@ def add_common_model_arguments(
     )
     add_boolean_flag(
         parser,
-        dest="boundary_layer",
-        default=True,
-        enable_option="--boundary-layer",
-        disable_option="--no-boundary-layer",
-        help_enable="Enable the atmospheric boundary layer (750m, optically thin) (default)",
-        help_disable="Disable the boundary layer (use 2-layer model)",
-    )
-    add_boolean_flag(
-        parser,
         dest="vertical_motion",
         default=True,
         enable_option="--vertical-motion",

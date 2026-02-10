@@ -13,12 +13,18 @@ import climate_sim.physics.radiation as radiation
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeModel, SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeModel, LatentHeatExchangeConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
-from climate_sim.physics.atmosphere.boundary_layer import BoundaryLayerConfig
 from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.diffusion import LayeredDiffusionOperator, DiffusionOperator
 from climate_sim.physics.radiation import RadiationConfig
-from climate_sim.physics.vertical_motion import VerticalMotionConfig, compute_vertical_motion_tendency, compute_vertical_motion_tendencies
+from climate_sim.physics.vertical_motion import (
+    VerticalMotionConfig,
+    compute_vertical_motion_tendencies,
+    compute_bl_atm_mixing_tendencies,
+    compute_hadley_subsidence_velocity,
+    hadley_subsidence_drying_jacobian,
+    _ALPHA,
+)
 from climate_sim.physics.precipitation import compute_precipitation_jacobian
 from climate_sim.physics.humidity import (
     COLUMN_MASS_KG_M2,
@@ -32,7 +38,10 @@ from climate_sim.physics.clouds import (
 )
 from climate_sim.core.state import ModelState
 from climate_sim.core.math_core import spherical_cell_area, compute_divergence
-from climate_sim.data.constants import R_EARTH_METERS, LATENT_HEAT_VAPORIZATION_J_KG, GAS_CONSTANT_WATER_VAPOR_J_KG_K
+from climate_sim.data.constants import (
+    R_EARTH_METERS, LATENT_HEAT_VAPORIZATION_J_KG, GAS_CONSTANT_WATER_VAPOR_J_KG_K,
+    STEFAN_BOLTZMANN_W_M2_K4, HEAT_CAPACITY_AIR_J_KG_K, BOUNDARY_LAYER_HEIGHT_M,
+)
 from typing import Callable
 
 @dataclass
@@ -69,7 +78,6 @@ class RhsBuildInputs:
     topographic_elevation: FloatArray
     sensible_heat_cfg: SensibleHeatExchangeConfig
     latent_heat_cfg: LatentHeatExchangeConfig
-    boundary_layer_cfg: BoundaryLayerConfig
     wind_model: WindModel | None
     advection_operator: AdvectionOperator | None
     lon2d: FloatArray
@@ -123,7 +131,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
     boundary_layer_diffusion_diag: np.ndarray | None = None
     boundary_layer_matrix = None
-    if inputs.diffusion_operator.boundary_layer is not None and inputs.diffusion_operator.boundary_layer.enabled:
+    if inputs.diffusion_operator.boundary_layer is not None:
         boundary_layer_diffusion_diag, boundary_layer_offdiag = (
             inputs.diffusion_operator.boundary_layer.linearised_tendency()
         )
@@ -143,9 +151,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             atmosphere_heat_capacity_J_m2_K=inputs.radiation_config.atmosphere_heat_capacity,
             wind_model=inputs.wind_model,
             config=inputs.sensible_heat_cfg,
-            boundary_layer_heat_capacity_J_m2_K=(
-                inputs.radiation_config.boundary_layer_heat_capacity if inputs.boundary_layer_cfg.enabled else None
-            ),
+            boundary_layer_heat_capacity_J_m2_K=inputs.radiation_config.boundary_layer_heat_capacity,
             topographic_elevation=inputs.topographic_elevation,
         )
 
@@ -157,9 +163,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             atmosphere_heat_capacity_J_m2_K=inputs.radiation_config.atmosphere_heat_capacity,
             wind_model=inputs.wind_model,
             config=inputs.latent_heat_cfg,
-            boundary_layer_heat_capacity_J_m2_K=(
-                inputs.radiation_config.boundary_layer_heat_capacity if inputs.boundary_layer_cfg.enabled else None
-            ),
+            boundary_layer_heat_capacity_J_m2_K=inputs.radiation_config.boundary_layer_heat_capacity,
         )
 
     def rhs(state: ModelState, insolation: np.ndarray, itcz_rad: np.ndarray) -> np.ndarray:
@@ -200,12 +204,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
             # Get temperature fields
             surface_temp = state.temperature[0]
-            if nlayers == 3:
-                T_bl = state.temperature[1]
-                T_atm = state.temperature[2]
-            else:
-                T_bl = state.temperature[0]
-                T_atm = state.temperature[1] if nlayers >= 2 else state.temperature[0]
+            T_bl = state.temperature[1]
+            T_atm = state.temperature[2]
 
             # Compute relative humidity
             rh = specific_humidity_to_relative_humidity(
@@ -243,7 +243,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             radiative = radiative.copy()
             nlayers = state.temperature.shape[0]
             surface_temperature = state.temperature[0]
-            # For 3-layer: use boundary layer wind (with drag), for 2-layer: use atmosphere wind
+            # Use boundary layer wind (with drag) for wind speed reference
             if nlayers == 3 and state.boundary_layer_wind_field is not None:
                 wind_speed_ref = state.boundary_layer_wind_field[2]
             elif state.wind_field is not None:
@@ -275,56 +275,12 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     ocean_advection_tendency = np.where(ocean_mask, ocean_advection_tendency, 0.0)
                     radiative[0] += ocean_advection_tendency
 
-            if nlayers == 2:
-                # Two-layer system
-                atmosphere_temperature = state.temperature[1]
-
-                if inputs.diffusion_operator.atmosphere.enabled:
-                    radiative[1] += inputs.diffusion_operator.atmosphere.tendency(atmosphere_temperature)
-
-                if inputs.advection_operator is not None and state.wind_field is not None:
-                    wind_u, wind_v, _ = state.wind_field
-                    advection_tendency = inputs.advection_operator.tendency(
-                        atmosphere_temperature, wind_u, wind_v
-                    )
-                    radiative[1] += advection_tendency
-
-                if sensible_heat_model is not None:
-                    tendencies = sensible_heat_model.compute_tendencies(
-                        surface_temperature_K=surface_temperature,
-                        atmosphere_temperature_K=atmosphere_temperature,
-                        wind_speed_reference_m_s=wind_speed_ref,
-                        itcz_rad=itcz_rad,
-                    )
-                    assert isinstance(tendencies, tuple)
-                    assert len(tendencies) == 2
-                    surface_tendency, atmosphere_tendency = tendencies
-                    radiative[0] += surface_tendency
-                    radiative[1] += atmosphere_tendency
-
-                if humidity_field is not None and latent_heat_model is not None:
-                    # Pass precipitation rate for correct latent heat routing
-                    precip_rate = state.precipitation_field
-                    tendencies = latent_heat_model.compute_tendencies(
-                        surface_temperature_K=surface_temperature,
-                        atmosphere_temperature_K=atmosphere_temperature,
-                        humidity_q=humidity_field,
-                        wind_speed_reference_m_s=wind_speed_ref,
-                        itcz_rad=itcz_rad,
-                        precipitation_rate=precip_rate,
-                    )
-                    assert isinstance(tendencies, tuple)
-                    assert len(tendencies) == 3  # surface, atm, evap_rate
-                    surface_tendency, atmosphere_tendency, _evap_rate = tendencies
-                    radiative[0] += surface_tendency
-                    radiative[1] += atmosphere_tendency
-
-            elif nlayers == 3:
+            if nlayers == 3:
                 # Three-layer system
                 boundary_temperature = state.temperature[1]
                 atmosphere_temperature = state.temperature[2]
 
-                if inputs.diffusion_operator.boundary_layer is not None and inputs.diffusion_operator.boundary_layer.enabled:
+                if inputs.diffusion_operator.boundary_layer is not None:
                     radiative[1] += inputs.diffusion_operator.boundary_layer.tendency(boundary_temperature)
                 if inputs.diffusion_operator.atmosphere.enabled:
                     radiative[2] += inputs.diffusion_operator.atmosphere.tendency(atmosphere_temperature)
@@ -377,6 +333,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         itcz_rad=itcz_rad,
                         boundary_layer_temperature_K=boundary_temperature,
                         precipitation_rate=precip_rate,
+                        soil_moisture=state.soil_moisture,
                     )
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 4  # surface, BL, atm, evap_rate
@@ -398,6 +355,21 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     )
                     radiative[1] += bl_tendency
                     radiative[2] += atm_tendency
+
+                # Background BL-atmosphere mixing (global subsidence/entrainment)
+                tau_mix = (
+                    inputs.vertical_motion_cfg.tau_bl_atm_mixing_s
+                    if inputs.vertical_motion_cfg is not None
+                    else 0.0
+                )
+                if tau_mix > 0:
+                    bl_mix, atm_mix = compute_bl_atm_mixing_tendencies(
+                        boundary_temperature, atmosphere_temperature,
+                        C_bl=inputs.radiation_config.boundary_layer_heat_capacity,
+                        C_atm=inputs.radiation_config.atmosphere_heat_capacity,
+                    )
+                    radiative[1] += bl_mix
+                    radiative[2] += atm_mix
 
             return radiative
         if inputs.diffusion_operator.surface.enabled:
@@ -432,12 +404,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 vertical_velocity = np.zeros_like(humidity_field)
 
             surface_temp = state.temperature[0]
-            if nlayers == 3:
-                T_bl = state.temperature[1]
-                T_atm = state.temperature[2]
-            else:
-                T_bl = state.temperature[0]
-                T_atm = state.temperature[1] if nlayers >= 2 else state.temperature[0]
+            T_bl = state.temperature[1]
+            T_atm = state.temperature[2]
 
             rh = specific_humidity_to_relative_humidity(
                 humidity_field, T_bl,
@@ -473,11 +441,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if surface_diffusion_diag is not None:
                 diag[0] = diag[0] + surface_diffusion_diag
 
-            if nlayers == 2:
-                # 2-layer: atmosphere is layer 1
-                if atmosphere_diffusion_diag is not None:
-                    diag[1] = diag[1] + atmosphere_diffusion_diag
-            elif nlayers == 3:
+            if nlayers == 3:
                 # 3-layer: boundary is layer 1, atmosphere is layer 2
                 if boundary_layer_diffusion_diag is not None:
                     diag[1] = diag[1] + boundary_layer_diffusion_diag
@@ -526,36 +490,16 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                                 if sparse.isspmatrix_csc(atm_matrix_csr)
                                 else atm_matrix_csr.tocsc()
                             )
-                elif nlayers == 2 and state.wind_field is not None:
-                    # Two-layer: only atmosphere gets advection
-                    wind_u, wind_v, _ = state.wind_field
-                    _, advection_matrix_csr = inputs.advection_operator.linearised_tendency(wind_u, wind_v)
-                    if advection_matrix_csr is not None:
-                        atmosphere_advection_matrix = (
-                            advection_matrix_csr
-                            if sparse.isspmatrix_csc(advection_matrix_csr)
-                            else advection_matrix_csr.tocsc()
-                        )
 
             # Compute sensible heat exchange Jacobian if enabled
             if sensible_heat_model is not None:
-                if nlayers == 3:
-                    sh_diag, sh_cross = sensible_heat_model.compute_jacobian(
-                        state.temperature[0],
-                        state.temperature[2],
-                        wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                        itcz_rad=None,
-                        boundary_layer_temperature_K=state.temperature[1],
-                    )
-                elif nlayers == 2:
-                    sh_diag, sh_cross = sensible_heat_model.compute_jacobian(
-                        state.temperature[0],
-                        state.temperature[1],
-                        wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                        itcz_rad=None,
-                    )
-                else:
-                    assert False, "Must have atmosphere for sensible heat exchange"
+                sh_diag, sh_cross = sensible_heat_model.compute_jacobian(
+                    state.temperature[0],
+                    state.temperature[2],
+                    wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
+                    itcz_rad=None,
+                    boundary_layer_temperature_K=state.temperature[1],
+                )
                 # Add sensible heat directly to diagonal and cross terms
                 diag = diag + sh_diag
                 if cross is not None:
@@ -566,27 +510,16 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             # Compute latent heat exchange Jacobian if enabled
             if latent_heat_model is not None and state.humidity_field is not None:
                 precip_rate = state.precipitation_field
-                if nlayers == 3:
-                    lh_diag, lh_cross = latent_heat_model.compute_jacobian(
-                        state.temperature[0],
-                        state.temperature[2],
-                        state.humidity_field,
-                        wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                        itcz_rad=None,
-                        boundary_layer_temperature_K=state.temperature[1],
-                        precipitation_rate=precip_rate,
-                    )
-                elif nlayers == 2:
-                    lh_diag, lh_cross = latent_heat_model.compute_jacobian(
-                        state.temperature[0],
-                        state.temperature[1],
-                        state.humidity_field,
-                        wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
-                        itcz_rad=None,
-                        precipitation_rate=precip_rate,
-                    )
-                else:
-                    assert False, "Must have atmosphere for latent heat exchange"
+                lh_diag, lh_cross = latent_heat_model.compute_jacobian(
+                    state.temperature[0],
+                    state.temperature[2],
+                    state.humidity_field,
+                    wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
+                    itcz_rad=None,
+                    boundary_layer_temperature_K=state.temperature[1],
+                    precipitation_rate=precip_rate,
+                    soil_moisture=state.soil_moisture,
+                )
                 # Add latent heat directly to diagonal and cross terms
                 diag = diag + lh_diag
                 if cross is not None:
@@ -595,26 +528,21 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     cross = lh_cross
 
             # Vertical motion Jacobian (3-layer only)
-            # Tendency: Q = ρ*cp*w*f*(θ_atm - θ_bl) where θ_atm = T_atm*(P0/P_ATM)^κ
-            #
-            # True Jacobian has signed w, but ascent (w<0) creates destabilizing
-            # positive diagonal terms. We use max(w,0) to only include subsidence
-            # in the Jacobian - this keeps diagonals negative (stabilizing) while
-            # still capturing the dominant subtropical subsidence coupling.
+            # Tendency: Q = ρ*cp*w*f*(θ_atm - θ_bl), symmetric for ascent/descent.
+            # dT_bl = Q/C_bl, dT_atm = -Q/C_atm (energy conserving).
+            # Note: ascent (w<0) gives positive BL diagonal (destabilizing),
+            # but total diagonal remains negative from radiation + other terms.
             vertical_motion_enabled = (
                 inputs.vertical_motion_cfg is not None
                 and inputs.vertical_motion_cfg.enabled
                 and nlayers == 3
             )
             if vertical_motion_enabled and state.boundary_layer_wind_field is not None:
-                from climate_sim.data.constants import HEAT_CAPACITY_AIR_J_KG_K, BOUNDARY_LAYER_HEIGHT_M
                 wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
                 divergence = compute_divergence(wind_u_bl, wind_v_bl, inputs.lat2d, inputs.lon2d)
 
                 h_bl = BOUNDARY_LAYER_HEIGHT_M
                 w = divergence * h_bl  # m/s, positive = subsidence
-                w_subsidence = np.maximum(w, 0)  # Only subsidence for BL
-                w_ascent = np.minimum(w, 0)      # Only ascent (negative)
 
                 rho = 1.0  # kg/m³
                 cp = HEAT_CAPACITY_AIR_J_KG_K
@@ -627,22 +555,36 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 f = (np.log(P0) - np.log(P_EXCHANGE)) / (np.log(P0) - np.log(P_ATM))
                 alpha = (P0 / P_ATM) ** KAPPA  # ≈ 1.22
 
-                coeff_sub = rho * cp * w_subsidence * f
-                coeff_asc = rho * cp * w_ascent * f  # negative where ascending
+                coeff = rho * cp * w * f  # signed: positive for subsidence, negative for ascent
 
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
 
-                # BL Jacobian: only subsidence (ascent replacement via advection)
-                # dT_bl = Q_sub/C_bl where Q_sub = coeff_sub*(α*T_atm - T_bl)
-                diag[1] += -coeff_sub / C_bl
-                cross[1, 2] += coeff_sub * alpha / C_bl
+                # BL: dT_bl = coeff*(α*T_atm - T_bl) / C_bl
+                diag[1] += -coeff / C_bl
+                cross[1, 2] += coeff * alpha / C_bl
 
-                # Atm Jacobian: subsidence (loses heat) + ascent (gains cool BL air)
-                # dT_atm = -Q_sub/C_atm + Q_asc/C_atm
-                # Q_asc = coeff_asc*(α*T_atm - T_bl), coeff_asc < 0 where ascending
-                diag[2] += -coeff_sub * alpha / C_atm + coeff_asc * alpha / C_atm
-                cross[2, 1] += coeff_sub / C_atm - coeff_asc / C_atm
+                # Atm: dT_atm = -coeff*(α*T_atm - T_bl) / C_atm
+                diag[2] += -coeff * alpha / C_atm
+                cross[2, 1] += coeff / C_atm
+
+            # Background BL-atmosphere mixing Jacobian
+            tau_mix = (
+                inputs.vertical_motion_cfg.tau_bl_atm_mixing_s
+                if inputs.vertical_motion_cfg is not None
+                else 0.0
+            )
+            if tau_mix > 0 and nlayers == 3:
+                C_bl = inputs.radiation_config.boundary_layer_heat_capacity
+                C_atm = inputs.radiation_config.atmosphere_heat_capacity
+                # τ_rad = C_atm / (4σT_atm³), treat as locally constant for Jacobian
+                tau_rad = C_atm / (4.0 * STEFAN_BOLTZMANN_W_M2_K4 * state.temperature[2]**3)
+                # dT_bl/dt = (α*T_atm - T_bl) / τ_rad
+                diag[1] += -1.0 / tau_rad
+                cross[1, 2] += _ALPHA / tau_rad
+                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ_rad
+                diag[2] += -(C_bl / C_atm) * _ALPHA / tau_rad
+                cross[2, 1] += (C_bl / C_atm) / tau_rad
 
             # Use updated surface diffusion matrix if ocean ψ was applied
             actual_surface_diffusion_matrix = surface_matrix
@@ -707,14 +649,15 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             state.humidity_field,
                             wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
                             itcz_rad=None,
-                            boundary_layer_temperature_K=state.temperature[1] if nlayers == 3 else None,
+                            boundary_layer_temperature_K=state.temperature[1],
+                            soil_moisture=state.soil_moisture,
                         )
                     else:
                         dE_dq = np.zeros_like(state.humidity_field)
 
                     # dP/dq from precipitation model
-                    t_bl = state.temperature[1] if nlayers == 3 else state.temperature[0]
-                    t_atm = state.temperature[2] if nlayers == 3 else state.temperature[1] if nlayers == 2 else state.temperature[0]
+                    t_bl = state.temperature[1]
+                    t_atm = state.temperature[2]
 
                     # Get cloud fractions for Jacobian
                     if cloud_output is not None:
@@ -738,9 +681,24 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         state.humidity_field, w_largescale, t_bl
                     )
 
-                    # Humidity diagonal: dE/dq / M - dP/dq / M
+                    # Humidity diagonal: dE/dq / M - dP/dq / M + Hadley subsidence
                     # (dE/dq is negative, dP/dq is positive)
                     humidity_diag = dE_dq / COLUMN_MASS_KG_M2 - dP_dq / COLUMN_MASS_KG_M2
+
+                    # Hadley subsidence drying Jacobian (stabilizing: always negative)
+                    if (inputs.vertical_motion_cfg is not None
+                            and inputs.vertical_motion_cfg.enabled
+                            and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0):
+                        lat_rad = np.deg2rad(inputs.lat2d)
+                        # Use itcz_rad from the current state evaluation
+                        w_hadley = compute_hadley_subsidence_velocity(
+                            lat_rad, itcz_rad,
+                            peak_velocity_m_s=inputs.vertical_motion_cfg.hadley_descent_velocity_m_s,
+                        )
+                        humidity_diag += hadley_subsidence_drying_jacobian(
+                            w_hadley,
+                            upper_troposphere_q_fraction=inputs.vertical_motion_cfg.upper_troposphere_q_fraction,
+                        )
 
                     # Humidity-temperature coupling terms already computed above
 
@@ -757,7 +715,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
                     # dR_q/dT terms (to be multiplied by -dt in solver)
                     dR_q_dT_sfc = -dE_dT_sfc / COLUMN_MASS_KG_M2
-                    dR_q_dT_bl = -dP_dT_bl / COLUMN_MASS_KG_M2 if nlayers >= 3 else np.zeros_like(state.humidity_field)
+                    dR_q_dT_bl = -dP_dT_bl / COLUMN_MASS_KG_M2
                     dR_q_dT_atm = -dP_dT_atm / COLUMN_MASS_KG_M2
 
                     humidity_temp_coupling = (dR_q_dT_sfc, dR_q_dT_bl, dR_q_dT_atm)
@@ -770,12 +728,12 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     # Evaporation Jacobian: surface cools when q increases (less evap)
                     dR_Tsfc_dq = -dE_dq * L_v / C_sfc
 
-                    # Precipitation heating split: 30% to BL, 70% to atmosphere
-                    BL_LATENT_FRACTION = 0.30 if nlayers >= 3 else 0.0
+                    # Precipitation heating split: 5% to BL, 95% to atmosphere
+                    BL_LATENT_FRACTION = 0.05
                     dR_Tatm_dq = (1 - BL_LATENT_FRACTION) * dP_dq * L_v / C_atm
-                    dR_Tbl_dq = BL_LATENT_FRACTION * dP_dq * L_v / C_bl if nlayers >= 3 else None
+                    dR_Tbl_dq = BL_LATENT_FRACTION * dP_dq * L_v / C_bl
 
-                    temp_humidity_coupling = (dR_Tsfc_dq, dR_Tbl_dq, dR_Tatm_dq) if nlayers >= 3 else (dR_Tsfc_dq, dR_Tatm_dq)
+                    temp_humidity_coupling = (dR_Tsfc_dq, dR_Tbl_dq, dR_Tatm_dq)
 
             return Linearization(
                 diag=diag,

@@ -31,8 +31,13 @@ from climate_sim.data.constants import (
     BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
     STANDARD_LAPSE_RATE_K_PER_M,
     HEAT_CAPACITY_AIR_J_KG_K,
+    STEFAN_BOLTZMANN_W_M2_K4,
 )
-
+from climate_sim.physics.atmosphere.pressure import (
+    LAT_SUBTROPICS_BASE,
+    SUBTROPICS_ITCZ_COUPLING,
+    SIGMA_SUBTROPICS,
+)
 
 # Physical constants
 GAMMA_DRY = 0.0098  # K/m, dry adiabatic lapse rate (for subsidence)
@@ -49,6 +54,17 @@ class VerticalMotionConfig:
     """Configuration for vertical motion physics."""
 
     enabled: bool = True
+
+    # Hadley subsidence: large-scale descent at subtropical highs
+    hadley_descent_velocity_m_s: float = 0.0003
+
+    # How dry the descending air is relative to boundary layer.
+    upper_troposphere_q_fraction: float = 0.20
+
+    # Background BL-atmosphere mixing timescale (seconds).
+    # Represents subsidence, entrainment, and turbulent exchange that
+    # returns latent heat from the free atmosphere back to the BL.
+    tau_bl_atm_mixing_s: float = 20.0 * 86400.0  # 20 days (Cronin 2013)
 
 
 def compute_vertical_motion_heating(
@@ -150,27 +166,13 @@ def compute_vertical_motion_tendencies(
 
     theta_exchange = theta_bl + f * (theta_atm - theta_bl)
 
-    # Split into subsidence and ascent
-    w_subsidence = np.maximum(w, 0)  # positive where sinking
-    w_ascent = np.minimum(w, 0)      # negative where rising
+    # Vertical heat exchange between BL and atmosphere.
+    # Q > 0 when w > 0 (subsidence warms BL), Q < 0 when w < 0 (ascent cools BL).
+    # Energy conserving: BL gains Q/C_bl, atmosphere loses Q/C_atm.
+    Q_vertical = rho * cp * w * (theta_exchange - theta_bl)
 
-    # SUBSIDENCE (w > 0): Energy-conserving exchange between atm and BL
-    # Air at θ_exchange descends into BL, warming it
-    Q_subsidence = rho * cp * w_subsidence * (theta_exchange - theta_bl)
-
-    # ASCENT (w < 0): BL unchanged (replacement from advection), but
-    # atmosphere receives air at θ_bl. Since θ_bl < θ_exchange typically,
-    # this "cools" the atmosphere (adds relatively cool air).
-    # Q_ascent is the heat flux INTO atmosphere from rising BL air
-    # w_ascent is negative, and we want positive flux when θ_bl < θ_exchange
-    Q_ascent = rho * cp * w_ascent * (theta_exchange - theta_bl)
-    # When w < 0 and θ_exchange > θ_bl: Q_ascent < 0 (atmosphere cools)
-
-    # BL tendency: only from subsidence (ascent replacement via advection)
-    dT_bl = Q_subsidence / C_bl
-
-    # Atmosphere tendency: from both subsidence (loses heat) and ascent (gains cool air)
-    dT_atm = -Q_subsidence / C_atm + Q_ascent / C_atm
+    dT_bl = Q_vertical / C_bl
+    dT_atm = -Q_vertical / C_atm
 
     return dT_bl, dT_atm
 
@@ -223,3 +225,89 @@ def compute_subsidence_drying(
     dq_dt = mixing_rate * delta_q
 
     return dq_dt
+
+
+def compute_hadley_subsidence_velocity(
+    lat_rad: np.ndarray,
+    itcz_rad: np.ndarray,
+    peak_velocity_m_s: float = 0.003,
+) -> np.ndarray:
+    """Compute downward vertical velocity from Hadley cell overturning.
+
+    Returns vertical velocity (m/s), positive = descent.
+    """
+    lat_subtrop_north = LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
+    lat_subtrop_south = -LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
+
+    w = peak_velocity_m_s * (
+        np.exp(-((lat_rad - lat_subtrop_south) / SIGMA_SUBTROPICS) ** 2)
+        + np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_SUBTROPICS) ** 2)
+    )
+
+    return w
+
+
+def compute_hadley_subsidence_drying(
+    w_descent: np.ndarray,
+    humidity_field: np.ndarray,
+    upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
+    boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
+) -> np.ndarray:
+    """Compute humidity tendency from Hadley subsidence mixing dry air into BL.
+
+    dq/dt = (w / h_BL) * (q_upper - q_BL)
+    """
+    q_upper = humidity_field * upper_troposphere_q_fraction
+    delta_q = q_upper - humidity_field  # Always negative
+    mixing_rate = w_descent / boundary_layer_height_m
+    return mixing_rate * delta_q
+
+
+def hadley_subsidence_drying_jacobian(
+    w_descent: np.ndarray,
+    upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
+    boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
+) -> np.ndarray:
+    """Diagonal of the humidity Jacobian from Hadley subsidence drying.
+
+    d(dq/dt)/dq = (w / h_BL) * (f_upper - 1) = -(1 - f_upper) * w / h_BL
+    Always negative (stabilizing).
+    """
+    return w_descent / boundary_layer_height_m * (upper_troposphere_q_fraction - 1.0)
+
+# Potential temperature factor: θ_atm = T_atm × (P0/P_ATM)^κ
+_P0 = 1013.25  # hPa
+_P_ATM = 500.0  # hPa
+_KAPPA = 0.286  # R/cp
+_ALPHA = (_P0 / _P_ATM) ** _KAPPA  # ≈ 1.219
+
+
+def compute_bl_atm_mixing_tendencies(
+    T_bl: np.ndarray,
+    T_atm: np.ndarray,
+    C_bl: float = BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
+    C_atm: float = ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Background BL-atmosphere heat exchange via subsidence and mixing.
+
+    Relaxes the BL toward the potential temperature of the free atmosphere,
+    closing the latent heat return loop: surface evaporation -> condensation
+    aloft -> radiative cooling -> subsidence warming back to BL.
+
+    The timescale is the radiative-subsidence timescale (Cronin 2013):
+    tau_rad = C_atm / (4*sigma*T_atm^3), computed per grid cell from model
+    state. Varies ~22d (tropics) to ~27d (poles).
+
+    Energy-conserving: C_bl * dT_bl + C_atm * dT_atm = 0.
+    """
+    theta_atm = T_atm * _ALPHA  # Potential temperature of free atm at surface
+
+    # Radiative-subsidence timescale (seconds, per grid cell)
+    tau_rad = C_atm / (4.0 * STEFAN_BOLTZMANN_W_M2_K4 * T_atm**3)
+
+    heat_flux = C_bl * (theta_atm - T_bl) / tau_rad  # W/m²
+
+    dT_bl = heat_flux / C_bl      # = (theta_atm - T_bl) / tau_rad
+    dT_atm = -heat_flux / C_atm   # Energy conservation
+
+    return dT_bl, dT_atm

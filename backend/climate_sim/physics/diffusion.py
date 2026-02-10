@@ -106,63 +106,41 @@ class DiffusionConfig:
     # Reduced from 2000 since we now have explicit ocean currents for advective transport
     surface_kappa_ref_m2_s: float = 1.0e3
 
-    surface_resolution_ref_deg: float = 1.0
-
     # Ocean latitude-dependent scaling to represent thermohaline circulation
     # MOC transports ~2 PW poleward, requiring strong effective diffusivity
-    use_latitude_dependent_surface: bool = True
+    use_latitude_dependent_surface: bool = False
     surface_meridional_tropical_scale: float = 0.5    # 0-30°: Weak cross-equatorial
     surface_meridional_midlat_scale: float = 1.5      # 30-60°: Western boundary currents
     surface_meridional_polar_scale: float = 1.5       # 60-90°: Strong MOC/deep convection
 
-    # Atmospheric eddy diffusivity: ~1-5e6 m²/s for mid-latitude storm tracks
-    atmosphere_kappa_ref_m2_s: float = 5.0e5
+    # Atmospheric eddy diffusivity: represents baroclinic eddy transport.
+    # Transient eddies carry 60-80% of midlat heat transport (~2-3e6 m²/s).
+    # Tropics: eddies are ~5-10% of transport (Hadley dominates).
+    atmosphere_kappa_ref_m2_s: float = 0.8e6
 
-    atmosphere_resolution_ref_deg: float = 1.0
     enabled: bool = True
 
-    # Latitude-dependent atmospheric diffusivity scaling
-    # Peak at midlatitudes where baroclinic storm tracks dominate
+    # Latitude-dependent atmospheric eddy diffusivity scaling
+    # Eddies are roughly isotropic — same scaling for meridional and zonal.
+    # Mean wind transport (trade winds, westerlies) is handled by advection, not diffusion.
     use_latitude_dependent_atmosphere: bool = True
-    atmosphere_meridional_tropical_scale: float = 0.5   # 0-30°: Hadley cell dominates, weak eddy mixing
-    atmosphere_meridional_midlat_scale: float = 2.0     # 30-60°: Storm tracks, moderate eddy transport
-    atmosphere_meridional_polar_scale: float = 0.5      # 60-90°: Polar vortex isolation, but still significant transport
-    atmosphere_zonal_tropical_scale: float = 1.5        # 0-30°: Trade winds mix zonally
-    atmosphere_zonal_midlat_scale: float = 2.5          # 30-60°: Westerlies enhance zonal mixing
-    atmosphere_zonal_polar_scale: float = 1.0           # 60-90°: Polar vortex limits mixing
+    atmosphere_meridional_tropical_scale: float = 0.3   # 0-30°: Hadley cell dominates, weak eddy mixing
+    atmosphere_meridional_midlat_scale: float = 2.5     # 30-60°: Baroclinic storm tracks peak
+    atmosphere_meridional_polar_scale: float = 0.7      # 60-90°: Moderate eddy transport
+    atmosphere_zonal_tropical_scale: float = 0.3        # Isotropic with meridional
+    atmosphere_zonal_midlat_scale: float = 2.5          # Isotropic with meridional
+    atmosphere_zonal_polar_scale: float = 0.7           # Isotropic with meridional
 
-    # Boundary layer diffusivity scaling relative to free atmosphere
-    # BL is thin (~1km) and its heat transport is mostly vertical (convection),
-    # not the large-scale eddies that transport across latitudes.
-    # BL feels meridional transport indirectly via coupling to free atm above.
-    boundary_layer_diffusivity_scale: float = 0.1  # 10% of free atmosphere
-
-    @staticmethod
-    def _scaled_diffusivity(
-        grid_resolution_deg: float, kappa_ref: float, resolution_ref_deg: float
-    ) -> float:
-        if grid_resolution_deg <= 0.0:
-            raise ValueError("Grid resolution must be positive to scale diffusivity")
-        if resolution_ref_deg <= 0.0:
-            raise ValueError(
-                "Reference resolution must be positive to scale diffusivity"
-            )
-        scale = grid_resolution_deg / resolution_ref_deg
-        return kappa_ref * scale
+    # Boundary layer diffusivity scaling relative to free atmosphere.
+    # Same κ as atmosphere; the smaller heat capacity (C_bl/C_atm ≈ 1/7.5)
+    # already ensures BL carries only ~12% of total diffusive transport.
+    boundary_layer_diffusivity_scale: float = 1.0
 
     def surface_diffusivity(self, grid_resolution_deg: float) -> float:
-        return self._scaled_diffusivity(
-            grid_resolution_deg,
-            self.surface_kappa_ref_m2_s,
-            self.surface_resolution_ref_deg,
-        )
+        return self.surface_kappa_ref_m2_s
 
     def atmosphere_diffusivity(self, grid_resolution_deg: float) -> float:
-        return self._scaled_diffusivity(
-            grid_resolution_deg,
-            self.atmosphere_kappa_ref_m2_s,
-            self.atmosphere_resolution_ref_deg,
-        )
+        return self.atmosphere_kappa_ref_m2_s
 
     def compute_latitude_scaling(
         self,
