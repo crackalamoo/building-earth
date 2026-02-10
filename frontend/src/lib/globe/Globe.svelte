@@ -39,6 +39,8 @@
   let treeInstances: TreeInstances | null = null;
   let cloudInstances: CloudInstances | null = null;
   let atmosphereMesh: THREE.Mesh | null = null;
+  let sunOrb: THREE.Mesh | null = null;
+  let sunGlow: THREE.Sprite | null = null;
 
   // Derive discrete month for temperature display (nearest month)
   $: displayMonth = Math.round(displayMonthProgress) % 12;
@@ -532,6 +534,7 @@
       if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, normalizedDir);
       if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(normalizedDir);
       sunLight.position.copy(dir.multiplyScalar(distance));
+      if (sunOrb) sunOrb.position.copy(sunLight.position);
       return;
     }
 
@@ -580,6 +583,7 @@
     if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(sunDir);
 
     sunLight.position.copy(sunDir.multiplyScalar(distance));
+    if (sunOrb) sunOrb.position.copy(sunLight.position);
   }
 
   function initWindParticles() {
@@ -641,6 +645,60 @@
     // Directional light as sun - position updated each frame relative to camera
     sunLight = new THREE.DirectionalLight(0xffffff, 2.0);
     scene.add(sunLight);
+
+    // Visible sun orb with limb darkening
+    const sunOrbGeo = new THREE.SphereGeometry(1.0, 32, 32);
+    const sunOrbMat = new THREE.ShaderMaterial({
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+          vViewDir = normalize(-mvPos.xyz);
+          gl_Position = projectionMatrix * mvPos;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+        void main() {
+          float mu = dot(vNormal, vViewDir);
+          float limb = pow(max(mu, 0.0), 0.4);
+          vec3 core = vec3(1.0, 0.95, 0.85);
+          vec3 edge = vec3(1.0, 0.5, 0.1);
+          vec3 col = mix(edge, core, limb);
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+      side: THREE.FrontSide,
+      transparent: true,
+      depthWrite: false,
+    });
+    sunOrb = new THREE.Mesh(sunOrbGeo, sunOrbMat);
+    scene.add(sunOrb);
+
+    // Glow sprite behind sun orb
+    const glowCanvas = document.createElement('canvas');
+    glowCanvas.width = 128;
+    glowCanvas.height = 128;
+    const ctx = glowCanvas.getContext('2d')!;
+    const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    grad.addColorStop(0, 'rgba(255, 220, 160, 0.6)');
+    grad.addColorStop(0.3, 'rgba(255, 180, 80, 0.3)');
+    grad.addColorStop(1, 'rgba(255, 140, 40, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 128, 128);
+    const glowTex = new THREE.CanvasTexture(glowCanvas);
+    const glowMat = new THREE.SpriteMaterial({
+      map: glowTex,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+    });
+    sunGlow = new THREE.Sprite(glowMat);
+    sunGlow.scale.set(8, 8, 1);
+    sunOrb.add(sunGlow);
 
     // Initialize display month progress
     displayMonthProgress = monthProgress;
@@ -734,11 +792,11 @@
     if (displayMonthProgress < 0) displayMonthProgress += 12;
     if (displayMonthProgress >= 12) displayMonthProgress -= 12;
 
-    // When not auto-rotating, orbit the sun around the globe at 8x auto-rotate speed
-    // This gives 1 day per 15 seconds
+    // When not auto-rotating, orbit the sun around the globe at 4x auto-rotate speed
+    // This gives 1 day per ~60 seconds
     if (!isAutoRotating && lastAnimateTime !== null && time !== undefined) {
       const dt = (time - lastAnimateTime) / 1000;
-      sunOrbitAngle += dt * controls.autoRotateSpeed * (2 * Math.PI / 60) * 8;
+      sunOrbitAngle += dt * controls.autoRotateSpeed * (2 * Math.PI / 60) * 2;
     }
 
     // Update wind particles
@@ -805,6 +863,14 @@
     window.removeEventListener('resize', onResize);
     renderer?.dispose();
     controls?.dispose();
+    if (sunOrb) {
+      sunOrb.geometry.dispose();
+      (sunOrb.material as THREE.Material).dispose();
+      if (sunGlow) {
+        (sunGlow.material as THREE.SpriteMaterial).map?.dispose();
+        (sunGlow.material as THREE.Material).dispose();
+      }
+    }
     if (windParticles) {
       windParticles.dispose();
     }
