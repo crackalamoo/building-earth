@@ -8,9 +8,12 @@
 
 // ── Color palette ──────────────────────────────────────────────────
 
-// Ocean base (deep saturated blue, slightly brighter in tropics)
-const OCEAN_DEEP: [number, number, number] = [0.04, 0.10, 0.30];
-const OCEAN_SHALLOW: [number, number, number] = [0.06, 0.18, 0.42];
+// Ocean depth gradient (bathymetry-driven)
+const OCEAN_ABYSS: [number, number, number] = [0.02, 0.06, 0.20];   // deep trenches
+const OCEAN_DEEP: [number, number, number] = [0.04, 0.10, 0.28];    // deep ocean
+const OCEAN_MID: [number, number, number] = [0.06, 0.16, 0.40];     // mid-ocean
+const OCEAN_SHELF: [number, number, number] = [0.10, 0.28, 0.52];   // continental shelf
+const OCEAN_COASTAL: [number, number, number] = [0.14, 0.38, 0.58]; // near-shore shallow
 
 // Land soil-moisture gradient (dry → wet)
 const ARID_SAND: [number, number, number] = [0.82, 0.72, 0.50];
@@ -88,18 +91,38 @@ function iceSheetFraction(tempC: number): number {
  * @param isLand       - true if land cell
  * @param surfaceTempC - surface temperature in Celsius (native 5deg)
  * @param soilMoisture - soil moisture 0-1 fraction of field capacity (native 5deg)
+ * @param elevationM   - elevation in meters (negative for ocean bathymetry)
  * @returns [r, g, b] normalized 0-1
  */
 export function blueMarbleColor(
   isLand: boolean,
   surfaceTempC: number,
   soilMoisture: number,
+  elevationM: number = 0,
 ): [number, number, number] {
   if (!isLand) {
-    // ── Ocean ──
-    // Warmer water is slightly lighter/shallower looking
-    const warmth = clamp01((surfaceTempC + 2) / 30);
-    let color = lerp3(OCEAN_DEEP, OCEAN_SHALLOW, warmth * 0.4);
+    // ── Ocean ── bathymetry-driven depth shading
+    const depth = Math.max(0, -elevationM); // meters below sea level
+
+    // Multi-stop depth gradient
+    let color: [number, number, number];
+    if (depth < 200) {
+      // Continental shelf (0-200m)
+      const t = depth / 200;
+      color = lerp3(OCEAN_COASTAL, OCEAN_SHELF, t);
+    } else if (depth < 2000) {
+      // Continental slope (200-2000m)
+      const t = (depth - 200) / 1800;
+      color = lerp3(OCEAN_SHELF, OCEAN_MID, t);
+    } else if (depth < 5000) {
+      // Deep ocean (2000-5000m)
+      const t = (depth - 2000) / 3000;
+      color = lerp3(OCEAN_MID, OCEAN_DEEP, t);
+    } else {
+      // Abyssal/trench (5000m+)
+      const t = clamp01((depth - 5000) / 4000);
+      color = lerp3(OCEAN_DEEP, OCEAN_ABYSS, t);
+    }
 
     // Sea ice overlay
     const iceFrac = seaIceFraction(surfaceTempC);

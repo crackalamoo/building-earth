@@ -176,6 +176,9 @@
     const landMaskData = ld.land_mask.data as Uint8Array;
     const soilData = ld.soil_moisture?.data as Float32Array | undefined;
     const coarseLandMask = ld.land_mask_native?.data as Uint8Array | undefined;
+    const elevData = ld.elevation?.data as Float32Array | undefined;
+    const elevNlat = ld.elevation?.shape[0] ?? 0;
+    const elevNlon = ld.elevation?.shape[1] ?? 0;
 
     // High-res grid dimensions (from land_mask, 0.25deg)
     const hiNlat = ld.land_mask.shape[0];
@@ -206,7 +209,16 @@
             )
           : 0;
 
-        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture);
+        // Sample elevation for bathymetry shading
+        let elev = 0;
+        if (elevData && elevNlat > 0) {
+          // Map hi-res grid index to elevation grid index
+          const ei = Math.floor(dataLatIdx * elevNlat / hiNlat);
+          const ej = Math.floor(j * elevNlon / hiNlon);
+          elev = elevData[ei * elevNlon + ej];
+        }
+
+        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev);
         const base = (i * hiNlon + j) * 3;
         rgbBuf[base] = r;
         rgbBuf[base + 1] = g;
@@ -259,7 +271,8 @@
         let r = rgbBuf[base];
         let g = rgbBuf[base + 1];
         let b = rgbBuf[base + 2];
-        if (hsGrid) {
+        const isLand = landMaskData[dataLatIdx * hiNlon + j] === 1;
+        if (hsGrid && isLand) {
           const hs = hsGrid[i * hiNlon + j];
           r = Math.min(1, r * hs);
           g = Math.min(1, g * hs);
@@ -309,7 +322,7 @@
       let r = radius;
       if (elevationData && elevNlat && elevNlon) {
         const elev = sampleElevation(elevationData, elevNlat, elevNlon, lat, lon);
-        r += elev * ELEVATION_SCALE;
+        r += Math.max(0, elev) * ELEVATION_SCALE;
       }
       const phi = (90 - lat) * (Math.PI / 180);
       const theta = lon * (Math.PI / 180);

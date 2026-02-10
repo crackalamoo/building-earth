@@ -158,7 +158,7 @@ def _write_binary_export(
         elevation = compute_cell_elevation(fine_lon2d, fine_lat2d, cache=False)
     else:
         elevation = compute_cell_elevation(lon2d, lat2d, cache=False)
-    elevation = np.maximum(elevation, 0.0)
+    # Keep negative values (bathymetry) for ocean depth shading
     fields.append(("elevation", elevation, "float16"))
     print(f"  elevation: {elevation.shape}")
 
