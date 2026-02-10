@@ -248,9 +248,12 @@
     }
 
     // Write smoothed RGB to vertex colors, applying hillshade
+    // Also update specular mask: open ocean=1, sea ice/land=0, smooth transition
     const hsGrid = (blueMarbleGlobe as any)?._hillshadeGrid as Float32Array | undefined;
+    const specAttr = geometry.attributes.isOcean as THREE.BufferAttribute | undefined;
     let idx = 0;
     for (let i = 0; i < hiNlat; i++) {
+      const dataLatIdx = hiNlat - 1 - i;
       for (let j = 0; j < hiNlon; j++) {
         const base = (i * hiNlon + j) * 3;
         let r = rgbBuf[base];
@@ -262,18 +265,41 @@
           g = Math.min(1, g * hs);
           b = Math.min(1, b * hs);
         }
+
+        // Compute specular mask: 0 for land/ice, 1 for open ocean
+        let spec = 0.0;
+        if (specAttr) {
+          const isLand = landMaskData[dataLatIdx * hiNlon + j] === 1;
+          if (!isLand) {
+            const temp = sampleBilinear(
+              surfaceData, lowNlat, lowNlon, monthOffset,
+              dataLatIdx, j, hiNlat, hiNlon,
+              false, coarseLandMask,
+            );
+            // Mirror seaIceFraction from blueMarbleColormap.ts:
+            // Hermite smoothstep from -1.8°C to -8°C, max 0.70
+            const ICE_FREEZE = -1.8, ICE_FULL = -8.0, ICE_MAX = 0.70;
+            const u = Math.max(0, Math.min(1, (ICE_FREEZE - temp) / (ICE_FREEZE - ICE_FULL)));
+            const iceFrac = u * u * (3 - 2 * u) * ICE_MAX;
+            spec = 1.0 - iceFrac;
+          }
+        }
+
         for (let v = 0; v < 6; v++) {
           colors.setXYZ(idx, r, g, b);
+          if (specAttr) specAttr.setX(idx, spec);
           idx++;
         }
       }
     }
     colors.needsUpdate = true;
+    if (specAttr) specAttr.needsUpdate = true;
   }
 
   function createGlobeMesh(
     latCount: number, lonCount: number, radius: number,
     elevationData?: Float32Array, elevNlat?: number, elevNlon?: number,
+    landMaskData?: Uint8Array, maskNlat?: number, maskNlon?: number,
   ): THREE.Mesh {
     // Build geometry manually with per-face colors (no interpolation)
     const positions: number[] = [];
@@ -348,10 +374,34 @@
       }
     }
 
+    // Build per-vertex isOcean attribute if land mask provided
+    const isOceanArr: number[] = [];
+    if (landMaskData && maskNlat && maskNlon) {
+      const latStep2 = 180 / latCount;
+      const lonStep2 = 360 / lonCount;
+      for (let i = 0; i < latCount; i++) {
+        const lat0 = 90 - i * latStep2;
+        const lat1 = 90 - (i + 1) * latStep2;
+        const cellLat = (lat0 + lat1) / 2;
+        // Convert to data index (data is south-to-north)
+        const dataLatIdx = latCount - 1 - i;
+        for (let j = 0; j < lonCount; j++) {
+          const lon0 = j * (360 / lonCount);
+          const lon1 = (j + 1) * (360 / lonCount);
+          const isLand = landMaskData[dataLatIdx * maskNlon + j] === 1;
+          const val = isLand ? 0.0 : 1.0;
+          for (let v = 0; v < 6; v++) isOceanArr.push(val);
+        }
+      }
+    }
+
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(blendedNormals, 3));
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    if (isOceanArr.length > 0) {
+      geometry.setAttribute('isOcean', new THREE.Float32BufferAttribute(isOceanArr, 1));
+    }
 
     const material = new THREE.MeshLambertMaterial({
       vertexColors: true,
@@ -373,6 +423,63 @@
     return mesh;
   }
 
+  let bmShaderMaterial: THREE.ShaderMaterial | null = null;
+
+  function createOceanSpecularMaterial(): THREE.ShaderMaterial {
+    bmShaderMaterial = new THREE.ShaderMaterial({
+      vertexShader: `
+        attribute float isOcean;
+        varying vec3 vColor;
+        varying vec3 vNormal;
+        varying vec3 vWorldPos;
+        varying float vIsOcean;
+        void main() {
+          vColor = color;
+          // Transform normal to world space (not view space)
+          vNormal = mat3(modelMatrix) * normal;
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPos = worldPos.xyz;
+          vIsOcean = isOcean;
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 sunDirection;
+        uniform float ambientIntensity;
+        varying vec3 vColor;
+        varying vec3 vNormal;
+        varying vec3 vWorldPos;
+        varying float vIsOcean;
+
+        void main() {
+          vec3 normal = normalize(vNormal);
+          float NdotL = max(dot(normal, sunDirection), 0.0);
+          vec3 diffuse = vColor * (ambientIntensity + NdotL * (1.0 - ambientIntensity));
+
+          // Early out for land/ice/night — no specular
+          if (vIsOcean < 0.01 || NdotL <= 0.0) {
+            gl_FragColor = vec4(diffuse, 1.0);
+            return;
+          }
+
+          // Blinn-Phong specular with wave perturbation (ocean only)
+          vec3 viewDir = normalize(cameraPosition - vWorldPos);
+          vec3 halfVec = normalize(sunDirection + viewDir);
+
+          float spec = pow(max(dot(normal, halfVec), 0.0), 200.0) * 0.7 * vIsOcean;
+          gl_FragColor = vec4(diffuse + vec3(1.0, 0.97, 0.90) * spec, 1.0);
+        }
+      `,
+      uniforms: {
+        sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+        ambientIntensity: { value: 0.15 },
+      },
+      vertexColors: true,
+      side: THREE.FrontSide,
+    });
+    return bmShaderMaterial;
+  }
+
   function createBlueMarbleGlobe(ld: ClimateLayerData) {
     // Use land_mask resolution (0.25deg, same as temperature) for crisp coastlines
     const bmNlat = ld.land_mask.shape[0];
@@ -380,7 +487,10 @@
     const elevData = ld.elevation?.data as Float32Array | undefined;
     const elevNlat = ld.elevation?.shape[0];
     const elevNlon = ld.elevation?.shape[1];
-    const mesh = createGlobeMesh(bmNlat, bmNlon, 1, elevData, elevNlat, elevNlon);
+    const landMaskData = ld.land_mask.data as Uint8Array;
+    const mesh = createGlobeMesh(bmNlat, bmNlon, 1, elevData, elevNlat, elevNlon, landMaskData, bmNlat, bmNlon);
+    // Replace default Lambert material with ocean specular shader
+    mesh.material = createOceanSpecularMaterial();
     return mesh;
   }
 
@@ -407,6 +517,7 @@
       if (treeInstances) treeInstances.setSunDirection(normalizedDir);
       if (cloudInstances) cloudInstances.setSunDirection(normalizedDir);
       if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, normalizedDir);
+      if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(normalizedDir);
       sunLight.position.copy(dir.multiplyScalar(distance));
       return;
     }
@@ -451,6 +562,10 @@
     if (treeInstances) treeInstances.setSunDirection(sunDir);
     if (cloudInstances) cloudInstances.setSunDirection(sunDir.clone());
     if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, sunDir);
+
+    // Update ocean specular shader sun direction (in world space, pre-scaling)
+    if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(sunDir);
+
     sunLight.position.copy(sunDir.multiplyScalar(distance));
   }
 
