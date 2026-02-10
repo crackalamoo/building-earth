@@ -642,7 +642,7 @@ def monthly_step(
         if lagged_humidity is not None:
             t_for_cap = final_temp[1] if nlayers_final == 3 else final_temp[0]
             q_sat = compute_saturation_specific_humidity(t_for_cap)
-            q_max = 1.1 * q_sat  # Allow 10% supersaturation for numerical stability
+            q_max = q_sat  # Cap at saturation — excess should precipitate out
             lagged_humidity = np.clip(lagged_humidity, 1e-6, q_max)
 
         # Compute final precipitation from converged humidity using unified cloud physics

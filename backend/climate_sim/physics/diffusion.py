@@ -116,7 +116,7 @@ class DiffusionConfig:
     # Atmospheric eddy diffusivity: represents baroclinic eddy transport.
     # Transient eddies carry 60-80% of midlat heat transport (~2-3e6 m²/s).
     # Tropics: eddies are ~5-10% of transport (Hadley dominates).
-    atmosphere_kappa_ref_m2_s: float = 1.2e6
+    atmosphere_kappa_ref_m2_s: float = 0.8e6
 
     enabled: bool = True
 
