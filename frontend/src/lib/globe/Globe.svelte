@@ -536,7 +536,7 @@
       if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, normalizedDir);
       if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(normalizedDir);
       sunLight.position.copy(normalizedDir).multiplyScalar(distance);
-      if (sunOrb) sunOrb.position.copy(normalizedDir).multiplyScalar(180);
+      if (sunOrb) sunOrb.position.copy(normalizedDir).multiplyScalar(360);
       return;
     }
 
@@ -586,7 +586,7 @@
 
     const sunDirNorm = sunDir.clone().normalize();
     sunLight.position.copy(sunDirNorm).multiplyScalar(distance);
-    if (sunOrb) sunOrb.position.copy(sunDirNorm).multiplyScalar(180);
+    if (sunOrb) sunOrb.position.copy(sunDirNorm).multiplyScalar(360);
   }
 
   function initWindParticles() {
@@ -650,7 +650,7 @@
     scene.add(sunLight);
 
     // Visible sun orb with limb darkening — placed far from globe to minimize parallax
-    const sunOrbGeo = new THREE.SphereGeometry(3.6, 32, 32);
+    const sunOrbGeo = new THREE.SphereGeometry(7.2, 32, 32);
     const sunOrbMat = new THREE.ShaderMaterial({
       vertexShader: `
         varying vec3 vNormal;
@@ -700,7 +700,7 @@
       depthWrite: false,
     });
     sunGlow = new THREE.Sprite(glowMat);
-    sunGlow.scale.set(28, 28, 1);
+    sunGlow.scale.set(56, 56, 1);
     sunOrb.add(sunGlow);
 
     // Initialize display month progress
@@ -729,8 +729,8 @@
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    controls.minDistance = 1.5;
-    controls.maxDistance = 10;
+    controls.minDistance = 1.1;
+    controls.maxDistance = 20;
     controls.autoRotate = true;
     controls.autoRotateSpeed = 0.5;
 
