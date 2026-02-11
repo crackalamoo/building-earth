@@ -179,6 +179,7 @@
     const surfaceData = ld.surface.data as Float32Array;
     const landMaskData = ld.land_mask.data as Uint8Array;
     const soilData = ld.soil_moisture?.data as Float32Array | undefined;
+    const vegData = ld.vegetation_fraction?.data as Float32Array | undefined;
     const coarseLandMask = ld.land_mask_native?.data as Uint8Array | undefined;
     const elevData = ld.elevation?.data as Float32Array | undefined;
     const elevNlat = ld.elevation?.shape[0] ?? 0;
@@ -192,6 +193,18 @@
     const lowNlat = ld.surface.shape[1];
     const lowNlon = ld.surface.shape[2];
     const monthOffset = monthIdx * lowNlat * lowNlon;
+
+    // Precompute annual mean surface temp per coarse cell (for soil hue)
+    const annualMeanTemp = new Float32Array(lowNlat * lowNlon);
+    for (let ci = 0; ci < lowNlat; ci++) {
+      for (let cj = 0; cj < lowNlon; cj++) {
+        let sum = 0;
+        for (let m = 0; m < 12; m++) {
+          sum += surfaceData[m * lowNlat * lowNlon + ci * lowNlon + cj];
+        }
+        annualMeanTemp[ci * lowNlon + cj] = sum / 12;
+      }
+    }
 
     // First pass: compute per-cell RGB into a flat buffer
     const rgbBuf = new Float32Array(hiNlat * hiNlon * 3);
@@ -222,7 +235,23 @@
           elev = elevData[ei * elevNlon + ej];
         }
 
-        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev);
+        // Sample vegetation fraction (same grid as soil moisture)
+        const vegFrac = vegData
+          ? sampleBilinear(
+              vegData, lowNlat, lowNlon, monthOffset,
+              dataLatIdx, j, hiNlat, hiNlon,
+              isLand, coarseLandMask,
+            )
+          : 0;
+
+        // Sample annual mean temp bilinearly (offset=0, it's a single 2D field)
+        const annMeanT = sampleBilinear(
+          annualMeanTemp, lowNlat, lowNlon, 0,
+          dataLatIdx, j, hiNlat, hiNlon,
+          isLand, coarseLandMask,
+        );
+
+        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT);
         const base = (i * hiNlon + j) * 3;
         rgbBuf[base] = r;
         rgbBuf[base + 1] = g;

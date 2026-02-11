@@ -15,11 +15,18 @@ const OCEAN_MID: [number, number, number] = [0.06, 0.16, 0.40];     // mid-ocean
 const OCEAN_SHELF: [number, number, number] = [0.10, 0.28, 0.52];   // continental shelf
 const OCEAN_COASTAL: [number, number, number] = [0.14, 0.38, 0.58]; // near-shore shallow
 
-// Land soil-moisture gradient (dry → wet)
-const ARID_SAND: [number, number, number] = [0.82, 0.72, 0.50];
-const DRY_SCRUB: [number, number, number] = [0.62, 0.58, 0.32];
-const TEMPERATE_GREEN: [number, number, number] = [0.28, 0.50, 0.20];
-const LUSH_GREEN: [number, number, number] = [0.10, 0.40, 0.12];
+// Bare soil hues by annual mean temperature
+const SOIL_TUNDRA: [number, number, number] = [0.58, 0.55, 0.50];     // pale grey-tan
+const SOIL_PODZOL: [number, number, number] = [0.45, 0.40, 0.34];     // grey-brown boreal
+const SOIL_TEMPERATE: [number, number, number] = [0.42, 0.36, 0.26];  // neutral brown
+const SOIL_WARM: [number, number, number] = [0.48, 0.38, 0.26];       // warm brown (subtle warmth)
+const SOIL_LATERITE: [number, number, number] = [0.55, 0.38, 0.24];   // muted red-brown tropical
+
+// Ground cover (grass/moss) hues
+const GRASS_DEAD: [number, number, number] = [0.62, 0.55, 0.30];      // yellow-brown dead grass
+const GRASS_BOREAL: [number, number, number] = [0.22, 0.38, 0.18];    // boreal moss/lichen
+const GRASS_TEMPERATE: [number, number, number] = [0.24, 0.50, 0.18]; // rich green grass
+const GRASS_TROPICAL: [number, number, number] = [0.16, 0.52, 0.12];  // bright tropical green
 
 // Snow/ice colors
 const SEASONAL_SNOW: [number, number, number] = [0.88, 0.90, 0.92];
@@ -88,10 +95,12 @@ function iceSheetFraction(tempC: number): number {
 /**
  * Compute Blue Marble color for a single vertex.
  *
- * @param isLand       - true if land cell
- * @param surfaceTempC - surface temperature in Celsius (native 5deg)
- * @param soilMoisture - soil moisture 0-1 fraction of field capacity (native 5deg)
- * @param elevationM   - elevation in meters (negative for ocean bathymetry)
+ * @param isLand             - true if land cell
+ * @param surfaceTempC       - surface temperature in Celsius (monthly)
+ * @param soilMoisture       - soil moisture 0-1 fraction of field capacity (monthly)
+ * @param elevationM         - elevation in meters (negative for ocean bathymetry)
+ * @param vegetationFraction - vegetation cover 0-1 (monthly, controls bare soil vs ground cover)
+ * @param annualMeanTempC    - annual mean surface temp in Celsius (for soil mineralogy hue)
  * @returns [r, g, b] normalized 0-1
  */
 export function blueMarbleColor(
@@ -99,6 +108,8 @@ export function blueMarbleColor(
   surfaceTempC: number,
   soilMoisture: number,
   elevationM: number = 0,
+  vegetationFraction: number = 0,
+  annualMeanTempC: number = 15,
 ): [number, number, number] {
   if (!isLand) {
     // ── Ocean ── bathymetry-driven depth shading
@@ -134,24 +145,37 @@ export function blueMarbleColor(
   }
 
   // ── Land ──
-  // Base color from soil moisture (0 = bone dry → 1 = saturated)
-  let baseColor: [number, number, number];
-
-  if (soilMoisture < 0.1) {
-    // Arid desert (sandy tan)
-    baseColor = lerp3(ARID_SAND, DRY_SCRUB, soilMoisture / 0.1);
-  } else if (soilMoisture < 0.3) {
-    // Dry scrubland (muted yellow-brown)
-    const t = (soilMoisture - 0.1) / 0.2;
-    baseColor = lerp3(DRY_SCRUB, TEMPERATE_GREEN, t);
-  } else if (soilMoisture < 0.6) {
-    // Temperate grassland/soil (olive → green)
-    const t = (soilMoisture - 0.3) / 0.3;
-    baseColor = lerp3(TEMPERATE_GREEN, LUSH_GREEN, t);
+  // 1. Bare soil color from annual mean temperature + moisture darkening
+  let bareSoil: [number, number, number];
+  if (annualMeanTempC < -5) {
+    bareSoil = SOIL_TUNDRA;
+  } else if (annualMeanTempC < 5) {
+    const t = clamp01((annualMeanTempC + 5) / 10);
+    bareSoil = lerp3(SOIL_TUNDRA, SOIL_PODZOL, t);
+  } else if (annualMeanTempC < 15) {
+    const t = clamp01((annualMeanTempC - 5) / 10);
+    bareSoil = lerp3(SOIL_PODZOL, SOIL_TEMPERATE, t);
+  } else if (annualMeanTempC < 28) {
+    const t = clamp01((annualMeanTempC - 15) / 13);
+    bareSoil = lerp3(SOIL_TEMPERATE, SOIL_WARM, t);
   } else {
-    // Lush/wet (rich green)
-    baseColor = LUSH_GREEN;
+    const t = clamp01((annualMeanTempC - 28) / 7);
+    bareSoil = lerp3(SOIL_WARM, SOIL_LATERITE, t);
   }
+  // Moisture darkens soil (wet organic soil is darker)
+  const darken = 1.0 - 0.25 * soilMoisture;
+  bareSoil = [bareSoil[0] * darken, bareSoil[1] * darken, bareSoil[2] * darken];
+
+  // 2. Ground cover color from monthly temperature + moisture
+  let groundCover: [number, number, number];
+  const grassGreen = surfaceTempC < 0
+    ? lerp3(GRASS_BOREAL, GRASS_TEMPERATE, clamp01((surfaceTempC + 10) / 10))
+    : lerp3(GRASS_TEMPERATE, GRASS_TROPICAL, clamp01(surfaceTempC / 25));
+  const grassAlive = clamp01(soilMoisture / 0.3);
+  groundCover = lerp3(GRASS_DEAD, grassGreen, grassAlive);
+
+  // 3. Blend bare soil ↔ ground cover by vegetation fraction
+  let baseColor = lerp3(bareSoil, groundCover, clamp01(vegetationFraction));
 
   // Snow overlay
   const snowFrac = landSnowFraction(surfaceTempC);

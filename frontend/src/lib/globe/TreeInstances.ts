@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { ClimateLayerData } from './loadBinaryData';
 import { ELEVATION_SCALE, sampleElevation } from './elevation';
+import { sampleBilinear } from './gridSampling';
 
 const GLOBE_RADIUS = 1.001;
 const TREE_HEIGHT = 0.017;
@@ -344,32 +345,49 @@ export class TreeInstances {
 
     for (let i = 0; i < nativeNlat; i++) {
       for (let j = 0; j < nativeNlon; j++) {
-        if (landMaskNative[i * nativeNlon + j] === 0) continue;
-
-        let vegSum = 0, soilSum = 0;
+        // Coarse cell stats for tree type probabilities (only if coarse land)
+        const isCoarseLand = landMaskNative[i * nativeNlon + j] === 1;
         let coldestMonth = Infinity, warmestMonth = -Infinity;
-        for (let m = 0; m < 12; m++) {
-          const offset = m * nativeNlat * nativeNlon + i * nativeNlon + j;
-          const temp = surfaceData[offset];
-          if (temp < coldestMonth) coldestMonth = temp;
-          if (temp > warmestMonth) warmestMonth = temp;
-          vegSum += vegData[offset];
-          soilSum += soilData[offset];
+        let coarseVegSum = 0, coarseSoilSum = 0;
+        let monthsAbove10 = 0;
+        if (isCoarseLand) {
+          for (let m = 0; m < 12; m++) {
+            const offset = m * nativeNlat * nativeNlon + i * nativeNlon + j;
+            const temp = surfaceData[offset];
+            if (temp < coldestMonth) coldestMonth = temp;
+            if (temp > warmestMonth) warmestMonth = temp;
+            if (temp > 10) monthsAbove10++;
+            coarseVegSum += vegData[offset];
+            coarseSoilSum += soilData[offset];
+          }
         }
-        const annualVeg = vegSum / 12;
-        const annualSoil = Math.min(soilSum / 12, 1);
+        const coarseAnnualVeg = isCoarseLand ? coarseVegSum / 12 : 0;
 
-        if (annualVeg < 0.05) continue;
+        // Tree density from vegetation surplus + tree growing season
+        // Trees need established ground cover (>0.3) and warm summers (>10°C)
+        const treePotential = Math.max(0, (coarseAnnualVeg - 0.3) / 0.7);
+        const gsU = Math.max(0, Math.min(1, (monthsAbove10 - 3) / 3));
+        const treeGrowingSeason = gsU * gsU * (3 - 2 * gsU); // hermite
+        const treeDensity = treePotential * treeGrowingSeason;
 
-        const treeCount = Math.floor(annualVeg * 15 + rand());
-        if (treeCount <= 0) continue;
+        // Max possible trees per coarse cell — try more candidates for
+        // cells that are partially ocean at coarse res but have hi-res land
+        const maxCandidates = isCoarseLand
+          ? Math.floor(treeDensity * 15 + rand())
+          : 4; // small budget for coastal spillover
+        if (maxCandidates <= 0) { rand(); continue; } // consume one rand for determinism
 
-        const [pConifer, pBroadleaf, pPalm] = computeTypeProbabilities(coldestMonth, warmestMonth, annualSoil);
+        const coarseAnnualSoil = isCoarseLand ? Math.min(coarseSoilSum / 12, 1) : 0.5;
+        const [pConifer, pBroadleaf, pPalm] = computeTypeProbabilities(
+          isCoarseLand ? coldestMonth : 15,
+          isCoarseLand ? warmestMonth : 25,
+          coarseAnnualSoil,
+        );
 
         const cellLatSouth = -90 + i * latStep;
         const cellLonWest = j * lonStep;
 
-        for (let t = 0; t < treeCount; t++) {
+        for (let t = 0; t < maxCandidates; t++) {
           let lat: number = 0, lon: number = 0;
           let valid = false;
 
@@ -389,6 +407,34 @@ export class TreeInstances {
           }
 
           if (!valid) continue;
+
+          // For non-coarse-land cells, sample interpolated veg + temp to decide if tree lives
+          if (!isCoarseLand) {
+            const hiRenderI = Math.floor(((90 - lat) / 180) * hiNlat);
+            const hiDataI = hiNlat - 1 - Math.min(hiRenderI, hiNlat - 1);
+            const hiJ = Math.floor((lon / 360) * hiNlon) % hiNlon;
+            let vegAtPoint = 0;
+            let warmCount = 0;
+            for (let m = 0; m < 12; m++) {
+              const mOff = m * nativeNlat * nativeNlon;
+              vegAtPoint += sampleBilinear(
+                vegData, nativeNlat, nativeNlon, mOff,
+                hiDataI, hiJ, hiNlat, hiNlon,
+                true, landMaskNative,
+              );
+              const tempAtPoint = sampleBilinear(
+                surfaceData, nativeNlat, nativeNlon, mOff,
+                hiDataI, hiJ, hiNlat, hiNlon,
+                true, landMaskNative,
+              );
+              if (tempAtPoint > 10) warmCount++;
+            }
+            vegAtPoint /= 12;
+            const tp = Math.max(0, (vegAtPoint - 0.3) / 0.7);
+            const gsU2 = Math.max(0, Math.min(1, (warmCount - 3) / 3));
+            const td = tp * gsU2 * gsU2 * (3 - 2 * gsU2);
+            if (td < 0.01 || rand() > td) continue;
+          }
 
           const r = rand();
           let type: 0 | 1 | 2;
