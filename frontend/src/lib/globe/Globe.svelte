@@ -821,15 +821,8 @@
 
     const isAutoRotating = controls.autoRotate;
 
-    // Smooth interpolation toward target month progress
-    // Handle wraparound (e.g., 11.5 -> 0.5 should go forward, not backward)
-    let delta = monthProgress - displayMonthProgress;
-    if (delta > 6) delta -= 12;
-    if (delta < -6) delta += 12;
-    displayMonthProgress += delta * 0.05;
-    // Keep in 0-12 range
-    if (displayMonthProgress < 0) displayMonthProgress += 12;
-    if (displayMonthProgress >= 12) displayMonthProgress -= 12;
+    // Snap to target month progress (no easing)
+    displayMonthProgress = monthProgress;
 
     // When not auto-rotating, orbit the sun around the globe at 4x auto-rotate speed
     // This gives 1 day per ~60 seconds
