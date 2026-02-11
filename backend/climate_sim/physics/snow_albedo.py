@@ -59,20 +59,16 @@ class SnowAlbedoConfig:
     # Vegetation albedo (forests, grasslands)
     vegetation_albedo: float = 0.18  # Typical vegetated surface
 
-    # Vegetation fraction from annual precipitation
-    # Desert: < 250 mm/year -> veg_frac ~ 0
-    # Grassland: 250-750 mm/year -> veg_frac ~ 0.3-0.6
-    # Forest: > 1000 mm/year -> veg_frac ~ 0.8-0.9
-    veg_precip_min_mm_year: float = 200.0  # Below this: bare desert
-    veg_precip_max_mm_year: float = 1200.0  # Above this: full vegetation
+    # Vegetation fraction = ground cover (bare soil vs any plant cover)
+    # Low threshold: 400-500 mm/yr gives full grass/shrub cover
+    veg_precip_min_mm_year: float = 100.0   # Below this: hyperarid, ~0% cover
+    veg_precip_max_mm_year: float = 500.0   # Above this: full ground cover
 
-    # Growing season temperature threshold
-    # Vegetation needs warmth to grow - months below this don't contribute
-    # 5°C is a common threshold for temperate vegetation
+    # Growing season: caps max achievable ground cover when short
+    # Only matters below ~5 warm months; above that, precip is sole driver
     veg_growing_threshold_c: float = 5.0
-    # Minimum growing season fraction for any vegetation
-    # Below this (e.g., < 2 months), essentially no vegetation can establish
-    veg_min_growing_season: float = 0.15  # ~2 months
+    veg_growing_season_full_months: float = 5.0  # months above threshold for uncapped cover
+    veg_tundra_floor: float = 0.0  # 0 warm months = no vegetation
 
 
 class AlbedoModel:
@@ -115,11 +111,12 @@ class AlbedoModel:
         annual_precip_mm_year: np.ndarray,
         monthly_temperatures_c: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Compute vegetation fraction from precipitation and growing season.
+        """Compute vegetation ground cover fraction.
 
-        Vegetation coverage depends on:
-        1. Annual precipitation (water availability)
-        2. Growing season length (months with T > threshold)
+        Represents visible ground cover (bare soil vs any plant material),
+        not biomass or productivity. Precipitation drives ground cover with
+        a low saturation threshold (~500 mm/yr). Growing season acts as a
+        cap on maximum achievable cover when very short (<5 warm months).
 
         Parameters
         ----------
@@ -127,7 +124,7 @@ class AlbedoModel:
             Annual precipitation in mm/year.
         monthly_temperatures_c : np.ndarray | None
             Monthly surface temperatures in Celsius, shape (12, lat, lon).
-            If None, growing season factor is not applied.
+            Used to compute growing season cap.
 
         Returns
         -------
@@ -140,40 +137,27 @@ class AlbedoModel:
         p_min = self.config.veg_precip_min_mm_year
         p_max = self.config.veg_precip_max_mm_year
 
-        # Normalize precipitation to [0, 1] range
+        # Precipitation → ground cover: hermite ramp 100-500 mm/yr
         denom = p_max - p_min
         if abs(denom) < 1e-6:
             u = np.where(annual_precip_mm_year > p_min, 1.0, 0.0)
         else:
             u = (annual_precip_mm_year - p_min) / denom
         u_clamped = np.clip(u, 0.0, 1.0)
+        veg_frac = u_clamped * u_clamped * (3.0 - 2.0 * u_clamped)
 
-        # Smooth hermite interpolation for natural transition
-        veg_frac_precip = u_clamped * u_clamped * (3.0 - 2.0 * u_clamped)
-
-        # Apply growing season factor if temperatures provided
+        # Growing season cap: short seasons limit max achievable ground cover
         if monthly_temperatures_c is not None:
-            # Count fraction of year with T > threshold
-            threshold = self.config.veg_growing_threshold_c
-            months_above = np.sum(monthly_temperatures_c > threshold, axis=0)
-            growing_season_frac = months_above / 12.0
-
-            # Below minimum growing season, no vegetation can establish
-            min_gs = self.config.veg_min_growing_season
-            # Scale from 0 at min_gs to 1 at full year
-            # Using smooth hermite for gradual transition
-            denom = 1.0 - min_gs
-            if abs(denom) < 1e-6:
-                # Full year required - only year-round warm areas qualify
-                gs_factor = np.where(growing_season_frac >= 1.0 - 1e-6, 1.0, 0.0)
-            else:
-                gs_scaled = (growing_season_frac - min_gs) / denom
-                gs_scaled = np.clip(gs_scaled, 0.0, 1.0)
-                gs_factor = gs_scaled * gs_scaled * (3.0 - 2.0 * gs_scaled)
-
-            veg_frac = veg_frac_precip * gs_factor
-        else:
-            veg_frac = veg_frac_precip
+            warm_months = np.sum(
+                monthly_temperatures_c > self.config.veg_growing_threshold_c, axis=0,
+            )
+            # Hermite ramp from tundra_floor (0 months) to 1.0 (full_months)
+            # Hermite keeps cap low for 1-2 months, rises steeply toward 5
+            full = self.config.veg_growing_season_full_months
+            floor = self.config.veg_tundra_floor
+            gs_u = np.clip(warm_months / full, 0.0, 1.0)
+            gs_cap = floor + (1.0 - floor) * gs_u * gs_u * (3.0 - 2.0 * gs_u)
+            veg_frac = np.minimum(veg_frac, gs_cap)
 
         # Cap at 95% - even rainforests have some bare ground
         veg_frac = np.clip(veg_frac, 0.0, 0.95)
