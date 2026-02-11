@@ -44,6 +44,18 @@
   let sunGlow: THREE.Sprite | null = null;
   let starField: StarField | null = null;
 
+  // Cached color buffers: 12 base months + sub-step interpolations
+  const SUB_STEPS = 3;
+  const TOTAL_STEPS = 12 * SUB_STEPS;
+  let tempBaseCache: (Float32Array | null)[] = new Array(12).fill(null);
+  let bmBaseRgbCache: (Float32Array | null)[] = new Array(12).fill(null);
+  let bmBaseSpecCache: (Float32Array | null)[] = new Array(12).fill(null);
+  let tempStepCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
+  let bmStepRgbCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
+  let bmStepSpecCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
+  let lastAppliedStep = -1;
+  let warmupGeneration = 0;
+
   // Derive discrete month for temperature display (nearest month)
   $: displayMonth = Math.round(displayMonthProgress) % 12;
 
@@ -119,14 +131,53 @@
   $: nlat = data ? data[0].length : 0;
   $: nlon = data ? data[0][0].length : 0;
 
-  // Update colors when displayMonth or data changes (temperature layer)
-  $: if (globe && data && activeLayer === 'temperature') {
-    updateTemperatureColors(data, displayMonth);
+  // Precompute all cached steps in background (one step per frame to avoid blocking)
+
+  // Build one cache item per idle callback, yielding to the browser between each
+  function warmCache(gen: number) {
+    if (gen !== warmupGeneration) return;
+    const ric = typeof requestIdleCallback === 'function' ? requestIdleCallback : (cb: () => void) => setTimeout(cb, 50);
+    // Phase 1: build 12 base months, Phase 2: build 24 sub-step lerps
+    let baseMonth = 0;
+    let step = 0;
+    function next() {
+      if (gen !== warmupGeneration) return;
+      // Build base months first (expensive)
+      if (baseMonth < 12) {
+        if (data && !tempBaseCache[baseMonth]) tempBaseCache[baseMonth] = buildTemperatureColorBuffer(data, baseMonth);
+        if (layerData && !bmBaseRgbCache[baseMonth]) {
+          const r = buildBlueMarbleBuffers(layerData, baseMonth);
+          bmBaseRgbCache[baseMonth] = r.rgb; bmBaseSpecCache[baseMonth] = r.spec;
+        }
+        baseMonth++;
+        ric(next);
+      } else if (step < TOTAL_STEPS) {
+        // Sub-steps: skip whole-month steps (t=0), only build intermediate lerps
+        if (step % SUB_STEPS !== 0) {
+          if (data) ensureTempStep(step);
+          if (layerData) ensureBmStep(step);
+        }
+        step++;
+        ric(next);
+      }
+    }
+    ric(next);
   }
 
-  // Update blue marble colors when month or layerData changes
-  $: if (blueMarbleGlobe && layerData && activeLayer === 'blue-marble') {
-    updateBlueMarbleColors(layerData, displayMonth);
+  // Invalidate caches when data changes and start idle-time warmup
+  $: if (data) {
+    tempBaseCache = new Array(12).fill(null);
+    tempStepCache = new Array(TOTAL_STEPS).fill(null);
+    lastAppliedStep = -1;
+    warmCache(++warmupGeneration);
+  }
+  $: if (layerData) {
+    bmBaseRgbCache = new Array(12).fill(null);
+    bmBaseSpecCache = new Array(12).fill(null);
+    bmStepRgbCache = new Array(TOTAL_STEPS).fill(null);
+    bmStepSpecCache = new Array(TOTAL_STEPS).fill(null);
+    lastAppliedStep = -1;
+    warmCache(++warmupGeneration);
   }
 
   let ambientLight: THREE.AmbientLight;
@@ -145,37 +196,26 @@
     }
   }
 
-  function updateTemperatureColors(climateData: number[][][], monthIdx: number) {
-    if (!globe) return;
-
-    const geometry = globe.geometry;
-    const colors = geometry.attributes.color;
+  function buildTemperatureColorBuffer(climateData: number[][][], monthIdx: number): Float32Array {
     const monthData = averagePolarTemps(climateData[monthIdx], nlat, nlon);
+    const nVerts = nlat * nlon * 6;
+    const buf = new Float32Array(nVerts * 3);
 
-    // Each cell has 6 vertices (2 triangles), all same color
     let idx = 0;
     for (let i = 0; i < nlat; i++) {
       const dataLatIdx = nlat - 1 - i;
       for (let j = 0; j < nlon; j++) {
-        const dataLonIdx = j;
-        const temp = monthData[dataLatIdx][dataLonIdx];
+        const temp = monthData[dataLatIdx][j];
         const [r, g, b] = temperatureToColorNormalized(temp);
-
-        // 6 vertices per cell
         for (let v = 0; v < 6; v++) {
-          colors.setXYZ(idx, r, g, b);
-          idx++;
+          buf[idx++] = r; buf[idx++] = g; buf[idx++] = b;
         }
       }
     }
-    colors.needsUpdate = true;
+    return buf;
   }
 
-  function updateBlueMarbleColors(ld: ClimateLayerData, monthIdx: number) {
-    if (!blueMarbleGlobe) return;
-
-    const geometry = blueMarbleGlobe.geometry;
-    const colors = geometry.attributes.color;
+  function buildBlueMarbleBuffers(ld: ClimateLayerData, monthIdx: number): { rgb: Float32Array; spec: Float32Array } {
     const surfaceData = ld.surface.data as Float32Array;
     const landMaskData = ld.land_mask.data as Uint8Array;
     const soilData = ld.soil_moisture?.data as Float32Array | undefined;
@@ -292,10 +332,11 @@
       }
     }
 
-    // Write smoothed RGB to vertex colors, applying hillshade
-    // Also update specular mask: open ocean=1, sea ice/land=0, smooth transition
+    // Apply hillshade to RGB buffer and build specular + vertex-expanded buffers
     const hsGrid = (blueMarbleGlobe as any)?._hillshadeGrid as Float32Array | undefined;
-    const specAttr = geometry.attributes.isOcean as THREE.BufferAttribute | undefined;
+    const nVerts = hiNlat * hiNlon * 6;
+    const outRgb = new Float32Array(nVerts * 3);
+    const outSpec = new Float32Array(nVerts);
     let idx = 0;
     for (let i = 0; i < hiNlat; i++) {
       const dataLatIdx = hiNlat - 1 - i;
@@ -314,32 +355,101 @@
 
         // Compute specular mask: 0 for land/ice, 1 for open ocean
         let spec = 0.0;
-        if (specAttr) {
-          const isLand = landMaskData[dataLatIdx * hiNlon + j] === 1;
-          if (!isLand) {
-            const temp = sampleBilinear(
-              surfaceData, lowNlat, lowNlon, monthOffset,
-              dataLatIdx, j, hiNlat, hiNlon,
-              false, coarseLandMask,
-            );
-            // Mirror seaIceFraction from blueMarbleColormap.ts:
-            // Hermite smoothstep from -1.8°C to -8°C, max 0.70
-            const ICE_FREEZE = -1.8, ICE_FULL = -8.0, ICE_MAX = 0.70;
-            const u = Math.max(0, Math.min(1, (ICE_FREEZE - temp) / (ICE_FREEZE - ICE_FULL)));
-            const iceFrac = u * u * (3 - 2 * u) * ICE_MAX;
-            spec = 1.0 - iceFrac;
-          }
+        if (!isLand) {
+          const temp = sampleBilinear(
+            surfaceData, lowNlat, lowNlon, monthOffset,
+            dataLatIdx, j, hiNlat, hiNlon,
+            false, coarseLandMask,
+          );
+          const ICE_FREEZE = -1.8, ICE_FULL = -8.0, ICE_MAX = 0.70;
+          const u = Math.max(0, Math.min(1, (ICE_FREEZE - temp) / (ICE_FREEZE - ICE_FULL)));
+          const iceFrac = u * u * (3 - 2 * u) * ICE_MAX;
+          spec = 1.0 - iceFrac;
         }
 
         for (let v = 0; v < 6; v++) {
-          colors.setXYZ(idx, r, g, b);
-          if (specAttr) specAttr.setX(idx, spec);
+          outRgb[idx * 3] = r; outRgb[idx * 3 + 1] = g; outRgb[idx * 3 + 2] = b;
+          outSpec[idx] = spec;
           idx++;
         }
       }
     }
+    return { rgb: outRgb, spec: outSpec };
+  }
+
+  function ensureTempBase(m: number) {
+    if (!tempBaseCache[m] && data) tempBaseCache[m] = buildTemperatureColorBuffer(data, m);
+  }
+
+  function ensureBmBase(m: number) {
+    if (!bmBaseRgbCache[m] && layerData) {
+      const r = buildBlueMarbleBuffers(layerData, m);
+      bmBaseRgbCache[m] = r.rgb; bmBaseSpecCache[m] = r.spec;
+    }
+  }
+
+  function ensureTempStep(step: number) {
+    if (tempStepCache[step]) return;
+    const m0 = Math.floor(step / SUB_STEPS) % 12;
+    const m1 = (m0 + 1) % 12;
+    ensureTempBase(m0); ensureTempBase(m1);
+    const t = (step % SUB_STEPS) / SUB_STEPS;
+    if (t < 0.001) { tempStepCache[step] = tempBaseCache[m0]!; return; }
+    const b0 = tempBaseCache[m0]!, b1 = tempBaseCache[m1]!;
+    const out = new Float32Array(b0.length);
+    const s = 1 - t;
+    for (let i = 0; i < out.length; i++) out[i] = b0[i] * s + b1[i] * t;
+    tempStepCache[step] = out;
+  }
+
+  function ensureBmStep(step: number) {
+    if (bmStepRgbCache[step]) return;
+    const m0 = Math.floor(step / SUB_STEPS) % 12;
+    const m1 = (m0 + 1) % 12;
+    ensureBmBase(m0); ensureBmBase(m1);
+    const t = (step % SUB_STEPS) / SUB_STEPS;
+    if (t < 0.001) {
+      bmStepRgbCache[step] = bmBaseRgbCache[m0]!;
+      bmStepSpecCache[step] = bmBaseSpecCache[m0]!;
+      return;
+    }
+    const r0 = bmBaseRgbCache[m0]!, r1 = bmBaseRgbCache[m1]!;
+    const s0 = bmBaseSpecCache[m0]!, s1 = bmBaseSpecCache[m1]!;
+    const s = 1 - t;
+    const outR = new Float32Array(r0.length);
+    const outS = new Float32Array(s0.length);
+    for (let i = 0; i < outR.length; i++) outR[i] = r0[i] * s + r1[i] * t;
+    for (let i = 0; i < outS.length; i++) outS[i] = s0[i] * s + s1[i] * t;
+    bmStepRgbCache[step] = outR;
+    bmStepSpecCache[step] = outS;
+  }
+
+  function progressToStep(progress: number): number {
+    return Math.round(progress * SUB_STEPS) % TOTAL_STEPS;
+  }
+
+  /** Apply cached sub-step colors to temperature globe. */
+  function applyTemperatureColors(step: number) {
+    if (!globe || !data) return;
+    ensureTempStep(step);
+    const colors = globe.geometry.attributes.color;
+    ((colors as any).array as Float32Array).set(tempStepCache[step]!);
     colors.needsUpdate = true;
-    if (specAttr) specAttr.needsUpdate = true;
+  }
+
+  /** Apply cached sub-step colors to blue marble globe. */
+  function applyBlueMarbleColors(step: number) {
+    if (!blueMarbleGlobe || !layerData) return;
+    ensureBmStep(step);
+    const geometry = blueMarbleGlobe.geometry;
+    const colors = geometry.attributes.color;
+    ((colors as any).array as Float32Array).set(bmStepRgbCache[step]!);
+    colors.needsUpdate = true;
+    const specAttr = geometry.attributes.isOcean as THREE.BufferAttribute | undefined;
+    if (specAttr) {
+      ((specAttr as any).array as Float32Array).set(bmStepSpecCache[step]!);
+      specAttr.needsUpdate = true;
+    }
   }
 
   function createGlobeMesh(
@@ -774,7 +884,7 @@
       globe = createTemperatureGlobe(data);
       globe.visible = activeLayer === 'temperature';
       scene.add(globe);
-      updateTemperatureColors(data, displayMonth);
+      applyTemperatureColors(progressToStep(displayMonthProgress));
     }
 
     // Create blue marble globe if layerData is available
@@ -782,7 +892,7 @@
       blueMarbleGlobe = createBlueMarbleGlobe(layerData);
       blueMarbleGlobe.visible = activeLayer === 'blue-marble';
       scene.add(blueMarbleGlobe);
-      updateBlueMarbleColors(layerData, displayMonth);
+      applyBlueMarbleColors(progressToStep(displayMonthProgress));
       initWindParticles();
       initTreeInstances();
       initCloudInstances();
@@ -823,6 +933,17 @@
 
     // Snap to target month progress (no easing)
     displayMonthProgress = monthProgress;
+
+    // Update colors only when nearest sub-step changes
+    const step = progressToStep(displayMonthProgress);
+    if (step !== lastAppliedStep) {
+      if (activeLayer === 'temperature') {
+        applyTemperatureColors(step);
+      } else if (activeLayer === 'blue-marble') {
+        applyBlueMarbleColors(step);
+      }
+      lastAppliedStep = step;
+    }
 
     // When not auto-rotating, orbit the sun around the globe at 4x auto-rotate speed
     // This gives 1 day per ~60 seconds
@@ -881,7 +1002,7 @@
     globe = createTemperatureGlobe(data);
     globe.visible = activeLayer === 'temperature';
     scene.add(globe);
-    updateTemperatureColors(data, displayMonth);
+    applyTemperatureColors(progressToStep(displayMonthProgress));
   }
 
   // Create blue marble globe when layerData arrives
@@ -889,7 +1010,7 @@
     blueMarbleGlobe = createBlueMarbleGlobe(layerData);
     blueMarbleGlobe.visible = activeLayer === 'blue-marble';
     scene.add(blueMarbleGlobe);
-    updateBlueMarbleColors(layerData, displayMonth);
+    applyBlueMarbleColors(progressToStep(displayMonthProgress));
     initWindParticles();
     initTreeInstances();
   }
