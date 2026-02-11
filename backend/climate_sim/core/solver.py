@@ -525,6 +525,7 @@ def monthly_step(
                                 w_hadley, lagged_humidity,
                                 upper_troposphere_q_fraction=vertical_motion_cfg.upper_troposphere_q_fraction,
                             )
+                            # No land masking — over ocean, evaporation should compensate
                         else:
                             hadley_drying = np.zeros_like(lagged_humidity)
                         humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency + diffusion_tendency + hadley_drying
