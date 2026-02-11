@@ -37,6 +37,7 @@ from climate_sim.physics.atmosphere.pressure import (
     LAT_SUBTROPICS_BASE,
     SUBTROPICS_ITCZ_COUPLING,
     SIGMA_SUBTROPICS,
+    SIGMA_ITCZ,
 )
 
 # Physical constants
@@ -46,7 +47,7 @@ GAMMA_MOIST = STANDARD_LAPSE_RATE_K_PER_M  # ~0.0065 K/m, moist lapse rate (for 
 # Upper troposphere humidity fraction relative to boundary layer
 # Air rising through the troposphere loses most moisture via precipitation
 # By the time it reaches the upper troposphere (~300 hPa), q is ~20% of surface value
-UPPER_TROPOSPHERE_Q_FRACTION = 0.20
+UPPER_TROPOSPHERE_Q_FRACTION = 0.50
 
 
 @dataclass(frozen=True)
@@ -55,11 +56,14 @@ class VerticalMotionConfig:
 
     enabled: bool = True
 
-    # Hadley subsidence: large-scale descent at subtropical highs
-    hadley_descent_velocity_m_s: float = 0.0003
+    # Hadley subsidence at BL top (~850 hPa).
+    # Mid-tropospheric (500 hPa) omega is 3-5 mm/s, but at BL top it's
+    # ~1/3 of that due to mass continuity (w scales with height above ground).
+    hadley_descent_velocity_m_s: float = 0.001
 
-    # How dry the descending air is relative to boundary layer.
-    upper_troposphere_q_fraction: float = 0.20
+    # Humidity of air entrained into BL top from the lower free troposphere.
+    # At ~850-700 hPa, q is ~50% of BL value (not 20% which is upper troposphere/300 hPa).
+    upper_troposphere_q_fraction: float = 0.50
 
     # Background BL-atmosphere mixing timescale (seconds).
     # Represents subsidence, entrainment, and turbulent exchange that
@@ -230,21 +234,31 @@ def compute_subsidence_drying(
 def compute_hadley_subsidence_velocity(
     lat_rad: np.ndarray,
     itcz_rad: np.ndarray,
-    peak_velocity_m_s: float = 0.003,
+    peak_velocity_m_s: float = 0.001,
 ) -> np.ndarray:
-    """Compute downward vertical velocity from Hadley cell overturning.
+    """Compute vertical velocity from Hadley cell overturning at BL top.
 
-    Returns vertical velocity (m/s), positive = descent.
+    Returns vertical velocity (m/s), positive = descent, negative = ascent.
+
+    Peak is BL-top subsidence (~1 mm/s), not mid-tropospheric omega (3-5 mm/s).
+    Uses a narrow Gaussian (σ=7°) for descent, with compensating ITCZ ascent.
     """
     lat_subtrop_north = LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
     lat_subtrop_south = -LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
 
-    w = peak_velocity_m_s * (
-        np.exp(-((lat_rad - lat_subtrop_south) / SIGMA_SUBTROPICS) ** 2)
-        + np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_SUBTROPICS) ** 2)
+    # Hadley-Ferrel boundary: descent must go to zero here
+    sigma_descent = np.deg2rad(7.0)  # Narrower than pressure σ=12°
+
+    # Subtropical descent (positive = downward)
+    w_descent = peak_velocity_m_s * (
+        np.exp(-((lat_rad - lat_subtrop_south) / sigma_descent) ** 2)
+        + np.exp(-((lat_rad - lat_subtrop_north) / sigma_descent) ** 2)
     )
 
-    return w
+    # ITCZ ascent (negative = upward)
+    w_ascent = peak_velocity_m_s * np.exp(-((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2)
+
+    return w_descent - w_ascent
 
 
 def compute_hadley_subsidence_drying(
@@ -256,10 +270,13 @@ def compute_hadley_subsidence_drying(
     """Compute humidity tendency from Hadley subsidence mixing dry air into BL.
 
     dq/dt = (w / h_BL) * (q_upper - q_BL)
+
+    Only applies where w > 0 (descent). Ascent regions (w < 0) are handled
+    by convergence via advection, not by this term.
     """
     q_upper = humidity_field * upper_troposphere_q_fraction
     delta_q = q_upper - humidity_field  # Always negative
-    mixing_rate = w_descent / boundary_layer_height_m
+    mixing_rate = np.maximum(w_descent, 0.0) / boundary_layer_height_m
     return mixing_rate * delta_q
 
 
@@ -271,9 +288,9 @@ def hadley_subsidence_drying_jacobian(
     """Diagonal of the humidity Jacobian from Hadley subsidence drying.
 
     d(dq/dt)/dq = (w / h_BL) * (f_upper - 1) = -(1 - f_upper) * w / h_BL
-    Always negative (stabilizing).
+    Only where w > 0 (descent). Always negative (stabilizing).
     """
-    return w_descent / boundary_layer_height_m * (upper_troposphere_q_fraction - 1.0)
+    return np.maximum(w_descent, 0.0) / boundary_layer_height_m * (upper_troposphere_q_fraction - 1.0)
 
 # Potential temperature factor: θ_atm = T_atm × (P0/P_ATM)^κ
 _P0 = 1013.25  # hPa
