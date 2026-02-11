@@ -121,6 +121,8 @@ def monthly_step(
         lagged_albedo_field = surface_context.albedo_model.apply_snow_albedo(
             base_albedo_field,
             start_temp_capped[0],
+            soil_moisture=state.soil_moisture,
+            vegetation_fraction=state.vegetation_fraction,
             effective_mu=effective_mu,
             ocean_albedo=ocean_albedo,
         )
@@ -1050,6 +1052,7 @@ def find_periodic_climate_cycle(
                                 s.temperature[0],
                                 soil_moisture=s.soil_moisture,
                                 vegetation_fraction=current_vegetation_fraction,
+                                annual_precip_mm_year=annual_precip_mm,
                                 effective_mu=month_mu,
                                 ocean_albedo=month_ocean_alb,
                             )
