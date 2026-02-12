@@ -139,9 +139,11 @@ def monthly_step(
                     itcz_rad=itcz_rad,
                     ekman_drag=False
                 )
-                # Boundary layer wind: use BL T only
+                # Boundary layer wind: use T_atm for pressure gradient, T_BL for drag
                 lagged_boundary_layer_wind_field = surface_context.wind_model.wind_field(
-                    start_temp_capped[1], itcz_rad=itcz_rad, ekman_drag=True
+                    start_temp_capped[2],
+                    temperature_boundary_layer=start_temp_capped[1],
+                    itcz_rad=itcz_rad, ekman_drag=True
                 )
                 # Apply orographic flow blocking to BL winds
                 if surface_context.orographic_model is not None:
@@ -793,9 +795,11 @@ def monthly_step(
                     itcz_rad=final_itcz,
                     ekman_drag=False
                 )
-                # Boundary layer wind: with surface drag + orographic blocking
+                # Boundary layer wind: T_atm for pressure gradient, T_BL for drag
                 final_state.boundary_layer_wind_field = surface_context.wind_model.wind_field(
-                    final_temp[1], itcz_rad=final_itcz, ekman_drag=True
+                    final_temp[2],
+                    temperature_boundary_layer=final_temp[1],
+                    itcz_rad=final_itcz, ekman_drag=True
                 )
                 if surface_context.orographic_model is not None:
                     bl_u, bl_v = final_state.boundary_layer_wind_field[0], final_state.boundary_layer_wind_field[1]
@@ -1321,7 +1325,8 @@ def solve_periodic_climate(
                         )
                     if bl_wind is None:
                         bl_wind = operators.wind_model.wind_field(
-                            month_state.temperature[1],
+                            month_state.temperature[2],
+                            temperature_boundary_layer=month_state.temperature[1],
                             itcz_rad=itcz_rad,
                             ekman_drag=True
                         )

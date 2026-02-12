@@ -283,28 +283,27 @@ def compute_geopotential_height(
     """Compute geopotential height (m) of a pressure surface.
 
     For a given pressure level p₀, computes the altitude where pressure equals p₀.
-    Uses hydrostatic balance: Z = (RT_ref/g) * ln(p_surface/p₀)
+    Uses hydrostatic balance: Z = (R*T_local/g) * ln(p_surface/p₀)
 
-    We use a global reference temperature for the scale height rather than local
-    temperature. This ensures the geopotential height gradient reflects only
-    the pressure gradient, not local temperature variations. Using local T would
-    cause thermal lows (hot + low pressure) to have artificially high Z due to
-    the larger scale height, partially canceling the low pressure effect and
-    giving incorrect wind directions.
+    Using local (smoothed) temperature captures the thermal wind effect:
+    warm columns have larger scale heights, so a given pressure surface is
+    higher in warm air than cold air. The gradient of Z then includes both
+    the SLP gradient contribution and the thermal wind contribution, which
+    is the dominant term at upper levels.
+
+    The input temperature should already be spatially smoothed (1000 km) to
+    remove mesoscale thermal lows while preserving the large-scale meridional
+    gradient that drives the thermal wind.
     """
     temperature = np.asarray(temperature_K, dtype=float)
     if temperature.ndim != 2:
         raise ValueError("temperature_K must be a 2-D latitude/longitude field")
 
-    # Use global mean temperature for scale height to isolate pressure effect
-    # This gives geopotential that reflects pressure pattern, not local T
-    nlat, nlon = temperature.shape
-    lat_deg = _get_latitude_centers(nlat)
-    cos_lat = np.clip(np.cos(np.deg2rad(lat_deg)), 1.0e-6, None)
-    weights = np.broadcast_to(cos_lat[:, None], temperature.shape)
-    T_ref = area_weighted_mean(temperature, weights)
-    T_ref = max(T_ref, 150.0)
-    scale_height = GAS_CONSTANT_J_KG_K * T_ref / gravity_m_s2
+    # Use local temperature for scale height to capture thermal wind effect.
+    # dZ/dy = (R/g) * [dT/dy * ln(p_sfc/p_ref) + T/p_sfc * dp_sfc/dy]
+    #          ^^^^ thermal wind term              ^^^^ SLP gradient term
+    T_local = np.maximum(temperature, 150.0)
+    scale_height = GAS_CONSTANT_J_KG_K * T_local / gravity_m_s2
 
     # Where surface pressure < reference pressure (e.g., high mountains), the
     # reference pressure level doesn't exist. Clip to avoid log of values < 1.

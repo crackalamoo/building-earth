@@ -251,22 +251,21 @@ class WindModel:
         # BL wind: ~925 hPa, Free atmosphere: ~700 hPa
 
         if ekman_drag:
-            # Boundary layer wind
             reference_pressure_pa = 92500.0  # 925 hPa
-            column_temperature = temperature  # T_BL is already the column average
         else:
-            # Free atmosphere wind - need height-weighted temperature
             reference_pressure_pa = 70000.0  # 700 hPa
-            if temperature_boundary_layer is not None:
-                # Height-weighted average: (T_BL * h_BL + T_atm * h_atm) / (h_BL + h_atm)
-                total_height = BOUNDARY_LAYER_HEIGHT_M + ATMOSPHERE_LAYER_HEIGHT_M
-                column_temperature = (
-                    temperature_boundary_layer * BOUNDARY_LAYER_HEIGHT_M +
-                    temperature * ATMOSPHERE_LAYER_HEIGHT_M
-                ) / total_height
-            else:
-                # Single-layer case or missing BL temp - use atmosphere temperature
-                column_temperature = temperature
+
+        if temperature_boundary_layer is not None:
+            # Height-weighted column mean for pressure gradient calculation.
+            # Sea-level pressure reflects the weight of the entire column.
+            total_height = BOUNDARY_LAYER_HEIGHT_M + ATMOSPHERE_LAYER_HEIGHT_M
+            column_temperature = (
+                temperature_boundary_layer * BOUNDARY_LAYER_HEIGHT_M +
+                temperature * ATMOSPHERE_LAYER_HEIGHT_M
+            ) / total_height
+        else:
+            # Single-layer case or missing BL temp
+            column_temperature = temperature
 
         # Compute geopotential height using smoothed temperature and full pressure field
         # This removes spurious small-scale variations while preserving large-scale patterns
