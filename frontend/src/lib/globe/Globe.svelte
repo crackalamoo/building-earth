@@ -955,7 +955,7 @@
     // Update wind particles
     if (windParticles && time !== undefined && lastAnimateTime !== null) {
       const dt = (time - lastAnimateTime) / 1000;
-      windParticles.setMonth(Math.floor(displayMonthProgress) % 12);
+      windParticles.setMonth(displayMonthProgress);
       if (activeLayer === 'blue-marble') {
         windParticles.update(dt);
       }
