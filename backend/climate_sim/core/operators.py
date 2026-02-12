@@ -10,7 +10,7 @@ from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.core.math_core import LinearSolveCache
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.data.constants import ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K
-from climate_sim.data.elevation import compute_cell_elevation, compute_cell_roughness_length
+from climate_sim.data.elevation import compute_cell_elevation, compute_cell_elevation_statistics, compute_cell_roughness_length
 from climate_sim.data.landmask import (
     LAND_ALBEDO,
     OCEAN_ALBEDO,
@@ -38,6 +38,7 @@ from climate_sim.physics.solar import (
     compute_monthly_effective_cosine_zenith,
 )
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
+from climate_sim.physics.orographic_effects import OrographicModel
 from climate_sim.runtime.config import ModelConfig
 
 
@@ -56,6 +57,7 @@ class SurfaceHeatCapacityContext:
     base_C_ocean: float
     baseline_capacity: np.ndarray
     topographic_elevation: np.ndarray | None = None
+    orographic_model: OrographicModel | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,7 @@ class ModelOperators:
     latent_heat_cfg: LatentHeatExchangeConfig
     ocean_advection_cfg: OceanAdvectionConfig
     vertical_motion_cfg: VerticalMotionConfig
+    orographic_model: OrographicModel | None
 
 
 def build_model_operators(
@@ -210,6 +213,19 @@ def build_model_operators(
         config=advection_config,
     )
 
+    # Build orographic model if enabled
+    orographic_model: OrographicModel | None = None
+    if model_config.orographic.enabled:
+        elevation_std, elevation_max = compute_cell_elevation_statistics(lon2d, lat2d)
+        orographic_model = OrographicModel(
+            lon2d, lat2d,
+            elevation=topographic_elevation,
+            elevation_std=elevation_std,
+            elevation_max=elevation_max,
+            config=model_config.orographic,
+            land_mask=land_mask,
+        )
+
     # Compute month durations
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY
 
@@ -241,6 +257,7 @@ def build_model_operators(
         base_C_land=base_C_land,
         base_C_ocean=base_C_ocean,
         baseline_capacity=baseline_capacity,
+        orographic_model=orographic_model,
     )
 
     # Create solver cache
@@ -269,4 +286,5 @@ def build_model_operators(
         latent_heat_cfg=latent_heat_cfg,
         ocean_advection_cfg=model_config.ocean_advection,
         vertical_motion_cfg=model_config.vertical_motion,
+        orographic_model=orographic_model,
     )

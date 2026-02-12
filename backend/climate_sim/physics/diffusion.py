@@ -116,7 +116,7 @@ class DiffusionConfig:
     # Atmospheric eddy diffusivity: represents baroclinic eddy transport.
     # Transient eddies carry 60-80% of midlat heat transport (~2-3e6 m²/s).
     # Tropics: eddies are ~5-10% of transport (Hadley dominates).
-    atmosphere_kappa_ref_m2_s: float = 0.8e6
+    atmosphere_kappa_ref_m2_s: float = 1.0e6
 
     enabled: bool = True
 
@@ -124,12 +124,16 @@ class DiffusionConfig:
     # Eddies are roughly isotropic — same scaling for meridional and zonal.
     # Mean wind transport (trade winds, westerlies) is handled by advection, not diffusion.
     use_latitude_dependent_atmosphere: bool = True
-    atmosphere_meridional_tropical_scale: float = 0.3   # 0-30°: Hadley cell dominates, weak eddy mixing
-    atmosphere_meridional_midlat_scale: float = 2.5     # 30-60°: Baroclinic storm tracks peak
-    atmosphere_meridional_polar_scale: float = 0.7      # 60-90°: Moderate eddy transport
-    atmosphere_zonal_tropical_scale: float = 0.3        # Isotropic with meridional
-    atmosphere_zonal_midlat_scale: float = 2.5          # Isotropic with meridional
-    atmosphere_zonal_polar_scale: float = 0.7           # Isotropic with meridional
+
+    # Eady-based scaling: κ ∝ f × |dT/dy| (baroclinic instability).
+    # f ∝ |sin(φ)|, |dT/dy| ∝ |sin(2φ)| for sinusoidal T profile.
+    # Naturally gives low κ in tropics (Hadley, not eddies) and subtropics
+    # (weak gradient, high stability), peak in midlatitudes (storm track).
+    eady_kappa_max_m2_s: float = 2.0e6  # Cap to prevent excessive polar transport
+
+    # Scaling reference values used by Eady formula
+    atmosphere_meridional_tropical_scale: float = 0.3   # Floor: minimum eddy mixing
+    atmosphere_meridional_midlat_scale: float = 2.5     # Normalization: Eady scaling at 45°
 
     # Boundary layer diffusivity scaling relative to free atmosphere.
     # Same κ as atmosphere; the smaller heat capacity (C_bl/C_atm ≈ 1/7.5)
@@ -170,46 +174,20 @@ class DiffusionConfig:
             if not self.use_latitude_dependent_atmosphere:
                 return np.ones_like(lat_deg)
 
-            if meridional:
-                tropical_scale = self.atmosphere_meridional_tropical_scale
-                midlat_scale = self.atmosphere_meridional_midlat_scale
-                polar_scale = self.atmosphere_meridional_polar_scale
-            else:
-                tropical_scale = self.atmosphere_zonal_tropical_scale
-                midlat_scale = self.atmosphere_zonal_midlat_scale
-                polar_scale = self.atmosphere_zonal_polar_scale
-
-        lat_abs = np.abs(lat_deg)
-
-        # Smooth transitions using piecewise smoothstep interpolation
-        # 0-30°: tropical → midlat
-        # 30-60°: midlat (peak)
-        # 60-90°: midlat → polar
-
-        scaling = np.ones_like(lat_abs, dtype=float)
-
-        # Tropical to mid-latitude transition (0° to 30°)
-        tropical_mask = lat_abs < 30.0
-        if np.any(tropical_mask):
-            t = np.clip(lat_abs[tropical_mask] / 30.0, 0.0, 1.0)
-            # Smoothstep interpolation
-            smooth_t = 3 * t**2 - 2 * t**3
-            scaling[tropical_mask] = tropical_scale + (midlat_scale - tropical_scale) * smooth_t
-
-        # Mid-latitude region (30° to 60°)
-        midlat_mask = (lat_abs >= 30.0) & (lat_abs < 60.0)
-        if np.any(midlat_mask):
-            scaling[midlat_mask] = midlat_scale
-
-        # Mid-latitude to polar transition (60° to 90°)
-        polar_mask = lat_abs >= 60.0
-        if np.any(polar_mask):
-            t = np.clip((lat_abs[polar_mask] - 60.0) / 30.0, 0.0, 1.0)
-            # Smoothstep interpolation
-            smooth_t = 3 * t**2 - 2 * t**3
-            scaling[polar_mask] = midlat_scale + (polar_scale - midlat_scale) * smooth_t
-
-        return scaling
+            lat_rad = np.deg2rad(lat_deg)
+            # Eady-based: κ ∝ f × |dT/dy|
+            # f ∝ |sin(φ)|, |dT/dy| ∝ |sin(2φ)| for sinusoidal T profile
+            eady = np.abs(np.sin(lat_rad)) * np.abs(np.sin(2 * lat_rad))
+            # Normalize so 45° gives midlat_scale
+            eady_at_45 = np.sin(np.deg2rad(45.0)) * np.sin(np.deg2rad(90.0))
+            scaling = eady / eady_at_45 * self.atmosphere_meridional_midlat_scale
+            # Floor: tropics still need some eddy transport
+            scaling = np.maximum(scaling, self.atmosphere_meridional_tropical_scale)
+            # Cap to prevent excessive polar transport
+            if self.eady_kappa_max_m2_s > 0:
+                max_scaling = self.eady_kappa_max_m2_s / self.atmosphere_kappa_ref_m2_s
+                scaling = np.minimum(scaling, max_scaling)
+            return scaling
 
 
 @dataclass

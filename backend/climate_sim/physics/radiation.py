@@ -1298,6 +1298,20 @@ def radiative_equilibrium_initial_guess(
         top_height = compute_cloud_top_height(dp_norm)
         return coverage, albedo, top_height
 
+    # Latitude-dependent clear-sky emissivity: proxy for humidity.
+    # Tropics are moist (ε ≈ 0.72), poles are dry (ε ≈ 0.50).
+    abs_lat = np.abs(lat2d) if lat2d is not None else 45.0
+    eps_pole = 0.53
+    eps_equator = 0.65
+    # Smooth cosine-squared profile: 1 at equator, 0 at poles
+    humidity_weight = np.cos(np.deg2rad(abs_lat)) ** 2
+    eps_clear_field = eps_pole + (eps_equator - eps_pole) * humidity_weight
+
+    # BL-surface lapse rate: smaller over ocean (well-mixed marine BL)
+    bl_lapse = STANDARD_LAPSE_RATE_K_PER_M * np.ones_like(abs_lat)
+    if land_mask is not None:
+        bl_lapse = np.where(land_mask, bl_lapse, bl_lapse * 0.7)
+
     def radiative_equilibrium_temps(
         cloud_coverage: np.ndarray,
         cloud_albedo: np.ndarray,
@@ -1311,9 +1325,8 @@ def radiative_equilibrium_initial_guess(
         sw_down_surface = (1.0 - atm_albedo - atm_absorptance) * insolation
         absorbed_sw_surface = sw_down_surface * (1.0 - albedo_field)
 
-        eps_clear = config.emissivity_atmosphere
-        eps_cloud = (1.0 - eps_clear) * np.sqrt(cloud_coverage)
-        eps_atm = eps_clear + eps_cloud
+        eps_cloud = (1.0 - eps_clear_field) * np.sqrt(cloud_coverage)
+        eps_atm = eps_clear_field + eps_cloud
         denom = np.maximum(2.0 - eps_atm, 1e-6)
 
         surface = np.power((absorbed_sw_surface + 0.5 * absorbed_sw_atm) / (0.5 * denom * sigma), 0.25)
@@ -1328,7 +1341,7 @@ def radiative_equilibrium_initial_guess(
 
     surface, atmosphere = radiative_equilibrium_temps(coverage, albedo, top_height)
 
-    boundary = surface - STANDARD_LAPSE_RATE_K_PER_M * (BOUNDARY_LAYER_HEIGHT_M / 2.0)
+    boundary = surface - bl_lapse * (BOUNDARY_LAYER_HEIGHT_M / 2.0)
     first_pass_temp = np.stack([surface, boundary, atmosphere])
 
     first_pass_temp = _with_floor(first_pass_temp, config.temperature_floor)
@@ -1337,7 +1350,11 @@ def radiative_equilibrium_initial_guess(
     coverage, albedo, top_height = compute_cloud_properties(first_pass_temp[0])
     surface, atmosphere = radiative_equilibrium_temps(coverage, albedo, top_height)
 
-    boundary = surface - STANDARD_LAPSE_RATE_K_PER_M * (BOUNDARY_LAYER_HEIGHT_M / 2.0)
+    boundary = surface - bl_lapse * (BOUNDARY_LAYER_HEIGHT_M / 2.0)
     stacked = np.stack([surface, boundary, atmosphere])
 
-    return _with_floor(stacked, config.temperature_floor)
+    # Radiative equilibrium has no heat transport, so poles are unrealistically
+    # cold (−55 to −70°C vs observed −30 to −50°C). Clamp to a realistic
+    # minimum based on observed coldest annual-mean temperatures.
+    realistic_floor = 233.15  # −40°C; observed Antarctic plateau ≈ −50°C
+    return _with_floor(stacked, max(config.temperature_floor, realistic_floor))

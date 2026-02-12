@@ -30,8 +30,9 @@ from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfi
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
+from climate_sim.physics.orographic_effects import OrographicConfig
 from climate_sim.core.grid import create_lat_lon_grid
-from climate_sim.plotting import plot_monthly_temperature_cycle
+from climate_sim.plotting import add_status_readout, plot_monthly_temperature_cycle
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.runtime.cli import add_common_model_arguments
@@ -850,7 +851,7 @@ def plot_eval_metrics(
     rmse_vmax = float(np.nanmax(cell_rmse_display))
     if not np.isfinite(rmse_vmax) or rmse_vmax <= 0:
         rmse_vmax = 10.0
-    rmse_vmax = min(rmse_vmax, 10.0)
+    rmse_vmax = min(rmse_vmax, 6.0)
 
     rmse_cmap = colormaps["Purples"]  # Neutral colormap for error magnitude
     rmse_norm = Normalize(vmin=0, vmax=rmse_vmax)
@@ -916,6 +917,8 @@ def plot_eval_metrics(
     cbar_ax_map = fig.add_axes([0.87, 0.15, 0.02, 0.75])
     cbar_map = fig.colorbar(mesh, cax=cbar_ax_map)
     cbar_map.set_label(f"RMSE ({unit})")
+
+    add_status_readout(fig, ax_map, lon2d, lat2d, cell_rmse_display, unit_label=unit)
 
     # Scatter axis (for correlation)
     ax_scatter = fig.add_axes([0.1, 0.15, 0.75, 0.75])
@@ -1044,6 +1047,7 @@ def main() -> None:
         enabled=args.latent_heat_exchange,
     )
     advection_config = AdvectionConfig(enabled=args.advection)
+    orographic_config = OrographicConfig(enabled=args.orographic)
     model_config = ModelConfig(
         radiation=radiation_config,
         diffusion=diffusion_config,
@@ -1051,6 +1055,7 @@ def main() -> None:
         snow=snow_config,
         sensible_heat=sensible_heat_config,
         latent_heat=latent_heat_config,
+        orographic=orographic_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )

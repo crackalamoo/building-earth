@@ -25,6 +25,7 @@ from climate_sim.physics.vertical_motion import (
     hadley_subsidence_drying_jacobian,
     _ALPHA,
 )
+from climate_sim.physics.orographic_effects import OrographicModel
 from climate_sim.physics.precipitation import compute_precipitation_jacobian
 from climate_sim.physics.humidity import (
     COLUMN_MASS_KG_M2,
@@ -85,6 +86,7 @@ class RhsBuildInputs:
     ocean_advection_cfg: OceanAdvectionConfig | None = None
     vertical_motion_cfg: VerticalMotionConfig | None = None
     humidity_diffusion_operator: DiffusionOperator | None = None
+    orographic_model: OrographicModel | None = None
 
 def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
     """Build RHS and Jacobian functions from physics configuration.
@@ -195,10 +197,12 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             else:
                 wind_u = wind_v = None
 
-            # Compute vertical velocity from wind divergence (or use zero if no wind)
+            # Compute vertical velocity from wind divergence + orographic lifting
             if wind_u is not None and wind_v is not None:
                 divergence = compute_divergence(wind_u, wind_v, inputs.lat2d, inputs.lon2d)
                 vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+                if inputs.orographic_model is not None:
+                    vertical_velocity = vertical_velocity + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u, wind_v)
             else:
                 vertical_velocity = np.zeros_like(humidity_field)
 
@@ -287,7 +291,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
                 # Apply advection to both layers with appropriate wind fields
                 if inputs.advection_operator is not None:
-                    # Boundary layer advection: use boundary layer wind (with drag)
+                    # Boundary layer advection: use boundary layer wind (with drag, already blocked)
                     if state.boundary_layer_wind_field is not None:
                         wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
                         advection_boundary = inputs.advection_operator.tendency(
@@ -348,8 +352,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     and inputs.vertical_motion_cfg.enabled
                 )
                 if vertical_motion_enabled and state.boundary_layer_wind_field is not None:
-                    wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
-                    divergence = compute_divergence(wind_u_bl, wind_v_bl, inputs.lat2d, inputs.lon2d)
+                    wind_u_vm, wind_v_vm, _ = state.boundary_layer_wind_field
+                    divergence = compute_divergence(wind_u_vm, wind_v_vm, inputs.lat2d, inputs.lon2d)
                     bl_tendency, atm_tendency = compute_vertical_motion_tendencies(
                         divergence, boundary_temperature, atmosphere_temperature
                     )
@@ -396,10 +400,12 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             else:
                 wind_u = wind_v = None
 
-            # Compute vertical velocity from wind divergence (or use zero if no wind)
+            # Compute vertical velocity from wind divergence + orographic lifting
             if wind_u is not None and wind_v is not None:
                 divergence = compute_divergence(wind_u, wind_v, inputs.lat2d, inputs.lon2d)
                 vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+                if inputs.orographic_model is not None:
+                    vertical_velocity = vertical_velocity + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u, wind_v)
             else:
                 vertical_velocity = np.zeros_like(humidity_field)
 
@@ -538,8 +544,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 and nlayers == 3
             )
             if vertical_motion_enabled and state.boundary_layer_wind_field is not None:
-                wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
-                divergence = compute_divergence(wind_u_bl, wind_v_bl, inputs.lat2d, inputs.lon2d)
+                wind_u_bl_vm, wind_v_bl_vm, _ = state.boundary_layer_wind_field
+                divergence = compute_divergence(wind_u_bl_vm, wind_v_bl_vm, inputs.lat2d, inputs.lon2d)
 
                 h_bl = BOUNDARY_LAYER_HEIGHT_M
                 w = divergence * h_bl  # m/s, positive = subsidence
@@ -669,10 +675,12 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         strat_frac = np.zeros_like(state.humidity_field)
                         marine_frac = np.zeros_like(state.humidity_field)
 
-                    # Compute vertical velocity from divergence
+                    # Compute vertical velocity from divergence + orographic
                     if wind_u_q is not None and wind_v_q is not None:
                         divergence = compute_divergence(wind_u_q, wind_v_q, inputs.lat2d, inputs.lon2d)
                         w_largescale = compute_vertical_velocity_from_divergence(divergence)
+                        if inputs.orographic_model is not None:
+                            w_largescale = w_largescale + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u_q, wind_v_q)
                     else:
                         w_largescale = np.zeros_like(state.humidity_field)
 
