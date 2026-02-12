@@ -102,6 +102,7 @@ def main() -> None:
     from climate_sim.physics.snow_albedo import SnowAlbedoConfig
     from climate_sim.physics.atmosphere.advection import AdvectionConfig
     from climate_sim.physics.atmosphere.wind import WindConfig
+    from climate_sim.physics.orographic_effects import OrographicConfig
     from climate_sim.core.solver import solve_periodic_climate
     from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
     from climate_sim.runtime.config import ModelConfig
@@ -121,6 +122,7 @@ def main() -> None:
     )
     advection_config = AdvectionConfig(enabled=args.advection)
     wind_config = WindConfig()
+    orographic_config = OrographicConfig(enabled=args.orographic)
     model_config = ModelConfig(
         radiation=radiation_config,
         diffusion=diffusion_config,
@@ -129,6 +131,7 @@ def main() -> None:
         snow=snow_config,
         sensible_heat=sensible_heat_config,
         latent_heat=latent_heat_config,
+        orographic=orographic_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )

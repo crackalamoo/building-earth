@@ -143,6 +143,12 @@ def monthly_step(
                 lagged_boundary_layer_wind_field = surface_context.wind_model.wind_field(
                     start_temp_capped[1], itcz_rad=itcz_rad, ekman_drag=True
                 )
+                # Apply orographic flow blocking to BL winds
+                if surface_context.orographic_model is not None:
+                    bl_u, bl_v = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+                    bl_u_blocked, bl_v_blocked = surface_context.orographic_model.apply_flow_blocking(bl_u, bl_v)
+                    bl_speed_blocked = np.hypot(bl_u_blocked, bl_v_blocked)
+                    lagged_boundary_layer_wind_field = (bl_u_blocked, bl_v_blocked, bl_speed_blocked)
             elif start_temp_capped.shape[0] == 2:
                 lagged_wind_field = surface_context.wind_model.wind_field(
                     start_temp_capped[1], itcz_rad=itcz_rad, ekman_drag=True
@@ -787,10 +793,14 @@ def monthly_step(
                     itcz_rad=final_itcz,
                     ekman_drag=False
                 )
-                # Boundary layer wind: with surface drag
+                # Boundary layer wind: with surface drag + orographic blocking
                 final_state.boundary_layer_wind_field = surface_context.wind_model.wind_field(
                     final_temp[1], itcz_rad=final_itcz, ekman_drag=True
                 )
+                if surface_context.orographic_model is not None:
+                    bl_u, bl_v = final_state.boundary_layer_wind_field[0], final_state.boundary_layer_wind_field[1]
+                    bl_u_b, bl_v_b = surface_context.orographic_model.apply_flow_blocking(bl_u, bl_v)
+                    final_state.boundary_layer_wind_field = (bl_u_b, bl_v_b, np.hypot(bl_u_b, bl_v_b))
             else:
                 # One-layer: single wind with drag
                 final_state.wind_field = surface_context.wind_model.wind_field(
@@ -1229,6 +1239,7 @@ def solve_periodic_climate(
             ocean_advection_cfg=operators.ocean_advection_cfg,
             vertical_motion_cfg=operators.vertical_motion_cfg,
             humidity_diffusion_operator=humidity_diffusion_op,
+            orographic_model=operators.orographic_model,
         )
         rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
 
@@ -1314,6 +1325,10 @@ def solve_periodic_climate(
                             itcz_rad=itcz_rad,
                             ekman_drag=True
                         )
+                        if operators.orographic_model is not None:
+                            bu, bv = bl_wind[0], bl_wind[1]
+                            bu_b, bv_b = operators.orographic_model.apply_flow_blocking(bu, bv)
+                            bl_wind = (bu_b, bv_b, np.hypot(bu_b, bv_b))
 
                     # Compute ocean currents from boundary layer wind
                     ocean_current_field = None

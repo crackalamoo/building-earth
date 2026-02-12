@@ -13,6 +13,7 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
+from climate_sim.physics.orographic_effects import OrographicConfig
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class ModelConfig:
     )
     ocean_advection: OceanAdvectionConfig = field(default_factory=OceanAdvectionConfig)
     vertical_motion: VerticalMotionConfig = field(default_factory=VerticalMotionConfig)
+    orographic: OrographicConfig = field(default_factory=OrographicConfig)
     solar_constant: float | None = None
     use_elliptical_orbit: bool = True
     ocean_heat_capacity: float | None = None

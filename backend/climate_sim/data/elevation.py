@@ -307,6 +307,129 @@ def compute_cell_elevation(
     return res
 
 
+def compute_cell_elevation_statistics(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    data: xr.DataArray | None = None,
+    cache: bool = True,
+    n_samples_per_cell: int = 15,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return sub-grid elevation statistics for each grid cell.
+
+    Parameters
+    ----------
+    lon2d, lat2d : np.ndarray
+        2D arrays of cell centers (degrees).
+    data : xr.DataArray | None
+        Elevation dataset. If None, loads from default location.
+    cache : bool
+        Whether to use disk caching.
+    n_samples_per_cell : int
+        Samples per cell dimension (15×15=225 for robust statistics).
+
+    Returns
+    -------
+    elevation_std : np.ndarray
+        Standard deviation of fine-resolution elevation within each cell (m).
+    elevation_max : np.ndarray
+        Peak elevation within each cell (m).
+    """
+    if lon2d.shape != lat2d.shape:
+        raise ValueError("Longitude and latitude grids must share the same shape")
+
+    if cache:
+        data_dir = os.getenv("DATA_DIR")
+        if data_dir is not None:
+            cache_path = Path(data_dir) / "elevation_statistics_cache.npz"
+            if cache_path.exists():
+                try:
+                    with np.load(cache_path) as cached:
+                        if cached['elevation_std'].shape == lon2d.shape:
+                            return cached['elevation_std'], cached['elevation_max']
+                except Exception as e:
+                    print(f"Failed to load cached elevation statistics: {e}, recomputing...")
+
+    lon_array = np.asarray(lon2d, dtype=float)
+    lat_array = np.asarray(lat2d, dtype=float)
+
+    dataset = data if data is not None else load_elevation_data()
+    if dataset is None:
+        return np.zeros_like(lon_array), np.zeros_like(lon_array)
+
+    if dataset.rio.crs is None:
+        dataset = dataset.rio.write_crs("EPSG:4326", inplace=False)
+
+    # Compute cell edges
+    lat_centers = lat_array[:, 0]
+    lon_centers = lon_array[0, :]
+    lat_edges = regular_latitude_edges(lat_centers)
+    lon_edges = regular_longitude_edges(lon_centers)
+    nlat, nlon = lon_array.shape
+
+    # Build sub-grid sampling points (same logic as compute_cell_elevation)
+    sample_weights = np.linspace(0.0, 1.0, n_samples_per_cell + 1)
+    sample_weights = (sample_weights[:-1] + sample_weights[1:]) / 2.0
+
+    lat_min_2d = np.broadcast_to(lat_edges[:-1, np.newaxis], (nlat, nlon))
+    lat_max_2d = np.broadcast_to(lat_edges[1:, np.newaxis], (nlat, nlon))
+    lon_min_2d = np.broadcast_to(lon_edges[np.newaxis, :-1], (nlat, nlon))
+    lon_max_2d = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))
+    lon_max_2d = np.where(lon_max_2d < lon_min_2d, lon_max_2d + 360.0, lon_max_2d)
+
+    lat_weights = sample_weights[np.newaxis, np.newaxis, :, np.newaxis]
+    lon_weights = sample_weights[np.newaxis, np.newaxis, np.newaxis, :]
+
+    lat_min_4d = lat_min_2d[:, :, np.newaxis, np.newaxis]
+    lat_max_4d = lat_max_2d[:, :, np.newaxis, np.newaxis]
+    lon_min_4d = lon_min_2d[:, :, np.newaxis, np.newaxis]
+    lon_max_4d = lon_max_2d[:, :, np.newaxis, np.newaxis]
+
+    lat_samples_partial = np.clip(
+        lat_min_4d + (lat_max_4d - lat_min_4d) * lat_weights, -90.0, 90.0
+    )
+    lon_samples_partial = _wrap_longitudes(
+        lon_min_4d + (lon_max_4d - lon_min_4d) * lon_weights
+    )
+
+    target_shape = (nlat, nlon, n_samples_per_cell, n_samples_per_cell)
+    lat_samples_4d = np.broadcast_to(lat_samples_partial, target_shape)
+    lon_samples_4d = np.broadcast_to(lon_samples_partial, target_shape)
+
+    lon_flat = lon_samples_4d.ravel()
+    lat_flat = lat_samples_4d.ravel()
+
+    # Sample elevation
+    data_dir_env = os.getenv("DATA_DIR")
+    tif_path = Path(data_dir_env) / "etopo_60s.tif" if data_dir_env else None
+
+    if tif_path is not None and tif_path.exists():
+        sampled = _sample_elevation_points_rasterio(tif_path, lon_flat, lat_flat)
+    else:
+        from scipy.interpolate import RegularGridInterpolator
+        x_coords, y_coords, data_values = _get_elevation_arrays(dataset)
+        interp = RegularGridInterpolator(
+            (y_coords, x_coords), data_values,
+            method="nearest", bounds_error=False, fill_value=0.0,
+        )
+        sampled = interp(np.stack([lat_flat, lon_flat], axis=-1))
+
+    sampled = np.nan_to_num(sampled, nan=0.0)
+    sampled_4d = sampled.reshape(nlat, nlon, n_samples_per_cell, n_samples_per_cell)
+
+    elevation_std = np.std(sampled_4d, axis=(2, 3))
+    elevation_max = np.max(sampled_4d, axis=(2, 3))
+
+    if cache:
+        data_dir_env = os.getenv("DATA_DIR")
+        if data_dir_env is not None:
+            cache_path = Path(data_dir_env) / "elevation_statistics_cache.npz"
+            np.savez_compressed(
+                cache_path, elevation_std=elevation_std, elevation_max=elevation_max
+            )
+
+    return elevation_std, elevation_max
+
+
 def compute_cell_roughness_length(
     lon2d: np.ndarray,
     lat2d: np.ndarray,

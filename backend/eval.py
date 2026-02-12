@@ -30,6 +30,7 @@ from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfi
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
+from climate_sim.physics.orographic_effects import OrographicConfig
 from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.plotting import plot_monthly_temperature_cycle
 from climate_sim.data.calendar import MONTH_NAMES
@@ -1044,6 +1045,7 @@ def main() -> None:
         enabled=args.latent_heat_exchange,
     )
     advection_config = AdvectionConfig(enabled=args.advection)
+    orographic_config = OrographicConfig(enabled=args.orographic)
     model_config = ModelConfig(
         radiation=radiation_config,
         diffusion=diffusion_config,
@@ -1051,6 +1053,7 @@ def main() -> None:
         snow=snow_config,
         sensible_heat=sensible_heat_config,
         latent_heat=latent_heat_config,
+        orographic=orographic_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )

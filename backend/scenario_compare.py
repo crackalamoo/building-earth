@@ -18,6 +18,7 @@ from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
+from climate_sim.physics.orographic_effects import OrographicConfig
 from climate_sim.plotting import plot_layered_monthly_temperature_cycle
 from climate_sim.runtime.cli import (
     add_boolean_flag,
@@ -236,6 +237,24 @@ def main() -> None:
         help_enable="Enable ocean heat advection in the experiment case (default)",
         help_disable="Disable ocean heat advection in the experiment case",
     )
+    add_boolean_flag(
+        parser,
+        dest="base_orographic",
+        default=True,
+        enable_option="--base-orographic",
+        disable_option="--no-base-orographic",
+        help_enable="Enable orographic effects in the baseline case (default)",
+        help_disable="Disable orographic effects in the baseline case",
+    )
+    add_boolean_flag(
+        parser,
+        dest="experiment_orographic",
+        default=True,
+        enable_option="--exp-orographic",
+        disable_option="--no-exp-orographic",
+        help_enable="Enable orographic effects in the experiment case (default)",
+        help_disable="Disable orographic effects in the experiment case",
+    )
     add_temperature_unit_argument(
         parser,
         help_text="Display anomalies in degrees Fahrenheit instead of Celsius",
@@ -305,6 +324,13 @@ def main() -> None:
         enabled=args.experiment_ocean_advection,
     )
 
+    base_orographic = OrographicConfig(
+        enabled=args.base_orographic,
+    )
+    exp_orographic = OrographicConfig(
+        enabled=args.experiment_orographic,
+    )
+
     base_model_config = ModelConfig(
         radiation=base_rad,
         diffusion=base_diff,
@@ -313,6 +339,7 @@ def main() -> None:
         sensible_heat=base_sensible_heat,
         latent_heat=base_latent_heat,
         ocean_advection=base_ocean_advection,
+        orographic=base_orographic,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.base_elliptical_orbit,
     )
@@ -324,6 +351,7 @@ def main() -> None:
         sensible_heat=exp_sensible_heat,
         latent_heat=exp_latent_heat,
         ocean_advection=exp_ocean_advection,
+        orographic=exp_orographic,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.experiment_elliptical_orbit,
     )
@@ -384,6 +412,7 @@ def main() -> None:
         "lapse_rate_elevation": args.base_lapse_rate_elevation,
         "advection": args.base_advection,
         "ocean_advection": args.base_ocean_advection,
+        "orographic": args.base_orographic,
     }
     exp_summary = {
         "elliptical_orbit": args.experiment_elliptical_orbit,
@@ -396,6 +425,7 @@ def main() -> None:
         "lapse_rate_elevation": args.experiment_lapse_rate_elevation,
         "advection": args.experiment_advection,
         "ocean_advection": args.experiment_ocean_advection,
+        "orographic": args.experiment_orographic,
     }
 
     print("Baseline configuration:", _summarize(base_summary))

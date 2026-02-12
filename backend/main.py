@@ -35,6 +35,7 @@ from climate_sim.runtime.config import ModelConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.atmosphere.wind import WindConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
+from climate_sim.physics.orographic_effects import OrographicConfig
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.physics.atmosphere.pressure import compute_pressure
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
@@ -99,6 +100,7 @@ def main() -> None:
     wind_config = WindConfig()
     ocean_advection_config = OceanAdvectionConfig(enabled=args.ocean_advection)
     vertical_motion_config = VerticalMotionConfig(enabled=args.vertical_motion)
+    orographic_config = OrographicConfig(enabled=args.orographic)
 
     model_config = ModelConfig(
         radiation=radiation_config,
@@ -110,6 +112,7 @@ def main() -> None:
         latent_heat=latent_heat_config,
         ocean_advection=ocean_advection_config,
         vertical_motion=vertical_motion_config,
+        orographic=orographic_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )

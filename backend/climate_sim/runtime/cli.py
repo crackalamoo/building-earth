@@ -213,6 +213,15 @@ def add_common_model_arguments(
         help_enable="Enable vertical motion physics (subsidence warming + latent heat release) (default)",
         help_disable="Disable vertical motion physics",
     )
+    add_boolean_flag(
+        parser,
+        dest="orographic",
+        default=True,
+        enable_option="--orographic",
+        disable_option="--no-orographic",
+        help_enable="Enable orographic effects (terrain-induced vertical velocity and flow blocking) (default)",
+        help_disable="Disable orographic effects",
+    )
     if include_temperature_unit:
         add_temperature_unit_argument(
             parser,
