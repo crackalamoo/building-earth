@@ -43,7 +43,7 @@ from climate_sim.physics.vertical_motion import (
 )
 from climate_sim.core.operators import SurfaceHeatCapacityContext, build_model_operators
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
-from climate_sim.physics.ocean_currents import compute_ocean_currents
+from climate_sim.physics.ocean_currents import compute_ocean_currents, compute_deep_ocean_temperature
 from climate_sim.core.math_core import spherical_cell_area
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.runtime.config import ModelConfig
@@ -163,6 +163,10 @@ def monthly_step(
         # Compute lagged ocean currents from 10m wind (boundary layer or atmosphere wind)
         lagged_ocean_current_field = None
         lagged_ocean_current_psi = None
+        lagged_ekman_pumping = None
+        # Deep ocean temperature is static (latitude-dependent only)
+        deep_ocean_temp = compute_deep_ocean_temperature(surface_context.lat2d[:, 0])
+        deep_ocean_temp_2d = np.broadcast_to(deep_ocean_temp[:, np.newaxis], surface_context.lat2d.shape).copy()
         if ocean_advection_enabled:
             if lagged_boundary_layer_wind_field is not None:
                 # Use boundary layer wind (10m equivalent)
@@ -185,6 +189,7 @@ def monthly_step(
                     ocean_results['v_velocity'],
                 )
                 lagged_ocean_current_psi = ocean_results['psi']
+                lagged_ekman_pumping = ocean_results['w_ekman_pumping']
 
         # Compute cell areas once for ITCZ calculations inside Newton loop
         cell_areas = spherical_cell_area(
@@ -277,6 +282,8 @@ def monthly_step(
                     boundary_layer_wind_field=lagged_boundary_layer_wind_field,
                     ocean_current_field=lagged_ocean_current_field,
                     ocean_current_psi=lagged_ocean_current_psi,
+                    ocean_ekman_pumping=lagged_ekman_pumping,
+                    deep_ocean_temperature=deep_ocean_temp_2d,
                     precipitation_field=lagged_precipitation,
                     cloud_output=lagged_cloud_output,  # Unified clouds (frozen for Jacobian consistency)
                     soil_moisture=lagged_soil_moisture,
@@ -766,6 +773,8 @@ def monthly_step(
             boundary_layer_wind_field=lagged_boundary_layer_wind_field,
             ocean_current_field=lagged_ocean_current_field,
             ocean_current_psi=lagged_ocean_current_psi,
+            ocean_ekman_pumping=lagged_ekman_pumping,
+            deep_ocean_temperature=deep_ocean_temp_2d,
             precipitation_field=final_precipitation,
             soil_moisture=new_soil,
             vegetation_fraction=state.vegetation_fraction,  # Carry forward from input state
@@ -1338,6 +1347,7 @@ def solve_periodic_climate(
                     # Compute ocean currents from boundary layer wind
                     ocean_current_field = None
                     ocean_current_psi = None
+                    ekman_pumping = None
                     if ocean_advection_enabled and bl_wind is not None:
                         ocean_results = compute_ocean_currents(
                             bl_wind[0], bl_wind[1],
@@ -1347,6 +1357,11 @@ def solve_periodic_climate(
                         )
                         ocean_current_field = (ocean_results['u_velocity'], ocean_results['v_velocity'])
                         ocean_current_psi = ocean_results['psi']
+                        ekman_pumping = ocean_results['w_ekman_pumping']
+
+                    # Deep ocean temperature (static)
+                    deep_temp = compute_deep_ocean_temperature(operators.lat2d[:, 0])
+                    deep_temp_2d = np.broadcast_to(deep_temp[:, np.newaxis], operators.lat2d.shape).copy()
 
                     monthly_states[idx] = ModelState(
                         temperature=month_state.temperature,
@@ -1356,6 +1371,8 @@ def solve_periodic_climate(
                         boundary_layer_wind_field=bl_wind,
                         ocean_current_field=ocean_current_field,
                         ocean_current_psi=ocean_current_psi,
+                        ocean_ekman_pumping=ekman_pumping,
+                        deep_ocean_temperature=deep_temp_2d,
                         precipitation_field=month_state.precipitation_field,
                         soil_moisture=month_state.soil_moisture,
                         vegetation_fraction=month_state.vegetation_fraction,
@@ -1374,6 +1391,7 @@ def solve_periodic_climate(
                     # Compute ocean currents from atmosphere wind
                     ocean_current_field = None
                     ocean_current_psi = None
+                    ekman_pumping = None
                     if ocean_advection_enabled and wind_field is not None:
                         ocean_results = compute_ocean_currents(
                             wind_field[0], wind_field[1],
@@ -1383,6 +1401,11 @@ def solve_periodic_climate(
                         )
                         ocean_current_field = (ocean_results['u_velocity'], ocean_results['v_velocity'])
                         ocean_current_psi = ocean_results['psi']
+                        ekman_pumping = ocean_results['w_ekman_pumping']
+
+                    # Deep ocean temperature (static)
+                    deep_temp = compute_deep_ocean_temperature(operators.lat2d[:, 0])
+                    deep_temp_2d = np.broadcast_to(deep_temp[:, np.newaxis], operators.lat2d.shape).copy()
 
                     monthly_states[idx] = ModelState(
                         temperature=month_state.temperature,
@@ -1392,6 +1415,8 @@ def solve_periodic_climate(
                         boundary_layer_wind_field=month_state.boundary_layer_wind_field,
                         ocean_current_field=ocean_current_field,
                         ocean_current_psi=ocean_current_psi,
+                        ocean_ekman_pumping=ekman_pumping,
+                        deep_ocean_temperature=deep_temp_2d,
                         precipitation_field=month_state.precipitation_field,
                         soil_moisture=month_state.soil_moisture,
                         vegetation_fraction=month_state.vegetation_fraction,

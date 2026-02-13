@@ -279,6 +279,22 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     ocean_advection_tendency = np.where(ocean_mask, ocean_advection_tendency, 0.0)
                     radiative[0] += ocean_advection_tendency
 
+            # Ekman pumping: upwelling entrainment of deep ocean water
+            # w_E from offshore Ekman transport at coastal cells (positive = upwelling)
+            if state.ocean_ekman_pumping is not None and state.deep_ocean_temperature is not None:
+                w_E = np.nan_to_num(state.ocean_ekman_pumping, nan=0.0)  # m/s
+                H_mix = 70.0  # m, consistent with ocean heat capacity
+                T_deep = state.deep_ocean_temperature  # K
+                # Cap upwelling velocity to avoid extreme values near equator
+                w_E_up = np.minimum(np.maximum(w_E, 0.0), 5e-6)
+                # dT/dt = w_E/H * (T_deep - T_sfc) [K/s]
+                entrainment = (w_E_up / H_mix) * (T_deep - surface_temperature)
+                # Only apply where upwelling cools (T_deep < T_sfc); at high
+                # latitudes T_deep > T_sfc which would spuriously warm
+                ocean_mask = ~inputs.land_mask
+                cooling_mask = ocean_mask & (T_deep < surface_temperature)
+                radiative[0] += np.where(cooling_mask, entrainment, 0.0)
+
             if nlayers == 3:
                 # Three-layer system
                 boundary_temperature = state.temperature[1]
