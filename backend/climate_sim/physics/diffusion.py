@@ -276,6 +276,7 @@ class LayeredDiffusionOperator:
     surface: DiffusionOperator
     atmosphere: DiffusionOperator
     boundary_layer: DiffusionOperator | None = None
+    humidity: DiffusionOperator | None = None
 
     @classmethod
     def disabled(cls, shape: tuple[int, int]) -> LayeredDiffusionOperator:
@@ -294,6 +295,7 @@ def _build_single_layer_operator(
     diffusivity_m2_s: float,
     use_latitude_scaling: bool = False,
     layer: str = "atmosphere",
+    barrier_factors: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> DiffusionOperator:
     if lon2d.shape != lat2d.shape or lon2d.shape != heat_capacity_field.shape:
         raise ValueError("Grid and heat capacity field must share the same shape")
@@ -377,6 +379,9 @@ def _build_single_layer_operator(
             )
         north_conductance = np.where(north_mask, north_conductance, 0.0)
 
+        if barrier_factors is not None:
+            north_conductance = north_conductance * barrier_factors[0][:-1]
+
         north_coeff[:-1] = north_conductance * inv_capacity[:-1]
         south_coeff[1:] = north_conductance * inv_capacity[1:]
 
@@ -409,6 +414,9 @@ def _build_single_layer_operator(
         with np.errstate(divide="ignore", invalid="ignore"):
             east_conductance = east_diffusivity * (boundary_length_east / delta_x)
         east_conductance = np.where(east_mask, east_conductance, 0.0)
+
+        if barrier_factors is not None:
+            east_conductance = east_conductance * barrier_factors[1]
 
         east_coeff = east_conductance * inv_capacity
         west_coeff = np.roll(east_conductance, 1, axis=1) * inv_capacity
@@ -443,6 +451,7 @@ def create_diffusion_operator(
     atmosphere_heat_capacity: float | None = None,
     boundary_layer_heat_capacity: float | None = None,
     config: DiffusionConfig | None = None,
+    barrier_factors: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> LayeredDiffusionOperator:
     """Create diffusion operators for the surface ocean and atmosphere layers."""
 
@@ -514,10 +523,26 @@ def create_diffusion_operator(
             config=config,
             diffusivity_m2_s=boundary_layer_diffusivity,
             use_latitude_scaling=True,  # BL uses same latitude pattern as atmosphere
+            barrier_factors=barrier_factors,
+        )
+
+    # Build humidity diffusion operator (same as atmosphere but with orographic barriers)
+    humidity_operator = None
+    if barrier_factors is not None:
+        humidity_operator = _build_single_layer_operator(
+            lon2d,
+            lat2d,
+            atmosphere_heat_capacity_field,
+            cell_area_field,
+            config=config,
+            diffusivity_m2_s=atmosphere_diffusivity_m2_s,
+            use_latitude_scaling=True,
+            barrier_factors=barrier_factors,
         )
 
     return LayeredDiffusionOperator(
         surface=surface_operator,
         atmosphere=atmosphere_operator,
         boundary_layer=boundary_layer_operator,
+        humidity=humidity_operator,
     )

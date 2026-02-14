@@ -146,8 +146,10 @@ def monthly_step(
                     itcz_rad=itcz_rad, ekman_drag=True
                 )
                 # Apply orographic flow blocking to BL winds
+                # Keep unblocked wind for orographic uplift calculation
                 if surface_context.orographic_model is not None:
                     bl_u, bl_v = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+                    lagged_bl_wind_unblocked = (bl_u, bl_v)
                     bl_u_blocked, bl_v_blocked = surface_context.orographic_model.apply_flow_blocking(bl_u, bl_v)
                     bl_speed_blocked = np.hypot(bl_u_blocked, bl_v_blocked)
                     lagged_boundary_layer_wind_field = (bl_u_blocked, bl_v_blocked, bl_speed_blocked)
@@ -260,6 +262,16 @@ def monthly_step(
         if lagged_humidity is not None and nlayers >= 2:
             lagged_cloud_output = _compute_cloud_fractions(start_temp_capped, lagged_humidity)
 
+        # Precompute orographic vertical velocity from UNBLOCKED wind.
+        # Orographic uplift represents air forced upward over terrain, which uses the
+        # approaching (unblocked) wind speed. Wind blocking is a separate effect
+        # (surface flow deflected around terrain).
+        lagged_orographic_w = None
+        if surface_context.orographic_model is not None and lagged_boundary_layer_wind_field is not None:
+            lagged_orographic_w = surface_context.orographic_model.compute_orographic_vertical_velocity(
+                lagged_bl_wind_unblocked[0], lagged_bl_wind_unblocked[1]  # type: ignore[possibly-undefined]
+            )
+
         def _init_state(temp: np.ndarray) -> tuple[ModelState, np.ndarray]:
             """Create model state for RHS evaluation during Newton iterations.
 
@@ -280,6 +292,7 @@ def monthly_step(
                     precipitation_field=lagged_precipitation,
                     cloud_output=lagged_cloud_output,  # Unified clouds (frozen for Jacobian consistency)
                     soil_moisture=lagged_soil_moisture,
+                    orographic_w=lagged_orographic_w,
                 ), current_itcz
 
         # implicit solver loop
@@ -538,6 +551,13 @@ def monthly_step(
                             # No land masking — over ocean, evaporation should compensate
                         else:
                             hadley_drying = np.zeros_like(lagged_humidity)
+                        # Direct orographic precipitation: P_oro = η · max(w, 0) · q · ρ
+                        if lagged_orographic_w is not None and surface_context.orographic_model is not None:
+                            t_bl_K = temp_capped[1]
+                            oro_precip = surface_context.orographic_model.compute_orographic_precipitation(
+                                lagged_orographic_w, lagged_humidity, t_bl_K,
+                            )
+                            precip_rate = precip_rate + oro_precip
                         humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency + diffusion_tendency + hadley_drying
 
                         # Humidity residual: q_new - q_old - dt * tendency
@@ -755,6 +775,11 @@ def monthly_step(
             marine_sc_frac = cloud_output.marine_sc_frac
             high_cloud_frac = cloud_output.high_cloud_frac
             final_precipitation = cloud_output.total_precip
+            # Add orographic precipitation to total
+            if lagged_orographic_w is not None and surface_context.orographic_model is not None:
+                final_precipitation = final_precipitation + surface_context.orographic_model.compute_orographic_precipitation(
+                    lagged_orographic_w, lagged_humidity, final_temp[1],
+                )
 
         # Build final state with converged humidity
         final_itcz = _compute_itcz_from_temp(final_temp)
@@ -1223,7 +1248,11 @@ def solve_periodic_climate(
 
     # Use same diffusion operator for humidity as atmosphere (Lewis number ≈ 1)
     # Turbulent eddies transport both heat and moisture equally
-    humidity_diffusion_op = operators.diffusion_operator.atmosphere if operators.latent_heat_cfg.enabled else None
+    # If orographic barriers exist, use the barrier-modified humidity operator
+    humidity_diffusion_op = (
+        operators.diffusion_operator.humidity
+        or operators.diffusion_operator.atmosphere
+    ) if operators.latent_heat_cfg.enabled else None
 
     # Build RHS functions from operators
     with time_block("build_rhs"):

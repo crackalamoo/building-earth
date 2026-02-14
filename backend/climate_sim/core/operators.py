@@ -188,6 +188,24 @@ def build_model_operators(
     else:
         topographic_elevation = np.zeros_like(lon2d, dtype=float)
 
+    # Pre-compute orographic barrier factors for diffusion (need before building diffusion operator)
+    orographic_barrier_factors: tuple[np.ndarray, np.ndarray] | None = None
+    if model_config.orographic.enabled:
+        elevation_std, _elevation_max = compute_cell_elevation_statistics(lon2d, lat2d)
+        face_stats = compute_face_elevation_statistics(lon2d, lat2d)
+        _oro_model = OrographicModel(
+            lon2d, lat2d,
+            elevation=topographic_elevation,
+            elevation_std=elevation_std,
+            face_stats=face_stats,
+            config=model_config.orographic,
+            land_mask=land_mask,
+        )
+        orographic_barrier_factors = (
+            _oro_model.diffusion_barrier_north,
+            _oro_model.diffusion_barrier_east,
+        )
+
     # Build diffusion operator
     diffusion_operator = create_diffusion_operator(
         lon2d,
@@ -197,6 +215,7 @@ def build_model_operators(
         atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
         boundary_layer_heat_capacity=radiation_config.boundary_layer_heat_capacity if radiation_config.include_atmosphere else None,
         config=diffusion_config,
+        barrier_factors=orographic_barrier_factors,
     )
 
     # Build wind and advection models
@@ -214,19 +233,10 @@ def build_model_operators(
         config=advection_config,
     )
 
-    # Build orographic model if enabled
+    # Build orographic model if enabled (reuse the one built for diffusion barriers)
     orographic_model: OrographicModel | None = None
     if model_config.orographic.enabled:
-        elevation_std, _elevation_max = compute_cell_elevation_statistics(lon2d, lat2d)
-        face_stats = compute_face_elevation_statistics(lon2d, lat2d)
-        orographic_model = OrographicModel(
-            lon2d, lat2d,
-            elevation=topographic_elevation,
-            elevation_std=elevation_std,
-            face_stats=face_stats,
-            config=model_config.orographic,
-            land_mask=land_mask,
-        )
+        orographic_model = _oro_model  # type: ignore[possibly-undefined]
 
     # Compute month durations
     month_durations = DAYS_PER_MONTH * SECONDS_PER_DAY

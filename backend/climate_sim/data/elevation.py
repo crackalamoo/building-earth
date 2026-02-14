@@ -468,7 +468,11 @@ def compute_face_elevation_statistics(
 
     nlat, nlon = lon2d.shape
     cache_name = "face_elevation_cache.npz"
-    expected_keys = ["r_east_pos", "r_east_neg", "r_north_pos", "r_north_neg"]
+    expected_keys = [
+        "r_east_pos", "r_east_neg", "r_north_pos", "r_north_neg",
+        "r_east_pos_eddy", "r_east_neg_eddy", "r_north_pos_eddy", "r_north_neg_eddy",
+        "grad_x_pos", "grad_x_neg", "grad_y_pos", "grad_y_neg",
+    ]
 
     if cache:
         data_dir = os.getenv("DATA_DIR")
@@ -573,20 +577,24 @@ def compute_face_elevation_statistics(
     z_entry_left = cell_elev[:, :, np.newaxis]                          # cell j
     z_entry_right = np.roll(cell_elev, -1, axis=1)[:, :, np.newaxis]   # cell j+1
 
-    # Blockage ratio: fraction of BL cross-section blocked at each position.
-    # BL extends from z_entry to z_entry + H_bl.  Terrain above z_entry + H_bl
-    # blocks the full column; terrain between z_entry and z_entry + H_bl blocks
-    # a fraction; terrain below z_entry doesn't block.
-    H_BL = 3000.0  # effective BL depth (m) — flow can climb over terrain shorter than this
-    blocked_frac_east_pos = np.clip(
-        (east_silhouette - z_entry_left) / H_BL, 0.0, 1.0
-    )
-    blocked_frac_east_neg = np.clip(
-        (east_silhouette - z_entry_right) / H_BL, 0.0, 1.0
-    )
-    # r = 1 - mean blocked fraction across cross-section positions
-    r_east_pos = 1.0 - np.mean(blocked_frac_east_pos, axis=2)
-    r_east_neg = 1.0 - np.mean(blocked_frac_east_neg, axis=2)
+    # Blockage ratios for two different physics:
+    # 1. Wind (advection): H_wind = BL depth (~1000m). Mountains taller than the BL
+    #    completely block surface wind — flow goes around, not over.
+    # 2. Eddies (diffusion): H_eddy = moisture-weighted tropospheric depth (~5000m).
+    #    Baroclinic eddies extend through the full troposphere, but most moisture
+    #    lives below 3-4 km (scale height ~2 km), so a 3 km range blocks most of
+    #    the moisture-carrying capacity even though storms pass over it.
+    H_WIND = 1500.0   # BL depth (m) — for advection/wind blocking
+    H_EDDY = 5000.0   # moisture-weighted tropospheric depth (m) — for diffusion blocking
+
+    def _compute_r(silhouette: np.ndarray, z_entry: np.ndarray, H: float) -> np.ndarray:
+        blocked = np.clip((silhouette - z_entry) / H, 0.0, 1.0)
+        return 1.0 - np.mean(blocked, axis=2)
+
+    r_east_pos_wind = _compute_r(east_silhouette, z_entry_left, H_WIND)
+    r_east_neg_wind = _compute_r(east_silhouette, z_entry_right, H_WIND)
+    r_east_pos_eddy = _compute_r(east_silhouette, z_entry_left, H_EDDY)
+    r_east_neg_eddy = _compute_r(east_silhouette, z_entry_right, H_EDDY)
 
     # ---- North faces: strip centered on face, half-cell on each side ----
     lat_lo_n = np.broadcast_to(lat_centers[:, np.newaxis], (nlat, nlon))
@@ -604,20 +612,84 @@ def compute_face_elevation_statistics(
     z_entry_south = cell_elev[:, :, np.newaxis]                         # cell i
     z_entry_north = np.roll(cell_elev, -1, axis=0)[:, :, np.newaxis]   # cell i+1
 
-    blocked_frac_north_pos = np.clip(
-        (north_silhouette - z_entry_south) / H_BL, 0.0, 1.0
-    )
-    blocked_frac_north_neg = np.clip(
-        (north_silhouette - z_entry_north) / H_BL, 0.0, 1.0
-    )
-    r_north_pos = 1.0 - np.mean(blocked_frac_north_pos, axis=2)
-    r_north_neg = 1.0 - np.mean(blocked_frac_north_neg, axis=2)
+    r_north_pos_wind = _compute_r(north_silhouette, z_entry_south, H_WIND)
+    r_north_neg_wind = _compute_r(north_silhouette, z_entry_north, H_WIND)
+    r_north_pos_eddy = _compute_r(north_silhouette, z_entry_south, H_EDDY)
+    r_north_neg_eddy = _compute_r(north_silhouette, z_entry_north, H_EDDY)
+
+    # ---- Directional orographic gradients from fine-res data ----
+    # Sample fine-res elevation within each cell to compute effective terrain
+    # gradients.  At coarse resolution, cell-mean gradients average out windward
+    # and leeward slopes.  Instead we separate positive (upslope) and negative
+    # (downslope) contributions so orographic precipitation sees the actual
+    # mountain slope, not the smoothed cell-mean.
+    lat_lo_c = np.broadcast_to(lat_edges[:-1, np.newaxis], (nlat, nlon))
+    lat_hi_c = np.broadcast_to(lat_edges[1:, np.newaxis], (nlat, nlon))
+    lon_lo_c = np.broadcast_to(lon_edges[np.newaxis, :-1], (nlat, nlon))
+    lon_hi_c = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))
+
+    cell_elev_fine = _sample_rect(lat_lo_c, lat_hi_c, lon_lo_c, lon_hi_c,
+                                  n_samples_per_cell, n_samples_per_cell)
+    # shape: (nlat, nlon, n_lat, n_lon)
+
+    # Compute ∂h/∂x from finite differences of fine-res samples within each cell.
+    # dx between adjacent samples = cell_width / n_samples
+    earth_radius = 6.371e6
+    dlat = np.deg2rad(lat_edges[1:] - lat_edges[:-1])  # (nlat,)
+    dlon = np.deg2rad(lon_edges[1:] - lon_edges[:-1])   # (nlon,)
+    cos_lat = np.cos(np.deg2rad(lat_centers))
+
+    # Distance between adjacent fine-res samples (m)
+    dx_sample = (earth_radius * cos_lat[:, np.newaxis] * dlon[np.newaxis, :]
+                 / n_samples_per_cell)  # (nlat, nlon)
+    dy_sample = (earth_radius * dlat[:, np.newaxis]
+                 / n_samples_per_cell)  # (nlat, 1) broadcast to (nlat, nlon)
+    dy_sample = np.broadcast_to(dy_sample, (nlat, nlon))
+
+    # Central differences for interior points, forward/backward at edges
+    # ∂h/∂x: gradient in the longitude (east-west) direction
+    dhdx = np.zeros_like(cell_elev_fine)
+    dhdx[:, :, :, 1:-1] = ((cell_elev_fine[:, :, :, 2:] - cell_elev_fine[:, :, :, :-2])
+                            / (2.0 * dx_sample[:, :, np.newaxis, np.newaxis]))
+    dhdx[:, :, :, 0] = ((cell_elev_fine[:, :, :, 1] - cell_elev_fine[:, :, :, 0])
+                         / dx_sample[:, :, np.newaxis])
+    dhdx[:, :, :, -1] = ((cell_elev_fine[:, :, :, -1] - cell_elev_fine[:, :, :, -2])
+                          / dx_sample[:, :, np.newaxis])
+
+    # ∂h/∂y: gradient in the latitude (north-south) direction
+    dhdy = np.zeros_like(cell_elev_fine)
+    dhdy[:, :, 1:-1, :] = ((cell_elev_fine[:, :, 2:, :] - cell_elev_fine[:, :, :-2, :])
+                            / (2.0 * dy_sample[:, :, np.newaxis, np.newaxis]))
+    dhdy[:, :, 0, :] = ((cell_elev_fine[:, :, 1, :] - cell_elev_fine[:, :, 0, :])
+                         / dy_sample[:, :, np.newaxis])
+    dhdy[:, :, -1, :] = ((cell_elev_fine[:, :, -1, :] - cell_elev_fine[:, :, -2, :])
+                          / dy_sample[:, :, np.newaxis])
+
+    # Separate into positive (upslope) and negative (downslope) gradients,
+    # then average over all sample points in each cell.
+    # grad_x_pos: mean positive ∂h/∂x (upslope for eastward flow)
+    # grad_x_neg: mean positive -∂h/∂x (upslope for westward flow)
+    grad_x_pos = np.mean(np.maximum(dhdx, 0.0), axis=(2, 3))  # (nlat, nlon)
+    grad_x_neg = np.mean(np.maximum(-dhdx, 0.0), axis=(2, 3))
+    grad_y_pos = np.mean(np.maximum(dhdy, 0.0), axis=(2, 3))
+    grad_y_neg = np.mean(np.maximum(-dhdy, 0.0), axis=(2, 3))
 
     result = {
-        "r_east_pos": r_east_pos,
-        "r_east_neg": r_east_neg,
-        "r_north_pos": r_north_pos,
-        "r_north_neg": r_north_neg,
+        # Wind blocking (advection) — H = 1500m
+        "r_east_pos": r_east_pos_wind,
+        "r_east_neg": r_east_neg_wind,
+        "r_north_pos": r_north_pos_wind,
+        "r_north_neg": r_north_neg_wind,
+        # Eddy blocking (diffusion) — H = 5000m
+        "r_east_pos_eddy": r_east_pos_eddy,
+        "r_east_neg_eddy": r_east_neg_eddy,
+        "r_north_pos_eddy": r_north_pos_eddy,
+        "r_north_neg_eddy": r_north_neg_eddy,
+        # Directional orographic gradients (m/m)
+        "grad_x_pos": grad_x_pos,
+        "grad_x_neg": grad_x_neg,
+        "grad_y_pos": grad_y_pos,
+        "grad_y_neg": grad_y_neg,
     }
 
     if cache:

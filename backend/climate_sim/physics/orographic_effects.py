@@ -21,7 +21,9 @@ class OrographicConfig:
     """Configuration for orographic wind effects."""
 
     enabled: bool = True
-    subgrid_length_scale_factor: float = 0.5
+    # Efficiency of orographic precipitation: fraction of condensable moisture
+    # removed per unit ascent.  P_oro = efficiency * max(w_oro, 0) * q * rho.
+    orographic_precip_efficiency: float = 0.1
 
 
 class OrographicModel:
@@ -62,64 +64,56 @@ class OrographicModel:
         # Zero out sub-grid terrain stats over ocean (coastal variance is noise)
         self.elevation_std = np.where(self.land_mask, elevation_std, 0.0)
 
-        # Pre-compute terrain gradients ∂h/∂x, ∂h/∂y (m/m)
-        nlat, nlon = elevation.shape
-        self.grad_x = np.zeros_like(elevation)
-        self.grad_y = np.zeros_like(elevation)
-
-        lat_centers = lat2d[:, 0]
-        lon_centers = lon2d[0, :]
-
-        if nlon > 1:
-            dlon_rad = np.deg2rad(lon_centers[1] - lon_centers[0])
-            dx = R_EARTH_METERS * np.cos(np.deg2rad(lat_centers)) * dlon_rad
-            inv_2dx = np.zeros_like(dx)
-            valid = np.abs(dx) > 0.0
-            inv_2dx[valid] = 1.0 / (2.0 * dx[valid])
-            padded = np.pad(elevation, ((0, 0), (1, 1)), mode="wrap")
-            self.grad_x = (padded[:, 2:] - padded[:, :-2]) * inv_2dx[:, np.newaxis]
-
-        if nlat > 1:
-            dlat_rad = np.deg2rad(lat_centers[1] - lat_centers[0])
-            dy = R_EARTH_METERS * dlat_rad
-            if dy != 0.0:
-                inv_2dy = 1.0 / (2.0 * dy)
-                padded = np.pad(elevation, ((1, 1), (0, 0)), mode="edge")
-                self.grad_y = (padded[2:, :] - padded[:-2, :]) * inv_2dy
-
-        # Pre-compute sub-grid length scale (m)
-        if nlon > 1:
-            mean_dx = R_EARTH_METERS * np.cos(np.deg2rad(np.mean(np.abs(lat_centers)))) * dlon_rad
-        else:
-            mean_dx = R_EARTH_METERS * np.deg2rad(5.0)
-        self.l_subgrid = config.subgrid_length_scale_factor * mean_dx
+        # Directional orographic gradients from fine-res data (m/m).
+        # Separated into positive (upslope) and negative (downslope) so that
+        # orographic w reflects the actual mountain slope, not the smoothed
+        # cell-mean gradient which cancels windward and leeward within one cell.
+        self.grad_x_pos = face_stats["grad_x_pos"]  # mean(max(∂h/∂x, 0))
+        self.grad_x_neg = face_stats["grad_x_neg"]  # mean(max(-∂h/∂x, 0))
+        self.grad_y_pos = face_stats["grad_y_pos"]
+        self.grad_y_neg = face_stats["grad_y_neg"]
 
         # --- Directional blockage ratios (precomputed from fine-res data) ---
-        # Open fraction: 0 = fully blocked, 1 = fully open
+        # Wind blocking (H=1000m BL depth): for advection
         self.r_east_pos = face_stats["r_east_pos"]      # for u > 0
         self.r_east_neg = face_stats["r_east_neg"]      # for u < 0
         self.r_north_pos = face_stats["r_north_pos"]    # for v > 0
         self.r_north_neg = face_stats["r_north_neg"]    # for v < 0
 
-        # Diffusion barrier: use min open fraction of both directions (conservative)
-        self.diffusion_barrier_east = np.minimum(self.r_east_pos, self.r_east_neg)
-        self.diffusion_barrier_north = np.minimum(self.r_north_pos, self.r_north_neg)
+        # Eddy blocking (H=5000m moisture-weighted tropo depth): for diffusion
+        # Use min of both directions (eddies are bidirectional)
+        self.diffusion_barrier_east = np.minimum(
+            face_stats["r_east_pos_eddy"], face_stats["r_east_neg_eddy"]
+        )
+        self.diffusion_barrier_north = np.minimum(
+            face_stats["r_north_pos_eddy"], face_stats["r_north_neg_eddy"]
+        )
 
     def compute_orographic_vertical_velocity(
         self, wind_u: np.ndarray, wind_v: np.ndarray
     ) -> np.ndarray:
         """Compute terrain-induced vertical velocity (m/s).
 
+        Uses directional gradients from fine-resolution terrain data.
+        For eastward flow (u > 0), the air encounters the mean positive
+        ∂h/∂x (upslope terrain) within the cell.  For westward flow (u < 0),
+        it encounters the mean positive -∂h/∂x.  This avoids the cancellation
+        of windward and leeward slopes that plagues cell-mean gradients at
+        coarse resolution.
+
         Returns w > 0 for upward motion (upslope flow).
         """
-        # Resolved: w = u·∂h/∂x + v·∂h/∂y
-        w_resolved = wind_u * self.grad_x + wind_v * self.grad_y
+        # Eastward (u>0) flow climbs positive gradients; westward climbs negative
+        u_pos = np.maximum(wind_u, 0.0)
+        u_neg = np.minimum(wind_u, 0.0)  # negative values
+        w_x = u_pos * self.grad_x_pos + (-u_neg) * self.grad_x_neg
 
-        # Sub-grid: w = |V| × σ_h / L_subgrid (always upward — represents mean lifting)
-        wind_speed = np.hypot(wind_u, wind_v)
-        w_subgrid = wind_speed * self.elevation_std / self.l_subgrid
+        # Northward (v>0) flow climbs positive gradients; southward climbs negative
+        v_pos = np.maximum(wind_v, 0.0)
+        v_neg = np.minimum(wind_v, 0.0)
+        w_y = v_pos * self.grad_y_pos + (-v_neg) * self.grad_y_neg
 
-        return w_resolved + w_subgrid
+        return w_x + w_y
 
     def apply_flow_blocking(
         self, wind_u: np.ndarray, wind_v: np.ndarray
@@ -146,6 +140,22 @@ class OrographicModel:
         )
         return u_out, v_out
 
+    def compute_orographic_precipitation(
+        self, w_orographic: np.ndarray, humidity_q: np.ndarray,
+        temperature_K: np.ndarray,
+    ) -> np.ndarray:
+        """Direct orographic precipitation rate (kg/m²/s).
+
+        When air is forced upward over terrain, it cools adiabatically and
+        moisture condenses.  The rate scales as  P = η · max(w, 0) · q · ρ,
+        where η is the precipitation efficiency.
+
+        Returns precipitation rate in kg/m²/s (same units as cloud precip).
+        """
+        eff = self.config.orographic_precip_efficiency
+        rho = 101325.0 / (287.05 * temperature_K)
+        return eff * np.maximum(w_orographic, 0.0) * humidity_q * rho
+
     def compute_effects(
         self, wind_u: np.ndarray, wind_v: np.ndarray
     ) -> dict[str, np.ndarray]:
@@ -155,8 +165,11 @@ class OrographicModel:
         - w_orographic: terrain-induced vertical velocity (m/s)
         - wind_u_blocked, wind_v_blocked: flow-blocked wind components
         """
+        # Orographic uplift uses UNBLOCKED wind: the approaching air is forced
+        # upward over terrain, causing condensation and precipitation.
+        # Wind blocking is a separate effect: surface flow deflected around terrain.
+        w_oro = self.compute_orographic_vertical_velocity(wind_u, wind_v)
         u_blocked, v_blocked = self.apply_flow_blocking(wind_u, wind_v)
-        w_oro = self.compute_orographic_vertical_velocity(u_blocked, v_blocked)
 
         return {
             "w_orographic": w_oro,

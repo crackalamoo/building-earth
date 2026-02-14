@@ -201,7 +201,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if wind_u is not None and wind_v is not None:
                 divergence = compute_divergence(wind_u, wind_v, inputs.lat2d, inputs.lon2d)
                 vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
-                if inputs.orographic_model is not None:
+                if state.orographic_w is not None:
+                    vertical_velocity = vertical_velocity + state.orographic_w
+                elif inputs.orographic_model is not None:
                     vertical_velocity = vertical_velocity + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u, wind_v)
             else:
                 vertical_velocity = np.zeros_like(humidity_field)
@@ -404,7 +406,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if wind_u is not None and wind_v is not None:
                 divergence = compute_divergence(wind_u, wind_v, inputs.lat2d, inputs.lon2d)
                 vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
-                if inputs.orographic_model is not None:
+                if state.orographic_w is not None:
+                    vertical_velocity = vertical_velocity + state.orographic_w
+                elif inputs.orographic_model is not None:
                     vertical_velocity = vertical_velocity + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u, wind_v)
             else:
                 vertical_velocity = np.zeros_like(humidity_field)
@@ -679,7 +683,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     if wind_u_q is not None and wind_v_q is not None:
                         divergence = compute_divergence(wind_u_q, wind_v_q, inputs.lat2d, inputs.lon2d)
                         w_largescale = compute_vertical_velocity_from_divergence(divergence)
-                        if inputs.orographic_model is not None:
+                        if state.orographic_w is not None:
+                            w_largescale = w_largescale + state.orographic_w
+                        elif inputs.orographic_model is not None:
                             w_largescale = w_largescale + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u_q, wind_v_q)
                     else:
                         w_largescale = np.zeros_like(state.humidity_field)
@@ -688,6 +694,13 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         conv_frac, strat_frac, marine_frac,
                         state.humidity_field, w_largescale, t_bl
                     )
+
+                    # Orographic precipitation Jacobian: dP_oro/dq = η * max(w, 0) * ρ
+                    if state.orographic_w is not None and inputs.orographic_model is not None:
+                        eff = inputs.orographic_model.config.orographic_precip_efficiency
+                        rho = 101325.0 / (287.05 * state.temperature[1])
+                        dP_oro_dq = eff * np.maximum(state.orographic_w, 0.0) * rho
+                        dP_dq = dP_dq + dP_oro_dq
 
                     # Humidity diagonal: dE/dq / M - dP/dq / M + Hadley subsidence
                     # (dE/dq is negative, dP/dq is positive)
