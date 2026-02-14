@@ -11,6 +11,7 @@ import rioxarray
 from PIL import Image
 from functools import lru_cache
 import xarray as xr
+from scipy.interpolate import RegularGridInterpolator
 
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.core.math_core import regular_latitude_edges, regular_longitude_edges
@@ -428,6 +429,204 @@ def compute_cell_elevation_statistics(
             )
 
     return elevation_std, elevation_max
+
+
+def compute_face_elevation_statistics(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    cache: bool = True,
+    n_samples_per_cell: int = 15,
+) -> dict[str, np.ndarray]:
+    """Compute directional cross-sectional blockage ratios at cell faces.
+
+    For each face between two adjacent cells, we sample fine-resolution
+    elevation in a strip centered on the face (half a cell on each side).
+    The blockage ratio is the fraction of the BL cross-section that is open.
+
+    At each cross-section position (latitude row for east faces, longitude
+    column for north faces), we find the silhouette height — the max elevation
+    across the flow direction.  The blocked fraction at that position is
+    ``clip((silhouette - z_entry) / H_BL, 0, 1)`` where ``z_entry`` is the
+    upwind cell-mean elevation and ``H_BL`` is the effective BL depth.
+
+    This naturally distinguishes:
+    - Continuous ridges (blocked at every position → low open fraction)
+    - Isolated peaks (blocked at few positions → high open fraction)
+    - High plateaus (silhouette ≈ z_entry → minimal blocking)
+
+    Returns
+    -------
+    dict with keys:
+      r_east_pos : (nlat, nlon) open fraction for eastward  (u>0) flow
+      r_east_neg : (nlat, nlon) open fraction for westward  (u<0) flow
+      r_north_pos: (nlat, nlon) open fraction for northward (v>0) flow
+      r_north_neg: (nlat, nlon) open fraction for southward (v<0) flow
+    Values range from 0 (fully blocked) to 1 (fully open).
+    """
+    if lon2d.shape != lat2d.shape:
+        raise ValueError("Longitude and latitude grids must share the same shape")
+
+    nlat, nlon = lon2d.shape
+    cache_name = "face_elevation_cache.npz"
+    expected_keys = ["r_east_pos", "r_east_neg", "r_north_pos", "r_north_neg"]
+
+    if cache:
+        data_dir = os.getenv("DATA_DIR")
+        if data_dir is not None:
+            cache_path = Path(data_dir) / cache_name
+            if cache_path.exists():
+                try:
+                    with np.load(cache_path) as cached:
+                        if all(k in cached and cached[k].shape == (nlat, nlon) for k in expected_keys):
+                            return {k: cached[k] for k in expected_keys}
+                except Exception as e:
+                    print(f"Failed to load face elevation cache: {e}, recomputing...")
+
+    lat_centers = lat2d[:, 0]
+    lon_centers = lon2d[0, :]
+    lat_edges = regular_latitude_edges(lat_centers)
+    lon_edges = regular_longitude_edges(lon_centers)
+
+    # Sample weights within a single cell dimension
+    sw = np.linspace(0.0, 1.0, n_samples_per_cell + 1)
+    sw = (sw[:-1] + sw[1:]) / 2.0  # cell-interior sample positions [0..1]
+
+    # ---- helper: sample a rectangle of fine-res elevation ----
+    data_dir_env = os.getenv("DATA_DIR")
+    tif_path = Path(data_dir_env) / "etopo_60s.tif" if data_dir_env else None
+    dataset = None
+    interp = None
+    if tif_path is None or not tif_path.exists():
+        dataset = load_elevation_data()
+        if dataset is None:
+            return {k: np.zeros((nlat, nlon)) for k in expected_keys}
+        if dataset.rio.crs is None:
+            dataset = dataset.rio.write_crs("EPSG:4326", inplace=False)
+        x_coords, y_coords, data_values = _get_elevation_arrays(dataset)
+        interp = RegularGridInterpolator(
+            (y_coords, x_coords), data_values,
+            method="nearest", bounds_error=False, fill_value=0.0,
+        )
+
+    def _sample_rect(lat_lo: np.ndarray, lat_hi: np.ndarray,
+                     lon_lo: np.ndarray, lon_hi: np.ndarray,
+                     n_lat: int, n_lon: int) -> np.ndarray:
+        """Sample fine-res elevation in rectangles.
+
+        lat_lo/hi, lon_lo/hi: (nlat, nlon) arrays of rectangle bounds.
+        Returns: (nlat, nlon, n_lat, n_lon) sampled elevation.
+        """
+        sw_lat = np.linspace(0.0, 1.0, n_lat + 1)
+        sw_lat = (sw_lat[:-1] + sw_lat[1:]) / 2.0
+        sw_lon = np.linspace(0.0, 1.0, n_lon + 1)
+        sw_lon = (sw_lon[:-1] + sw_lon[1:]) / 2.0
+
+        # Wrap longitudes where needed
+        lon_hi_w = np.where(lon_hi < lon_lo, lon_hi + 360.0, lon_hi)
+
+        lat_s = np.clip(
+            lat_lo[:, :, np.newaxis, np.newaxis]
+            + (lat_hi - lat_lo)[:, :, np.newaxis, np.newaxis]
+            * sw_lat[np.newaxis, np.newaxis, :, np.newaxis],
+            -90.0, 90.0,
+        )
+        lon_s = _wrap_longitudes(
+            lon_lo[:, :, np.newaxis, np.newaxis]
+            + (lon_hi_w - lon_lo)[:, :, np.newaxis, np.newaxis]
+            * sw_lon[np.newaxis, np.newaxis, np.newaxis, :],
+        )
+
+        target_shape = (nlat, nlon, n_lat, n_lon)
+        lat_s = np.broadcast_to(lat_s, target_shape)
+        lon_s = np.broadcast_to(lon_s, target_shape)
+        lon_flat = lon_s.ravel()
+        lat_flat = lat_s.ravel()
+
+        if tif_path is not None and tif_path.exists():
+            vals = _sample_elevation_points_rasterio(tif_path, lon_flat, lat_flat)
+        else:
+            assert interp is not None
+            vals = interp(np.stack([lat_flat, lon_flat], axis=-1))
+
+        # Clamp to >= 0: ocean bathymetry shouldn't create terrain barriers.
+        return np.maximum(0.0, np.nan_to_num(vals, nan=0.0)).reshape(target_shape)
+
+    # ---- East faces: strip centered on face, half-cell on each side ----
+    # Lat bounds: same as each cell's lat range
+    lat_lo_e = np.broadcast_to(lat_edges[:-1, np.newaxis], (nlat, nlon))
+    lat_hi_e = np.broadcast_to(lat_edges[1:, np.newaxis], (nlat, nlon))
+    # Lon bounds: cell center j to cell center j+1 (half-cell each side of face)
+    lon_lo_e = np.broadcast_to(lon_centers[np.newaxis, :], (nlat, nlon))
+    lon_hi_e = np.broadcast_to(np.roll(lon_centers, -1)[np.newaxis, :], (nlat, nlon))
+
+    east_elev = _sample_rect(lat_lo_e, lat_hi_e, lon_lo_e, lon_hi_e,
+                             n_samples_per_cell, n_samples_per_cell)
+    # shape: (nlat, nlon, n_lat_samples, n_lon_samples)
+
+    # Silhouette: at each latitude row, find the max elevation across longitudes.
+    # This is the terrain wall the flow must cross at that latitude.
+    east_silhouette = np.max(east_elev, axis=3)  # (nlat, nlon, n_lat_samples)
+
+    # Entry elevation: cell-mean elevation on each side (our model's "surface").
+    # Clamp to >= 0 so ocean cells have z_entry = 0 (sea level).
+    cell_elev = np.maximum(0.0, compute_cell_elevation(lon2d, lat2d))
+    z_entry_left = cell_elev[:, :, np.newaxis]                          # cell j
+    z_entry_right = np.roll(cell_elev, -1, axis=1)[:, :, np.newaxis]   # cell j+1
+
+    # Blockage ratio: fraction of BL cross-section blocked at each position.
+    # BL extends from z_entry to z_entry + H_bl.  Terrain above z_entry + H_bl
+    # blocks the full column; terrain between z_entry and z_entry + H_bl blocks
+    # a fraction; terrain below z_entry doesn't block.
+    H_BL = 3000.0  # effective BL depth (m) — flow can climb over terrain shorter than this
+    blocked_frac_east_pos = np.clip(
+        (east_silhouette - z_entry_left) / H_BL, 0.0, 1.0
+    )
+    blocked_frac_east_neg = np.clip(
+        (east_silhouette - z_entry_right) / H_BL, 0.0, 1.0
+    )
+    # r = 1 - mean blocked fraction across cross-section positions
+    r_east_pos = 1.0 - np.mean(blocked_frac_east_pos, axis=2)
+    r_east_neg = 1.0 - np.mean(blocked_frac_east_neg, axis=2)
+
+    # ---- North faces: strip centered on face, half-cell on each side ----
+    lat_lo_n = np.broadcast_to(lat_centers[:, np.newaxis], (nlat, nlon))
+    lat_hi_n = np.broadcast_to(np.roll(lat_centers, -1)[:, np.newaxis], (nlat, nlon))
+    lon_lo_n = np.broadcast_to(lon_edges[np.newaxis, :-1], (nlat, nlon))
+    lon_hi_n = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))
+
+    north_elev = _sample_rect(lat_lo_n, lat_hi_n, lon_lo_n, lon_hi_n,
+                              n_samples_per_cell, n_samples_per_cell)
+    # shape: (nlat, nlon, n_lat_samples, n_lon_samples)
+
+    # Silhouette: at each longitude column, find max elevation across latitudes.
+    north_silhouette = np.max(north_elev, axis=2)  # (nlat, nlon, n_lon_samples)
+
+    z_entry_south = cell_elev[:, :, np.newaxis]                         # cell i
+    z_entry_north = np.roll(cell_elev, -1, axis=0)[:, :, np.newaxis]   # cell i+1
+
+    blocked_frac_north_pos = np.clip(
+        (north_silhouette - z_entry_south) / H_BL, 0.0, 1.0
+    )
+    blocked_frac_north_neg = np.clip(
+        (north_silhouette - z_entry_north) / H_BL, 0.0, 1.0
+    )
+    r_north_pos = 1.0 - np.mean(blocked_frac_north_pos, axis=2)
+    r_north_neg = 1.0 - np.mean(blocked_frac_north_neg, axis=2)
+
+    result = {
+        "r_east_pos": r_east_pos,
+        "r_east_neg": r_east_neg,
+        "r_north_pos": r_north_pos,
+        "r_north_neg": r_north_neg,
+    }
+
+    if cache:
+        data_dir_env = os.getenv("DATA_DIR")
+        if data_dir_env is not None:
+            cache_path = Path(data_dir_env) / cache_name
+            np.savez_compressed(cache_path, **result)
+
+    return result
 
 
 def compute_cell_roughness_length(

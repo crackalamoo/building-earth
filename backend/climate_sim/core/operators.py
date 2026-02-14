@@ -39,6 +39,7 @@ from climate_sim.physics.solar import (
 )
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.physics.orographic_effects import OrographicModel
+from climate_sim.data.elevation import compute_face_elevation_statistics
 from climate_sim.runtime.config import ModelConfig
 
 
@@ -216,12 +217,13 @@ def build_model_operators(
     # Build orographic model if enabled
     orographic_model: OrographicModel | None = None
     if model_config.orographic.enabled:
-        elevation_std, elevation_max = compute_cell_elevation_statistics(lon2d, lat2d)
+        elevation_std, _elevation_max = compute_cell_elevation_statistics(lon2d, lat2d)
+        face_stats = compute_face_elevation_statistics(lon2d, lat2d)
         orographic_model = OrographicModel(
             lon2d, lat2d,
             elevation=topographic_elevation,
             elevation_std=elevation_std,
-            elevation_max=elevation_max,
+            face_stats=face_stats,
             config=model_config.orographic,
             land_mask=land_mask,
         )

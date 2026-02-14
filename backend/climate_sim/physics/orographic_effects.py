@@ -22,9 +22,6 @@ class OrographicConfig:
 
     enabled: bool = True
     subgrid_length_scale_factor: float = 0.5
-    froude_critical: float = 1.0
-    min_blocking_height_m: float = 1500.0
-    brunt_vaisala_frequency_s: float = 0.01  # N, typical tropospheric stability
 
 
 class OrographicModel:
@@ -38,8 +35,10 @@ class OrographicModel:
         Cell-mean elevation (m).
     elevation_std : np.ndarray
         Sub-grid elevation standard deviation (m).
-    elevation_max : np.ndarray
-        Peak elevation within each cell (m).
+    face_stats : dict[str, np.ndarray]
+        Precomputed directional blockage ratios from
+        ``compute_face_elevation_statistics``.  Values are open fractions
+        (0 = fully blocked, 1 = fully open).
     config : OrographicConfig
         Physics configuration.
     """
@@ -50,7 +49,7 @@ class OrographicModel:
         lat2d: np.ndarray,
         elevation: np.ndarray,
         elevation_std: np.ndarray,
-        elevation_max: np.ndarray,
+        face_stats: dict[str, np.ndarray],
         config: OrographicConfig,
         land_mask: np.ndarray | None = None,
     ) -> None:
@@ -62,7 +61,6 @@ class OrographicModel:
 
         # Zero out sub-grid terrain stats over ocean (coastal variance is noise)
         self.elevation_std = np.where(self.land_mask, elevation_std, 0.0)
-        self.elevation_max = np.where(self.land_mask, elevation_max, elevation)
 
         # Pre-compute terrain gradients ∂h/∂x, ∂h/∂y (m/m)
         nlat, nlon = elevation.shape
@@ -96,16 +94,16 @@ class OrographicModel:
             mean_dx = R_EARTH_METERS * np.deg2rad(5.0)
         self.l_subgrid = config.subgrid_length_scale_factor * mean_dx
 
-        # Pre-compute effective blocking height: max(h_max - h_mean, 2σ_h)
-        self.h_eff = np.maximum(elevation_max - elevation, 2.0 * elevation_std)
+        # --- Directional blockage ratios (precomputed from fine-res data) ---
+        # Open fraction: 0 = fully blocked, 1 = fully open
+        self.r_east_pos = face_stats["r_east_pos"]      # for u > 0
+        self.r_east_neg = face_stats["r_east_neg"]      # for u < 0
+        self.r_north_pos = face_stats["r_north_pos"]    # for v > 0
+        self.r_north_neg = face_stats["r_north_neg"]    # for v < 0
 
-        # Pre-compute gradient magnitude for blocking direction
-        grad_mag = np.hypot(self.grad_x, self.grad_y)
-        self.grad_mag = grad_mag
-        # Unit vector of terrain gradient (direction of steepest ascent)
-        safe_mag = np.where(grad_mag > 1e-10, grad_mag, 1.0)
-        self.grad_nx = np.where(grad_mag > 1e-10, self.grad_x / safe_mag, 0.0)
-        self.grad_ny = np.where(grad_mag > 1e-10, self.grad_y / safe_mag, 0.0)
+        # Diffusion barrier: use min open fraction of both directions (conservative)
+        self.diffusion_barrier_east = np.minimum(self.r_east_pos, self.r_east_neg)
+        self.diffusion_barrier_north = np.minimum(self.r_north_pos, self.r_north_neg)
 
     def compute_orographic_vertical_velocity(
         self, wind_u: np.ndarray, wind_v: np.ndarray
@@ -126,35 +124,26 @@ class OrographicModel:
     def apply_flow_blocking(
         self, wind_u: np.ndarray, wind_v: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Reduce wind component into terrain where Froude number < 1.
+        """Reduce wind by precomputed cross-sectional blockage ratios.
+
+        Each face has a directional open fraction (0=blocked, 1=open)
+        computed from fine-resolution terrain.  Eastward flow at cell j
+        is scaled by the east face's open fraction for eastward flow;
+        westward flow uses the west face's (= cell j-1's east face)
+        open fraction for westward flow.
 
         Returns blocked (u, v).
         """
-        cfg = self.config
-        N = cfg.brunt_vaisala_frequency_s
-
-        # Wind component normal to terrain gradient (into the slope)
-        v_n = wind_u * self.grad_nx + wind_v * self.grad_ny
-        # Tangential components
-        v_t_x = wind_u - v_n * self.grad_nx
-        v_t_y = wind_v - v_n * self.grad_ny
-
-        # Froude number: Fr = |V_n| / (N × h_eff)
-        abs_vn = np.abs(v_n)
-        fr = np.where(
-            self.h_eff > cfg.min_blocking_height_m,
-            abs_vn / (N * self.h_eff),
-            999.0,  # no blocking for low terrain
+        u_out = wind_u * np.where(
+            wind_u >= 0,
+            self.r_east_pos,
+            np.roll(self.r_east_neg, 1, axis=1),
         )
-
-        # Where Fr < 1: reduce V_n by Fr (linear; Fr² is too aggressive at coarse resolution)
-        reduction = np.where(fr < cfg.froude_critical, fr, 1.0)
-        v_n_blocked = v_n * reduction
-
-        # Reconstruct
-        u_out = v_t_x + v_n_blocked * self.grad_nx
-        v_out = v_t_y + v_n_blocked * self.grad_ny
-
+        v_out = wind_v * np.where(
+            wind_v >= 0,
+            self.r_north_pos,
+            np.roll(self.r_north_neg, 1, axis=0),
+        )
         return u_out, v_out
 
     def compute_effects(
