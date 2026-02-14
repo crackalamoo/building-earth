@@ -681,18 +681,10 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         strat_frac = np.zeros_like(state.humidity_field)
                         marine_frac = np.zeros_like(state.humidity_field)
 
-                    # Compute vertical velocity from divergence + frontal + orographic
+                    # Compute vertical velocity from divergence + orographic (must match forward RHS)
                     if wind_u_q is not None and wind_v_q is not None:
                         divergence = compute_divergence(wind_u_q, wind_v_q, inputs.lat2d, inputs.lon2d)
                         w_largescale = compute_vertical_velocity_from_divergence(divergence)
-                        # Add frontal (warm advection) component
-                        lat_rad = np.deg2rad(inputs.lat2d)
-                        dy_m = np.deg2rad(inputs.lat2d[1, 0] - inputs.lat2d[0, 0]) * R_EARTH_METERS
-                        dx_m = np.deg2rad(inputs.lon2d[0, 1] - inputs.lon2d[0, 0]) * R_EARTH_METERS * np.cos(lat_rad)
-                        w_frontal = compute_vertical_velocity_from_warm_advection(
-                            t_bl, wind_u_q, wind_v_q, dx_m, abs(dy_m),
-                        )
-                        w_largescale = w_largescale + w_frontal
                         if state.orographic_w is not None:
                             w_largescale = w_largescale + state.orographic_w
                         elif inputs.orographic_model is not None:
@@ -746,7 +738,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         dE_dT_sfc = np.zeros_like(state.humidity_field)
 
                     # dR_q/dT terms (to be multiplied by -dt in solver)
-                    dR_q_dT_sfc = -dE_dT_sfc / COLUMN_MASS_KG_M2
+                    dR_q_dT_sfc = dE_dT_sfc / COLUMN_MASS_KG_M2
                     dR_q_dT_bl = -dP_dT_bl / COLUMN_MASS_KG_M2
                     dR_q_dT_atm = -dP_dT_atm / COLUMN_MASS_KG_M2
 

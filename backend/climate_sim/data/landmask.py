@@ -75,25 +75,71 @@ def _grid_signature(lon2d: np.ndarray, lat2d: np.ndarray) -> tuple[int, int, flo
 
 
 def _compute_land_and_lake_masks(
-    lon2d: np.ndarray, lat2d: np.ndarray
+    lon2d: np.ndarray, lat2d: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Determine the land/sea classification and highlight lakes for each grid center."""
+    """Determine land/sea classification by testing each cell center."""
     prepared_land = _prepared_land_geometry()
     prepared_lakes = _prepared_lake_geometry()
+
+    nlat, nlon = lon2d.shape
     flat_lon = lon2d.ravel()
     flat_lat = lat2d.ravel()
+    n_cells = flat_lon.size
 
-    land_flat = np.empty(flat_lon.size, dtype=bool)
-    lake_flat = np.empty(flat_lon.size, dtype=bool)
-    for idx, (lon, lat) in enumerate(zip(flat_lon, flat_lat, strict=True)):
-        lon_wrapped = ((lon + 180.0) % 360.0) - 180.0
-        point = Point(lon_wrapped, lat)
-        is_lake = prepared_lakes.covers(point)
-        lake_flat[idx] = is_lake
-        land_flat[idx] = prepared_land.covers(point) and not is_lake
+    land_flat = np.zeros(n_cells, dtype=bool)
+    lake_flat = np.zeros(n_cells, dtype=bool)
 
-    shape = lon2d.shape
-    return land_flat.reshape(shape), lake_flat.reshape(shape)
+    for idx in range(n_cells):
+        lon_wrapped = ((flat_lon[idx] + 180.0) % 360.0) - 180.0
+        point = Point(lon_wrapped, flat_lat[idx])
+        if prepared_lakes.covers(point):
+            lake_flat[idx] = True
+        elif prepared_land.covers(point):
+            land_flat[idx] = True
+
+    land = land_flat.reshape(nlat, nlon)
+    lake = lake_flat.reshape(nlat, nlon)
+
+    # Resolution-specific manual overrides for misclassified coastal cells.
+    # Keyed by resolution (degrees) → (force_land, force_ocean) lists of (lat, lon).
+    # Lon uses the grid's 0-360 convention.
+    _OVERRIDES: dict[float, tuple[list[tuple[float, float]], list[tuple[float, float]]]] = {
+        5.0: (
+            [  # Force land
+                (62.5, 337.5),   # Iceland
+                (7.5, 82.5),     # Sri Lanka
+                (32.5, 132.5),   # Japan (southern)
+                (37.5, 137.5),   # Japan (central)
+                (-37.5, 177.5),  # New Zealand North Island
+                (22.5, 282.5),   # Cuba
+                (7.5, 277.5),    # Panama
+                (17.5, 122.5),   # Philippines (northern)
+                (-2.5, 122.5),   # Sulawesi
+                (47.5, 237.5),   # Washington State / BC
+                (12.5, 272.5),   # Honduras / Nicaragua
+                (12.5, 122.5),   # Philippines (central / Visayas)
+                (-7.5, 147.5),   # Papua New Guinea (eastern)
+                (-72.5, 287.5),  # West Antarctica (Antarctic Peninsula base)
+                (-72.5, 237.5),  # West Antarctica (Marie Byrd Land)
+                (-72.5, 247.5),  # West Antarctica (Marie Byrd Land)
+            ],
+            [  # Force ocean
+                (32.5, 22.5),    # Eastern Mediterranean (off Libya)
+            ],
+        ),
+    }
+    dlon = lon2d[0, 1] - lon2d[0, 0] if nlon > 1 else 360.0
+    resolution = round(float(dlon), 1)
+    if resolution in _OVERRIDES:
+        force_land, force_ocean = _OVERRIDES[resolution]
+        for olat, olon in force_land:
+            mask = (np.abs(lat2d - olat) < 0.1) & (np.abs(lon2d - olon) < 0.1)
+            land[mask] = True
+        for olat, olon in force_ocean:
+            mask = (np.abs(lat2d - olat) < 0.1) & (np.abs(lon2d - olon) < 0.1)
+            land[mask] = False
+
+    return land, lake
 
 
 def compute_land_mask(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
