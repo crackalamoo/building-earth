@@ -504,6 +504,7 @@ def create_diffusion_operator(
         config=config,
         diffusivity_m2_s=atmosphere_diffusivity_m2_s,
         use_latitude_scaling=True,  # Atmosphere uses latitude-dependent diffusivity
+        barrier_factors=barrier_factors,
     )
 
     # Optionally build boundary layer operator with its own heat capacity
