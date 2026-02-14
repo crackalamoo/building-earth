@@ -59,6 +59,8 @@ PROC_DIR.mkdir(parents=True, exist_ok=True)
 URLS = {
     "land": "https://downloads.psl.noaa.gov/Datasets/ghcncams/air.mon.mean.nc",
     "ocean": "https://downloads.psl.noaa.gov/Datasets/COBE2/sst.mon.mean.nc",
+    "humidity": "https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis.derived/surface_gauss/shum.2m.mon.mean.nc",
+    "precip": "https://downloads.psl.noaa.gov/Datasets/gpcp/precip.mon.mean.nc",
 }
 
 BASELINE_START = "1981-01-01"
@@ -213,6 +215,269 @@ def build_reference_climatology(mask_path: Path | None) -> xr.Dataset:
     print(f"Wrote: {OUTFILE}")
 
     return ds_out
+
+
+HUMIDITY_PRECIP_OUTFILE = PROC_DIR / "ref_humidity_precip_1deg_1981-2010.nc"
+
+
+def build_humidity_precip_reference() -> xr.Dataset | None:
+    """Download NCEP specific humidity and GPCP precipitation climatologies.
+
+    Returns a Dataset with monthly climatology fields on the 1° target grid,
+    or None if downloads fail.
+    """
+    try:
+        shum_nc = fetch(URLS["humidity"], RAW_DIR)
+        precip_nc = fetch(URLS["precip"], RAW_DIR)
+    except Exception as e:
+        print(f"Warning: could not download humidity/precip reference data: {e}")
+        return None
+
+    # --- Specific humidity (NCEP reanalysis, 2.5° grid) ---
+    shum_ds = xr.open_dataset(shum_nc)
+    shum_ds = to_0360(shum_ds, "lon")
+    # Variable "shum" is near-surface specific humidity in g/kg (NCEP convention)
+    shum = shum_ds["shum"]
+    if "level" in shum.dims:
+        # Take the lowest (highest pressure) level — near-surface
+        shum = shum.isel(level=-1)
+    shum = shum.sel(time=slice(BASELINE_START, BASELINE_END))
+    shum_1deg = regrid_1deg(shum)
+    clim_shum = shum_1deg.groupby("time.month").mean("time") / 1000.0  # g/kg → kg/kg
+
+    # --- Precipitation (GPCP, 2.5° grid, mm/day) ---
+    precip_ds = xr.open_dataset(precip_nc)
+    precip_ds = to_0360(precip_ds, "lon")
+    precip = precip_ds["precip"]
+    precip = precip.sel(time=slice(BASELINE_START, BASELINE_END))
+    precip_1deg = regrid_1deg(precip)
+    clim_precip = precip_1deg.groupby("time.month").mean("time")
+
+    ds_out = xr.Dataset(
+        dict(
+            shum_clim=clim_shum,       # kg/kg
+            precip_clim=clim_precip,    # mm/day
+        ),
+        coords=dict(
+            month=("month", np.arange(1, 13, dtype=int)),
+            lat=("lat", LAT_T),
+            lon=("lon", LON_T),
+        ),
+    )
+
+    encoding = {var: {"zlib": True, "complevel": 4} for var in ds_out.data_vars}
+    ds_out.to_netcdf(HUMIDITY_PRECIP_OUTFILE, encoding=encoding)
+    print(f"Wrote humidity/precip reference: {HUMIDITY_PRECIP_OUTFILE}")
+
+    return ds_out
+
+
+def aggregate_humidity_precip_to_sim_grid(
+    ds: xr.Dataset,
+    lon2d_sim: np.ndarray,
+    lat2d_sim: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Aggregate 1° humidity/precip reference onto the simulation grid."""
+    lat_noaa = np.asarray(ds["lat"].values, dtype=float)
+    lon_noaa = np.asarray(ds["lon"].values, dtype=float)
+
+    lat_centers_sim = lat2d_sim[:, 0]
+    lon_centers_sim = lon2d_sim[0, :]
+
+    dlat_sim = float(lat_centers_sim[1] - lat_centers_sim[0]) if lat_centers_sim.size > 1 else 180.0
+    dlon_sim = float(lon_centers_sim[1] - lon_centers_sim[0]) if lon_centers_sim.size > 1 else 360.0
+
+    lat_edges_min = lat_centers_sim - 0.5 * dlat_sim
+    lat_edges_max = lat_centers_sim + 0.5 * dlat_sim
+
+    lon_noaa_wrapped = lon_noaa % 360.0
+    lon_centers_sim_wrapped = lon_centers_sim % 360.0
+    lon_edges_min_wrapped = (lon_centers_sim - 0.5 * dlon_sim) % 360.0
+    lon_edges_max_wrapped = (lon_centers_sim + 0.5 * dlon_sim) % 360.0
+
+    shum_src = np.asarray(ds["shum_clim"].values, dtype=float)
+    precip_src = np.asarray(ds["precip_clim"].values, dtype=float)
+
+    nmonth = shum_src.shape[0]
+    nlat_sim = lat_centers_sim.size
+    nlon_sim = lon_centers_sim.size
+
+    shum_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
+    precip_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
+
+    lat_masks = [
+        (lat_noaa >= lat_edges_min[i]) & (lat_noaa < lat_edges_max[i])
+        for i in range(nlat_sim)
+    ]
+
+    for j in range(nlon_sim):
+        lon_min = lon_edges_min_wrapped[j]
+        lon_max = lon_edges_max_wrapped[j]
+        if lon_min < lon_max:
+            lon_mask = (lon_noaa_wrapped >= lon_min) & (lon_noaa_wrapped < lon_max)
+        else:
+            lon_mask = (lon_noaa_wrapped >= lon_min) | (lon_noaa_wrapped < lon_max)
+
+        if not np.any(lon_mask):
+            continue
+
+        for i in range(nlat_sim):
+            cell_mask = lat_masks[i][:, None] & lon_mask[None, :]
+            if not np.any(cell_mask):
+                continue
+            with np.errstate(invalid="ignore"):
+                shum_out[:, i, j] = np.nanmean(shum_src[:, cell_mask], axis=1)
+                precip_out[:, i, j] = np.nanmean(precip_src[:, cell_mask], axis=1)
+
+    return {"shum": shum_out, "precip": precip_out}
+
+
+def compute_humidity_precip_statistics(
+    sim_humidity: np.ndarray,
+    sim_precip: np.ndarray,
+    obs_shum: np.ndarray,
+    obs_precip: np.ndarray,
+    land_mask: np.ndarray,
+    cell_areas: np.ndarray,
+) -> None:
+    """Print humidity and precipitation evaluation statistics."""
+    weights_land = cell_areas * land_mask
+    weights_ocean = cell_areas * (~land_mask)
+
+    # Convert units for display: kg/kg → g/kg, kg/m²/s → mm/day
+    sim_q_gkg = sim_humidity * 1000.0
+    obs_q_gkg = obs_shum * 1000.0
+    sim_p_mmday = sim_precip * 86400.0
+    obs_p_mmday = obs_precip  # GPCP already in mm/day
+
+    q_diff = sim_q_gkg - obs_q_gkg
+    p_diff = sim_p_mmday - obs_p_mmday
+
+    # Annual stats
+    def stats_for(diff: np.ndarray, weights: np.ndarray) -> tuple[float, float, float]:
+        bias = weighted_mean(diff, weights)
+        rmse = weighted_rmse(diff, weights)
+        return bias, rmse
+
+    print("\n" + "=" * 60)
+    print("Humidity Evaluation (g/kg)")
+    print("=" * 60)
+
+    header = f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    print(header)
+    print("-" * len(header))
+
+    for m in range(12):
+        lb, _ = stats_for(q_diff[m], weights_land)
+        ob, _ = stats_for(q_diff[m], weights_ocean)
+        gb, gr = stats_for(q_diff[m], cell_areas)
+        print(f"{MONTH_NAMES[m]:<12}{lb:>10.2f}{ob:>11.2f}{gb:>12.2f}{gr:>12.2f}")
+
+    lb, lr = stats_for(q_diff, weights_land)
+    ob, orr = stats_for(q_diff, weights_ocean)
+    gb, gr = stats_for(q_diff, cell_areas)
+    print("-" * len(header))
+    print(f"{'Annual':<12}{lb:>10.2f}{ob:>11.2f}{gb:>12.2f}{gr:>12.2f}")
+
+    # Correlation
+    corr_land = weighted_pattern_correlation(sim_q_gkg, obs_q_gkg, weights_land)
+    corr_ocean = weighted_pattern_correlation(sim_q_gkg, obs_q_gkg, weights_ocean)
+    corr_global = weighted_pattern_correlation(sim_q_gkg, obs_q_gkg, cell_areas)
+    print(f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}")
+
+    # Area-weighted means
+    sim_q_land = weighted_mean(sim_q_gkg, weights_land)
+    obs_q_land = weighted_mean(obs_q_gkg, weights_land)
+    sim_q_ocean = weighted_mean(sim_q_gkg, weights_ocean)
+    obs_q_ocean = weighted_mean(obs_q_gkg, weights_ocean)
+    print(f"Mean q:  Sim land={sim_q_land:.1f}  Obs land={obs_q_land:.1f}  "
+          f"Sim ocean={sim_q_ocean:.1f}  Obs ocean={obs_q_ocean:.1f}")
+
+    print("\n" + "=" * 60)
+    print("Precipitation Evaluation (mm/day)")
+    print("=" * 60)
+
+    header = f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    print(header)
+    print("-" * len(header))
+
+    for m in range(12):
+        lb, _ = stats_for(p_diff[m], weights_land)
+        ob, _ = stats_for(p_diff[m], weights_ocean)
+        gb, gr = stats_for(p_diff[m], cell_areas)
+        print(f"{MONTH_NAMES[m]:<12}{lb:>10.2f}{ob:>11.2f}{gb:>12.2f}{gr:>12.2f}")
+
+    lb, lr = stats_for(p_diff, weights_land)
+    ob, orr = stats_for(p_diff, weights_ocean)
+    gb, gr = stats_for(p_diff, cell_areas)
+    print("-" * len(header))
+    print(f"{'Annual':<12}{lb:>10.2f}{ob:>11.2f}{gb:>12.2f}{gr:>12.2f}")
+
+    corr_land = weighted_pattern_correlation(sim_p_mmday, obs_p_mmday, weights_land)
+    corr_ocean = weighted_pattern_correlation(sim_p_mmday, obs_p_mmday, weights_ocean)
+    corr_global = weighted_pattern_correlation(sim_p_mmday, obs_p_mmday, cell_areas)
+    print(f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}")
+
+    sim_p_land = weighted_mean(sim_p_mmday, weights_land)
+    obs_p_land = weighted_mean(obs_p_mmday, weights_land)
+    sim_p_ocean = weighted_mean(sim_p_mmday, weights_ocean)
+    obs_p_ocean = weighted_mean(obs_p_mmday, weights_ocean)
+    print(f"Mean P:  Sim land={sim_p_land:.2f}  Obs land={obs_p_land:.2f}  "
+          f"Sim ocean={sim_p_ocean:.2f}  Obs ocean={obs_p_ocean:.2f}")
+
+
+def plot_humidity_precip_anomaly(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    sim_humidity: np.ndarray,
+    sim_precip: np.ndarray,
+    obs_shum: np.ndarray,
+    obs_precip: np.ndarray,
+    headless: bool = False,
+) -> None:
+    """Plot humidity and precipitation anomaly maps."""
+    if headless:
+        return
+
+    # Humidity anomaly (g/kg)
+    q_anomaly = sim_humidity * 1000.0 - obs_shum * 1000.0
+    q_with_annual = np.concatenate(
+        [q_anomaly, np.nanmean(q_anomaly, axis=0, keepdims=True)], axis=0
+    )
+
+    q_vmax = min(float(np.nanmax(np.abs(q_anomaly))), 15.0)
+    if not np.isfinite(q_vmax) or q_vmax <= 0:
+        q_vmax = 5.0
+
+    plot_monthly_temperature_cycle(
+        lon2d,
+        lat2d,
+        q_with_annual,
+        title="Specific Humidity Anomaly (Sim − Obs)",
+        cmap=colormaps["BrBG"],
+        norm=Normalize(vmin=-q_vmax, vmax=q_vmax),
+        colorbar_label="Humidity anomaly (g/kg)",
+    )
+
+    # Precipitation anomaly (mm/day)
+    p_anomaly = sim_precip * 86400.0 - obs_precip
+    p_with_annual = np.concatenate(
+        [p_anomaly, np.nanmean(p_anomaly, axis=0, keepdims=True)], axis=0
+    )
+
+    p_vmax = min(float(np.nanmax(np.abs(p_anomaly))), 8.0)
+    if not np.isfinite(p_vmax) or p_vmax <= 0:
+        p_vmax = 3.0
+
+    plot_monthly_temperature_cycle(
+        lon2d,
+        lat2d,
+        p_with_annual,
+        title="Precipitation Anomaly (Sim − Obs)",
+        cmap=colormaps["BrBG"],
+        norm=Normalize(vmin=-p_vmax, vmax=p_vmax),
+        colorbar_label="Precipitation anomaly (mm/day)",
+    )
 
 
 # ----------------------------
@@ -1191,6 +1456,37 @@ def main() -> None:
     format_bias_table(monthly_bias, annual_bias, args.fahrenheit)
     format_pattern_correlation_table(monthly_pattern_corr, annual_pattern_corr)
 
+    # --- Humidity and precipitation evaluation ---
+    sim_humidity = layers.get("humidity")
+    sim_precip = layers.get("precipitation")
+    obs_shum: np.ndarray | None = None
+    obs_precip: np.ndarray | None = None
+
+    if HUMIDITY_PRECIP_OUTFILE.exists():
+        hp_ref: xr.Dataset | None = xr.open_dataset(HUMIDITY_PRECIP_OUTFILE)
+    else:
+        hp_ref = build_humidity_precip_reference()
+
+    if hp_ref is not None and sim_humidity is not None and sim_precip is not None:
+        if args.interpolate:
+            obs_shum = hp_ref["shum_clim"].values
+            obs_precip = hp_ref["precip_clim"].values
+        else:
+            hp_agg = aggregate_humidity_precip_to_sim_grid(hp_ref, lon2d, lat2d)
+            obs_shum = hp_agg["shum"]
+            obs_precip = hp_agg["precip"]
+
+        compute_humidity_precip_statistics(
+            sim_humidity,
+            sim_precip,
+            obs_shum,
+            obs_precip,
+            land_mask,
+            cell_areas,
+        )
+    elif hp_ref is not None:
+        print("\nWarning: humidity/precipitation not in simulation output, skipping eval.")
+
     plot_baseline_and_anomaly(
         lon2d,
         lat2d,
@@ -1218,6 +1514,18 @@ def main() -> None:
         args.fahrenheit,
         args.headless,
     )
+
+    # --- Humidity and precipitation anomaly plots ---
+    if obs_shum is not None and obs_precip is not None:
+        plot_humidity_precip_anomaly(
+            lon2d,
+            lat2d,
+            sim_humidity,
+            sim_precip,
+            obs_shum,
+            obs_precip,
+            args.headless,
+        )
 
     # Compute combined simulation field (T2m over land, surface over ocean)
     sim_combined = np.where(land_mask[None, ...], sim_t2m, surface_cycle)
