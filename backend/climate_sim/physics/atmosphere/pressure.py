@@ -5,10 +5,7 @@ from scipy.ndimage import gaussian_filter
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.timing import time_block
 from climate_sim.data.constants import (
-    ATMOSPHERE_MASS,
-    EARTH_SURFACE_AREA_M2,
     GAS_CONSTANT_J_KG_K,
-    GRAVITY_M_S2,
     R_EARTH_METERS,
 )
 from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, compute_itcz_latitude
@@ -249,7 +246,7 @@ def compute_pressure(
         if humidity.shape != shape:
             raise ValueError("Temperature and humidity fields must share the same shape")
 
-    mean_p = ATMOSPHERE_MASS * gravity_m_s2 / EARTH_SURFACE_AREA_M2
+    mean_p = 101325.0  # Pa, standard mean sea level pressure
 
     nlat, nlon = shape
     lat_deg = _get_latitude_centers(nlat)
