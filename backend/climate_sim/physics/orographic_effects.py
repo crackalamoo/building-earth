@@ -128,16 +128,12 @@ class OrographicModel:
 
         Returns blocked (u, v).
         """
-        u_out = wind_u * np.where(
-            wind_u >= 0,
-            self.r_east_pos,
-            np.roll(self.r_east_neg, 1, axis=1),
-        )
-        v_out = wind_v * np.where(
-            wind_v >= 0,
-            self.r_north_pos,
-            np.roll(self.r_north_neg, 1, axis=0),
-        )
+        # Direction-independent: average both faces so blocking doesn't depend
+        # on wind direction (avoids solver oscillation from direction switching).
+        r_u = 0.5 * (self.r_east_pos + np.roll(self.r_east_neg, 1, axis=1))
+        r_v = 0.5 * (self.r_north_pos + np.roll(self.r_north_neg, 1, axis=0))
+        u_out = wind_u * r_u
+        v_out = wind_v * r_v
         return u_out, v_out
 
     def compute_orographic_precipitation(
