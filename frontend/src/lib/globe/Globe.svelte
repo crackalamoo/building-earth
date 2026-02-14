@@ -11,6 +11,7 @@
   import { CloudInstances } from './CloudInstances';
   import { createAtmosphere, updateAtmosphereSunDirection } from './Atmosphere';
   import { createStarField, updateStarRotation, type StarField } from './Stars';
+  import { CityLights } from './CityLights';
   import type { ClimateLayerData } from './loadBinaryData';
   import { ELEVATION_SCALE, NORMAL_BLEND, sampleElevation, displacedNormal, computeHillshadeGrid } from './elevation';
 
@@ -43,6 +44,7 @@
   let sunOrb: THREE.Mesh | null = null;
   let sunGlow: THREE.Sprite | null = null;
   let starField: StarField | null = null;
+  let cityLights: CityLights | null = null;
 
   // Cached color buffers: 12 base months + sub-step interpolations
   const SUB_STEPS = 3;
@@ -89,6 +91,9 @@
     if (cloudInstances) {
       cloudInstances.getObject().rotation.y += radians;
     }
+    if (cityLights) {
+      cityLights.getObject().rotation.y += radians;
+    }
   }
 
   export function resetView(): void {
@@ -113,6 +118,9 @@
     }
     if (cloudInstances) {
       cloudInstances.getObject().rotation.y = 0;
+    }
+    if (cityLights) {
+      cityLights.getObject().rotation.y = 0;
     }
     sunOrbitAngle = 0;
   }
@@ -192,6 +200,7 @@
       if (windParticles) windParticles.getObject().visible = layer === 'blue-marble';
       if (treeInstances) treeInstances.getObject().visible = layer === 'blue-marble';
       if (cloudInstances) cloudInstances.getObject().visible = layer === 'blue-marble';
+      if (cityLights) cityLights.getObject().visible = layer === 'blue-marble';
       if (atmosphereMesh) atmosphereMesh.visible = layer === 'blue-marble';
     }
   }
@@ -672,6 +681,7 @@
       const normalizedDir = dir.clone().normalize();
       if (treeInstances) treeInstances.setSunDirection(normalizedDir);
       if (cloudInstances) cloudInstances.setSunDirection(normalizedDir);
+      if (cityLights) cityLights.setSunDirection(normalizedDir);
       if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, normalizedDir);
       if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(normalizedDir);
       sunLight.position.copy(normalizedDir).multiplyScalar(distance);
@@ -718,6 +728,7 @@
 
     if (treeInstances) treeInstances.setSunDirection(sunDir);
     if (cloudInstances) cloudInstances.setSunDirection(sunDir.clone());
+    if (cityLights) cityLights.setSunDirection(sunDir);
     if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, sunDir);
 
     // Update ocean specular shader sun direction (in world space, pre-scaling)
@@ -898,6 +909,12 @@
       initCloudInstances();
     }
 
+    // City lights (nightside glow)
+    cityLights = new CityLights();
+    const cityObj = cityLights.getObject();
+    cityObj.visible = activeLayer === 'blue-marble';
+    scene.add(cityObj);
+
     // Atmosphere glow
     atmosphereMesh = createAtmosphere();
     atmosphereMesh.visible = activeLayer === 'blue-marble';
@@ -1040,6 +1057,9 @@
     }
     if (cloudInstances) {
       cloudInstances.dispose();
+    }
+    if (cityLights) {
+      cityLights.dispose();
     }
     if (starField) {
       starField.dispose();
