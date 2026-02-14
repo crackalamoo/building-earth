@@ -41,6 +41,7 @@ from climate_sim.physics.vertical_motion import (
     VerticalMotionConfig,
     compute_hadley_subsidence_velocity,
     compute_hadley_subsidence_drying,
+    compute_hadley_convergence_moistening,
 )
 from climate_sim.core.operators import SurfaceHeatCapacityContext, build_model_operators
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
@@ -549,7 +550,11 @@ def monthly_step(
                                 w_hadley, lagged_humidity,
                                 upper_troposphere_q_fraction=vertical_motion_cfg.upper_troposphere_q_fraction,
                             )
-                            # No land masking — over ocean, evaporation should compensate
+                            # Hadley convergence moistening near ITCZ
+                            hadley_moistening = compute_hadley_convergence_moistening(
+                                w_hadley, lagged_humidity, lat_rad,
+                            )
+                            hadley_drying = hadley_drying + hadley_moistening
                         else:
                             hadley_drying = np.zeros_like(lagged_humidity)
                         # Direct orographic precipitation: P_oro = η · max(w, 0) · q · ρ

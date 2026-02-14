@@ -292,6 +292,69 @@ def hadley_subsidence_drying_jacobian(
     """
     return np.maximum(w_descent, 0.0) / boundary_layer_height_m * (upper_troposphere_q_fraction - 1.0)
 
+
+def compute_hadley_convergence_moistening(
+    w_hadley: np.ndarray,
+    humidity_field: np.ndarray,
+    lat_rad: np.ndarray,
+    boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
+) -> np.ndarray:
+    """Compute humidity tendency from Hadley cell surface convergence near the ITCZ.
+
+    Where the Hadley cell ascends (w < 0), mass continuity requires surface
+    convergence.  Trade winds bring moist subtropical BL air toward the ITCZ.
+    This is the moisture source that the 2-layer model's advection scheme
+    cannot resolve because it lacks mean-meridional overturning.
+
+    The moistening rate is:
+        dq/dt = |w| / h_BL × (q_source - q_local)
+
+    where q_source is the zonal-mean humidity in the surrounding subtropical
+    belt (15-30° from equator in both hemispheres).  This represents the
+    moisture carried equatorward by the trade winds.
+
+    Only applies where w < 0 (ascent).  Descent regions are handled by
+    ``compute_hadley_subsidence_drying``.
+    """
+    # Ascent rate (positive magnitude where w < 0)
+    ascent_rate = np.maximum(-w_hadley, 0.0) / boundary_layer_height_m  # 1/s
+
+    # Compute zonal-mean subtropical q as the moisture source.
+    # Subtropics = 15-30° latitude in both hemispheres.
+    lat_deg = np.rad2deg(np.abs(lat_rad))
+    # Use a smooth weight to select subtropical belt
+    # Peaks at 22.5°, tapers at 15° and 30°
+    subtrop_weight = np.exp(-((lat_deg - 22.5) / 7.0) ** 2)
+    # Zonal mean weighted by subtropical belt
+    weighted_q = humidity_field * subtrop_weight
+    # Average over longitude (axis=1) and latitude (weighted)
+    q_source_zonal = (np.sum(weighted_q, axis=1) /
+                      np.maximum(np.sum(subtrop_weight, axis=1), 1e-10))
+    # Broadcast back to 2D (same q_source at all longitudes)
+    q_source = q_source_zonal[:, np.newaxis] * np.ones(humidity_field.shape[1])
+
+    # Moistening tendency: convergence brings subtropical air into ITCZ
+    dq_dt = ascent_rate * (q_source - humidity_field)
+
+    # Only moisten (don't dry) — convergence adds moisture
+    return np.maximum(dq_dt, 0.0)
+
+
+def hadley_convergence_moistening_jacobian(
+    w_hadley: np.ndarray,
+    boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
+) -> np.ndarray:
+    """Diagonal of the humidity Jacobian from Hadley convergence moistening.
+
+    d(dq/dt)/dq ≈ -|w| / h_BL  (where w < 0)
+
+    The q_source term also depends on q but across multiple cells,
+    so we only include the local (diagonal) part: -ascent_rate.
+    This is negative (stabilizing).
+    """
+    ascent_rate = np.maximum(-w_hadley, 0.0) / boundary_layer_height_m
+    return -ascent_rate
+
 # Potential temperature factor: θ_atm = T_atm × (P0/P_ATM)^κ
 _P0 = 1013.25  # hPa
 _P_ATM = 500.0  # hPa

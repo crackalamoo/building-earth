@@ -23,6 +23,7 @@ from climate_sim.physics.vertical_motion import (
     compute_bl_atm_mixing_tendencies,
     compute_hadley_subsidence_velocity,
     hadley_subsidence_drying_jacobian,
+    hadley_convergence_moistening_jacobian,
     _ALPHA,
 )
 from climate_sim.physics.orographic_effects import OrographicModel
@@ -729,6 +730,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             w_hadley,
                             upper_troposphere_q_fraction=inputs.vertical_motion_cfg.upper_troposphere_q_fraction,
                         )
+                        humidity_diag += hadley_convergence_moistening_jacobian(w_hadley)
 
                     # Humidity-temperature coupling terms already computed above
 
