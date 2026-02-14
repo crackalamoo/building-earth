@@ -756,6 +756,7 @@ def monthly_step(
         convective_frac = None
         stratiform_frac = None
         marine_sc_frac = None
+        final_vertical_velocity = None
         if lagged_humidity is not None and nlayers_final >= 2:
             # Compute relative humidity
             rh = specific_humidity_to_relative_humidity(
@@ -773,6 +774,7 @@ def monthly_step(
                 t_for_humidity, wind_u, wind_v, dx_m, abs(dy_m),
             )
             vertical_velocity = vertical_velocity + w_frontal
+            final_vertical_velocity = vertical_velocity
 
             # Compute cloud output
             cloud_output = compute_clouds_and_precipitation(
@@ -812,6 +814,7 @@ def monthly_step(
             stratiform_cloud_frac=stratiform_frac,
             marine_sc_cloud_frac=marine_sc_frac,
             high_cloud_frac=high_cloud_frac,
+            vertical_velocity=final_vertical_velocity,
         )
 
         final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(
@@ -1406,6 +1409,7 @@ def solve_periodic_climate(
                         stratiform_cloud_frac=month_state.stratiform_cloud_frac,
                         marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,
                         high_cloud_frac=month_state.high_cloud_frac,
+                        vertical_velocity=month_state.vertical_velocity,
                     )
                 else:
                     # One-layer: single wind field with drag
@@ -1442,6 +1446,7 @@ def solve_periodic_climate(
                         stratiform_cloud_frac=month_state.stratiform_cloud_frac,
                         marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,
                         high_cloud_frac=month_state.high_cloud_frac,
+                        vertical_velocity=month_state.vertical_velocity,
                     )
 
     # Post-process results (convert to Celsius, reshape layers)
