@@ -853,6 +853,14 @@ def monthly_step(
                     final_temp[0], itcz_rad=final_itcz, ekman_drag=True
                 )
 
+        # Compute surface pressure for diagnostic output
+        final_state.surface_pressure = compute_pressure(
+            final_temp[0],
+            itcz_rad=final_itcz,
+            lat2d=surface_context.lat2d,
+            lon2d=surface_context.lon2d,
+        )
+
         return final_state
 
 def evolve_year(
@@ -1410,6 +1418,7 @@ def solve_periodic_climate(
                         marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,
                         high_cloud_frac=month_state.high_cloud_frac,
                         vertical_velocity=month_state.vertical_velocity,
+                        surface_pressure=month_state.surface_pressure,
                     )
                 else:
                     # One-layer: single wind field with drag
@@ -1447,6 +1456,7 @@ def solve_periodic_climate(
                         marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,
                         high_cloud_frac=month_state.high_cloud_frac,
                         vertical_velocity=month_state.vertical_velocity,
+                        surface_pressure=month_state.surface_pressure,
                     )
 
     # Post-process results (convert to Celsius, reshape layers)

@@ -61,6 +61,7 @@ URLS = {
     "ocean": "https://downloads.psl.noaa.gov/Datasets/COBE2/sst.mon.mean.nc",
     "humidity": "https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis.derived/surface_gauss/shum.2m.mon.mean.nc",
     "precip": "https://downloads.psl.noaa.gov/Datasets/gpcp/precip.mon.mean.nc",
+    "slp": "https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis.derived/surface/slp.mon.mean.nc",
 }
 
 BASELINE_START = "1981-01-01"
@@ -233,6 +234,12 @@ def build_humidity_precip_reference() -> xr.Dataset | None:
         print(f"Warning: could not download humidity/precip reference data: {e}")
         return None
 
+    try:
+        slp_nc: Path | None = fetch(URLS["slp"], RAW_DIR)
+    except Exception as e:
+        print(f"Warning: could not download SLP reference data: {e}")
+        slp_nc = None
+
     # --- Specific humidity (NCEP reanalysis, 2.5° grid) ---
     shum_ds = xr.open_dataset(shum_nc)
     shum_ds = to_0360(shum_ds, "lon")
@@ -253,11 +260,25 @@ def build_humidity_precip_reference() -> xr.Dataset | None:
     precip_1deg = regrid_1deg(precip)
     clim_precip = precip_1deg.groupby("time.month").mean("time")
 
+    # --- Sea level pressure (NCEP reanalysis, 2.5° grid, Pa) ---
+    clim_slp = None
+    if slp_nc is not None:
+        slp_ds = xr.open_dataset(slp_nc)
+        slp_ds = to_0360(slp_ds, "lon")
+        slp = slp_ds["slp"]
+        slp = slp.sel(time=slice(BASELINE_START, BASELINE_END))
+        slp_1deg = regrid_1deg(slp)
+        clim_slp = slp_1deg.groupby("time.month").mean("time") * 100.0  # mbar → Pa
+
+    data_vars: dict = {
+        "shum_clim": clim_shum,       # kg/kg
+        "precip_clim": clim_precip,    # mm/day
+    }
+    if clim_slp is not None:
+        data_vars["slp_clim"] = clim_slp  # Pa
+
     ds_out = xr.Dataset(
-        dict(
-            shum_clim=clim_shum,       # kg/kg
-            precip_clim=clim_precip,    # mm/day
-        ),
+        data_vars,
         coords=dict(
             month=("month", np.arange(1, 13, dtype=int)),
             lat=("lat", LAT_T),
@@ -297,6 +318,7 @@ def aggregate_humidity_precip_to_sim_grid(
 
     shum_src = np.asarray(ds["shum_clim"].values, dtype=float)
     precip_src = np.asarray(ds["precip_clim"].values, dtype=float)
+    slp_src = np.asarray(ds["slp_clim"].values, dtype=float) if "slp_clim" in ds else None
 
     nmonth = shum_src.shape[0]
     nlat_sim = lat_centers_sim.size
@@ -304,6 +326,7 @@ def aggregate_humidity_precip_to_sim_grid(
 
     shum_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
     precip_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
+    slp_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float) if slp_src is not None else None
 
     lat_masks = [
         (lat_noaa >= lat_edges_min[i]) & (lat_noaa < lat_edges_max[i])
@@ -328,8 +351,13 @@ def aggregate_humidity_precip_to_sim_grid(
             with np.errstate(invalid="ignore"):
                 shum_out[:, i, j] = np.nanmean(shum_src[:, cell_mask], axis=1)
                 precip_out[:, i, j] = np.nanmean(precip_src[:, cell_mask], axis=1)
+                if slp_src is not None and slp_out is not None:
+                    slp_out[:, i, j] = np.nanmean(slp_src[:, cell_mask], axis=1)
 
-    return {"shum": shum_out, "precip": precip_out}
+    result = {"shum": shum_out, "precip": precip_out}
+    if slp_out is not None:
+        result["slp"] = slp_out
+    return result
 
 
 def compute_humidity_precip_statistics(
@@ -426,6 +454,56 @@ def compute_humidity_precip_statistics(
           f"Sim ocean={sim_p_ocean:.2f}  Obs ocean={obs_p_ocean:.2f}")
 
 
+def compute_slp_statistics(
+    sim_slp: np.ndarray,
+    obs_slp: np.ndarray,
+    land_mask: np.ndarray,
+    cell_areas: np.ndarray,
+) -> None:
+    """Print sea level pressure evaluation statistics."""
+    weights_land = cell_areas * land_mask
+    weights_ocean = cell_areas * (~land_mask)
+
+    # Convert Pa to hPa for display
+    sim_hpa = sim_slp / 100.0
+    obs_hpa = obs_slp / 100.0
+    diff_hpa = sim_hpa - obs_hpa
+
+    def stats_for(diff: np.ndarray, weights: np.ndarray) -> tuple[float, float]:
+        bias = weighted_mean(diff, weights)
+        rmse = weighted_rmse(diff, weights)
+        return bias, rmse
+
+    print("\n" + "=" * 60)
+    print("Sea Level Pressure Evaluation (hPa)")
+    print("=" * 60)
+
+    header = f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    print(header)
+    print("-" * len(header))
+
+    for m in range(12):
+        lb, _ = stats_for(diff_hpa[m], weights_land)
+        ob, _ = stats_for(diff_hpa[m], weights_ocean)
+        gb, gr = stats_for(diff_hpa[m], cell_areas)
+        print(f"{MONTH_NAMES[m]:<12}{lb:>10.2f}{ob:>11.2f}{gb:>12.2f}{gr:>12.2f}")
+
+    lb, lr = stats_for(diff_hpa, weights_land)
+    ob, orr = stats_for(diff_hpa, weights_ocean)
+    gb, gr = stats_for(diff_hpa, cell_areas)
+    print("-" * len(header))
+    print(f"{'Annual':<12}{lb:>10.2f}{ob:>11.2f}{gb:>12.2f}{gr:>12.2f}")
+
+    corr_land = weighted_pattern_correlation(sim_hpa, obs_hpa, weights_land)
+    corr_ocean = weighted_pattern_correlation(sim_hpa, obs_hpa, weights_ocean)
+    corr_global = weighted_pattern_correlation(sim_hpa, obs_hpa, cell_areas)
+    print(f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}")
+
+    sim_mean = weighted_mean(sim_hpa, cell_areas)
+    obs_mean = weighted_mean(obs_hpa, cell_areas)
+    print(f"Mean SLP:  Sim={sim_mean:.1f} hPa  Obs={obs_mean:.1f} hPa")
+
+
 def plot_humidity_precip_anomaly(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
@@ -477,6 +555,38 @@ def plot_humidity_precip_anomaly(
         cmap=colormaps["BrBG"],
         norm=Normalize(vmin=-p_vmax, vmax=p_vmax),
         colorbar_label="Precipitation anomaly (mm/day)",
+    )
+
+
+def plot_slp_anomaly(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    sim_slp: np.ndarray,
+    obs_slp: np.ndarray,
+    headless: bool = False,
+) -> None:
+    """Plot sea level pressure anomaly maps."""
+    if headless:
+        return
+
+    # SLP anomaly in hPa
+    slp_anomaly = sim_slp / 100.0 - obs_slp / 100.0
+    slp_with_annual = np.concatenate(
+        [slp_anomaly, np.nanmean(slp_anomaly, axis=0, keepdims=True)], axis=0
+    )
+
+    slp_vmax = min(float(np.nanmax(np.abs(slp_anomaly))), 20.0)
+    if not np.isfinite(slp_vmax) or slp_vmax <= 0:
+        slp_vmax = 10.0
+
+    plot_monthly_temperature_cycle(
+        lon2d,
+        lat2d,
+        slp_with_annual,
+        title="Sea Level Pressure Anomaly (Sim − Obs)",
+        cmap=colormaps["RdBu_r"],
+        norm=Normalize(vmin=-slp_vmax, vmax=slp_vmax),
+        colorbar_label="SLP anomaly (hPa)",
     )
 
 
@@ -1467,25 +1577,43 @@ def main() -> None:
     else:
         hp_ref = build_humidity_precip_reference()
 
+    hp_agg: dict[str, np.ndarray] | None = None
+    if hp_ref is not None and not args.interpolate:
+        hp_agg = aggregate_humidity_precip_to_sim_grid(hp_ref, lon2d, lat2d)
+
     if hp_ref is not None and sim_humidity is not None and sim_precip is not None:
         if args.interpolate:
             obs_shum = hp_ref["shum_clim"].values
             obs_precip = hp_ref["precip_clim"].values
-        else:
-            hp_agg = aggregate_humidity_precip_to_sim_grid(hp_ref, lon2d, lat2d)
+        elif hp_agg is not None:
             obs_shum = hp_agg["shum"]
             obs_precip = hp_agg["precip"]
 
-        compute_humidity_precip_statistics(
-            sim_humidity,
-            sim_precip,
-            obs_shum,
-            obs_precip,
-            land_mask,
-            cell_areas,
-        )
+        if obs_shum is not None and obs_precip is not None:
+            compute_humidity_precip_statistics(
+                sim_humidity,
+                sim_precip,
+                obs_shum,
+                obs_precip,
+                land_mask,
+                cell_areas,
+            )
     elif hp_ref is not None:
         print("\nWarning: humidity/precipitation not in simulation output, skipping eval.")
+
+    # --- Sea level pressure evaluation ---
+    sim_slp = layers.get("surface_pressure")
+    obs_slp: np.ndarray | None = None
+    if hp_ref is not None and sim_slp is not None:
+        if args.interpolate:
+            obs_slp = hp_ref["slp_clim"].values if "slp_clim" in hp_ref else None
+        elif hp_agg is not None and "slp" in hp_agg:
+            obs_slp = hp_agg["slp"]
+
+        if obs_slp is not None:
+            compute_slp_statistics(sim_slp, obs_slp, land_mask, cell_areas)
+        else:
+            print("\nWarning: SLP reference not available (delete processed/ref_humidity_precip_1deg_1981-2010.nc to re-download)")
 
     plot_baseline_and_anomaly(
         lon2d,
@@ -1526,6 +1654,10 @@ def main() -> None:
             obs_precip,
             args.headless,
         )
+
+    # --- SLP anomaly plot ---
+    if sim_slp is not None and obs_slp is not None:
+        plot_slp_anomaly(lon2d, lat2d, sim_slp, obs_slp, args.headless)
 
     # Compute combined simulation field (T2m over land, surface over ocean)
     sim_combined = np.where(land_mask[None, ...], sim_t2m, surface_cycle)

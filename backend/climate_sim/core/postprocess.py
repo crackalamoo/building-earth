@@ -198,6 +198,12 @@ def postprocess_periodic_cycle_results(
         vertical_velocity = np.stack(vertical_velocity_fields, axis=0)
         layers_map["vertical_velocity"] = vertical_velocity
 
+    # Extract surface pressure from state
+    surface_pressure_fields = [state.surface_pressure for state in monthly_states]
+    if all(sp is not None for sp in surface_pressure_fields):
+        surface_pressure = np.stack(surface_pressure_fields, axis=0)
+        layers_map["surface_pressure"] = surface_pressure
+
     # Extract vegetation fraction from state
     vegetation_frac_fields = [state.vegetation_fraction for state in monthly_states]
     if all(vf is not None for vf in vegetation_frac_fields):
