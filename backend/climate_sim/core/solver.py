@@ -19,6 +19,7 @@ from climate_sim.physics.clouds import (
     compute_clouds_and_precipitation,
     compute_vertical_velocity_from_divergence,
     compute_vertical_velocity_from_pressure,
+    compute_vertical_velocity_from_warm_advection,
 )
 from climate_sim.core.math_core import compute_divergence
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
@@ -756,9 +757,17 @@ def monthly_step(
                 lagged_humidity, t_for_humidity,
                 itcz_rad=itcz_rad, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d
             )
-            # Compute vertical velocity from wind divergence
+            # Compute vertical velocity from wind divergence + frontal lifting
             divergence = compute_divergence(wind_u, wind_v, surface_context.lat2d, surface_context.lon2d)
             vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+            # Add frontal (warm advection) component
+            lat_rad = np.deg2rad(surface_context.lat2d)
+            dy_m = np.deg2rad(surface_context.lat2d[1, 0] - surface_context.lat2d[0, 0]) * R_EARTH_METERS
+            dx_m = np.deg2rad(surface_context.lon2d[0, 1] - surface_context.lon2d[0, 0]) * R_EARTH_METERS * np.cos(lat_rad)
+            w_frontal = compute_vertical_velocity_from_warm_advection(
+                t_for_humidity, wind_u, wind_v, dx_m, abs(dy_m),
+            )
+            vertical_velocity = vertical_velocity + w_frontal
 
             # Compute cloud output
             cloud_output = compute_clouds_and_precipitation(

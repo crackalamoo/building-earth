@@ -720,7 +720,7 @@ def compute_vertical_velocity_from_warm_advection(
     wind_v: np.ndarray,
     dx: np.ndarray,
     dy: float,
-    w_scale: float = 500.0,
+    w_scale: float = 100.0,
 ) -> np.ndarray:
     """Compute vertical velocity from warm advection (frontal lifting).
 

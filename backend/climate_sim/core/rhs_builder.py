@@ -35,6 +35,7 @@ from climate_sim.physics.humidity import (
 from climate_sim.physics.clouds import (
     compute_clouds_and_precipitation,
     compute_vertical_velocity_from_divergence,
+    compute_vertical_velocity_from_warm_advection,
     CloudPrecipOutput,
 )
 from climate_sim.core.state import ModelState
@@ -679,10 +680,18 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         strat_frac = np.zeros_like(state.humidity_field)
                         marine_frac = np.zeros_like(state.humidity_field)
 
-                    # Compute vertical velocity from divergence + orographic
+                    # Compute vertical velocity from divergence + frontal + orographic
                     if wind_u_q is not None and wind_v_q is not None:
                         divergence = compute_divergence(wind_u_q, wind_v_q, inputs.lat2d, inputs.lon2d)
                         w_largescale = compute_vertical_velocity_from_divergence(divergence)
+                        # Add frontal (warm advection) component
+                        lat_rad = np.deg2rad(inputs.lat2d)
+                        dy_m = np.deg2rad(inputs.lat2d[1, 0] - inputs.lat2d[0, 0]) * R_EARTH_METERS
+                        dx_m = np.deg2rad(inputs.lon2d[0, 1] - inputs.lon2d[0, 0]) * R_EARTH_METERS * np.cos(lat_rad)
+                        w_frontal = compute_vertical_velocity_from_warm_advection(
+                            t_bl, wind_u_q, wind_v_q, dx_m, abs(dy_m),
+                        )
+                        w_largescale = w_largescale + w_frontal
                         if state.orographic_w is not None:
                             w_largescale = w_largescale + state.orographic_w
                         elif inputs.orographic_model is not None:
