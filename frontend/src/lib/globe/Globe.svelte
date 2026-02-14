@@ -929,7 +929,12 @@
 
     // Load borders
     if (showBorders) {
-      loadBorders().then(group => {
+      const elev = layerData?.elevation;
+      loadBorders(
+        elev?.data as Float32Array | undefined,
+        elev?.shape[0],
+        elev?.shape[1],
+      ).then(group => {
         bordersGroup = group;
         scene.add(bordersGroup);
       }).catch(e => console.error('Failed to load borders:', e));
