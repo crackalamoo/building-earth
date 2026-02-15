@@ -487,7 +487,7 @@
 
     const blendedNormals: number[] = [];
 
-    function addVertex(lat: number, lon: number, r: number, g: number, b: number) {
+    function addVertex(lat: number, lon: number, r: number, g: number, b: number, isLand: boolean) {
       const [x, y, z] = getVertex(lat, lon);
       positions.push(x, y, z);
       colors.push(r, g, b);
@@ -498,7 +498,8 @@
       const sny = Math.cos(phi);
       const snz = Math.sin(phi) * Math.sin(theta);
 
-      if (elevationData && elevNlat && elevNlon) {
+      // Ocean: use pure sphere normals (bathymetry shouldn't affect lighting)
+      if (elevationData && elevNlat && elevNlon && isLand) {
         const [dnx, dny, dnz] = displacedNormal(elevationData, elevNlat, elevNlon, lat, lon, radius);
         let nx = snx + NORMAL_BLEND * (dnx - snx);
         let ny = sny + NORMAL_BLEND * (dny - sny);
@@ -521,21 +522,27 @@
     for (let i = 0; i < latCount; i++) {
       const lat0 = 90 - i * latStep;
       const lat1 = 90 - (i + 1) * latStep;
+      const dataLatIdx = latCount - 1 - i;
 
       for (let j = 0; j < lonCount; j++) {
         const lon0 = j * lonStep;
         const lon1 = (j + 1) * lonStep;
 
+        // Check if this cell is land for normal computation
+        const cellIsLand = (landMaskData && maskNlat && maskNlon)
+          ? landMaskData[dataLatIdx * maskNlon + j] === 1
+          : false;
+
         // Default color (will be updated immediately)
         const r = 0.1, g = 0.1, b = 0.1;
 
-        addVertex(lat0, lon0, r, g, b);
-        addVertex(lat1, lon0, r, g, b);
-        addVertex(lat1, lon1, r, g, b);
+        addVertex(lat0, lon0, r, g, b, cellIsLand);
+        addVertex(lat1, lon0, r, g, b, cellIsLand);
+        addVertex(lat1, lon1, r, g, b, cellIsLand);
 
-        addVertex(lat0, lon0, r, g, b);
-        addVertex(lat1, lon1, r, g, b);
-        addVertex(lat0, lon1, r, g, b);
+        addVertex(lat0, lon0, r, g, b, cellIsLand);
+        addVertex(lat1, lon1, r, g, b, cellIsLand);
+        addVertex(lat0, lon1, r, g, b, cellIsLand);
       }
     }
 
@@ -618,21 +625,32 @@
 
         void main() {
           vec3 normal = normalize(vNormal);
-          float NdotL = max(dot(normal, sunDirection), 0.0);
+          float rawNdotL = dot(normal, sunDirection);
+          // Soften terminator for ocean — wrap lighting slightly into shadow
+          float NdotL = vIsOcean > 0.01
+            ? smoothstep(-0.15, 0.3, rawNdotL)
+            : max(rawNdotL, 0.0);
           vec3 diffuse = vColor * (ambientIntensity + NdotL * (1.0 - ambientIntensity));
 
-          // Early out for land/ice/night — no specular
-          if (vIsOcean < 0.01 || NdotL <= 0.0) {
-            gl_FragColor = vec4(diffuse, 1.0);
-            return;
+          vec3 viewDir = normalize(cameraPosition - vWorldPos);
+
+          // Fresnel: view-angle effect, applies day and night
+          float fresnel = 1.0 - max(dot(viewDir, normal), 0.0);
+          fresnel = fresnel * fresnel; // quadratic
+          float fresnelStrength = fresnel * 0.4 * vIsOcean;
+          vec3 fresnelColor = vec3(0.5, 0.65, 0.85) * fresnelStrength;
+
+          // Specular: fade smoothly across terminator
+          vec3 specColor = vec3(0.0);
+          if (vIsOcean > 0.01) {
+            vec3 halfVec = normalize(sunDirection + viewDir);
+            float specSharp = pow(max(dot(normal, halfVec), 0.0), 60.0) * 0.6;
+            float specBroad = pow(max(dot(normal, halfVec), 0.0), 8.0) * 0.15;
+            float specFade = smoothstep(-0.05, 0.15, rawNdotL);
+            specColor = vec3(1.0, 0.97, 0.90) * (specSharp + specBroad) * vIsOcean * specFade;
           }
 
-          // Blinn-Phong specular with wave perturbation (ocean only)
-          vec3 viewDir = normalize(cameraPosition - vWorldPos);
-          vec3 halfVec = normalize(sunDirection + viewDir);
-
-          float spec = pow(max(dot(normal, halfVec), 0.0), 200.0) * 0.7 * vIsOcean;
-          gl_FragColor = vec4(diffuse + vec3(1.0, 0.97, 0.90) * spec, 1.0);
+          gl_FragColor = vec4(diffuse + specColor + fresnelColor, 1.0);
         }
       `,
       uniforms: {
