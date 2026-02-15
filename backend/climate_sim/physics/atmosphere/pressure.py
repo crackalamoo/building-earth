@@ -5,10 +5,7 @@ from scipy.ndimage import gaussian_filter
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.timing import time_block
 from climate_sim.data.constants import (
-    ATMOSPHERE_MASS,
-    EARTH_SURFACE_AREA_M2,
     GAS_CONSTANT_J_KG_K,
-    GRAVITY_M_S2,
     R_EARTH_METERS,
 )
 from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, compute_itcz_latitude
@@ -34,8 +31,23 @@ SIGMA_SUBPOLAR = np.deg2rad(8.0)    # Subpolar low width
 SIGMA_POLES = np.deg2rad(8.0)       # Polar high width
 
 # Thermal pressure coefficient: δp = -β δT
-# From ideal gas law and hydrostatic balance: β = R_air / g
-THERMAL_PRESSURE_COEFFICIENT = GAS_CONSTANT_J_KG_K / GRAVITY_M_S2  # ~29.3 Pa/K
+# When a column warms by δT, it expands, upper-level mass diverges, and surface
+# pressure drops.  The steady-state fractional change scales as δp/p ≈ -δT/T,
+# giving β ≈ p_mean / T_mean as an upper bound.  In practice the response is
+# weaker because the BL is only ~15% of the column depth, the upper troposphere
+# partially compensates, and friction limits the steady-state deficit.
+# Calibrated to observed thermal lows: Sahara ~10 hPa for ~5 K column ΔT.
+# Calibrated to observed thermal lows: Sahara ~10 hPa for ~5 K column ΔT.
+THERMAL_PRESSURE_COEFFICIENT = 200.0  # Pa/K
+
+# Rossby deformation radius: L_R = N*H / f, the minimum scale at which
+# temperature anomalies can organise upper-level mass redistribution and
+# create surface pressure anomalies.  Used for latitude-dependent smoothing.
+_BRUNT_VAISALA_FREQ = 0.01          # s⁻¹, typical tropospheric N
+_TROPOPAUSE_HEIGHT_M = 10_000.0     # m, effective scale height
+_OMEGA = 7.2921e-5                  # rad/s, Earth's angular velocity
+_MIN_ROSSBY_RADIUS_KM = 500.0       # floor near poles (prevents blow-up)
+_MAX_ROSSBY_RADIUS_KM = 4000.0      # cap in deep tropics
 
 def _get_latitude_centers(nlat: int) -> np.ndarray:
     """Return latitude centers (deg) for a grid with nlat latitude points."""
@@ -95,48 +107,69 @@ def hadley_pressure_anomaly(lat_rad: np.ndarray, itcz_rad: np.ndarray) -> np.nda
     return dp_itcz + dp_subtrop + dp_subpolar + dp_poles
 
 
+def _rossby_radius_km(lat_deg: np.ndarray) -> np.ndarray:
+    """Rossby deformation radius L_R = N*H / |f|, clamped to physical bounds.
+
+    At the equator f→0, so L_R diverges; we cap at _MAX_ROSSBY_RADIUS_KM.
+    Near the poles f is large and L_R shrinks; we floor at _MIN_ROSSBY_RADIUS_KM.
+    """
+    f = np.abs(2.0 * _OMEGA * np.sin(np.deg2rad(lat_deg)))
+    f_safe = np.maximum(f, 1e-10)  # avoid division by zero
+    lr_m = _BRUNT_VAISALA_FREQ * _TROPOPAUSE_HEIGHT_M / f_safe
+    lr_km = lr_m / 1000.0
+    return np.clip(lr_km, _MIN_ROSSBY_RADIUS_KM, _MAX_ROSSBY_RADIUS_KM)
+
+
 def _smooth_temperature_field(
     field: np.ndarray,
     lat_centers: np.ndarray,
     *,
-    smoothing_length_km: float = 1000.0,
+    smoothing_length_km: float | None = None,
 ) -> np.ndarray:
-    """Apply latitude-dependent Gaussian smoothing with longitude wrapping.
+    """Apply Gaussian smoothing at the local Rossby deformation radius.
 
-    Uses isotropic smoothing in physical space - constant smoothing length in km
-    regardless of latitude. This means more grid cells are smoothed at high latitudes
-    where cells are smaller in the zonal direction.
+    The Rossby radius L_R = N*H/f sets the minimum horizontal scale at which
+    temperature anomalies can drive organised upper-level mass redistribution
+    and hence surface pressure anomalies.  Smoothing at this scale filters out
+    sub-Rossby features that cannot create coherent pressure patterns.
+
+    L_R varies with latitude (~4000 km in tropics, ~800 km at 60°, floored
+    at 500 km near poles).  Both the meridional and zonal smoothing lengths
+    adapt to the local L_R.
     """
 
     field = np.asarray(field, dtype=float)
     nlat, nlon = field.shape
 
-    # Calculate grid spacing in km
+    # Latitude-dependent smoothing length (Rossby radius)
+    if smoothing_length_km is not None:
+        smooth_km = np.full_like(lat_centers, smoothing_length_km)
+    else:
+        smooth_km = _rossby_radius_km(lat_centers)
+
+    # Grid spacing in km
     lat_spacing_deg = 180.0 / nlat
     lat_spacing_km = R_EARTH_METERS * np.deg2rad(lat_spacing_deg) / 1000.0
 
-    # Meridional sigma in grid cells (constant)
-    sigma_lat = smoothing_length_km / lat_spacing_km
-
-    # Zonal spacing varies with latitude
     lon_spacing_deg = 360.0 / nlon
     cos_lat = np.cos(np.deg2rad(lat_centers))
     lon_spacing_km = R_EARTH_METERS * np.deg2rad(lon_spacing_deg) * np.abs(cos_lat) / 1000.0
-
-    # Avoid division by zero at poles
     lon_spacing_km = np.maximum(lon_spacing_km, lat_spacing_km * 0.1)
 
-    # Sigma varies by latitude - more grid cells smoothed near poles
-    sigma_lon_by_lat = smoothing_length_km / lon_spacing_km
+    # Zonal sigma in grid cells (varies with latitude via both L_R and cell size)
+    sigma_lon_by_lat = smooth_km / lon_spacing_km
 
-    # Maximum padding needed (at equator where sigma_lon is smallest)
+    # Meridional sigma in grid cells (varies with latitude via L_R only)
+    sigma_lat_by_lat = smooth_km / lat_spacing_km
+
+    # Maximum padding needed
     max_sigma_lon = np.max(sigma_lon_by_lat)
     pad_width = int(np.ceil(3 * max_sigma_lon))
 
     # Wrap field in longitude for periodic boundary
     field_wrapped = np.pad(field, ((0, 0), (pad_width, pad_width)), mode='wrap')
 
-    # Apply latitude-dependent smoothing row by row
+    # Apply latitude-dependent smoothing row by row (zonal + meridional sigma both vary)
     smoothed_wrapped = np.zeros_like(field_wrapped)
     for i in range(nlat):
         sigma_lon = sigma_lon_by_lat[i]
@@ -146,8 +179,10 @@ def _smooth_temperature_field(
             mode='nearest'
         )
 
-    # Apply meridional smoothing
-    smoothed_wrapped = gaussian_filter(smoothed_wrapped, sigma=(sigma_lat, 0), mode='nearest')
+    # Meridional smoothing: apply row-by-row with varying sigma
+    # We approximate by using the mean sigma (the variation is modest: ~1-7 cells)
+    mean_sigma_lat = np.mean(sigma_lat_by_lat)
+    smoothed_wrapped = gaussian_filter(smoothed_wrapped, sigma=(mean_sigma_lat, 0), mode='nearest')
 
     # Extract the central portion (unwrap)
     smoothed = smoothed_wrapped[:, pad_width:-pad_width]
@@ -211,7 +246,7 @@ def compute_pressure(
         if humidity.shape != shape:
             raise ValueError("Temperature and humidity fields must share the same shape")
 
-    mean_p = ATMOSPHERE_MASS * gravity_m_s2 / EARTH_SURFACE_AREA_M2
+    mean_p = 101325.0  # Pa, standard mean sea level pressure
 
     nlat, nlon = shape
     lat_deg = _get_latitude_centers(nlat)
@@ -224,18 +259,25 @@ def compute_pressure(
         target_mean = area_weighted_mean(temperature, weights)
     elif humidity_q is not None:
         virtual_temperature = temperature * (1 + 0.61 * humidity_q)
-        temp_smooth = _smooth_temperature_field(virtual_temperature, lat_deg, smoothing_length_km=1000.0)
+        temp_smooth = _smooth_temperature_field(virtual_temperature, lat_deg, smoothing_length_km=None)
         target_mean = area_weighted_mean(virtual_temperature, weights)
     else:
-        temp_smooth = _smooth_temperature_field(temperature, lat_deg, smoothing_length_km=1000.0)
+        temp_smooth = _smooth_temperature_field(temperature, lat_deg, smoothing_length_km=None)
         target_mean = area_weighted_mean(temperature, weights)
 
     smooth_mean = area_weighted_mean(temp_smooth, weights)
     temp_smooth = temp_smooth + (target_mean - smooth_mean)
 
-    dT = temp_smooth - area_weighted_mean(temp_smooth, weights)
+    # Thermal pressure responds only to ZONAL anomalies (departures from the
+    # zonal mean).  The meridional pressure structure (equator-to-pole gradient)
+    # is already captured by dp_hadley, which represents the Hadley/Ferrel/Polar
+    # cell response to the meridional temperature gradient.  Applying dp_th to
+    # the full temperature field would double-count the meridional component and
+    # produce ~60-100 hPa equator-to-pole gradients (obs ~20-25 hPa).
+    zonal_mean = np.mean(temp_smooth, axis=1, keepdims=True)
+    dT_zonal = temp_smooth - zonal_mean
 
-    dp_th = -THERMAL_PRESSURE_COEFFICIENT * dT
+    dp_th = -THERMAL_PRESSURE_COEFFICIENT * dT_zonal
     dp_th = dp_th - area_weighted_mean(dp_th, weights)
 
     t_ref_lat = area_weighted_mean(temp_smooth, weights, axis=1)

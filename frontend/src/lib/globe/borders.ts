@@ -6,14 +6,25 @@
 import * as THREE from 'three';
 import * as topojson from 'topojson-client';
 import type { Topology, GeometryCollection } from 'topojson-specification';
+import { ELEVATION_SCALE, sampleElevation } from './elevation';
+
+/** Shared elevation state set before building lines. */
+let _elevData: Float32Array | null = null;
+let _elevNlat = 0;
+let _elevNlon = 0;
 
 function latLonToVector3(lat: number, lon: number, r: number): THREE.Vector3 {
+  let radius = r;
+  if (_elevData) {
+    const elev = sampleElevation(_elevData, _elevNlat, _elevNlon, lat, lon);
+    radius += Math.max(0, elev) * ELEVATION_SCALE;
+  }
   const phi = (90 - lat) * (Math.PI / 180);
   const theta = lon * (Math.PI / 180);
   return new THREE.Vector3(
-    -r * Math.sin(phi) * Math.cos(theta),
-    r * Math.cos(phi),
-    r * Math.sin(phi) * Math.sin(theta),
+    -radius * Math.sin(phi) * Math.cos(theta),
+    radius * Math.cos(phi),
+    radius * Math.sin(phi) * Math.sin(theta),
   );
 }
 
@@ -64,7 +75,13 @@ function processMultiPolygon(
  * Load country borders and coastlines, returning a THREE.Group.
  * Fetches /countries-110m.json and /land-110m.json.
  */
-export async function loadBorders(): Promise<THREE.Group> {
+export async function loadBorders(
+  elevData?: Float32Array, elevNlat?: number, elevNlon?: number,
+): Promise<THREE.Group> {
+  _elevData = elevData ?? null;
+  _elevNlat = elevNlat ?? 0;
+  _elevNlon = elevNlon ?? 0;
+
   const group = new THREE.Group();
   const radius = 1.002; // slightly above globe surface
 

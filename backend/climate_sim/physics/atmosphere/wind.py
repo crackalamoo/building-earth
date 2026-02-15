@@ -277,7 +277,7 @@ class WindModel:
         weights = np.broadcast_to(cos_lat[:, None], column_temperature.shape)
 
         column_temperature_smooth = _smooth_temperature_field(
-            column_temperature, lat_deg, smoothing_length_km=1000.0
+            column_temperature, lat_deg,
         )
 
         # Preserve global mean (same as compute_pressure does)

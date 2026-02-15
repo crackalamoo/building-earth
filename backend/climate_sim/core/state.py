@@ -31,6 +31,9 @@ class ModelState:
     # Frozen cloud output for Newton solver Jacobian consistency
     # When set, RHS uses this instead of recomputing clouds from temperature
     cloud_output: CloudPrecipOutput | None = None
+    vertical_velocity: np.ndarray | None = None  # Large-scale w for clouds (m/s, positive=rising)
+    surface_pressure: np.ndarray | None = None  # Surface pressure (Pa)
+    orographic_w: np.ndarray | None = None  # Precomputed from unblocked wind
 
 
 def select_wind_temperature(temperature: np.ndarray) -> np.ndarray:

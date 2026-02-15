@@ -19,6 +19,7 @@ from climate_sim.physics.clouds import (
     compute_clouds_and_precipitation,
     compute_vertical_velocity_from_divergence,
     compute_vertical_velocity_from_pressure,
+    compute_vertical_velocity_from_warm_advection,
 )
 from climate_sim.core.math_core import compute_divergence
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
@@ -36,10 +37,12 @@ from climate_sim.core.state import (
 )
 from climate_sim.core.postprocess import postprocess_periodic_cycle_results
 from climate_sim.core.rhs_builder import create_rhs_functions, RhsFn, RhsDerivativeFn, RhsBuildInputs
+from climate_sim.physics.precipitation import compute_precipitation_recycling
 from climate_sim.physics.vertical_motion import (
     VerticalMotionConfig,
     compute_hadley_subsidence_velocity,
     compute_hadley_subsidence_drying,
+    compute_hadley_convergence_moistening,
 )
 from climate_sim.core.operators import SurfaceHeatCapacityContext, build_model_operators
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
@@ -146,8 +149,10 @@ def monthly_step(
                     itcz_rad=itcz_rad, ekman_drag=True
                 )
                 # Apply orographic flow blocking to BL winds
+                # Keep unblocked wind for orographic uplift calculation
                 if surface_context.orographic_model is not None:
                     bl_u, bl_v = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+                    lagged_bl_wind_unblocked = (bl_u, bl_v)
                     bl_u_blocked, bl_v_blocked = surface_context.orographic_model.apply_flow_blocking(bl_u, bl_v)
                     bl_speed_blocked = np.hypot(bl_u_blocked, bl_v_blocked)
                     lagged_boundary_layer_wind_field = (bl_u_blocked, bl_v_blocked, bl_speed_blocked)
@@ -230,21 +235,29 @@ def monthly_step(
             T_bl_cloud = temp[1]
             T_atm_cloud = temp[2]
             current_itcz_cf = _compute_itcz_from_temp(temp)
-            pressure = compute_pressure(
-                temp[0],
-                itcz_rad=current_itcz_cf,
-                lat2d=surface_context.lat2d,
-                lon2d=surface_context.lon2d,
-            )
-            nlat, nlon = temp[0].shape
-            lat_spacing = 180.0 / nlat
-            lat_centers = -90.0 + (np.arange(nlat) + 0.5) * lat_spacing
-            cos_lat = np.clip(np.cos(np.deg2rad(lat_centers)), 1.0e-6, None)
-            weights = np.broadcast_to(cos_lat[:, None], (nlat, nlon))
-            mean_pressure = np.sum(pressure * weights) / np.sum(weights)
-            dp = pressure - mean_pressure
-            dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
-            vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
+            # Use divergence-based w from lagged winds when available.
+            # This gives proper ITCZ convergence / subtropical subsidence structure.
+            # Falls back to pressure-based w (weak, nearly uniform) if no winds.
+            if lagged_boundary_layer_wind_field is not None:
+                wind_u_cf, wind_v_cf = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+                divergence = compute_divergence(wind_u_cf, wind_v_cf, surface_context.lat2d, surface_context.lon2d)
+                vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+            else:
+                pressure = compute_pressure(
+                    temp[0],
+                    itcz_rad=current_itcz_cf,
+                    lat2d=surface_context.lat2d,
+                    lon2d=surface_context.lon2d,
+                )
+                nlat, nlon = temp[0].shape
+                lat_spacing = 180.0 / nlat
+                lat_centers = -90.0 + (np.arange(nlat) + 0.5) * lat_spacing
+                cos_lat = np.clip(np.cos(np.deg2rad(lat_centers)), 1.0e-6, None)
+                weights = np.broadcast_to(cos_lat[:, None], (nlat, nlon))
+                mean_pressure = np.sum(pressure * weights) / np.sum(weights)
+                dp = pressure - mean_pressure
+                dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
+                vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
             rh = specific_humidity_to_relative_humidity(
                 humidity, T_bl_cloud,
                 itcz_rad=current_itcz_cf, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d,
@@ -264,6 +277,16 @@ def monthly_step(
         nlayers = start_temp_capped.shape[0]
         if lagged_humidity is not None and nlayers >= 2:
             lagged_cloud_output = _compute_cloud_fractions(start_temp_capped, lagged_humidity)
+
+        # Precompute orographic vertical velocity from UNBLOCKED wind.
+        # Orographic uplift represents air forced upward over terrain, which uses the
+        # approaching (unblocked) wind speed. Wind blocking is a separate effect
+        # (surface flow deflected around terrain).
+        lagged_orographic_w = None
+        if surface_context.orographic_model is not None and lagged_boundary_layer_wind_field is not None:
+            lagged_orographic_w = surface_context.orographic_model.compute_orographic_vertical_velocity(
+                lagged_bl_wind_unblocked[0], lagged_bl_wind_unblocked[1]  # type: ignore[possibly-undefined]
+            )
 
         def _init_state(temp: np.ndarray) -> tuple[ModelState, np.ndarray]:
             """Create model state for RHS evaluation during Newton iterations.
@@ -287,6 +310,7 @@ def monthly_step(
                     precipitation_field=lagged_precipitation,
                     cloud_output=lagged_cloud_output,  # Unified clouds (frozen for Jacobian consistency)
                     soil_moisture=lagged_soil_moisture,
+                    orographic_w=lagged_orographic_w,
                 ), current_itcz
 
         # implicit solver loop
@@ -542,9 +566,29 @@ def monthly_step(
                                 w_hadley, lagged_humidity,
                                 upper_troposphere_q_fraction=vertical_motion_cfg.upper_troposphere_q_fraction,
                             )
-                            # No land masking — over ocean, evaporation should compensate
+                            # Hadley convergence moistening near ITCZ
+                            hadley_moistening = compute_hadley_convergence_moistening(
+                                w_hadley, lagged_humidity, lat_rad,
+                            )
+                            hadley_drying = hadley_drying + hadley_moistening
                         else:
                             hadley_drying = np.zeros_like(lagged_humidity)
+                        # Direct orographic precipitation: P_oro = η · max(w, 0) · q · ρ
+                        if lagged_orographic_w is not None and surface_context.orographic_model is not None:
+                            t_bl_K = temp_capped[1]
+                            oro_precip = surface_context.orographic_model.compute_orographic_precipitation(
+                                lagged_orographic_w, lagged_humidity, t_bl_K,
+                            )
+                            precip_rate = precip_rate + oro_precip
+                        # Precipitation recycling (Eltahir & Bras 1996)
+                        wind_speed_recycle = (lagged_boundary_layer_wind_field[2] if lagged_boundary_layer_wind_field is not None
+                                              else lagged_wind_field[2] if lagged_wind_field is not None
+                                              else np.full_like(lagged_humidity, 3.0))
+                        grid_deg = abs(surface_context.lat2d[1, 0] - surface_context.lat2d[0, 0])
+                        precip_rate = precip_rate + compute_precipitation_recycling(
+                            evap_rate, lagged_humidity, wind_speed_recycle,
+                            surface_context.land_mask, resolution_deg=grid_deg,
+                        )
                         humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency + diffusion_tendency + hadley_drying
 
                         # Humidity residual: q_new - q_old - dt * tendency
@@ -705,6 +749,14 @@ def monthly_step(
             tau_evap = 7 * 86400.0
             evaporation_rate = np.maximum(q_sat - lagged_humidity, 0) * COLUMN_MASS_KG_M2 / tau_evap
 
+        # Add precipitation recycling to final precipitation (for latent heating + soil moisture)
+        if lagged_humidity is not None:
+            grid_deg = abs(surface_context.lat2d[1, 0] - surface_context.lat2d[0, 0])
+            final_precipitation = final_precipitation + compute_precipitation_recycling(
+                evaporation_rate, lagged_humidity, wind_speed_ref if wind_speed_ref is not None else np.full_like(lagged_humidity, 3.0),
+                surface_context.land_mask, resolution_deg=grid_deg,
+            )
+
         # Soil moisture evolution (semi-implicit two-component drainage)
         # Soil capacity: 300mm root zone depth
         SOIL_CAPACITY_KG_M2 = 300.0  # mm = kg/m²
@@ -737,15 +789,25 @@ def monthly_step(
         convective_frac = None
         stratiform_frac = None
         marine_sc_frac = None
+        final_vertical_velocity = None
         if lagged_humidity is not None and nlayers_final >= 2:
             # Compute relative humidity
             rh = specific_humidity_to_relative_humidity(
                 lagged_humidity, t_for_humidity,
                 itcz_rad=itcz_rad, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d
             )
-            # Compute vertical velocity from wind divergence
+            # Compute vertical velocity from wind divergence + frontal lifting
             divergence = compute_divergence(wind_u, wind_v, surface_context.lat2d, surface_context.lon2d)
             vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+            # Add frontal (warm advection) component
+            lat_rad = np.deg2rad(surface_context.lat2d)
+            dy_m = np.deg2rad(surface_context.lat2d[1, 0] - surface_context.lat2d[0, 0]) * R_EARTH_METERS
+            dx_m = np.deg2rad(surface_context.lon2d[0, 1] - surface_context.lon2d[0, 0]) * R_EARTH_METERS * np.cos(lat_rad)
+            w_frontal = compute_vertical_velocity_from_warm_advection(
+                t_for_humidity, wind_u, wind_v, dx_m, abs(dy_m),
+            )
+            vertical_velocity = vertical_velocity + w_frontal
+            final_vertical_velocity = vertical_velocity
 
             # Compute cloud output
             cloud_output = compute_clouds_and_precipitation(
@@ -762,6 +824,11 @@ def monthly_step(
             marine_sc_frac = cloud_output.marine_sc_frac
             high_cloud_frac = cloud_output.high_cloud_frac
             final_precipitation = cloud_output.total_precip
+            # Add orographic precipitation to total
+            if lagged_orographic_w is not None and surface_context.orographic_model is not None:
+                final_precipitation = final_precipitation + surface_context.orographic_model.compute_orographic_precipitation(
+                    lagged_orographic_w, lagged_humidity, final_temp[1],
+                )
 
         # Build final state with converged humidity
         final_itcz = _compute_itcz_from_temp(final_temp)
@@ -782,6 +849,7 @@ def monthly_step(
             stratiform_cloud_frac=stratiform_frac,
             marine_sc_cloud_frac=marine_sc_frac,
             high_cloud_frac=high_cloud_frac,
+            vertical_velocity=final_vertical_velocity,
         )
 
         final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(
@@ -819,6 +887,14 @@ def monthly_step(
                 final_state.wind_field = surface_context.wind_model.wind_field(
                     final_temp[0], itcz_rad=final_itcz, ekman_drag=True
                 )
+
+        # Compute surface pressure for diagnostic output
+        final_state.surface_pressure = compute_pressure(
+            final_temp[0],
+            itcz_rad=final_itcz,
+            lat2d=surface_context.lat2d,
+            lon2d=surface_context.lon2d,
+        )
 
         return final_state
 
@@ -1232,7 +1308,11 @@ def solve_periodic_climate(
 
     # Use same diffusion operator for humidity as atmosphere (Lewis number ≈ 1)
     # Turbulent eddies transport both heat and moisture equally
-    humidity_diffusion_op = operators.diffusion_operator.atmosphere if operators.latent_heat_cfg.enabled else None
+    # If orographic barriers exist, use the barrier-modified humidity operator
+    humidity_diffusion_op = (
+        operators.diffusion_operator.humidity
+        or operators.diffusion_operator.atmosphere
+    ) if operators.latent_heat_cfg.enabled else None
 
     # Build RHS functions from operators
     with time_block("build_rhs"):
@@ -1380,6 +1460,8 @@ def solve_periodic_climate(
                         stratiform_cloud_frac=month_state.stratiform_cloud_frac,
                         marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,
                         high_cloud_frac=month_state.high_cloud_frac,
+                        vertical_velocity=month_state.vertical_velocity,
+                        surface_pressure=month_state.surface_pressure,
                     )
                 else:
                     # One-layer: single wind field with drag
@@ -1424,6 +1506,8 @@ def solve_periodic_climate(
                         stratiform_cloud_frac=month_state.stratiform_cloud_frac,
                         marine_sc_cloud_frac=month_state.marine_sc_cloud_frac,
                         high_cloud_frac=month_state.high_cloud_frac,
+                        vertical_velocity=month_state.vertical_velocity,
+                        surface_pressure=month_state.surface_pressure,
                     )
 
     # Post-process results (convert to Celsius, reshape layers)

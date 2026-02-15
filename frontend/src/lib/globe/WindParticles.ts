@@ -39,6 +39,7 @@ export class WindParticles {
 
   private windFields: WindFields;
   private monthIndex: number = 0;
+  private monthFrac: number = 0; // fractional part for lerping
   private nlat: number;
   private nlon: number;
 
@@ -94,8 +95,10 @@ export class WindParticles {
     return this.mesh;
   }
 
-  setMonth(monthIndex: number): void {
-    this.monthIndex = Math.floor(monthIndex) % 12;
+  setMonth(monthProgress: number): void {
+    const wrapped = ((monthProgress % 12) + 12) % 12;
+    this.monthIndex = Math.floor(wrapped) % 12;
+    this.monthFrac = wrapped - Math.floor(wrapped);
   }
 
   update(dt: number): void {
@@ -285,13 +288,26 @@ export class WindParticles {
   }
 
   private sampleWind(month: number, lat: number, lon: number): { u: number; v: number } {
-    return {
-      u: this.sampleFieldBilinear(this.windFields.wind_u_10m.data as Float32Array, month, lat, lon),
-      v: this.sampleFieldBilinear(this.windFields.wind_v_10m.data as Float32Array, month, lat, lon),
-    };
+    const m0 = month % 12;
+    const m1 = (month + 1) % 12;
+    const t = this.monthFrac;
+    const uData = this.windFields.wind_u_10m.data as Float32Array;
+    const vData = this.windFields.wind_v_10m.data as Float32Array;
+    const u0 = this.sampleFieldBilinear(uData, m0, lat, lon);
+    const v0 = this.sampleFieldBilinear(vData, m0, lat, lon);
+    if (t < 0.001) return { u: u0, v: v0 };
+    const u1 = this.sampleFieldBilinear(uData, m1, lat, lon);
+    const v1 = this.sampleFieldBilinear(vData, m1, lat, lon);
+    return { u: u0 + (u1 - u0) * t, v: v0 + (v1 - v0) * t };
   }
 
   private sampleWindSpeed(month: number, lat: number, lon: number): number {
-    return this.sampleFieldBilinear(this.windFields.wind_speed_10m.data as Float32Array, month, lat, lon);
+    const m0 = month % 12;
+    const t = this.monthFrac;
+    const sData = this.windFields.wind_speed_10m.data as Float32Array;
+    const s0 = this.sampleFieldBilinear(sData, m0, lat, lon);
+    if (t < 0.001) return s0;
+    const m1 = (month + 1) % 12;
+    return s0 + (this.sampleFieldBilinear(sData, m1, lat, lon) - s0) * t;
   }
 }

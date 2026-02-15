@@ -23,6 +23,7 @@ from climate_sim.physics.vertical_motion import (
     compute_bl_atm_mixing_tendencies,
     compute_hadley_subsidence_velocity,
     hadley_subsidence_drying_jacobian,
+    hadley_convergence_moistening_jacobian,
     _ALPHA,
 )
 from climate_sim.physics.orographic_effects import OrographicModel
@@ -35,6 +36,7 @@ from climate_sim.physics.humidity import (
 from climate_sim.physics.clouds import (
     compute_clouds_and_precipitation,
     compute_vertical_velocity_from_divergence,
+    compute_vertical_velocity_from_warm_advection,
     CloudPrecipOutput,
 )
 from climate_sim.core.state import ModelState
@@ -201,7 +203,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if wind_u is not None and wind_v is not None:
                 divergence = compute_divergence(wind_u, wind_v, inputs.lat2d, inputs.lon2d)
                 vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
-                if inputs.orographic_model is not None:
+                if state.orographic_w is not None:
+                    vertical_velocity = vertical_velocity + state.orographic_w
+                elif inputs.orographic_model is not None:
                     vertical_velocity = vertical_velocity + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u, wind_v)
             else:
                 vertical_velocity = np.zeros_like(humidity_field)
@@ -420,7 +424,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if wind_u is not None and wind_v is not None:
                 divergence = compute_divergence(wind_u, wind_v, inputs.lat2d, inputs.lon2d)
                 vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
-                if inputs.orographic_model is not None:
+                if state.orographic_w is not None:
+                    vertical_velocity = vertical_velocity + state.orographic_w
+                elif inputs.orographic_model is not None:
                     vertical_velocity = vertical_velocity + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u, wind_v)
             else:
                 vertical_velocity = np.zeros_like(humidity_field)
@@ -599,14 +605,13 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if tau_mix > 0 and nlayers == 3:
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
-                # τ_rad = C_atm / (4σT_atm³), treat as locally constant for Jacobian
-                tau_rad = C_atm / (4.0 * STEFAN_BOLTZMANN_W_M2_K4 * state.temperature[2]**3)
-                # dT_bl/dt = (α*T_atm - T_bl) / τ_rad
-                diag[1] += -1.0 / tau_rad
-                cross[1, 2] += _ALPHA / tau_rad
-                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ_rad
-                diag[2] += -(C_bl / C_atm) * _ALPHA / tau_rad
-                cross[2, 1] += (C_bl / C_atm) / tau_rad
+                tau = 8.0 * 86400.0  # 8 days, matching vertical_motion.py
+                # dT_bl/dt = (α*T_atm - T_bl) / τ
+                diag[1] += -1.0 / tau
+                cross[1, 2] += _ALPHA / tau
+                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ
+                diag[2] += -(C_bl / C_atm) * _ALPHA / tau
+                cross[2, 1] += (C_bl / C_atm) / tau
 
             # Use updated surface diffusion matrix if ocean ψ was applied
             actual_surface_diffusion_matrix = surface_matrix
@@ -691,11 +696,13 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         strat_frac = np.zeros_like(state.humidity_field)
                         marine_frac = np.zeros_like(state.humidity_field)
 
-                    # Compute vertical velocity from divergence + orographic
+                    # Compute vertical velocity from divergence + orographic (must match forward RHS)
                     if wind_u_q is not None and wind_v_q is not None:
                         divergence = compute_divergence(wind_u_q, wind_v_q, inputs.lat2d, inputs.lon2d)
                         w_largescale = compute_vertical_velocity_from_divergence(divergence)
-                        if inputs.orographic_model is not None:
+                        if state.orographic_w is not None:
+                            w_largescale = w_largescale + state.orographic_w
+                        elif inputs.orographic_model is not None:
                             w_largescale = w_largescale + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u_q, wind_v_q)
                     else:
                         w_largescale = np.zeros_like(state.humidity_field)
@@ -704,6 +711,13 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         conv_frac, strat_frac, marine_frac,
                         state.humidity_field, w_largescale, t_bl
                     )
+
+                    # Orographic precipitation Jacobian: dP_oro/dq = η * max(w, 0) * ρ
+                    if state.orographic_w is not None and inputs.orographic_model is not None:
+                        eff = inputs.orographic_model.config.orographic_precip_efficiency
+                        rho = 101325.0 / (287.05 * state.temperature[1])
+                        dP_oro_dq = eff * np.maximum(state.orographic_w, 0.0) * rho
+                        dP_dq = dP_dq + dP_oro_dq
 
                     # Humidity diagonal: dE/dq / M - dP/dq / M + Hadley subsidence
                     # (dE/dq is negative, dP/dq is positive)
@@ -723,6 +737,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             w_hadley,
                             upper_troposphere_q_fraction=inputs.vertical_motion_cfg.upper_troposphere_q_fraction,
                         )
+                        humidity_diag += hadley_convergence_moistening_jacobian(w_hadley)
 
                     # Humidity-temperature coupling terms already computed above
 
@@ -738,7 +753,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         dE_dT_sfc = np.zeros_like(state.humidity_field)
 
                     # dR_q/dT terms (to be multiplied by -dt in solver)
-                    dR_q_dT_sfc = -dE_dT_sfc / COLUMN_MASS_KG_M2
+                    dR_q_dT_sfc = dE_dT_sfc / COLUMN_MASS_KG_M2
                     dR_q_dT_bl = -dP_dT_bl / COLUMN_MASS_KG_M2
                     dR_q_dT_atm = -dP_dT_atm / COLUMN_MASS_KG_M2
 

@@ -11,8 +11,14 @@
   import { CloudInstances } from './CloudInstances';
   import { createAtmosphere, updateAtmosphereSunDirection } from './Atmosphere';
   import { createStarField, updateStarRotation, type StarField } from './Stars';
+  import { CityLights } from './CityLights';
   import type { ClimateLayerData } from './loadBinaryData';
   import { ELEVATION_SCALE, NORMAL_BLEND, sampleElevation, displacedNormal, computeHillshadeGrid } from './elevation';
+
+  function smoothstep(edge0: number, edge1: number, x: number): number {
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
+  }
 
   export let data: number[][][] | null = null; // [month][lat][lon] temperature in Celsius
   export let monthProgress: number = 0; // Continuous 0-12 (wraps), controls sun position
@@ -41,8 +47,21 @@
   let cloudInstances: CloudInstances | null = null;
   let atmosphereMesh: THREE.Mesh | null = null;
   let sunOrb: THREE.Mesh | null = null;
-  let sunGlow: THREE.Sprite | null = null;
+  let sunGlow: THREE.Object3D | null = null;
   let starField: StarField | null = null;
+  let cityLights: CityLights | null = null;
+
+  // Cached color buffers: 12 base months + sub-step interpolations
+  const SUB_STEPS = 3;
+  const TOTAL_STEPS = 12 * SUB_STEPS;
+  let tempBaseCache: (Float32Array | null)[] = new Array(12).fill(null);
+  let bmBaseRgbCache: (Float32Array | null)[] = new Array(12).fill(null);
+  let bmBaseSpecCache: (Float32Array | null)[] = new Array(12).fill(null);
+  let tempStepCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
+  let bmStepRgbCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
+  let bmStepSpecCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
+  let lastAppliedStep = -1;
+  let warmupGeneration = 0;
 
   // Derive discrete month for temperature display (nearest month)
   $: displayMonth = Math.round(displayMonthProgress) % 12;
@@ -77,6 +96,9 @@
     if (cloudInstances) {
       cloudInstances.getObject().rotation.y += radians;
     }
+    if (cityLights) {
+      cityLights.getObject().rotation.y += radians;
+    }
   }
 
   export function resetView(): void {
@@ -102,6 +124,9 @@
     if (cloudInstances) {
       cloudInstances.getObject().rotation.y = 0;
     }
+    if (cityLights) {
+      cityLights.getObject().rotation.y = 0;
+    }
     sunOrbitAngle = 0;
   }
 
@@ -119,14 +144,53 @@
   $: nlat = data ? data[0].length : 0;
   $: nlon = data ? data[0][0].length : 0;
 
-  // Update colors when displayMonth or data changes (temperature layer)
-  $: if (globe && data && activeLayer === 'temperature') {
-    updateTemperatureColors(data, displayMonth);
+  // Precompute all cached steps in background (one step per frame to avoid blocking)
+
+  // Build one cache item per idle callback, yielding to the browser between each
+  function warmCache(gen: number) {
+    if (gen !== warmupGeneration) return;
+    const ric = typeof requestIdleCallback === 'function' ? requestIdleCallback : (cb: () => void) => setTimeout(cb, 50);
+    // Phase 1: build 12 base months, Phase 2: build 24 sub-step lerps
+    let baseMonth = 0;
+    let step = 0;
+    function next() {
+      if (gen !== warmupGeneration) return;
+      // Build base months first (expensive)
+      if (baseMonth < 12) {
+        if (data && !tempBaseCache[baseMonth]) tempBaseCache[baseMonth] = buildTemperatureColorBuffer(data, baseMonth);
+        if (layerData && !bmBaseRgbCache[baseMonth]) {
+          const r = buildBlueMarbleBuffers(layerData, baseMonth);
+          bmBaseRgbCache[baseMonth] = r.rgb; bmBaseSpecCache[baseMonth] = r.spec;
+        }
+        baseMonth++;
+        ric(next);
+      } else if (step < TOTAL_STEPS) {
+        // Sub-steps: skip whole-month steps (t=0), only build intermediate lerps
+        if (step % SUB_STEPS !== 0) {
+          if (data) ensureTempStep(step);
+          if (layerData) ensureBmStep(step);
+        }
+        step++;
+        ric(next);
+      }
+    }
+    ric(next);
   }
 
-  // Update blue marble colors when month or layerData changes
-  $: if (blueMarbleGlobe && layerData && activeLayer === 'blue-marble') {
-    updateBlueMarbleColors(layerData, displayMonth);
+  // Invalidate caches when data changes and start idle-time warmup
+  $: if (data) {
+    tempBaseCache = new Array(12).fill(null);
+    tempStepCache = new Array(TOTAL_STEPS).fill(null);
+    lastAppliedStep = -1;
+    warmCache(++warmupGeneration);
+  }
+  $: if (layerData) {
+    bmBaseRgbCache = new Array(12).fill(null);
+    bmBaseSpecCache = new Array(12).fill(null);
+    bmStepRgbCache = new Array(TOTAL_STEPS).fill(null);
+    bmStepSpecCache = new Array(TOTAL_STEPS).fill(null);
+    lastAppliedStep = -1;
+    warmCache(++warmupGeneration);
   }
 
   let ambientLight: THREE.AmbientLight;
@@ -141,41 +205,31 @@
       if (windParticles) windParticles.getObject().visible = layer === 'blue-marble';
       if (treeInstances) treeInstances.getObject().visible = layer === 'blue-marble';
       if (cloudInstances) cloudInstances.getObject().visible = layer === 'blue-marble';
+      if (cityLights) cityLights.getObject().visible = layer === 'blue-marble';
       if (atmosphereMesh) atmosphereMesh.visible = layer === 'blue-marble';
     }
   }
 
-  function updateTemperatureColors(climateData: number[][][], monthIdx: number) {
-    if (!globe) return;
-
-    const geometry = globe.geometry;
-    const colors = geometry.attributes.color;
+  function buildTemperatureColorBuffer(climateData: number[][][], monthIdx: number): Float32Array {
     const monthData = averagePolarTemps(climateData[monthIdx], nlat, nlon);
+    const nVerts = nlat * nlon * 6;
+    const buf = new Float32Array(nVerts * 3);
 
-    // Each cell has 6 vertices (2 triangles), all same color
     let idx = 0;
     for (let i = 0; i < nlat; i++) {
       const dataLatIdx = nlat - 1 - i;
       for (let j = 0; j < nlon; j++) {
-        const dataLonIdx = j;
-        const temp = monthData[dataLatIdx][dataLonIdx];
+        const temp = monthData[dataLatIdx][j];
         const [r, g, b] = temperatureToColorNormalized(temp);
-
-        // 6 vertices per cell
         for (let v = 0; v < 6; v++) {
-          colors.setXYZ(idx, r, g, b);
-          idx++;
+          buf[idx++] = r; buf[idx++] = g; buf[idx++] = b;
         }
       }
     }
-    colors.needsUpdate = true;
+    return buf;
   }
 
-  function updateBlueMarbleColors(ld: ClimateLayerData, monthIdx: number) {
-    if (!blueMarbleGlobe) return;
-
-    const geometry = blueMarbleGlobe.geometry;
-    const colors = geometry.attributes.color;
+  function buildBlueMarbleBuffers(ld: ClimateLayerData, monthIdx: number): { rgb: Float32Array; spec: Float32Array } {
     const surfaceData = ld.surface.data as Float32Array;
     const landMaskData = ld.land_mask.data as Uint8Array;
     const soilData = ld.soil_moisture?.data as Float32Array | undefined;
@@ -194,15 +248,19 @@
     const lowNlon = ld.surface.shape[2];
     const monthOffset = monthIdx * lowNlat * lowNlon;
 
-    // Precompute annual mean surface temp per coarse cell (for soil hue)
+    // Precompute annual means per coarse cell
     const annualMeanTemp = new Float32Array(lowNlat * lowNlon);
+    const annualMeanSoil = new Float32Array(lowNlat * lowNlon);
     for (let ci = 0; ci < lowNlat; ci++) {
       for (let cj = 0; cj < lowNlon; cj++) {
-        let sum = 0;
+        let tsum = 0, ssum = 0;
         for (let m = 0; m < 12; m++) {
-          sum += surfaceData[m * lowNlat * lowNlon + ci * lowNlon + cj];
+          const idx = m * lowNlat * lowNlon + ci * lowNlon + cj;
+          tsum += surfaceData[idx];
+          if (soilData) ssum += soilData[idx];
         }
-        annualMeanTemp[ci * lowNlon + cj] = sum / 12;
+        annualMeanTemp[ci * lowNlon + cj] = tsum / 12;
+        annualMeanSoil[ci * lowNlon + cj] = soilData ? ssum / 12 : 0.5;
       }
     }
 
@@ -244,14 +302,19 @@
             )
           : 0;
 
-        // Sample annual mean temp bilinearly (offset=0, it's a single 2D field)
+        // Sample annual means bilinearly (offset=0, single 2D fields)
         const annMeanT = sampleBilinear(
           annualMeanTemp, lowNlat, lowNlon, 0,
           dataLatIdx, j, hiNlat, hiNlon,
           isLand, coarseLandMask,
         );
+        const annMeanSoil = sampleBilinear(
+          annualMeanSoil, lowNlat, lowNlon, 0,
+          dataLatIdx, j, hiNlat, hiNlon,
+          isLand, coarseLandMask,
+        );
 
-        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT);
+        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT, annMeanSoil);
         const base = (i * hiNlon + j) * 3;
         rgbBuf[base] = r;
         rgbBuf[base + 1] = g;
@@ -292,10 +355,11 @@
       }
     }
 
-    // Write smoothed RGB to vertex colors, applying hillshade
-    // Also update specular mask: open ocean=1, sea ice/land=0, smooth transition
+    // Apply hillshade to RGB buffer and build specular + vertex-expanded buffers
     const hsGrid = (blueMarbleGlobe as any)?._hillshadeGrid as Float32Array | undefined;
-    const specAttr = geometry.attributes.isOcean as THREE.BufferAttribute | undefined;
+    const nVerts = hiNlat * hiNlon * 6;
+    const outRgb = new Float32Array(nVerts * 3);
+    const outSpec = new Float32Array(nVerts);
     let idx = 0;
     for (let i = 0; i < hiNlat; i++) {
       const dataLatIdx = hiNlat - 1 - i;
@@ -314,32 +378,101 @@
 
         // Compute specular mask: 0 for land/ice, 1 for open ocean
         let spec = 0.0;
-        if (specAttr) {
-          const isLand = landMaskData[dataLatIdx * hiNlon + j] === 1;
-          if (!isLand) {
-            const temp = sampleBilinear(
-              surfaceData, lowNlat, lowNlon, monthOffset,
-              dataLatIdx, j, hiNlat, hiNlon,
-              false, coarseLandMask,
-            );
-            // Mirror seaIceFraction from blueMarbleColormap.ts:
-            // Hermite smoothstep from -1.8°C to -8°C, max 0.70
-            const ICE_FREEZE = -1.8, ICE_FULL = -8.0, ICE_MAX = 0.70;
-            const u = Math.max(0, Math.min(1, (ICE_FREEZE - temp) / (ICE_FREEZE - ICE_FULL)));
-            const iceFrac = u * u * (3 - 2 * u) * ICE_MAX;
-            spec = 1.0 - iceFrac;
-          }
+        if (!isLand) {
+          const temp = sampleBilinear(
+            surfaceData, lowNlat, lowNlon, monthOffset,
+            dataLatIdx, j, hiNlat, hiNlon,
+            false, coarseLandMask,
+          );
+          const ICE_FREEZE = -1.8, ICE_FULL = -8.0, ICE_MAX = 0.70;
+          const u = Math.max(0, Math.min(1, (ICE_FREEZE - temp) / (ICE_FREEZE - ICE_FULL)));
+          const iceFrac = u * u * (3 - 2 * u) * ICE_MAX;
+          spec = 1.0 - iceFrac;
         }
 
         for (let v = 0; v < 6; v++) {
-          colors.setXYZ(idx, r, g, b);
-          if (specAttr) specAttr.setX(idx, spec);
+          outRgb[idx * 3] = r; outRgb[idx * 3 + 1] = g; outRgb[idx * 3 + 2] = b;
+          outSpec[idx] = spec;
           idx++;
         }
       }
     }
+    return { rgb: outRgb, spec: outSpec };
+  }
+
+  function ensureTempBase(m: number) {
+    if (!tempBaseCache[m] && data) tempBaseCache[m] = buildTemperatureColorBuffer(data, m);
+  }
+
+  function ensureBmBase(m: number) {
+    if (!bmBaseRgbCache[m] && layerData) {
+      const r = buildBlueMarbleBuffers(layerData, m);
+      bmBaseRgbCache[m] = r.rgb; bmBaseSpecCache[m] = r.spec;
+    }
+  }
+
+  function ensureTempStep(step: number) {
+    if (tempStepCache[step]) return;
+    const m0 = Math.floor(step / SUB_STEPS) % 12;
+    const m1 = (m0 + 1) % 12;
+    ensureTempBase(m0); ensureTempBase(m1);
+    const t = (step % SUB_STEPS) / SUB_STEPS;
+    if (t < 0.001) { tempStepCache[step] = tempBaseCache[m0]!; return; }
+    const b0 = tempBaseCache[m0]!, b1 = tempBaseCache[m1]!;
+    const out = new Float32Array(b0.length);
+    const s = 1 - t;
+    for (let i = 0; i < out.length; i++) out[i] = b0[i] * s + b1[i] * t;
+    tempStepCache[step] = out;
+  }
+
+  function ensureBmStep(step: number) {
+    if (bmStepRgbCache[step]) return;
+    const m0 = Math.floor(step / SUB_STEPS) % 12;
+    const m1 = (m0 + 1) % 12;
+    ensureBmBase(m0); ensureBmBase(m1);
+    const t = (step % SUB_STEPS) / SUB_STEPS;
+    if (t < 0.001) {
+      bmStepRgbCache[step] = bmBaseRgbCache[m0]!;
+      bmStepSpecCache[step] = bmBaseSpecCache[m0]!;
+      return;
+    }
+    const r0 = bmBaseRgbCache[m0]!, r1 = bmBaseRgbCache[m1]!;
+    const s0 = bmBaseSpecCache[m0]!, s1 = bmBaseSpecCache[m1]!;
+    const s = 1 - t;
+    const outR = new Float32Array(r0.length);
+    const outS = new Float32Array(s0.length);
+    for (let i = 0; i < outR.length; i++) outR[i] = r0[i] * s + r1[i] * t;
+    for (let i = 0; i < outS.length; i++) outS[i] = s0[i] * s + s1[i] * t;
+    bmStepRgbCache[step] = outR;
+    bmStepSpecCache[step] = outS;
+  }
+
+  function progressToStep(progress: number): number {
+    return Math.round(progress * SUB_STEPS) % TOTAL_STEPS;
+  }
+
+  /** Apply cached sub-step colors to temperature globe. */
+  function applyTemperatureColors(step: number) {
+    if (!globe || !data) return;
+    ensureTempStep(step);
+    const colors = globe.geometry.attributes.color;
+    ((colors as any).array as Float32Array).set(tempStepCache[step]!);
     colors.needsUpdate = true;
-    if (specAttr) specAttr.needsUpdate = true;
+  }
+
+  /** Apply cached sub-step colors to blue marble globe. */
+  function applyBlueMarbleColors(step: number) {
+    if (!blueMarbleGlobe || !layerData) return;
+    ensureBmStep(step);
+    const geometry = blueMarbleGlobe.geometry;
+    const colors = geometry.attributes.color;
+    ((colors as any).array as Float32Array).set(bmStepRgbCache[step]!);
+    colors.needsUpdate = true;
+    const specAttr = geometry.attributes.isOcean as THREE.BufferAttribute | undefined;
+    if (specAttr) {
+      ((specAttr as any).array as Float32Array).set(bmStepSpecCache[step]!);
+      specAttr.needsUpdate = true;
+    }
   }
 
   function createGlobeMesh(
@@ -368,7 +501,7 @@
 
     const blendedNormals: number[] = [];
 
-    function addVertex(lat: number, lon: number, r: number, g: number, b: number) {
+    function addVertex(lat: number, lon: number, r: number, g: number, b: number, isLand: boolean) {
       const [x, y, z] = getVertex(lat, lon);
       positions.push(x, y, z);
       colors.push(r, g, b);
@@ -379,7 +512,8 @@
       const sny = Math.cos(phi);
       const snz = Math.sin(phi) * Math.sin(theta);
 
-      if (elevationData && elevNlat && elevNlon) {
+      // Ocean: use pure sphere normals (bathymetry shouldn't affect lighting)
+      if (elevationData && elevNlat && elevNlon && isLand) {
         const [dnx, dny, dnz] = displacedNormal(elevationData, elevNlat, elevNlon, lat, lon, radius);
         let nx = snx + NORMAL_BLEND * (dnx - snx);
         let ny = sny + NORMAL_BLEND * (dny - sny);
@@ -402,21 +536,27 @@
     for (let i = 0; i < latCount; i++) {
       const lat0 = 90 - i * latStep;
       const lat1 = 90 - (i + 1) * latStep;
+      const dataLatIdx = latCount - 1 - i;
 
       for (let j = 0; j < lonCount; j++) {
         const lon0 = j * lonStep;
         const lon1 = (j + 1) * lonStep;
 
+        // Check if this cell is land for normal computation
+        const cellIsLand = (landMaskData && maskNlat && maskNlon)
+          ? landMaskData[dataLatIdx * maskNlon + j] === 1
+          : false;
+
         // Default color (will be updated immediately)
         const r = 0.1, g = 0.1, b = 0.1;
 
-        addVertex(lat0, lon0, r, g, b);
-        addVertex(lat1, lon0, r, g, b);
-        addVertex(lat1, lon1, r, g, b);
+        addVertex(lat0, lon0, r, g, b, cellIsLand);
+        addVertex(lat1, lon0, r, g, b, cellIsLand);
+        addVertex(lat1, lon1, r, g, b, cellIsLand);
 
-        addVertex(lat0, lon0, r, g, b);
-        addVertex(lat1, lon1, r, g, b);
-        addVertex(lat0, lon1, r, g, b);
+        addVertex(lat0, lon0, r, g, b, cellIsLand);
+        addVertex(lat1, lon1, r, g, b, cellIsLand);
+        addVertex(lat0, lon1, r, g, b, cellIsLand);
       }
     }
 
@@ -499,21 +639,32 @@
 
         void main() {
           vec3 normal = normalize(vNormal);
-          float NdotL = max(dot(normal, sunDirection), 0.0);
+          float rawNdotL = dot(normal, sunDirection);
+          // Soften terminator for ocean — wrap lighting slightly into shadow
+          float NdotL = vIsOcean > 0.01
+            ? smoothstep(-0.15, 0.3, rawNdotL)
+            : max(rawNdotL, 0.0);
           vec3 diffuse = vColor * (ambientIntensity + NdotL * (1.0 - ambientIntensity));
 
-          // Early out for land/ice/night — no specular
-          if (vIsOcean < 0.01 || NdotL <= 0.0) {
-            gl_FragColor = vec4(diffuse, 1.0);
-            return;
+          vec3 viewDir = normalize(cameraPosition - vWorldPos);
+
+          // Fresnel: view-angle effect, applies day and night
+          float fresnel = 1.0 - max(dot(viewDir, normal), 0.0);
+          fresnel = fresnel * fresnel; // quadratic
+          float fresnelStrength = fresnel * 0.4 * vIsOcean;
+          vec3 fresnelColor = vec3(0.5, 0.65, 0.85) * fresnelStrength;
+
+          // Specular: fade smoothly across terminator
+          vec3 specColor = vec3(0.0);
+          if (vIsOcean > 0.01) {
+            vec3 halfVec = normalize(sunDirection + viewDir);
+            float specSharp = pow(max(dot(normal, halfVec), 0.0), 60.0) * 0.6;
+            float specBroad = pow(max(dot(normal, halfVec), 0.0), 8.0) * 0.15;
+            float specFade = smoothstep(-0.05, 0.15, rawNdotL);
+            specColor = vec3(1.0, 0.97, 0.90) * (specSharp + specBroad) * vIsOcean * specFade;
           }
 
-          // Blinn-Phong specular with wave perturbation (ocean only)
-          vec3 viewDir = normalize(cameraPosition - vWorldPos);
-          vec3 halfVec = normalize(sunDirection + viewDir);
-
-          float spec = pow(max(dot(normal, halfVec), 0.0), 200.0) * 0.7 * vIsOcean;
-          gl_FragColor = vec4(diffuse + vec3(1.0, 0.97, 0.90) * spec, 1.0);
+          gl_FragColor = vec4(diffuse + specColor + fresnelColor, 1.0);
         }
       `,
       uniforms: {
@@ -562,6 +713,7 @@
       const normalizedDir = dir.clone().normalize();
       if (treeInstances) treeInstances.setSunDirection(normalizedDir);
       if (cloudInstances) cloudInstances.setSunDirection(normalizedDir);
+      if (cityLights) cityLights.setSunDirection(normalizedDir);
       if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, normalizedDir);
       if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(normalizedDir);
       sunLight.position.copy(normalizedDir).multiplyScalar(distance);
@@ -608,6 +760,7 @@
 
     if (treeInstances) treeInstances.setSunDirection(sunDir);
     if (cloudInstances) cloudInstances.setSunDirection(sunDir.clone());
+    if (cityLights) cityLights.setSunDirection(sunDir);
     if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, sunDir);
 
     // Update ocean specular shader sun direction (in world space, pre-scaling)
@@ -710,27 +863,80 @@
     sunOrb = new THREE.Mesh(sunOrbGeo, sunOrbMat);
     scene.add(sunOrb);
 
-    // Glow sprite behind sun orb
-    const glowCanvas = document.createElement('canvas');
-    glowCanvas.width = 128;
-    glowCanvas.height = 128;
-    const ctx = glowCanvas.getContext('2d')!;
-    const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-    grad.addColorStop(0, 'rgba(255, 220, 160, 0.6)');
-    grad.addColorStop(0.3, 'rgba(255, 180, 80, 0.3)');
-    grad.addColorStop(1, 'rgba(255, 140, 40, 0.0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 128, 128);
-    const glowTex = new THREE.CanvasTexture(glowCanvas);
-    const glowMat = new THREE.SpriteMaterial({
-      map: glowTex,
+    // Screen-space sun bloom — fullscreen overlay that washes out when looking sunward
+    const screenBloomMat = new THREE.ShaderMaterial({
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec2 sunScreenPos;  // sun position in screen UV space (0-1)
+        uniform float sunVisible;   // 0 = behind camera, 1 = in front
+        uniform float sunIntensity; // how directly we're facing the sun
+        uniform float aspectRatio;  // width / height
+        uniform vec2 globeScreenPos;  // globe center in screen UV space
+        uniform float globeScreenRadius; // globe's apparent radius in UV units (corrected for aspect)
+        varying vec2 vUv;
+
+        void main() {
+          if (sunVisible < 0.01) discard;
+
+          // Fade bloom behind globe disc
+          vec2 toGlobe = vUv - globeScreenPos;
+          toGlobe.x *= aspectRatio;
+          float globeDist = length(toGlobe);
+          float globeMask = smoothstep(globeScreenRadius - 0.003, globeScreenRadius + 0.003, globeDist);
+          if (globeMask < 0.001) discard;
+
+          // Distance from sun's screen position, aspect-corrected
+          vec2 delta = vUv - sunScreenPos;
+          delta.x *= aspectRatio;
+          float d = length(delta);
+
+          // Core bloom — intense near sun position
+          float core = exp(-d * d * 120.0) * 2.5;
+
+          // Mid glow — warm spread
+          float mid = exp(-d * d * 15.0) * 0.6;
+
+          // Wide wash — entire screen tint when facing sun
+          float wash = exp(-d * d * 2.5) * 0.2;
+
+          // Subtle anamorphic horizontal streak (lens artifact)
+          float streak = exp(-abs(delta.y) * 40.0) * exp(-delta.x * delta.x * 3.0) * 0.12;
+
+          float intensity = (core + mid + wash + streak) * sunIntensity * sunVisible * globeMask;
+
+          // White-hot center → warm amber edge
+          vec3 white = vec3(1.0, 1.0, 0.95);
+          vec3 amber = vec3(1.0, 0.75, 0.35);
+          vec3 col = mix(white, amber, smoothstep(0.0, 0.3, d));
+
+          gl_FragColor = vec4(col * intensity, intensity);
+        }
+      `,
+      uniforms: {
+        sunScreenPos: { value: new THREE.Vector2(0.5, 0.5) },
+        sunVisible: { value: 0.0 },
+        sunIntensity: { value: 0.0 },
+        aspectRatio: { value: 1.0 },
+        globeScreenPos: { value: new THREE.Vector2(0.5, 0.5) },
+        globeScreenRadius: { value: 0.3 },
+      },
       blending: THREE.AdditiveBlending,
       transparent: true,
       depthWrite: false,
+      depthTest: false,
     });
-    sunGlow = new THREE.Sprite(glowMat);
-    sunGlow.scale.set(56, 56, 1);
-    sunOrb.add(sunGlow);
+    const screenBloomGeo = new THREE.PlaneGeometry(2, 2);
+    const screenBloomQuad = new THREE.Mesh(screenBloomGeo, screenBloomMat);
+    screenBloomQuad.frustumCulled = false;
+    screenBloomQuad.renderOrder = 999;
+    scene.add(screenBloomQuad);
+    sunGlow = screenBloomQuad;
 
     // Initialize display month progress
     displayMonthProgress = monthProgress;
@@ -774,7 +980,7 @@
       globe = createTemperatureGlobe(data);
       globe.visible = activeLayer === 'temperature';
       scene.add(globe);
-      updateTemperatureColors(data, displayMonth);
+      applyTemperatureColors(progressToStep(displayMonthProgress));
     }
 
     // Create blue marble globe if layerData is available
@@ -782,11 +988,17 @@
       blueMarbleGlobe = createBlueMarbleGlobe(layerData);
       blueMarbleGlobe.visible = activeLayer === 'blue-marble';
       scene.add(blueMarbleGlobe);
-      updateBlueMarbleColors(layerData, displayMonth);
+      applyBlueMarbleColors(progressToStep(displayMonthProgress));
       initWindParticles();
       initTreeInstances();
       initCloudInstances();
     }
+
+    // City lights (nightside glow)
+    cityLights = new CityLights();
+    const cityObj = cityLights.getObject();
+    cityObj.visible = activeLayer === 'blue-marble';
+    scene.add(cityObj);
 
     // Atmosphere glow
     atmosphereMesh = createAtmosphere();
@@ -802,7 +1014,12 @@
 
     // Load borders
     if (showBorders) {
-      loadBorders().then(group => {
+      const elev = layerData?.elevation;
+      loadBorders(
+        elev?.data as Float32Array | undefined,
+        elev?.shape[0],
+        elev?.shape[1],
+      ).then(group => {
         bordersGroup = group;
         scene.add(bordersGroup);
       }).catch(e => console.error('Failed to load borders:', e));
@@ -821,15 +1038,19 @@
 
     const isAutoRotating = controls.autoRotate;
 
-    // Smooth interpolation toward target month progress
-    // Handle wraparound (e.g., 11.5 -> 0.5 should go forward, not backward)
-    let delta = monthProgress - displayMonthProgress;
-    if (delta > 6) delta -= 12;
-    if (delta < -6) delta += 12;
-    displayMonthProgress += delta * 0.05;
-    // Keep in 0-12 range
-    if (displayMonthProgress < 0) displayMonthProgress += 12;
-    if (displayMonthProgress >= 12) displayMonthProgress -= 12;
+    // Snap to target month progress (no easing)
+    displayMonthProgress = monthProgress;
+
+    // Update colors only when nearest sub-step changes
+    const step = progressToStep(displayMonthProgress);
+    if (step !== lastAppliedStep) {
+      if (activeLayer === 'temperature') {
+        applyTemperatureColors(step);
+      } else if (activeLayer === 'blue-marble') {
+        applyBlueMarbleColors(step);
+      }
+      lastAppliedStep = step;
+    }
 
     // When not auto-rotating, orbit the sun around the globe at 4x auto-rotate speed
     // This gives 1 day per ~60 seconds
@@ -841,7 +1062,7 @@
     // Update wind particles
     if (windParticles && time !== undefined && lastAnimateTime !== null) {
       const dt = (time - lastAnimateTime) / 1000;
-      windParticles.setMonth(Math.floor(displayMonthProgress) % 12);
+      windParticles.setMonth(displayMonthProgress);
       if (activeLayer === 'blue-marble') {
         windParticles.update(dt);
       }
@@ -857,7 +1078,7 @@
       cloudInstances.setMonth(displayMonthProgress, layerData);
       if (time !== undefined && lastAnimateTime !== null) {
         const cdt = (time - lastAnimateTime) / 1000;
-        cloudInstances.update(cdt);
+        cloudInstances.update(cdt, camera);
       }
     }
 
@@ -874,6 +1095,65 @@
       updateStarRotation(starField, sunOrbitAngle, displayMonthProgress);
     }
 
+    // Update screen-space sun bloom
+    if (sunGlow && camera && sunOrb) {
+      const mat = (sunGlow as THREE.Mesh).material as THREE.ShaderMaterial;
+      const sunWorldPos = sunOrb.position.clone();
+      const sunNDC = sunWorldPos.project(camera);
+
+      // Check if sun is in front of camera
+      const camDir = new THREE.Vector3();
+      camera.getWorldDirection(camDir);
+      const toSun = sunOrb.position.clone().normalize();
+      const facing = camDir.dot(toSun);
+
+      // Ray-sphere occlusion: check if sun disc is blocked by globe
+      // Sun orb radius 7.2 at distance 360 → angular radius in radians
+      const sunAngularRadius = 7.2 / 360; // ~0.02 rad
+      const globeRadius = 1.0;
+      const camPos = camera.position;
+      const camDist = camPos.length();
+      // Globe's angular radius as seen from camera
+      const globeAngularRadius = Math.asin(Math.min(1, globeRadius / camDist));
+      // Angle between camera-to-sun direction and camera-to-globe-center
+      const toSunDir = sunOrb.position.clone().sub(camPos).normalize();
+      const toGlobeDir = camPos.clone().negate().normalize();
+      const angleBetween = Math.acos(Math.min(1, Math.max(-1, toSunDir.dot(toGlobeDir))));
+      // Sun edge clears globe when angle > globeAngularRadius + sunAngularRadius
+      const clearAngle = globeAngularRadius + sunAngularRadius;
+      const visibility = smoothstep(clearAngle - 0.04, clearAngle + 0.02, angleBetween);
+
+      if (facing > -0.2 && visibility > 0.001) {
+        mat.uniforms.sunVisible.value = smoothstep(-0.2, 0.1, facing) * visibility;
+        mat.uniforms.sunScreenPos.value.set(
+          sunNDC.x * 0.5 + 0.5,
+          sunNDC.y * 0.5 + 0.5,
+        );
+        const intensity = Math.pow(Math.max(0, facing), 2.0);
+        mat.uniforms.sunIntensity.value = intensity;
+        mat.uniforms.aspectRatio.value = camera.aspect;
+
+        // Globe screen-space disc for masking
+        // Project globe center
+        const globeCenter = new THREE.Vector3(0, 0, 0).clone().project(camera);
+        const gcx = globeCenter.x * 0.5 + 0.5;
+        const gcy = globeCenter.y * 0.5 + 0.5;
+        mat.uniforms.globeScreenPos.value.set(gcx, gcy);
+        // Visible limb angular radius (larger than asin(R/d) due to perspective)
+        const cDist = camera.position.length();
+        const R = 1.0;
+        const limbAngularRadius = Math.asin(Math.min(1, R / cDist));
+        // Convert to screen UV units: angular size → fraction of vertical FOV
+        const vFov = camera.fov * Math.PI / 180;
+        const screenRadiusY = Math.tan(limbAngularRadius) / Math.tan(vFov / 2);
+        // In aspect-corrected UV space (where x is already multiplied by aspect)
+        // screenRadiusY is in NDC half-extent; UV space spans 0–1, so halve it
+        mat.uniforms.globeScreenRadius.value = screenRadiusY * 0.5;
+      } else {
+        mat.uniforms.sunVisible.value = 0.0;
+      }
+    }
+
     renderer.render(scene, camera);
   }
 
@@ -888,7 +1168,7 @@
     globe = createTemperatureGlobe(data);
     globe.visible = activeLayer === 'temperature';
     scene.add(globe);
-    updateTemperatureColors(data, displayMonth);
+    applyTemperatureColors(progressToStep(displayMonthProgress));
   }
 
   // Create blue marble globe when layerData arrives
@@ -896,7 +1176,7 @@
     blueMarbleGlobe = createBlueMarbleGlobe(layerData);
     blueMarbleGlobe.visible = activeLayer === 'blue-marble';
     scene.add(blueMarbleGlobe);
-    updateBlueMarbleColors(layerData, displayMonth);
+    applyBlueMarbleColors(progressToStep(displayMonthProgress));
     initWindParticles();
     initTreeInstances();
   }
@@ -914,8 +1194,8 @@
       sunOrb.geometry.dispose();
       (sunOrb.material as THREE.Material).dispose();
       if (sunGlow) {
-        (sunGlow.material as THREE.SpriteMaterial).map?.dispose();
-        (sunGlow.material as THREE.Material).dispose();
+        ((sunGlow as THREE.Mesh).geometry as THREE.BufferGeometry)?.dispose();
+        ((sunGlow as THREE.Mesh).material as THREE.Material)?.dispose();
       }
     }
     if (windParticles) {
@@ -926,6 +1206,9 @@
     }
     if (cloudInstances) {
       cloudInstances.dispose();
+    }
+    if (cityLights) {
+      cityLights.dispose();
     }
     if (starField) {
       starField.dispose();

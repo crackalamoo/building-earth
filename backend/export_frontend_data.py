@@ -53,6 +53,69 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _fill_island_vegetation(
+    veg: np.ndarray,
+    native_layers: dict[str, np.ndarray],
+    native_land_mask: np.ndarray,
+    fine_land_mask: np.ndarray,
+) -> np.ndarray:
+    """Recompute vegetation for coarse ocean cells that contain fine-grid land.
+
+    Islands like Hawaii sit in ocean cells where veg=0. We recompute veg from
+    precipitation and temperature at these cells, assuming soil_moisture=1.0.
+    """
+    nlat, nlon = native_land_mask.shape
+    fine_nlat, fine_nlon = fine_land_mask.shape
+
+    # Find coarse ocean cells that contain at least one fine-grid land pixel
+    lat_ratio = fine_nlat // nlat
+    lon_ratio = fine_nlon // nlon
+
+    precip = native_layers["precipitation"]  # (12, nlat, nlon) in kg/m²/s
+    surface = native_layers["surface"]       # (12, nlat, nlon)
+
+    # Convert precipitation rate (kg/m²/s) to annual total (mm/year)
+    # Each month's rate × seconds in that month, then sum
+    days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    month_seconds = np.array([d * 86400.0 for d in days_per_month])  # (12,)
+
+    # Veg params (matching SnowAlbedoConfig defaults)
+    p_min, p_max = 50.0, 1000.0
+    growing_thresh = 5.0
+    full_months = 5.0
+
+    for i in range(nlat):
+        for j in range(nlon):
+            if native_land_mask[i, j]:
+                continue  # already has valid land veg
+
+            # Check if any fine-grid pixels in this coarse cell are land
+            fi0 = i * lat_ratio
+            fi1 = min((i + 1) * lat_ratio, fine_nlat)
+            fj0 = j * lon_ratio
+            fj1 = min((j + 1) * lon_ratio, fine_nlon)
+            if not np.any(fine_land_mask[fi0:fi1, fj0:fj1]):
+                continue  # pure ocean, skip
+
+            # Recompute veg from this cell's precipitation and temperature
+            # precip is kg/m²/s per month; multiply by seconds → kg/m² = mm
+            annual_precip = float(np.sum(precip[:, i, j] * month_seconds))
+            u = np.clip((annual_precip - p_min) / (p_max - p_min), 0.0, 1.0)
+            veg_frac = u ** 0.6
+
+            # Growing season cap
+            warm_months = float(np.sum(surface[:, i, j] > growing_thresh))
+            gs_u = np.clip(warm_months / full_months, 0.0, 1.0)
+            gs_cap = gs_u * gs_u * (3.0 - 2.0 * gs_u)
+            veg_frac = min(veg_frac, gs_cap, 0.95)
+
+            # Write into all 12 months
+            for m in range(12):
+                veg[m, i, j] = veg_frac
+
+    return veg
+
+
 def _write_binary_export(
     output_dir: Path,
     layers: dict[str, np.ndarray],
@@ -124,10 +187,15 @@ def _write_binary_export(
         fields.append(("land_mask_native", native_land_mask, "uint8"))
         print(f"  land_mask_native: {native_land_mask.shape}")
 
-    # vegetation_fraction: native resolution
+    # vegetation_fraction: native resolution, with island fill
     if "vegetation_fraction" in native_layers:
-        fields.append(("vegetation_fraction", native_layers["vegetation_fraction"], "float16"))
-        print(f"  vegetation_fraction: {native_layers['vegetation_fraction'].shape}")
+        veg = native_layers["vegetation_fraction"].copy()
+        if interpolate and "precipitation" in native_layers and "surface" in native_layers:
+            veg = _fill_island_vegetation(
+                veg, native_layers, native_land_mask, land_mask,
+            )
+        fields.append(("vegetation_fraction", veg, "float16"))
+        print(f"  vegetation_fraction: {veg.shape}")
 
     # soil_moisture: native resolution (drives Blue Marble land color)
     if "soil_moisture" in native_layers:

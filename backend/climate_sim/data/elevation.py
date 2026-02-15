@@ -11,6 +11,7 @@ import rioxarray
 from PIL import Image
 from functools import lru_cache
 import xarray as xr
+from scipy.interpolate import RegularGridInterpolator
 
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.core.math_core import regular_latitude_edges, regular_longitude_edges
@@ -428,6 +429,276 @@ def compute_cell_elevation_statistics(
             )
 
     return elevation_std, elevation_max
+
+
+def compute_face_elevation_statistics(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    cache: bool = True,
+    n_samples_per_cell: int = 15,
+) -> dict[str, np.ndarray]:
+    """Compute directional cross-sectional blockage ratios at cell faces.
+
+    For each face between two adjacent cells, we sample fine-resolution
+    elevation in a strip centered on the face (half a cell on each side).
+    The blockage ratio is the fraction of the BL cross-section that is open.
+
+    At each cross-section position (latitude row for east faces, longitude
+    column for north faces), we find the silhouette height — the max elevation
+    across the flow direction.  The blocked fraction at that position is
+    ``clip((silhouette - z_entry) / H_BL, 0, 1)`` where ``z_entry`` is the
+    upwind cell-mean elevation and ``H_BL`` is the effective BL depth.
+
+    This naturally distinguishes:
+    - Continuous ridges (blocked at every position → low open fraction)
+    - Isolated peaks (blocked at few positions → high open fraction)
+    - High plateaus (silhouette ≈ z_entry → minimal blocking)
+
+    Returns
+    -------
+    dict with keys:
+      r_east_pos : (nlat, nlon) open fraction for eastward  (u>0) flow
+      r_east_neg : (nlat, nlon) open fraction for westward  (u<0) flow
+      r_north_pos: (nlat, nlon) open fraction for northward (v>0) flow
+      r_north_neg: (nlat, nlon) open fraction for southward (v<0) flow
+    Values range from 0 (fully blocked) to 1 (fully open).
+    """
+    if lon2d.shape != lat2d.shape:
+        raise ValueError("Longitude and latitude grids must share the same shape")
+
+    nlat, nlon = lon2d.shape
+    cache_name = "face_elevation_cache.npz"
+    expected_keys = [
+        "r_east_pos", "r_east_neg", "r_north_pos", "r_north_neg",
+        "r_east_pos_eddy", "r_east_neg_eddy", "r_north_pos_eddy", "r_north_neg_eddy",
+        "grad_x_pos", "grad_x_neg", "grad_y_pos", "grad_y_neg",
+    ]
+
+    if cache:
+        data_dir = os.getenv("DATA_DIR")
+        if data_dir is not None:
+            cache_path = Path(data_dir) / cache_name
+            if cache_path.exists():
+                try:
+                    with np.load(cache_path) as cached:
+                        if all(k in cached and cached[k].shape == (nlat, nlon) for k in expected_keys):
+                            return {k: cached[k] for k in expected_keys}
+                except Exception as e:
+                    print(f"Failed to load face elevation cache: {e}, recomputing...")
+
+    lat_centers = lat2d[:, 0]
+    lon_centers = lon2d[0, :]
+    lat_edges = regular_latitude_edges(lat_centers)
+    lon_edges = regular_longitude_edges(lon_centers)
+
+    # Sample weights within a single cell dimension
+    sw = np.linspace(0.0, 1.0, n_samples_per_cell + 1)
+    sw = (sw[:-1] + sw[1:]) / 2.0  # cell-interior sample positions [0..1]
+
+    # ---- helper: sample a rectangle of fine-res elevation ----
+    data_dir_env = os.getenv("DATA_DIR")
+    tif_path = Path(data_dir_env) / "etopo_60s.tif" if data_dir_env else None
+    dataset = None
+    interp = None
+    if tif_path is None or not tif_path.exists():
+        dataset = load_elevation_data()
+        if dataset is None:
+            return {k: np.zeros((nlat, nlon)) for k in expected_keys}
+        if dataset.rio.crs is None:
+            dataset = dataset.rio.write_crs("EPSG:4326", inplace=False)
+        x_coords, y_coords, data_values = _get_elevation_arrays(dataset)
+        interp = RegularGridInterpolator(
+            (y_coords, x_coords), data_values,
+            method="nearest", bounds_error=False, fill_value=0.0,
+        )
+
+    def _sample_rect(lat_lo: np.ndarray, lat_hi: np.ndarray,
+                     lon_lo: np.ndarray, lon_hi: np.ndarray,
+                     n_lat: int, n_lon: int) -> np.ndarray:
+        """Sample fine-res elevation in rectangles.
+
+        lat_lo/hi, lon_lo/hi: (nlat, nlon) arrays of rectangle bounds.
+        Returns: (nlat, nlon, n_lat, n_lon) sampled elevation.
+        """
+        sw_lat = np.linspace(0.0, 1.0, n_lat + 1)
+        sw_lat = (sw_lat[:-1] + sw_lat[1:]) / 2.0
+        sw_lon = np.linspace(0.0, 1.0, n_lon + 1)
+        sw_lon = (sw_lon[:-1] + sw_lon[1:]) / 2.0
+
+        # Wrap longitudes where needed
+        lon_hi_w = np.where(lon_hi < lon_lo, lon_hi + 360.0, lon_hi)
+
+        lat_s = np.clip(
+            lat_lo[:, :, np.newaxis, np.newaxis]
+            + (lat_hi - lat_lo)[:, :, np.newaxis, np.newaxis]
+            * sw_lat[np.newaxis, np.newaxis, :, np.newaxis],
+            -90.0, 90.0,
+        )
+        lon_s = _wrap_longitudes(
+            lon_lo[:, :, np.newaxis, np.newaxis]
+            + (lon_hi_w - lon_lo)[:, :, np.newaxis, np.newaxis]
+            * sw_lon[np.newaxis, np.newaxis, np.newaxis, :],
+        )
+
+        target_shape = (nlat, nlon, n_lat, n_lon)
+        lat_s = np.broadcast_to(lat_s, target_shape)
+        lon_s = np.broadcast_to(lon_s, target_shape)
+        lon_flat = lon_s.ravel()
+        lat_flat = lat_s.ravel()
+
+        if tif_path is not None and tif_path.exists():
+            vals = _sample_elevation_points_rasterio(tif_path, lon_flat, lat_flat)
+        else:
+            assert interp is not None
+            vals = interp(np.stack([lat_flat, lon_flat], axis=-1))
+
+        # Clamp to >= 0: ocean bathymetry shouldn't create terrain barriers.
+        return np.maximum(0.0, np.nan_to_num(vals, nan=0.0)).reshape(target_shape)
+
+    # ---- East faces: strip centered on face, half-cell on each side ----
+    # Lat bounds: same as each cell's lat range
+    lat_lo_e = np.broadcast_to(lat_edges[:-1, np.newaxis], (nlat, nlon))
+    lat_hi_e = np.broadcast_to(lat_edges[1:, np.newaxis], (nlat, nlon))
+    # Lon bounds: cell center j to cell center j+1 (half-cell each side of face)
+    lon_lo_e = np.broadcast_to(lon_centers[np.newaxis, :], (nlat, nlon))
+    lon_hi_e = np.broadcast_to(np.roll(lon_centers, -1)[np.newaxis, :], (nlat, nlon))
+
+    east_elev = _sample_rect(lat_lo_e, lat_hi_e, lon_lo_e, lon_hi_e,
+                             n_samples_per_cell, n_samples_per_cell)
+    # shape: (nlat, nlon, n_lat_samples, n_lon_samples)
+
+    # Silhouette: at each latitude row, find the max elevation across longitudes.
+    # This is the terrain wall the flow must cross at that latitude.
+    east_silhouette = np.max(east_elev, axis=3)  # (nlat, nlon, n_lat_samples)
+
+    # Entry elevation: cell-mean elevation on each side (our model's "surface").
+    # Clamp to >= 0 so ocean cells have z_entry = 0 (sea level).
+    cell_elev = np.maximum(0.0, compute_cell_elevation(lon2d, lat2d))
+    z_entry_left = cell_elev[:, :, np.newaxis]                          # cell j
+    z_entry_right = np.roll(cell_elev, -1, axis=1)[:, :, np.newaxis]   # cell j+1
+
+    # Blockage ratios for two different physics:
+    # 1. Wind (advection): H_wind = BL depth (~1000m). Mountains taller than the BL
+    #    completely block surface wind — flow goes around, not over.
+    # 2. Eddies (diffusion): H_eddy = moisture-weighted tropospheric depth (~5000m).
+    #    Baroclinic eddies extend through the full troposphere, but most moisture
+    #    lives below 3-4 km (scale height ~2 km), so a 3 km range blocks most of
+    #    the moisture-carrying capacity even though storms pass over it.
+    H_WIND = 1500.0   # BL depth (m) — for advection/wind blocking
+    H_EDDY = 5000.0   # moisture-weighted tropospheric depth (m) — for diffusion blocking
+
+    def _compute_r(silhouette: np.ndarray, z_entry: np.ndarray, H: float) -> np.ndarray:
+        blocked = np.clip((silhouette - z_entry) / H, 0.0, 1.0)
+        return 1.0 - np.mean(blocked, axis=2)
+
+    r_east_pos_wind = _compute_r(east_silhouette, z_entry_left, H_WIND)
+    r_east_neg_wind = _compute_r(east_silhouette, z_entry_right, H_WIND)
+    r_east_pos_eddy = _compute_r(east_silhouette, z_entry_left, H_EDDY)
+    r_east_neg_eddy = _compute_r(east_silhouette, z_entry_right, H_EDDY)
+
+    # ---- North faces: strip centered on face, half-cell on each side ----
+    lat_lo_n = np.broadcast_to(lat_centers[:, np.newaxis], (nlat, nlon))
+    lat_hi_n = np.broadcast_to(np.roll(lat_centers, -1)[:, np.newaxis], (nlat, nlon))
+    lon_lo_n = np.broadcast_to(lon_edges[np.newaxis, :-1], (nlat, nlon))
+    lon_hi_n = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))
+
+    north_elev = _sample_rect(lat_lo_n, lat_hi_n, lon_lo_n, lon_hi_n,
+                              n_samples_per_cell, n_samples_per_cell)
+    # shape: (nlat, nlon, n_lat_samples, n_lon_samples)
+
+    # Silhouette: at each longitude column, find max elevation across latitudes.
+    north_silhouette = np.max(north_elev, axis=2)  # (nlat, nlon, n_lon_samples)
+
+    z_entry_south = cell_elev[:, :, np.newaxis]                         # cell i
+    z_entry_north = np.roll(cell_elev, -1, axis=0)[:, :, np.newaxis]   # cell i+1
+
+    r_north_pos_wind = _compute_r(north_silhouette, z_entry_south, H_WIND)
+    r_north_neg_wind = _compute_r(north_silhouette, z_entry_north, H_WIND)
+    r_north_pos_eddy = _compute_r(north_silhouette, z_entry_south, H_EDDY)
+    r_north_neg_eddy = _compute_r(north_silhouette, z_entry_north, H_EDDY)
+
+    # ---- Directional orographic gradients from fine-res data ----
+    # Sample fine-res elevation within each cell to compute effective terrain
+    # gradients.  At coarse resolution, cell-mean gradients average out windward
+    # and leeward slopes.  Instead we separate positive (upslope) and negative
+    # (downslope) contributions so orographic precipitation sees the actual
+    # mountain slope, not the smoothed cell-mean.
+    lat_lo_c = np.broadcast_to(lat_edges[:-1, np.newaxis], (nlat, nlon))
+    lat_hi_c = np.broadcast_to(lat_edges[1:, np.newaxis], (nlat, nlon))
+    lon_lo_c = np.broadcast_to(lon_edges[np.newaxis, :-1], (nlat, nlon))
+    lon_hi_c = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))
+
+    cell_elev_fine = _sample_rect(lat_lo_c, lat_hi_c, lon_lo_c, lon_hi_c,
+                                  n_samples_per_cell, n_samples_per_cell)
+    # shape: (nlat, nlon, n_lat, n_lon)
+
+    # Compute ∂h/∂x from finite differences of fine-res samples within each cell.
+    # dx between adjacent samples = cell_width / n_samples
+    earth_radius = 6.371e6
+    dlat = np.deg2rad(lat_edges[1:] - lat_edges[:-1])  # (nlat,)
+    dlon = np.deg2rad(lon_edges[1:] - lon_edges[:-1])   # (nlon,)
+    cos_lat = np.cos(np.deg2rad(lat_centers))
+
+    # Distance between adjacent fine-res samples (m)
+    dx_sample = (earth_radius * cos_lat[:, np.newaxis] * dlon[np.newaxis, :]
+                 / n_samples_per_cell)  # (nlat, nlon)
+    dy_sample = (earth_radius * dlat[:, np.newaxis]
+                 / n_samples_per_cell)  # (nlat, 1) broadcast to (nlat, nlon)
+    dy_sample = np.broadcast_to(dy_sample, (nlat, nlon))
+
+    # Central differences for interior points, forward/backward at edges
+    # ∂h/∂x: gradient in the longitude (east-west) direction
+    dhdx = np.zeros_like(cell_elev_fine)
+    dhdx[:, :, :, 1:-1] = ((cell_elev_fine[:, :, :, 2:] - cell_elev_fine[:, :, :, :-2])
+                            / (2.0 * dx_sample[:, :, np.newaxis, np.newaxis]))
+    dhdx[:, :, :, 0] = ((cell_elev_fine[:, :, :, 1] - cell_elev_fine[:, :, :, 0])
+                         / dx_sample[:, :, np.newaxis])
+    dhdx[:, :, :, -1] = ((cell_elev_fine[:, :, :, -1] - cell_elev_fine[:, :, :, -2])
+                          / dx_sample[:, :, np.newaxis])
+
+    # ∂h/∂y: gradient in the latitude (north-south) direction
+    dhdy = np.zeros_like(cell_elev_fine)
+    dhdy[:, :, 1:-1, :] = ((cell_elev_fine[:, :, 2:, :] - cell_elev_fine[:, :, :-2, :])
+                            / (2.0 * dy_sample[:, :, np.newaxis, np.newaxis]))
+    dhdy[:, :, 0, :] = ((cell_elev_fine[:, :, 1, :] - cell_elev_fine[:, :, 0, :])
+                         / dy_sample[:, :, np.newaxis])
+    dhdy[:, :, -1, :] = ((cell_elev_fine[:, :, -1, :] - cell_elev_fine[:, :, -2, :])
+                          / dy_sample[:, :, np.newaxis])
+
+    # Separate into positive (upslope) and negative (downslope) gradients,
+    # then average over all sample points in each cell.
+    # grad_x_pos: mean positive ∂h/∂x (upslope for eastward flow)
+    # grad_x_neg: mean positive -∂h/∂x (upslope for westward flow)
+    grad_x_pos = np.mean(np.maximum(dhdx, 0.0), axis=(2, 3))  # (nlat, nlon)
+    grad_x_neg = np.mean(np.maximum(-dhdx, 0.0), axis=(2, 3))
+    grad_y_pos = np.mean(np.maximum(dhdy, 0.0), axis=(2, 3))
+    grad_y_neg = np.mean(np.maximum(-dhdy, 0.0), axis=(2, 3))
+
+    result = {
+        # Wind blocking (advection) — H = 1500m
+        "r_east_pos": r_east_pos_wind,
+        "r_east_neg": r_east_neg_wind,
+        "r_north_pos": r_north_pos_wind,
+        "r_north_neg": r_north_neg_wind,
+        # Eddy blocking (diffusion) — H = 5000m
+        "r_east_pos_eddy": r_east_pos_eddy,
+        "r_east_neg_eddy": r_east_neg_eddy,
+        "r_north_pos_eddy": r_north_pos_eddy,
+        "r_north_neg_eddy": r_north_neg_eddy,
+        # Directional orographic gradients (m/m)
+        "grad_x_pos": grad_x_pos,
+        "grad_x_neg": grad_x_neg,
+        "grad_y_pos": grad_y_pos,
+        "grad_y_neg": grad_y_neg,
+    }
+
+    if cache:
+        data_dir_env = os.getenv("DATA_DIR")
+        if data_dir_env is not None:
+            cache_path = Path(data_dir_env) / cache_name
+            np.savez_compressed(cache_path, **result)
+
+    return result
 
 
 def compute_cell_roughness_length(

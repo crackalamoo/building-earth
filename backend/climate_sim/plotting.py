@@ -251,6 +251,7 @@ def plot_layered_monthly_temperature_cycle(
     colorbar_ticks: Iterable[float] | None = None,
     use_fahrenheit: bool = False,
     value_is_delta: bool = False,
+    per_layer_styles: Sequence[dict] | None = None,
 ) -> None:
     """Interactive monthly cycle viewer with month slider and layer selector."""
 
@@ -285,6 +286,19 @@ def plot_layered_monthly_temperature_cycle(
     if use_fahrenheit and colorbar_label.endswith("°C)"):
         colorbar_label = colorbar_label[:-3] + "°F)"
 
+    # Build per-layer style list (defaults to the shared cmap/norm/label)
+    layer_styles: list[dict] = []
+    for i in range(len(items)):
+        style: dict = {
+            "cmap": cmap,
+            "norm": norm,
+            "colorbar_label": colorbar_label,
+            "unit": unit,
+        }
+        if per_layer_styles is not None and i < len(per_layer_styles):
+            style.update(per_layer_styles[i])
+        layer_styles.append(style)
+
     projection = ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
     ax.set_global()
@@ -303,12 +317,13 @@ def plot_layered_monthly_temperature_cycle(
         for field in data_stack
     ]
 
+    style0 = layer_styles[0]
     mesh = ax.pcolormesh(
         lon2d,
         lat2d,
         data_stack_display[current_state["layer"]][current_state["month"]],
-        cmap=cmap,
-        norm=norm,
+        cmap=style0["cmap"],
+        norm=style0["norm"],
         shading="auto",
         transform=projection,
     )
@@ -323,11 +338,11 @@ def plot_layered_monthly_temperature_cycle(
     ax.set_title(format_title())
 
     cbar = fig.colorbar(mesh, ax=ax, orientation="vertical", pad=0.04, fraction=0.046)
-    if colorbar_label:
-        cbar.set_label(colorbar_label)
+    if style0["colorbar_label"]:
+        cbar.set_label(style0["colorbar_label"])
     if colorbar_ticks is not None:
         cbar.set_ticks(colorbar_ticks)
-    elif cmap is default_cmap:
+    elif style0["cmap"] is default_cmap:
         cbar.set_ticks(bounds)
 
     slider_ax = fig.add_axes([0.15, 0.1, 0.7, 0.03])
@@ -353,14 +368,20 @@ def plot_layered_monthly_temperature_cycle(
         data_container=current_field,
         format_message=lambda lon, lat, data, lon_idx, lat_idx: (
             f"{_format_lat(lat)}  {_format_lon(lon)}  "
-            f"{data['data'][lat_idx, lon_idx]:.1f} {unit}"
+            f"{data['data'][lat_idx, lon_idx]:.1f} {layer_styles[current_state['layer']]['unit']}"
         ),
     )
 
     def update_plot() -> None:
-        data = data_stack_display[current_state["layer"]][current_state["month"]]
+        li = current_state["layer"]
+        data = data_stack_display[li][current_state["month"]]
+        style = layer_styles[li]
+        mesh.set_cmap(style["cmap"])
+        mesh.set_norm(style["norm"])
         mesh.set_array(data.ravel())
         ax.set_title(format_title())
+        cbar.update_normal(mesh)
+        cbar.set_label(style["colorbar_label"])
         current_field["data"] = data
         fig.canvas.draw_idle()
 
@@ -381,6 +402,136 @@ def plot_layered_monthly_temperature_cycle(
 
         _layer_selector.on_clicked(on_layer)
 
+    plt.show()
+
+
+def plot_obs_vs_sim_grid(
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
+    columns: Sequence[dict],
+    *,
+    title: str = "Observed vs Simulated",
+    use_fahrenheit: bool = False,
+) -> None:
+    """2-row × N-column grid: observed on top, simulated on bottom.
+
+    Each entry in *columns* is a dict with keys:
+        obs, sim : (nmonths, nlat, nlon) arrays
+        cmap, norm : colormap and normalization
+        colorbar_label : str
+        label : column title (e.g. "Temperature")
+        unit : str for hover readout
+        is_temperature : bool (default False) — apply F conversion if needed
+        colorbar_ticks : optional list
+        quiver_uv : optional dict with "obs" and "sim" keys, each (u, v) tuple
+                     of (nmonths, nlat, nlon) arrays for wind direction arrows
+    """
+    ncols = len(columns)
+    month_names = list(MONTH_NAMES) + ["Average"]
+
+    projection = ccrs.PlateCarree()
+    fig, axes = plt.subplots(
+        2, ncols, figsize=(6 * ncols + 1, 9),
+        subplot_kw=dict(projection=projection),
+    )
+    if ncols == 1:
+        axes = axes.reshape(2, 1)
+    fig.subplots_adjust(bottom=0.12, hspace=0.12, wspace=0.05)
+
+    meshes: list[list] = [[], []]  # meshes[row][col]
+    display_data: list[list[np.ndarray]] = [[], []]  # display_data[row][col]
+    quivers: list[list] = [[], []]  # quivers[row][col] — None or quiver artist
+    quiver_data: list[list] = [[], []]  # quiver_data[row][col] — None or (u, v)
+
+    # Subsample stride for quiver arrows
+    nlat, nlon = lon2d.shape
+    stride_lat = max(1, nlat // 18)
+    stride_lon = max(1, nlon // 36)
+    q_lat = slice(None, None, stride_lat)
+    q_lon = slice(None, None, stride_lon)
+    q_lon2d = lon2d[q_lat, q_lon]
+    q_lat2d = lat2d[q_lat, q_lon]
+
+    for ci, col in enumerate(columns):
+        is_temp = col.get("is_temperature", False)
+        qdata = col.get("quiver_uv")
+        for ri, key in enumerate(("obs", "sim")):
+            ax = axes[ri, ci]
+            ax.set_global()
+            ax.coastlines(linewidth=0.4)
+            ax.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+            ax.add_feature(cfeature.NaturalEarthFeature(
+                'physical', 'lakes', '110m',
+                edgecolor='#000000', facecolor='none'), linewidth=0.2)
+            ax.add_feature(cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0)
+
+            raw = col[key]
+            data = convert_temperature(raw, use_fahrenheit, is_delta=False) if is_temp else raw
+            display_data[ri].append(data)
+
+            mesh = ax.pcolormesh(
+                lon2d, lat2d, data[0],
+                cmap=col["cmap"], norm=col["norm"],
+                shading="auto", transform=projection,
+            )
+            meshes[ri].append(mesh)
+
+            if qdata is not None:
+                u_full, v_full = qdata[key]
+                u_sub = u_full[0, q_lat, q_lon]
+                v_sub = v_full[0, q_lat, q_lon]
+                qv = ax.quiver(
+                    q_lon2d, q_lat2d, u_sub, v_sub,
+                    transform=projection, scale=120, width=0.003,
+                    headwidth=3, headlength=4, color="k", alpha=0.6,
+                )
+                quivers[ri].append(qv)
+                quiver_data[ri].append((u_full, v_full))
+            else:
+                quivers[ri].append(None)
+                quiver_data[ri].append(None)
+
+        axes[0, ci].set_title(col["label"], fontsize=11)
+
+    axes[0, 0].text(-0.05, 0.5, "Observed", transform=axes[0, 0].transAxes,
+                    fontsize=11, va="center", ha="right", rotation=90)
+    axes[1, 0].text(-0.05, 0.5, "Simulated", transform=axes[1, 0].transAxes,
+                    fontsize=11, va="center", ha="right", rotation=90)
+
+    # One colorbar per column, placed manually to the right of each column
+    for ci, col in enumerate(columns):
+        pos = axes[0, ci].get_position()
+        cbar_ax = fig.add_axes([pos.x1 + 0.005, 0.15, 0.01, 0.7])
+        cbar = fig.colorbar(meshes[0][ci], cax=cbar_ax)
+        cbar.set_label(col.get("colorbar_label", ""))
+        ticks = col.get("colorbar_ticks")
+        if ticks is not None:
+            cbar.set_ticks(ticks)
+
+    fig.suptitle(f"{title} – {month_names[0]}", fontsize=14)
+
+    slider_ax = fig.add_axes([0.15, 0.04, 0.7, 0.03])
+    slider = Slider(
+        slider_ax, label="Month", valmin=0,
+        valmax=display_data[0][0].shape[0] - 1,
+        valinit=0, valstep=1, valfmt="%0.0f",
+    )
+
+    def on_update(idx: float) -> None:
+        m = int(idx)
+        for ri in range(2):
+            for ci in range(ncols):
+                meshes[ri][ci].set_array(display_data[ri][ci][m].ravel())
+                if quivers[ri][ci] is not None:
+                    u_full, v_full = quiver_data[ri][ci]
+                    quivers[ri][ci].set_UVC(
+                        u_full[m, q_lat, q_lon],
+                        v_full[m, q_lat, q_lon],
+                    )
+        fig.suptitle(f"{title} – {month_names[m]}", fontsize=14)
+        fig.canvas.draw_idle()
+
+    slider.on_changed(on_update)
     plt.show()
 
 

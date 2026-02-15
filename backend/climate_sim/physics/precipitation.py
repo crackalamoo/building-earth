@@ -17,6 +17,7 @@ from climate_sim.data.constants import (
     GAS_CONSTANT_WATER_VAPOR_J_KG_K,
     LATENT_HEAT_VAPORIZATION_J_KG,
     STANDARD_LAPSE_RATE_K_PER_M,
+    R_EARTH_METERS,
 )
 from climate_sim.physics.humidity import compute_saturation_specific_humidity
 
@@ -384,3 +385,26 @@ def compute_precipitation_jacobian(
     dP_dT_bl += dP_drizzle_dT_bl
 
     return dP_dT_bl, dP_dT_atm, dP_dq
+
+
+def compute_precipitation_recycling(
+    evap_rate: np.ndarray,
+    humidity_q: np.ndarray,
+    wind_speed: np.ndarray,
+    land_mask: np.ndarray,
+    resolution_deg: float = 5.0,
+) -> np.ndarray:
+    """Precipitation recycling (Eltahir & Bras 1996): ρ = E·L / (q·U·H + E·L).
+
+    Local convection recaptures evaporated moisture before wind transports
+    it out of the grid cell.  Land only; zero free parameters.
+    """
+    L = R_EARTH_METERS * np.deg2rad(resolution_deg)
+    H = 2000.0  # moisture scale height (m)
+
+    E = np.maximum(evap_rate, 0.0)
+    moisture_flux = np.maximum(humidity_q, 1e-6) * np.maximum(wind_speed, 0.5) * H
+    local_supply = E * L
+
+    recycled = E * local_supply / (moisture_flux + local_supply)
+    return np.where(land_mask, recycled, 0.0)
