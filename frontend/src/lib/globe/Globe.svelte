@@ -797,7 +797,7 @@
       cloudInstances.dispose();
     }
     cloudInstances = new CloudInstances(layerData!);
-    if (container) cloudInstances.setViewportHeight(container.clientHeight * window.devicePixelRatio, camera.fov);
+    if (container) cloudInstances.setViewportHeight(container.clientHeight * Math.min(window.devicePixelRatio, 2), camera.fov);
     const obj = cloudInstances.getObject();
     obj.visible = activeLayer === 'blue-marble';
     if (globe) obj.rotation.y = globe.rotation.y;
@@ -958,7 +958,7 @@
     // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(renderer.domElement);
 
     // Controls
@@ -1162,7 +1162,7 @@
     camera.aspect = container.clientWidth / container.clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(container.clientWidth, container.clientHeight);
-    if (cloudInstances) cloudInstances.setViewportHeight(container.clientHeight * window.devicePixelRatio, camera.fov);
+    if (cloudInstances) cloudInstances.setViewportHeight(container.clientHeight * Math.min(window.devicePixelRatio, 2), camera.fov);
   }
 
   // Recreate temperature globe when data changes
