@@ -589,14 +589,13 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if tau_mix > 0 and nlayers == 3:
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
-                # τ_rad = C_atm / (4σT_atm³), treat as locally constant for Jacobian
-                tau_rad = C_atm / (4.0 * STEFAN_BOLTZMANN_W_M2_K4 * state.temperature[2]**3)
-                # dT_bl/dt = (α*T_atm - T_bl) / τ_rad
-                diag[1] += -1.0 / tau_rad
-                cross[1, 2] += _ALPHA / tau_rad
-                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ_rad
-                diag[2] += -(C_bl / C_atm) * _ALPHA / tau_rad
-                cross[2, 1] += (C_bl / C_atm) / tau_rad
+                tau = 10.0 * 86400.0  # 10 days, matching vertical_motion.py
+                # dT_bl/dt = (α*T_atm - T_bl) / τ
+                diag[1] += -1.0 / tau
+                cross[1, 2] += _ALPHA / tau
+                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ
+                diag[2] += -(C_bl / C_atm) * _ALPHA / tau
+                cross[2, 1] += (C_bl / C_atm) / tau
 
             # Use updated surface diffusion matrix if ocean ψ was applied
             actual_surface_diffusion_matrix = surface_matrix

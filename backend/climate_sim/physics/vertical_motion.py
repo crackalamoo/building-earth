@@ -68,7 +68,7 @@ class VerticalMotionConfig:
     # Background BL-atmosphere mixing timescale (seconds).
     # Represents subsidence, entrainment, and turbulent exchange that
     # returns latent heat from the free atmosphere back to the BL.
-    tau_bl_atm_mixing_s: float = 20.0 * 86400.0  # 20 days (Cronin 2013)
+    tau_bl_atm_mixing_s: float = 10.0 * 86400.0  # 10 days (blended processes)
 
 
 def compute_vertical_motion_heating(
@@ -374,18 +374,16 @@ def compute_bl_atm_mixing_tendencies(
     closing the latent heat return loop: surface evaporation -> condensation
     aloft -> radiative cooling -> subsidence warming back to BL.
 
-    The timescale is the radiative-subsidence timescale (Cronin 2013):
-    tau_rad = C_atm / (4*sigma*T_atm^3), computed per grid cell from model
-    state. Varies ~22d (tropics) to ~27d (poles).
+    Uses a fixed 10-day timescale representing a blend of radiative
+    subsidence, turbulent entrainment, and convective mixing.
 
     Energy-conserving: C_bl * dT_bl + C_atm * dT_atm = 0.
     """
     theta_atm = T_atm * _ALPHA  # Potential temperature of free atm at surface
 
-    # Radiative-subsidence timescale (seconds, per grid cell)
-    tau_rad = C_atm / (4.0 * STEFAN_BOLTZMANN_W_M2_K4 * T_atm**3)
+    tau = 10.0 * 86400.0  # 10 days
 
-    heat_flux = C_bl * (theta_atm - T_bl) / tau_rad  # W/m²
+    heat_flux = C_bl * (theta_atm - T_bl) / tau  # W/m²
 
     dT_bl = heat_flux / C_bl      # = (theta_atm - T_bl) / tau_rad
     dT_atm = -heat_flux / C_atm   # Energy conservation
