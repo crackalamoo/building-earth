@@ -5,7 +5,7 @@ import { ELEVATION_SCALE, sampleElevation } from './elevation';
 import { sampleBilinear } from './gridSampling';
 
 const GLOBE_RADIUS = 1.001;
-const TREE_HEIGHT = 0.017;
+const TREE_HEIGHT = 0.025;
 const SEED = 42;
 
 // Mulberry32 seeded PRNG
@@ -373,8 +373,8 @@ export class TreeInstances {
         // Max possible trees per coarse cell — try more candidates for
         // cells that are partially ocean at coarse res but have hi-res land
         const maxCandidates = isCoarseLand
-          ? Math.floor(treeDensity * 15 + rand())
-          : 4; // small budget for coastal spillover
+          ? Math.floor(treeDensity * 7 + rand())
+          : 2; // small budget for coastal spillover
         if (maxCandidates <= 0) { rand(); continue; } // consume one rand for determinism
 
         const coarseAnnualSoil = isCoarseLand ? Math.min(coarseSoilSum / 12, 1) : 0.5;

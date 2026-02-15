@@ -8,12 +8,10 @@
 
 // ── Color palette ──────────────────────────────────────────────────
 
-// Ocean depth gradient (bathymetry-driven)
-const OCEAN_ABYSS: [number, number, number] = [0.02, 0.06, 0.20];   // deep trenches
-const OCEAN_DEEP: [number, number, number] = [0.04, 0.10, 0.28];    // deep ocean
-const OCEAN_MID: [number, number, number] = [0.06, 0.16, 0.40];     // mid-ocean
-const OCEAN_SHELF: [number, number, number] = [0.10, 0.28, 0.52];   // continental shelf
-const OCEAN_COASTAL: [number, number, number] = [0.14, 0.38, 0.58]; // near-shore shallow
+// Ocean colors — subtle depth variation, not dramatic bathymetry
+const OCEAN_DEEP: [number, number, number] = [0.03, 0.08, 0.24];    // deep ocean
+const OCEAN_BASE: [number, number, number] = [0.05, 0.13, 0.33];    // mid ocean
+const OCEAN_COASTAL: [number, number, number] = [0.10, 0.28, 0.45]; // shallow near-shore
 
 // Bare soil hues by annual mean temperature
 const SOIL_TUNDRA: [number, number, number] = [0.58, 0.55, 0.50];     // pale grey-tan
@@ -110,29 +108,21 @@ export function blueMarbleColor(
   elevationM: number = 0,
   vegetationFraction: number = 0,
   annualMeanTempC: number = 15,
+  annualMeanSoilMoisture: number = 0.5,
 ): [number, number, number] {
   if (!isLand) {
-    // ── Ocean ── bathymetry-driven depth shading
-    const depth = Math.max(0, -elevationM); // meters below sea level
+    // ── Ocean ── subtle depth gradient
+    const depth = Math.max(0, -elevationM);
 
-    // Multi-stop depth gradient
     let color: [number, number, number];
     if (depth < 200) {
-      // Continental shelf (0-200m)
       const t = depth / 200;
-      color = lerp3(OCEAN_COASTAL, OCEAN_SHELF, t);
-    } else if (depth < 2000) {
-      // Continental slope (200-2000m)
-      const t = (depth - 200) / 1800;
-      color = lerp3(OCEAN_SHELF, OCEAN_MID, t);
-    } else if (depth < 5000) {
-      // Deep ocean (2000-5000m)
-      const t = (depth - 2000) / 3000;
-      color = lerp3(OCEAN_MID, OCEAN_DEEP, t);
+      color = lerp3(OCEAN_COASTAL, OCEAN_BASE, t);
+    } else if (depth < 4000) {
+      const t = (depth - 200) / 3800;
+      color = lerp3(OCEAN_BASE, OCEAN_DEEP, t);
     } else {
-      // Abyssal/trench (5000m+)
-      const t = clamp01((depth - 5000) / 4000);
-      color = lerp3(OCEAN_DEEP, OCEAN_ABYSS, t);
+      color = [...OCEAN_DEEP];
     }
 
     // Sea ice overlay
@@ -171,11 +161,35 @@ export function blueMarbleColor(
   const grassGreen = surfaceTempC < 0
     ? lerp3(GRASS_BOREAL, GRASS_TEMPERATE, clamp01((surfaceTempC + 10) / 10))
     : lerp3(GRASS_TEMPERATE, GRASS_TROPICAL, clamp01(surfaceTempC / 25));
-  const grassAlive = clamp01(soilMoisture / 0.3);
+  // Vegetation greenness: established plants don't die from one dry month.
+  // Annual mean moisture is the baseline (root-zone memory), monthly adds seasonal shift.
+  const baseMoisture = annualMeanSoilMoisture;
+  // seasonalDip: how far below annual mean is this month's moisture (as fraction of annual)
+  const moistureDrop = baseMoisture > 0.01 ? clamp01((baseMoisture - soilMoisture) / baseMoisture) : 0;
+  // Square it so small dips are subtle but big drops (Mediterranean summer) are dramatic
+  const seasonalDip = moistureDrop * moistureDrop;
+  const grassAlive = clamp01(baseMoisture / 0.3) * (1.0 - seasonalDip * 0.7);
   groundCover = lerp3(GRASS_DEAD, grassGreen, grassAlive);
 
   // 3. Blend bare soil ↔ ground cover by vegetation fraction
-  let baseColor = lerp3(bareSoil, groundCover, clamp01(vegetationFraction));
+  // Nonlinear: even moderate veg shows substantial green
+  const vegBlend = Math.sqrt(clamp01(vegetationFraction));
+  let baseColor = lerp3(bareSoil, groundCover, vegBlend);
+
+  // 4. Dense vegetation darkens and enriches the green (forest canopy effect)
+  // Low veg = bright open grassland, high veg = dark dense forest
+  if (vegetationFraction > 0.3) {
+    const density = clamp01((vegetationFraction - 0.3) / 0.5);
+    const darkening = 1.0 - density * 0.25; // up to 25% darker
+    const satBoost = density * 0.08; // slightly more saturated green
+    baseColor = [
+      baseColor[0] * darkening - satBoost,
+      baseColor[1] * darkening + satBoost * 0.3,
+      baseColor[2] * darkening - satBoost,
+    ];
+    baseColor[0] = Math.max(0, baseColor[0]);
+    baseColor[2] = Math.max(0, baseColor[2]);
+  }
 
   // Snow overlay
   const snowFrac = landSnowFraction(surfaceTempC);
