@@ -1078,7 +1078,7 @@
       cloudInstances.setMonth(displayMonthProgress, layerData);
       if (time !== undefined && lastAnimateTime !== null) {
         const cdt = (time - lastAnimateTime) / 1000;
-        cloudInstances.update(cdt, camera);
+        cloudInstances.update(cdt);
       }
     }
 

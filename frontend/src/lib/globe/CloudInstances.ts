@@ -1,17 +1,14 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import type { ClimateLayerData } from './loadBinaryData';
+import type { ClimateLayerData, FieldData } from './loadBinaryData';
 
 const DEG2RAD = Math.PI / 180;
-const CLOUD_RADIUS = 1.025;
+const CLOUD_RADIUS = 1.015;
 const SEED = 7919;
 
-const MIN_FRACTION = 0.12;
-const MAX_CLOUDS = 500;
-
-// Puff size range
-const PUFF_BASE = 0.008;
-const PUFF_VARY = 0.006;
+// Only place clouds in cells with annual-mean fraction above this
+const MIN_FRACTION = 0.05;
+// Max clouds total (budget for performance)
+const MAX_CLOUDS = 600;
 
 function mulberry32(seed: number): () => number {
   let s = seed | 0;
@@ -23,163 +20,100 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const Y_UP = new THREE.Vector3(0, 1, 0);
-
-function latLonToNormal(lat: number, lon: number): THREE.Vector3 {
+function latLonToPosition(lat: number, lon: number, radius: number): THREE.Vector3 {
   const phi = (90 - lat) * DEG2RAD;
   const theta = lon * DEG2RAD;
   return new THREE.Vector3(
-    -Math.sin(phi) * Math.cos(theta),
-    Math.cos(phi),
-    Math.sin(phi) * Math.sin(theta),
+    -radius * Math.sin(phi) * Math.cos(theta),
+    radius * Math.cos(phi),
+    radius * Math.sin(phi) * Math.sin(theta),
   );
 }
 
-function latLonToPosition(lat: number, lon: number, radius: number): THREE.Vector3 {
-  return latLonToNormal(lat, lon).multiplyScalar(radius);
-}
+// ---- High-quality procedural cloud texture ----
 
-// Cloud shape types for variety
-function buildCloudGeometry(rand: () => number, shapeType: number): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
+function createCloudTexture(): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, size, size);
 
-  // Different shapes: 0=small cumulus, 1=big cumulus, 2=elongated, 3=towering, 4=wispy, 5=cluster
-  let numPuffs: number;
-  let spreadX: number;
-  let spreadZ: number;
-  let heightRange: number;
-  let sizeMin: number;
-  let sizeMax: number;
+  const cx = size / 2;
+  const cy = size / 2;
 
-  switch (shapeType) {
-    case 0: // small cumulus — compact dome
-      numPuffs = 4 + Math.floor(rand() * 2);
-      spreadX = 0.008; spreadZ = 0.008; heightRange = 0.008;
-      sizeMin = 0.006; sizeMax = 0.012;
-      break;
-    case 1: // big cumulus — large puffy dome
-      numPuffs = 8 + Math.floor(rand() * 4);
-      spreadX = 0.014; spreadZ = 0.014; heightRange = 0.014;
-      sizeMin = 0.008; sizeMax = 0.016;
-      break;
-    case 2: // elongated — stretched along one axis
-      numPuffs = 6 + Math.floor(rand() * 3);
-      spreadX = 0.025; spreadZ = 0.006; heightRange = 0.005;
-      sizeMin = 0.006; sizeMax = 0.011;
-      break;
-    case 3: // towering — tall cumulonimbus-like
-      numPuffs = 10 + Math.floor(rand() * 4);
-      spreadX = 0.010; spreadZ = 0.010; heightRange = 0.020;
-      sizeMin = 0.007; sizeMax = 0.014;
-      break;
-    case 4: // wispy — few scattered small puffs
-      numPuffs = 3 + Math.floor(rand() * 2);
-      spreadX = 0.018; spreadZ = 0.012; heightRange = 0.003;
-      sizeMin = 0.004; sizeMax = 0.008;
-      break;
-    default: // cluster — group of distinct blobs
-      numPuffs = 7 + Math.floor(rand() * 3);
-      spreadX = 0.020; spreadZ = 0.016; heightRange = 0.010;
-      sizeMin = 0.005; sizeMax = 0.013;
-      break;
+  // Build up a cloud from many soft overlapping circles
+  // This creates a natural puffy shape with soft edges
+  const rand = mulberry32(12345);
+
+  // Large base blobs
+  const blobs: { x: number; y: number; r: number; a: number }[] = [
+    // Core mass
+    { x: cx, y: cy, r: 48, a: 0.35 },
+    { x: cx - 20, y: cy + 5, r: 40, a: 0.3 },
+    { x: cx + 22, y: cy + 3, r: 42, a: 0.3 },
+    { x: cx + 5, y: cy - 10, r: 36, a: 0.28 },
+    // Puffy bumps on top
+    { x: cx - 10, y: cy - 20, r: 30, a: 0.25 },
+    { x: cx + 12, y: cy - 18, r: 28, a: 0.25 },
+    { x: cx, y: cy - 28, r: 22, a: 0.2 },
+    // Wider base
+    { x: cx - 35, y: cy + 8, r: 30, a: 0.2 },
+    { x: cx + 38, y: cy + 6, r: 28, a: 0.2 },
+  ];
+
+  // Add some random smaller puffs for detail
+  for (let i = 0; i < 12; i++) {
+    blobs.push({
+      x: cx + (rand() - 0.5) * 70,
+      y: cy + (rand() - 0.5) * 50 - 5,
+      r: 12 + rand() * 20,
+      a: 0.1 + rand() * 0.15,
+    });
   }
 
-  for (let i = 0; i < numPuffs; i++) {
-    const r = sizeMin + rand() * (sizeMax - sizeMin);
-    const sphere = new THREE.IcosahedronGeometry(r, 2);
-
-    const pos = sphere.attributes.position;
-    const colors = new Float32Array(pos.count * 3);
-    colors.fill(1.0);
-    sphere.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-    // Position: bigger puffs near center and top (dome shape)
-    const angle = rand() * Math.PI * 2;
-    const distFrac = rand();
-    const px = Math.cos(angle) * distFrac * spreadX;
-    const pz = Math.sin(angle) * distFrac * spreadZ;
-    // Higher puffs near center, lower at edges
-    const py = (1.0 - distFrac * 0.7) * heightRange * rand();
-    sphere.translate(px, py, pz);
-
-    parts.push(sphere);
+  for (const b of blobs) {
+    const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+    grad.addColorStop(0, `rgba(255,255,255,${b.a})`);
+    grad.addColorStop(0.3, `rgba(255,255,255,${b.a * 0.8})`);
+    grad.addColorStop(0.6, `rgba(248,250,255,${b.a * 0.4})`);
+    grad.addColorStop(0.85, `rgba(240,244,255,${b.a * 0.1})`);
+    grad.addColorStop(1, 'rgba(235,240,250,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
   }
 
-  const merged = mergeGeometries(parts, false);
-  for (const p of parts) p.dispose();
-  return merged!;
+  // Slight bottom darkening (belly shadow)
+  const bellyGrad = ctx.createLinearGradient(0, 0, 0, size);
+  bellyGrad.addColorStop(0, 'rgba(0,0,0,0)');
+  bellyGrad.addColorStop(0.6, 'rgba(0,0,0,0)');
+  bellyGrad.addColorStop(1, 'rgba(30,40,60,0.08)');
+  ctx.globalCompositeOperation = 'source-atop';
+  ctx.fillStyle = bellyGrad;
+  ctx.fillRect(0, 0, size, size);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
 }
 
 // ---- Cloud placement ----
 
 interface CloudInfo {
+  sprite: THREE.Sprite;
   baseLat: number;
   baseLon: number;
-  driftLat: number;
-  driftLon: number;
-  windU: number; // current interpolated wind in deg/s
-  windV: number;
+  driftLat: number; // accumulated lat drift in degrees
+  driftLon: number; // accumulated lon drift in degrees
+  windU: number;    // annual-mean zonal wind (deg/s, positive = eastward)
+  windV: number;    // annual-mean meridional wind (deg/s, positive = northward)
+  radius: number;
   cellI: number;
   cellJ: number;
   currentOpacity: number;
   targetOpacity: number;
-  index: number; // index within its InstancedMesh
-  meshIndex: number; // which InstancedMesh template
 }
-
-// Custom shader for clouds: Lambert + sun-aware + opacity
-const cloudVertexShader = `
-  attribute float instanceOpacity;
-  varying vec3 vColor;
-  varying vec3 vNormal;
-  varying vec3 vWorldPos;
-  varying float vOpacity;
-
-  void main() {
-    vColor = color;
-    vNormal = normalize(mat3(modelMatrix) * normal);
-    vec4 worldPos = modelMatrix * instanceMatrix * vec4(position, 1.0);
-    vWorldPos = worldPos.xyz;
-    vOpacity = instanceOpacity;
-    gl_Position = projectionMatrix * viewMatrix * worldPos;
-  }
-`;
-
-const cloudFragmentShader = `
-  uniform vec3 sunDirection;
-
-  varying vec3 vColor;
-  varying vec3 vNormal;
-  varying vec3 vWorldPos;
-  varying float vOpacity;
-
-  void main() {
-    if (vOpacity < 0.01) discard;
-
-    vec3 normal = normalize(vNormal);
-    vec3 cloudDir = normalize(vWorldPos); // radial direction from globe center
-
-    // Sun illumination based on cloud's position on globe
-    float sunDot = dot(cloudDir, sunDirection);
-    float daylight = smoothstep(-0.15, 0.3, sunDot);
-
-    // Diffuse lighting on the puff surface
-    float NdotL = max(dot(normal, sunDirection), 0.0);
-    float ambient = 0.45; // clouds are bright even in shadow
-    float diffuse = ambient + (1.0 - ambient) * NdotL;
-
-    // Warm sunlit → cool shadow color
-    vec3 litColor = vec3(1.0, 0.99, 0.95);
-    vec3 shadowColor = vec3(0.65, 0.70, 0.82);
-    vec3 baseColor = mix(shadowColor, litColor, daylight);
-
-    // Night dimming
-    float brightness = 0.12 + 0.88 * daylight;
-
-    if (vOpacity < 0.01) discard;
-    gl_FragColor = vec4(baseColor * diffuse * brightness, vOpacity);
-  }
-`;
 
 export class CloudInstances {
   private group: THREE.Group;
@@ -188,13 +122,12 @@ export class CloudInstances {
   private nlat: number = 0;
   private nlon: number = 0;
   private lastMonthProgress: number = -1;
-  private meshes: THREE.InstancedMesh[] = [];
-  private opacityAttrs: THREE.InstancedBufferAttribute[] = [];
-  private dummy = new THREE.Object3D();
+  private texture: THREE.Texture;
 
   constructor(layerData: ClimateLayerData) {
     this.group = new THREE.Group();
 
+    // Determine which field to use for placement (combined cloud_fraction or sum of components)
     const totalField = layerData.cloud_fraction;
     if (!totalField) return;
 
@@ -206,21 +139,32 @@ export class CloudInstances {
     const lonStep = 360 / nlon;
     const data = totalField.data as Float32Array;
 
-    // Compute annual means per cell
+    // Compute annual means per cell: cloud fraction + wind
     const annualMean = new Float32Array(nlat * nlon);
+    const annualWindU = new Float32Array(nlat * nlon); // m/s, positive = eastward
+    const annualWindV = new Float32Array(nlat * nlon); // m/s, positive = northward
+    const windUData = layerData.wind_u_10m?.data as Float32Array | undefined;
+    const windVData = layerData.wind_v_10m?.data as Float32Array | undefined;
     for (let i = 0; i < nlat; i++) {
       for (let j = 0; j < nlon; j++) {
-        let csum = 0;
+        let csum = 0, usum = 0, vsum = 0;
         for (let m = 0; m < 12; m++) {
-          csum += data[m * nlat * nlon + i * nlon + j];
+          const idx = m * nlat * nlon + i * nlon + j;
+          csum += data[idx];
+          if (windUData) usum += windUData[idx];
+          if (windVData) vsum += windVData[idx];
         }
-        annualMean[i * nlon + j] = csum / 12;
+        const ci = i * nlon + j;
+        annualMean[ci] = csum / 12;
+        annualWindU[ci] = usum / 12;
+        annualWindV[ci] = vsum / 12;
       }
     }
 
+    this.texture = createCloudTexture();
     const rand = mulberry32(SEED);
 
-    // Collect cloudy cells
+    // Collect all candidate cells, then shuffle for even global coverage
     const cells: { i: number; j: number; mean: number }[] = [];
     for (let i = 0; i < nlat; i++) {
       for (let j = 0; j < nlon; j++) {
@@ -230,129 +174,65 @@ export class CloudInstances {
         }
       }
     }
-    // Shuffle
+    // Fisher-Yates shuffle
     for (let n = cells.length - 1; n > 0; n--) {
       const swap = Math.floor(rand() * (n + 1));
       [cells[n], cells[swap]] = [cells[swap], cells[n]];
     }
 
-    // Build several varied cloud geometry templates
-    const NUM_TEMPLATES = 6;
-    const cloudGeos: THREE.BufferGeometry[] = [];
-    for (let t = 0; t < NUM_TEMPLATES; t++) {
-      cloudGeos.push(buildCloudGeometry(mulberry32(12345 + t * 997), t));
-    }
-
-    // Place clouds, assigning each to a random template
-    const cloudInfos: CloudInfo[] = [];
-    const perTemplate: number[] = new Array(NUM_TEMPLATES).fill(0);
     let placed = 0;
     for (const cell of cells) {
       if (placed >= MAX_CLOUDS) break;
+
       const { i, j, mean } = cell;
 
-      const expected = mean * 3.5;
+      // Expected count scales with fraction
+      const expected = mean * 3.0;
       let count = Math.floor(expected);
       if (rand() < (expected - count)) count++;
       if (count < 1) count = 1;
 
       for (let k = 0; k < count && placed < MAX_CLOUDS; k++) {
-        const lat = -90 + i * latStep + rand() * latStep;
-        const lon = (j * lonStep + rand() * lonStep) % 360;
+          const lat = -90 + i * latStep + rand() * latStep;
+          const lon = (j * lonStep + rand() * lonStep) % 360;
+          const r = CLOUD_RADIUS + rand() * 0.01;
+          const baseSize = 0.06 + mean * 0.06 + rand() * 0.03;
 
-        // Wind will be set dynamically in setMonth()
-        const windU = 0;
-        const windV = 0;
+          const mat = new THREE.SpriteMaterial({
+            map: this.texture,
+            transparent: true,
+            depthWrite: false,
+            opacity: 0,
+            blending: THREE.NormalBlending,
+          });
 
-        const meshIdx = Math.floor(rand() * NUM_TEMPLATES);
-        const idxInMesh = perTemplate[meshIdx];
-        perTemplate[meshIdx]++;
+          const sprite = new THREE.Sprite(mat);
+          const aspectJitter = 0.85 + rand() * 0.3;
+          sprite.scale.set(baseSize * aspectJitter * 1.3, baseSize / aspectJitter * 0.9, 1);
+          sprite.position.copy(latLonToPosition(lat, lon, r));
+          sprite.visible = false;
+          sprite.renderOrder = 10;
 
-        cloudInfos.push({
-          baseLat: lat, baseLon: lon,
-          driftLat: 0, driftLon: 0,
-          windU, windV,
-          cellI: i, cellJ: j,
-          currentOpacity: 0, targetOpacity: 0,
-          index: idxInMesh,
-          meshIndex: meshIdx,
-        });
-        placed++;
+          // Convert wind m/s to degrees/s
+          // 1 deg latitude ≈ 111km, 1 deg longitude ≈ 111km * cos(lat)
+          const cosLat = Math.cos(lat * DEG2RAD);
+          const ci = i * nlon + j;
+          const windScale = 8.0; // speed up for visual drama
+          const windU = (annualWindU[ci] / (111000 * Math.max(cosLat, 0.15))) * windScale;
+          const windV = (annualWindV[ci] / 111000) * windScale;
+
+          this.clouds.push({
+            sprite, baseLat: lat, baseLon: lon,
+            driftLat: 0, driftLon: 0,
+            windU, windV,
+            radius: r,
+            cellI: i, cellJ: j,
+            currentOpacity: 0, targetOpacity: 0,
+          });
+          this.group.add(sprite);
+          placed++;
+        }
       }
-    }
-    this.clouds = cloudInfos;
-
-    // Create one InstancedMesh per template
-    for (let t = 0; t < NUM_TEMPLATES; t++) {
-      const count = perTemplate[t];
-      if (count === 0) continue;
-
-      const material = new THREE.ShaderMaterial({
-        vertexShader: cloudVertexShader,
-        fragmentShader: cloudFragmentShader,
-        uniforms: {
-          sunDirection: { value: this.sunDir },
-        },
-        vertexColors: true,
-        transparent: true,
-        depthWrite: false,
-        side: THREE.FrontSide,
-      });
-
-      const mesh = new THREE.InstancedMesh(cloudGeos[t], material, count);
-      mesh.renderOrder = 10;
-
-      const opacities = new Float32Array(count);
-      const attr = new THREE.InstancedBufferAttribute(opacities, 1);
-      mesh.geometry.setAttribute('instanceOpacity', attr);
-
-      this.meshes.push(mesh);
-      this.opacityAttrs.push(attr);
-      this.group.add(mesh);
-    }
-
-    // Map template index to mesh array index (some templates may have 0 clouds)
-    // Build lookup: meshIndex -> index in this.meshes
-    const templateToMeshIdx: number[] = [];
-    let meshIdx = 0;
-    for (let t = 0; t < NUM_TEMPLATES; t++) {
-      if (perTemplate[t] > 0) {
-        templateToMeshIdx.push(meshIdx++);
-      } else {
-        templateToMeshIdx.push(-1);
-      }
-    }
-    // Remap cloud meshIndex to actual mesh array index
-    for (const cloud of this.clouds) {
-      cloud.meshIndex = templateToMeshIdx[cloud.meshIndex];
-    }
-
-    // Set initial transforms
-    for (const cloud of this.clouds) {
-      this.updateCloudTransform(cloud);
-    }
-    for (const mesh of this.meshes) {
-      mesh.instanceMatrix.needsUpdate = true;
-    }
-  }
-
-  private updateCloudTransform(cloud: CloudInfo): void {
-    const lon = ((cloud.baseLon + cloud.driftLon) % 360 + 360) % 360;
-    const lat = Math.max(-89, Math.min(89, cloud.baseLat + cloud.driftLat));
-    const r = CLOUD_RADIUS;
-
-    const normal = latLonToNormal(lat, lon);
-    const pos = normal.clone().multiplyScalar(r);
-
-    this.dummy.position.copy(pos);
-    // Orient cloud to face outward from globe
-    this.dummy.quaternion.setFromUnitVectors(Y_UP, normal);
-    // Scale variation per cloud
-    const hash = (cloud.index * 7 + cloud.meshIndex * 13) % 17;
-    const s = 0.75 + hash * 0.04;
-    this.dummy.scale.set(s, s * 0.8, s);
-    this.dummy.updateMatrix();
-    this.meshes[cloud.meshIndex].setMatrixAt(cloud.index, this.dummy.matrix);
   }
 
   setMonth(monthProgress: number, layerData: ClimateLayerData): void {
@@ -371,63 +251,54 @@ export class CloudInstances {
     if (!totalField) return;
     const data = totalField.data as Float32Array;
 
-    const windUField = layerData.wind_u_10m;
-    const windVField = layerData.wind_v_10m;
-    const windUData = windUField?.data as Float32Array | undefined;
-    const windVData = windVField?.data as Float32Array | undefined;
-    const windScale = 5000.0;
-
-    const latStep = 180 / nlat;
-    const lonStep = 360 / nlon;
-
     for (const cloud of this.clouds) {
-      // Use current drifted position for wind/cloud lookups
-      const curLat = Math.max(-89, Math.min(89, cloud.baseLat + cloud.driftLat));
-      const curLon = ((cloud.baseLon + cloud.driftLon) % 360 + 360) % 360;
-      const ci = Math.min(nlat - 1, Math.max(0, Math.floor((curLat + 90) / latStep)));
-      const cj = Math.min(nlon - 1, Math.floor(curLon / lonStep));
-
-      const idx0 = m0 * nlat * nlon + ci * nlon + cj;
-      const idx1 = m1 * nlat * nlon + ci * nlon + cj;
-
-      const v0 = data[idx0];
-      const v1 = data[idx1];
+      const v0 = data[m0 * nlat * nlon + cloud.cellI * nlon + cloud.cellJ];
+      const v1 = data[m1 * nlat * nlon + cloud.cellI * nlon + cloud.cellJ];
       const fraction = Math.max(0, Math.min(1, v0 + (v1 - v0) * frac));
-      cloud.targetOpacity = Math.min(1, fraction * 1.4);
 
-      // Sample wind at current position
-      if (windUData && windVData) {
-        const cosLat = Math.cos(curLat * DEG2RAD);
-        const u = windUData[idx0] + (windUData[idx1] - windUData[idx0]) * frac;
-        const v = windVData[idx0] + (windVData[idx1] - windVData[idx0]) * frac;
-        cloud.windU = (u / (111000 * Math.max(cosLat, 0.15))) * windScale;
-        cloud.windV = (v / 111000) * windScale;
-      }
+      // Target opacity tracks the cloud fraction directly
+      // Scale it up a bit since we're only showing some cells
+      cloud.targetOpacity = Math.min(1, fraction * 1.3);
     }
   }
 
-  update(dt: number, camera?: THREE.Camera): void {
-    if (this.meshes.length === 0) return;
-
+  /** Call each frame with dt in seconds. */
+  update(dt: number): void {
     for (const cloud of this.clouds) {
-      // Smooth opacity
+      // Smooth opacity fade (~3s transition)
       const diff = cloud.targetOpacity - cloud.currentOpacity;
       if (Math.abs(diff) > 0.001) {
-        cloud.currentOpacity += Math.sign(diff) * Math.min(Math.abs(diff), 0.08 * dt);
+        cloud.currentOpacity += Math.sign(diff) * Math.min(Math.abs(diff), 0.35 * dt);
       }
 
-      this.opacityAttrs[cloud.meshIndex].array[cloud.index] = cloud.currentOpacity;
+      const mat = cloud.sprite.material as THREE.SpriteMaterial;
+      mat.opacity = cloud.currentOpacity;
 
-      // Drift
+      if (cloud.currentOpacity < 0.005) {
+        cloud.sprite.visible = false;
+        continue;
+      }
+
+      cloud.sprite.visible = true;
+
+      // Drift with local wind
       cloud.driftLon += cloud.windU * dt;
       cloud.driftLat += cloud.windV * dt;
 
-      this.updateCloudTransform(cloud);
-    }
+      // Wrap drift back when too far from base cell (smooth pullback)
+      const maxDrift = 15;
+      if (Math.abs(cloud.driftLon) > maxDrift) cloud.driftLon *= 0.5;
+      if (Math.abs(cloud.driftLat) > maxDrift) cloud.driftLat *= 0.5;
 
-    for (let i = 0; i < this.meshes.length; i++) {
-      this.meshes[i].instanceMatrix.needsUpdate = true;
-      this.opacityAttrs[i].needsUpdate = true;
+      const lon = ((cloud.baseLon + cloud.driftLon) % 360 + 360) % 360;
+      const lat = Math.max(-89, Math.min(89, cloud.baseLat + cloud.driftLat));
+      cloud.sprite.position.copy(latLonToPosition(lat, lon, cloud.radius));
+
+      // Day/night dimming
+      const normal = cloud.sprite.position.clone().normalize();
+      const surfaceDot = normal.dot(this.sunDir);
+      const brightness = 0.12 + 0.88 * Math.max(0, Math.min(1, (surfaceDot + 0.05) / 0.2));
+      mat.color.setRGB(brightness, brightness, brightness);
     }
   }
 
@@ -440,12 +311,10 @@ export class CloudInstances {
   }
 
   dispose(): void {
-    for (const mesh of this.meshes) {
-      mesh.geometry.dispose();
-      (mesh.material as THREE.Material).dispose();
+    for (const cloud of this.clouds) {
+      (cloud.sprite.material as THREE.SpriteMaterial).dispose();
     }
-    this.meshes = [];
-    this.opacityAttrs = [];
+    this.texture.dispose();
     this.clouds = [];
   }
 }
