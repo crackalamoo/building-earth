@@ -37,6 +37,7 @@ from climate_sim.core.state import (
 )
 from climate_sim.core.postprocess import postprocess_periodic_cycle_results
 from climate_sim.core.rhs_builder import create_rhs_functions, RhsFn, RhsDerivativeFn, RhsBuildInputs
+from climate_sim.physics.precipitation import compute_precipitation_recycling
 from climate_sim.physics.vertical_motion import (
     VerticalMotionConfig,
     compute_hadley_subsidence_velocity,
@@ -572,6 +573,15 @@ def monthly_step(
                                 lagged_orographic_w, lagged_humidity, t_bl_K,
                             )
                             precip_rate = precip_rate + oro_precip
+                        # Precipitation recycling (Eltahir & Bras 1996)
+                        wind_speed_recycle = (lagged_boundary_layer_wind_field[2] if lagged_boundary_layer_wind_field is not None
+                                              else lagged_wind_field[2] if lagged_wind_field is not None
+                                              else np.full_like(lagged_humidity, 3.0))
+                        grid_deg = abs(surface_context.lat2d[1, 0] - surface_context.lat2d[0, 0])
+                        precip_rate = precip_rate + compute_precipitation_recycling(
+                            evap_rate, lagged_humidity, wind_speed_recycle,
+                            surface_context.land_mask, resolution_deg=grid_deg,
+                        )
                         humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency + diffusion_tendency + hadley_drying
 
                         # Humidity residual: q_new - q_old - dt * tendency
@@ -731,6 +741,14 @@ def monthly_step(
             q_sat = compute_saturation_specific_humidity(t_for_humidity)
             tau_evap = 7 * 86400.0
             evaporation_rate = np.maximum(q_sat - lagged_humidity, 0) * COLUMN_MASS_KG_M2 / tau_evap
+
+        # Add precipitation recycling to final precipitation (for latent heating + soil moisture)
+        if lagged_humidity is not None:
+            grid_deg = abs(surface_context.lat2d[1, 0] - surface_context.lat2d[0, 0])
+            final_precipitation = final_precipitation + compute_precipitation_recycling(
+                evaporation_rate, lagged_humidity, wind_speed_ref if wind_speed_ref is not None else np.full_like(lagged_humidity, 3.0),
+                surface_context.land_mask, resolution_deg=grid_deg,
+            )
 
         # Soil moisture evolution (semi-implicit two-component drainage)
         # Soil capacity: 300mm root zone depth
