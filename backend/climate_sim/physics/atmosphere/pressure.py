@@ -13,8 +13,9 @@ from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, compu
 # Base latitude of subtropical highs (radians) - relatively fixed at ~30°
 LAT_SUBTROPICS_BASE = np.deg2rad(29.0)
 # How much subtropical highs track ITCZ movement (0 = fixed, 1 = moves with ITCZ)
-# Derived from: ITCZ range -5° to 15°, subtropical high range 27-28° to 33-35°
-SUBTROPICS_ITCZ_COUPLING = 0.325
+# Reduced from 0.325: real subtropical high doesn't migrate as far as ITCZ,
+# keeping descent zone near 30° rather than shifting to 35°+ in summer.
+SUBTROPICS_ITCZ_COUPLING = 0.15
 
 # Hadley cell pressure anomalies (Pa)
 # These represent CIRCULATION-ONLY effects, separate from thermal pressure.

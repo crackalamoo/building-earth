@@ -47,7 +47,7 @@ GAMMA_MOIST = STANDARD_LAPSE_RATE_K_PER_M  # ~0.0065 K/m, moist lapse rate (for 
 # Upper troposphere humidity fraction relative to boundary layer
 # Air rising through the troposphere loses most moisture via precipitation
 # By the time it reaches the upper troposphere (~300 hPa), q is ~20% of surface value
-UPPER_TROPOSPHERE_Q_FRACTION = 0.50
+UPPER_TROPOSPHERE_Q_FRACTION = 0.20
 
 
 @dataclass(frozen=True)
@@ -61,9 +61,10 @@ class VerticalMotionConfig:
     # ~1/3 of that due to mass continuity (w scales with height above ground).
     hadley_descent_velocity_m_s: float = 0.001
 
-    # Humidity of air entrained into BL top from the lower free troposphere.
-    # At ~850-700 hPa, q is ~50% of BL value (not 20% which is upper troposphere/300 hPa).
-    upper_troposphere_q_fraction: float = 0.50
+    # Humidity of air entrained into BL top from subsidence.
+    # Descending air has lost most moisture via precipitation during ascent;
+    # upper-tropospheric q is ~15-20% of BL value.
+    upper_troposphere_q_fraction: float = 0.20
 
     # Background BL-atmosphere mixing timescale (seconds).
     # Represents subsidence, entrainment, and turbulent exchange that
