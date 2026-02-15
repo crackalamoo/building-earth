@@ -32,7 +32,7 @@ from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.orographic_effects import OrographicConfig
 from climate_sim.core.grid import create_lat_lon_grid
-from climate_sim.plotting import add_status_readout, plot_layered_monthly_temperature_cycle, plot_monthly_temperature_cycle
+from climate_sim.plotting import add_status_readout, build_temperature_cmap, plot_layered_monthly_temperature_cycle, plot_monthly_temperature_cycle, plot_obs_vs_sim_grid
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.runtime.cli import add_common_model_arguments
@@ -1375,26 +1375,68 @@ def _plot_anomaly(
     )
 
 
+def _append_annual(field: np.ndarray) -> np.ndarray:
+    return np.concatenate([field, np.mean(field, axis=0, keepdims=True)], axis=0)
+
+
 def plot_baseline_and_anomaly(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
     obs_surface: np.ndarray,
+    sim_surface: np.ndarray,
     anomaly: np.ndarray,
     use_fahrenheit: bool,
     headless: bool = False,
+    obs_wspd: np.ndarray | None = None,
+    sim_wspd: np.ndarray | None = None,
+    obs_u: np.ndarray | None = None,
+    obs_v: np.ndarray | None = None,
+    sim_u: np.ndarray | None = None,
+    sim_v: np.ndarray | None = None,
 ) -> None:
-    """Generate baseline and anomaly plots."""
+    """Generate obs-vs-sim comparison grid and anomaly plot."""
     if headless:
         return
 
-    obs_with_annual = np.concatenate(
-        [obs_surface, np.mean(obs_surface, axis=0, keepdims=True)], axis=0
-    )
-    plot_monthly_temperature_cycle(
-        lon2d,
-        lat2d,
-        obs_with_annual,
-        title="NOAA 1981–2010 Monthly Climatology (incl. annual mean)",
+    unit = temperature_unit(use_fahrenheit)
+    default_cmap, bounds = build_temperature_cmap(unit=unit[-1])
+
+    columns: list[dict] = [
+        {
+            "obs": _append_annual(obs_surface),
+            "sim": _append_annual(sim_surface),
+            "cmap": default_cmap,
+            "norm": Normalize(vmin=bounds[0], vmax=bounds[-1]),
+            "colorbar_label": f"Temperature ({unit})",
+            "colorbar_ticks": list(bounds),
+            "label": "Temperature",
+            "unit": unit,
+            "is_temperature": True,
+        },
+    ]
+
+    if obs_wspd is not None and sim_wspd is not None:
+        wspd_max = max(float(np.nanpercentile(obs_wspd, 99)),
+                       float(np.nanpercentile(sim_wspd, 99)), 1.0)
+        wind_col: dict = {
+            "obs": _append_annual(obs_wspd),
+            "sim": _append_annual(sim_wspd),
+            "cmap": colormaps["YlOrRd"],
+            "norm": Normalize(vmin=0, vmax=wspd_max),
+            "colorbar_label": "Wind speed (m/s)",
+            "label": "Wind Speed",
+            "unit": "m/s",
+        }
+        if obs_u is not None and sim_u is not None:
+            wind_col["quiver_uv"] = {
+                "obs": (_append_annual(obs_u), _append_annual(obs_v)),
+                "sim": (_append_annual(sim_u), _append_annual(sim_v)),
+            }
+        columns.append(wind_col)
+
+    plot_obs_vs_sim_grid(
+        lon2d, lat2d, columns,
+        title="Observed vs Simulated Climatology",
         use_fahrenheit=use_fahrenheit,
     )
 
@@ -1886,13 +1928,23 @@ def main() -> None:
         else:
             print("\nWarning: Wind reference not available (delete processed/ref_humidity_precip_1deg_1981-2010.nc to re-download)")
 
+    sim_combined = np.where(land_mask[None, ...], sim_t2m, surface_cycle)
+    obs_wspd = np.sqrt(obs_uwnd**2 + obs_vwnd**2) if obs_uwnd is not None else None
+    sim_wspd = np.sqrt(sim_wind_u**2 + sim_wind_v**2) if sim_wind_u is not None else None
     plot_baseline_and_anomaly(
         lon2d,
         lat2d,
         obs_surface,
+        sim_combined,
         anomaly,
         args.fahrenheit,
         args.headless,
+        obs_wspd=obs_wspd,
+        sim_wspd=sim_wspd,
+        obs_u=obs_uwnd,
+        obs_v=obs_vwnd,
+        sim_u=sim_wind_u,
+        sim_v=sim_wind_v,
     )
 
     # Compute and plot bias-corrected anomaly
