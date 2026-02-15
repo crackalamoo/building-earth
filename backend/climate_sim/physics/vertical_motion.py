@@ -68,7 +68,7 @@ class VerticalMotionConfig:
     # Background BL-atmosphere mixing timescale (seconds).
     # Represents subsidence, entrainment, and turbulent exchange that
     # returns latent heat from the free atmosphere back to the BL.
-    tau_bl_atm_mixing_s: float = 10.0 * 86400.0  # 10 days (blended processes)
+    tau_bl_atm_mixing_s: float = 8.0 * 86400.0  # 8 days (blended processes)
 
 
 def compute_vertical_motion_heating(
@@ -381,7 +381,7 @@ def compute_bl_atm_mixing_tendencies(
     """
     theta_atm = T_atm * _ALPHA  # Potential temperature of free atm at surface
 
-    tau = 10.0 * 86400.0  # 10 days
+    tau = 8.0 * 86400.0  # 8 days
 
     heat_flux = C_bl * (theta_atm - T_bl) / tau  # W/m²
 

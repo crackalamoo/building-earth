@@ -67,7 +67,7 @@ RH_EXPONENT_STRATIFORM = 1.0   # Stratiform: linear RH sensitivity
 # Precipitation picks up sharply at column RH ~ 0.7-0.8 over tropical oceans.
 # Below this threshold, the atmosphere is too dry for deep moist convection to
 # produce surface precipitation (sub-cloud evaporation, insufficient moisture depth).
-RH_CRIT_CONVECTIVE = 0.75      # Critical RH for convective onset
+RH_CRIT_CONVECTIVE = 0.65      # Critical RH for convective onset
 RH_EXPONENT_CONVECTIVE = 1.5   # Super-linear above threshold (smoother than quadratic)
 
 # High cloud parameters

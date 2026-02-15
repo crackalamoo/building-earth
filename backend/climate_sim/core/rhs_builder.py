@@ -589,7 +589,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if tau_mix > 0 and nlayers == 3:
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
-                tau = 10.0 * 86400.0  # 10 days, matching vertical_motion.py
+                tau = 8.0 * 86400.0  # 8 days, matching vertical_motion.py
                 # dT_bl/dt = (α*T_atm - T_bl) / τ
                 diag[1] += -1.0 / tau
                 cross[1, 2] += _ALPHA / tau
