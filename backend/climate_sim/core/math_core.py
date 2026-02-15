@@ -213,16 +213,15 @@ def compute_divergence(
     v: np.ndarray,
     lat2d: np.ndarray,
     lon2d: np.ndarray,
-    smoothing_length_km: float = 1500.0,
+    smoothing_length_km: float = 0.0,
 ) -> np.ndarray:
     """Compute horizontal divergence on a lat-lon grid.
 
     div(V) = (1/R cos φ) * ∂u/∂λ + (1/R cos φ) * ∂(v cos φ)/∂φ
 
-    The divergence is smoothed to remove grid-scale noise. Large-scale vertical
-    motion (Hadley cell subsidence) operates on scales of ~1500+ km, so we filter
-    out smaller-scale variations that are numerical artifacts on coarse grids.
-    This makes the result resolution-independent.
+    The wind field is already derived from a Rossby-radius-smoothed pressure
+    field, so divergence inherits that physical filtering.  No additional
+    smoothing is applied by default.
     """
     R = R_EARTH_METERS
     lat_rad = np.deg2rad(lat2d)

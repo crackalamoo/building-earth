@@ -229,21 +229,29 @@ def monthly_step(
             T_bl_cloud = temp[1]
             T_atm_cloud = temp[2]
             current_itcz_cf = _compute_itcz_from_temp(temp)
-            pressure = compute_pressure(
-                temp[0],
-                itcz_rad=current_itcz_cf,
-                lat2d=surface_context.lat2d,
-                lon2d=surface_context.lon2d,
-            )
-            nlat, nlon = temp[0].shape
-            lat_spacing = 180.0 / nlat
-            lat_centers = -90.0 + (np.arange(nlat) + 0.5) * lat_spacing
-            cos_lat = np.clip(np.cos(np.deg2rad(lat_centers)), 1.0e-6, None)
-            weights = np.broadcast_to(cos_lat[:, None], (nlat, nlon))
-            mean_pressure = np.sum(pressure * weights) / np.sum(weights)
-            dp = pressure - mean_pressure
-            dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
-            vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
+            # Use divergence-based w from lagged winds when available.
+            # This gives proper ITCZ convergence / subtropical subsidence structure.
+            # Falls back to pressure-based w (weak, nearly uniform) if no winds.
+            if lagged_boundary_layer_wind_field is not None:
+                wind_u_cf, wind_v_cf = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+                divergence = compute_divergence(wind_u_cf, wind_v_cf, surface_context.lat2d, surface_context.lon2d)
+                vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+            else:
+                pressure = compute_pressure(
+                    temp[0],
+                    itcz_rad=current_itcz_cf,
+                    lat2d=surface_context.lat2d,
+                    lon2d=surface_context.lon2d,
+                )
+                nlat, nlon = temp[0].shape
+                lat_spacing = 180.0 / nlat
+                lat_centers = -90.0 + (np.arange(nlat) + 0.5) * lat_spacing
+                cos_lat = np.clip(np.cos(np.deg2rad(lat_centers)), 1.0e-6, None)
+                weights = np.broadcast_to(cos_lat[:, None], (nlat, nlon))
+                mean_pressure = np.sum(pressure * weights) / np.sum(weights)
+                dp = pressure - mean_pressure
+                dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
+                vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
             rh = specific_humidity_to_relative_humidity(
                 humidity, T_bl_cloud,
                 itcz_rad=current_itcz_cf, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d,
