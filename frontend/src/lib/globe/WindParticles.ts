@@ -62,6 +62,26 @@ export class WindParticles {
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       this.respawnParticle(i, true);
     }
+    // Pre-simulate so particles start with built-up trails instead of long lines
+    const simDt = 1 / 30;
+    for (let step = 0; step < TRAIL_LENGTH; step++) {
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        if (this.ages[i] >= this.lifetimes[i]) continue;
+        const base = i * TRAIL_LENGTH;
+        for (let t = TRAIL_LENGTH - 1; t > 0; t--) {
+          this.trailLats[base + t] = this.trailLats[base + t - 1];
+          this.trailLons[base + t] = this.trailLons[base + t - 1];
+        }
+        const headLat = this.trailLats[base];
+        const headLon = this.trailLons[base];
+        const { u, v } = this.sampleWind(0, headLat, headLon);
+        const cosLat = Math.cos(headLat * (Math.PI / 180));
+        const dlat = v * ADVECTION_SPEED * simDt;
+        const dlon = cosLat > 0.05 ? (u * ADVECTION_SPEED * simDt) / cosLat : 0;
+        this.trailLats[base] = Math.max(-89, Math.min(89, headLat + dlat));
+        this.trailLons[base] = ((headLon + dlon) % 360 + 360) % 360;
+      }
+    }
     this.rebuildBuffers();
 
     const geometry = new THREE.BufferGeometry();

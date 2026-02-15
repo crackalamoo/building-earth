@@ -149,30 +149,33 @@
   // Build one cache item per idle callback, yielding to the browser between each
   function warmCache(gen: number) {
     if (gen !== warmupGeneration) return;
-    const ric = typeof requestIdleCallback === 'function' ? requestIdleCallback : (cb: () => void) => setTimeout(cb, 50);
-    // Phase 1: build 12 base months, Phase 2: build 24 sub-step lerps
+    const ric = typeof requestIdleCallback === 'function'
+      ? (cb: IdleRequestCallback) => requestIdleCallback(cb, { timeout: 100 })
+      : (cb: () => void) => setTimeout(cb, 16);
+    // Phase 1: build 12 base months, Phase 2: build sub-step lerps
     let baseMonth = 0;
     let step = 0;
-    function next() {
+    function next(deadline?: IdleDeadline) {
       if (gen !== warmupGeneration) return;
+      const hasTime = () => !deadline || deadline.timeRemaining() > 2;
       // Build base months first (expensive)
-      if (baseMonth < 12) {
+      while (baseMonth < 12 && hasTime()) {
         if (data && !tempBaseCache[baseMonth]) tempBaseCache[baseMonth] = buildTemperatureColorBuffer(data, baseMonth);
         if (layerData && !bmBaseRgbCache[baseMonth]) {
           const r = buildBlueMarbleBuffers(layerData, baseMonth);
           bmBaseRgbCache[baseMonth] = r.rgb; bmBaseSpecCache[baseMonth] = r.spec;
         }
         baseMonth++;
-        ric(next);
-      } else if (step < TOTAL_STEPS) {
-        // Sub-steps: skip whole-month steps (t=0), only build intermediate lerps
+      }
+      // Sub-steps: skip whole-month steps (t=0), build multiple per callback
+      while (step < TOTAL_STEPS && hasTime()) {
         if (step % SUB_STEPS !== 0) {
           if (data) ensureTempStep(step);
           if (layerData) ensureBmStep(step);
         }
         step++;
-        ric(next);
       }
+      if (baseMonth < 12 || step < TOTAL_STEPS) ric(next);
     }
     ric(next);
   }
@@ -181,6 +184,9 @@
   $: if (data) {
     tempBaseCache = new Array(12).fill(null);
     tempStepCache = new Array(TOTAL_STEPS).fill(null);
+    for (let m = 0; m < 12; m++) {
+      tempBaseCache[m] = buildTemperatureColorBuffer(data, m);
+    }
     lastAppliedStep = -1;
     warmCache(++warmupGeneration);
   }
@@ -189,6 +195,12 @@
     bmBaseSpecCache = new Array(12).fill(null);
     bmStepRgbCache = new Array(TOTAL_STEPS).fill(null);
     bmStepSpecCache = new Array(TOTAL_STEPS).fill(null);
+    // Build all 12 base months eagerly to avoid lag on first month transition
+    for (let m = 0; m < 12; m++) {
+      const r = buildBlueMarbleBuffers(layerData, m);
+      bmBaseRgbCache[m] = r.rgb;
+      bmBaseSpecCache[m] = r.spec;
+    }
     lastAppliedStep = -1;
     warmCache(++warmupGeneration);
   }
