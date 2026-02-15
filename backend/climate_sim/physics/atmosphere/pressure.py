@@ -127,26 +127,24 @@ def _smooth_temperature_field(
     *,
     smoothing_length_km: float | None = None,
 ) -> np.ndarray:
-    """Apply Gaussian smoothing at the local Rossby deformation radius.
+    """Low-pass filter temperature at the local Rossby deformation radius.
 
     The Rossby radius L_R = N*H/f sets the minimum horizontal scale at which
     temperature anomalies can drive organised upper-level mass redistribution
-    and hence surface pressure anomalies.  Smoothing at this scale filters out
-    sub-Rossby features that cannot create coherent pressure patterns.
-
-    L_R varies with latitude (~4000 km in tropics, ~800 km at 60°, floored
-    at 500 km near poles).  Both the meridional and zonal smoothing lengths
-    adapt to the local L_R.
+    and hence surface pressure anomalies.  The Gaussian sigma is set to L_R/3,
+    which preserves features at L_R (H ≈ 0.80) while filtering sub-Rossby
+    noise (H ≈ 0.02 at L_R/3).
     """
 
     field = np.asarray(field, dtype=float)
     nlat, nlon = field.shape
 
-    # Latitude-dependent smoothing length (Rossby radius)
+    # Latitude-dependent smoothing length: σ = L_R / 3.
+    # This preserves Rossby-scale features while filtering grid noise.
     if smoothing_length_km is not None:
         smooth_km = np.full_like(lat_centers, smoothing_length_km)
     else:
-        smooth_km = _rossby_radius_km(lat_centers)
+        smooth_km = _rossby_radius_km(lat_centers) / 3.0
 
     # Grid spacing in km
     lat_spacing_deg = 180.0 / nlat

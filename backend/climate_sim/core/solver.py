@@ -61,6 +61,10 @@ FIXED_POINT_MAX_ITERS = 50
 
 # Anderson acceleration parameters for periodic cycle solver
 ANDERSON_HISTORY_LIMIT = 12
+# Under-relaxation factor for outer (year-to-year) state updates.
+# Blends Anderson output with previous state: x_new = α*x_anderson + (1-α)*x_old.
+# Values < 1.0 stabilize strong pressure-wind-temperature coupling.
+ANDERSON_RELAXATION = 0.7
 
 # Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
 INEXACT_NEWTON_REFACTORIZE_EVERY = 4
@@ -1252,6 +1256,17 @@ def find_periodic_climate_cycle(
                             soil_next = advanced.soil_moisture
                             residual_history = residual_history[-1:]
                             advanced_history = advanced_history[-1:]
+
+                # Under-relax: blend Anderson output with previous state
+                if ANDERSON_RELAXATION < 1.0:
+                    alpha = ANDERSON_RELAXATION
+                    T_next = alpha * T_next + (1.0 - alpha) * state.temperature
+                    if q_next is not None and state.humidity_field is not None:
+                        q_next = alpha * q_next + (1.0 - alpha) * state.humidity_field
+                        q_next = np.maximum(q_next, 1e-6)
+                    if soil_next is not None and state.soil_moisture is not None:
+                        soil_next = alpha * soil_next + (1.0 - alpha) * state.soil_moisture
+                        soil_next = np.clip(soil_next, 0.0, 1.0)
 
                 # Apply Anderson-accelerated state with mixed prognostic variables
                 # Diagnostics (albedo, wind, precipitation, clouds) will be recomputed
