@@ -409,12 +409,16 @@ export class TreeInstances {
           if (!valid) continue;
 
           // For non-coarse-land cells, sample interpolated veg + temp to decide if tree lives
+          // and recompute type probabilities from actual local temperatures
+          let localPConifer = pConifer, localPBroadleaf = pBroadleaf;
           if (!isCoarseLand) {
             const hiRenderI = Math.floor(((90 - lat) / 180) * hiNlat);
             const hiDataI = hiNlat - 1 - Math.min(hiRenderI, hiNlat - 1);
             const hiJ = Math.floor((lon / 360) * hiNlon) % hiNlon;
             let vegAtPoint = 0;
             let warmCount = 0;
+            let localColdest = Infinity, localWarmest = -Infinity;
+            let localSoilSum = 0;
             for (let m = 0; m < 12; m++) {
               const mOff = m * nativeNlat * nativeNlon;
               vegAtPoint += sampleBilinear(
@@ -428,18 +432,27 @@ export class TreeInstances {
                 true, landMaskNative,
               );
               if (tempAtPoint > 10) warmCount++;
+              if (tempAtPoint < localColdest) localColdest = tempAtPoint;
+              if (tempAtPoint > localWarmest) localWarmest = tempAtPoint;
+              localSoilSum += sampleBilinear(
+                soilData, nativeNlat, nativeNlon, mOff,
+                hiDataI, hiJ, hiNlat, hiNlon,
+                true, landMaskNative,
+              );
             }
             vegAtPoint /= 12;
             const tp = Math.max(0, (vegAtPoint - 0.3) / 0.7);
             const gsU2 = Math.max(0, Math.min(1, (warmCount - 3) / 3));
             const td = tp * gsU2 * gsU2 * (3 - 2 * gsU2);
             if (td < 0.01 || rand() > td) continue;
+            const localSoil = Math.min(localSoilSum / 12, 1);
+            [localPConifer, localPBroadleaf] = computeTypeProbabilities(localColdest, localWarmest, localSoil);
           }
 
           const r = rand();
           let type: 0 | 1 | 2;
-          if (r < pConifer) type = 0;
-          else if (r < pConifer + pBroadleaf) type = 1;
+          if (r < localPConifer) type = 0;
+          else if (r < localPConifer + localPBroadleaf) type = 1;
           else type = 2;
 
           const normal = latLonToNormal(lat, lon);
