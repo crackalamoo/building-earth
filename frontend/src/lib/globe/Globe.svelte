@@ -797,6 +797,7 @@
       cloudInstances.dispose();
     }
     cloudInstances = new CloudInstances(layerData!);
+    if (container) cloudInstances.setViewportHeight(container.clientHeight * window.devicePixelRatio, camera.fov);
     const obj = cloudInstances.getObject();
     obj.visible = activeLayer === 'blue-marble';
     if (globe) obj.rotation.y = globe.rotation.y;
@@ -1161,6 +1162,7 @@
     camera.aspect = container.clientWidth / container.clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(container.clientWidth, container.clientHeight);
+    if (cloudInstances) cloudInstances.setViewportHeight(container.clientHeight * window.devicePixelRatio, camera.fov);
   }
 
   // Recreate temperature globe when data changes
