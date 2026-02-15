@@ -248,15 +248,19 @@
     const lowNlon = ld.surface.shape[2];
     const monthOffset = monthIdx * lowNlat * lowNlon;
 
-    // Precompute annual mean surface temp per coarse cell (for soil hue)
+    // Precompute annual means per coarse cell
     const annualMeanTemp = new Float32Array(lowNlat * lowNlon);
+    const annualMeanSoil = new Float32Array(lowNlat * lowNlon);
     for (let ci = 0; ci < lowNlat; ci++) {
       for (let cj = 0; cj < lowNlon; cj++) {
-        let sum = 0;
+        let tsum = 0, ssum = 0;
         for (let m = 0; m < 12; m++) {
-          sum += surfaceData[m * lowNlat * lowNlon + ci * lowNlon + cj];
+          const idx = m * lowNlat * lowNlon + ci * lowNlon + cj;
+          tsum += surfaceData[idx];
+          if (soilData) ssum += soilData[idx];
         }
-        annualMeanTemp[ci * lowNlon + cj] = sum / 12;
+        annualMeanTemp[ci * lowNlon + cj] = tsum / 12;
+        annualMeanSoil[ci * lowNlon + cj] = soilData ? ssum / 12 : 0.5;
       }
     }
 
@@ -298,14 +302,19 @@
             )
           : 0;
 
-        // Sample annual mean temp bilinearly (offset=0, it's a single 2D field)
+        // Sample annual means bilinearly (offset=0, single 2D fields)
         const annMeanT = sampleBilinear(
           annualMeanTemp, lowNlat, lowNlon, 0,
           dataLatIdx, j, hiNlat, hiNlon,
           isLand, coarseLandMask,
         );
+        const annMeanSoil = sampleBilinear(
+          annualMeanSoil, lowNlat, lowNlon, 0,
+          dataLatIdx, j, hiNlat, hiNlon,
+          isLand, coarseLandMask,
+        );
 
-        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT);
+        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT, annMeanSoil);
         const base = (i * hiNlon + j) * 3;
         rgbBuf[base] = r;
         rgbBuf[base + 1] = g;

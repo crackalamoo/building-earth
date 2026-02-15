@@ -108,6 +108,7 @@ export function blueMarbleColor(
   elevationM: number = 0,
   vegetationFraction: number = 0,
   annualMeanTempC: number = 15,
+  annualMeanSoilMoisture: number = 0.5,
 ): [number, number, number] {
   if (!isLand) {
     // ── Ocean ── subtle depth gradient
@@ -160,11 +161,35 @@ export function blueMarbleColor(
   const grassGreen = surfaceTempC < 0
     ? lerp3(GRASS_BOREAL, GRASS_TEMPERATE, clamp01((surfaceTempC + 10) / 10))
     : lerp3(GRASS_TEMPERATE, GRASS_TROPICAL, clamp01(surfaceTempC / 25));
-  const grassAlive = clamp01(soilMoisture / 0.3);
+  // Vegetation greenness: established plants don't die from one dry month.
+  // Annual mean moisture is the baseline (root-zone memory), monthly adds seasonal shift.
+  const baseMoisture = annualMeanSoilMoisture;
+  // seasonalDip: how far below annual mean is this month's moisture (as fraction of annual)
+  const moistureDrop = baseMoisture > 0.01 ? clamp01((baseMoisture - soilMoisture) / baseMoisture) : 0;
+  // Square it so small dips are subtle but big drops (Mediterranean summer) are dramatic
+  const seasonalDip = moistureDrop * moistureDrop;
+  const grassAlive = clamp01(baseMoisture / 0.3) * (1.0 - seasonalDip * 0.7);
   groundCover = lerp3(GRASS_DEAD, grassGreen, grassAlive);
 
   // 3. Blend bare soil ↔ ground cover by vegetation fraction
-  let baseColor = lerp3(bareSoil, groundCover, clamp01(vegetationFraction));
+  // Nonlinear: even moderate veg shows substantial green
+  const vegBlend = Math.sqrt(clamp01(vegetationFraction));
+  let baseColor = lerp3(bareSoil, groundCover, vegBlend);
+
+  // 4. Dense vegetation darkens and enriches the green (forest canopy effect)
+  // Low veg = bright open grassland, high veg = dark dense forest
+  if (vegetationFraction > 0.3) {
+    const density = clamp01((vegetationFraction - 0.3) / 0.5);
+    const darkening = 1.0 - density * 0.25; // up to 25% darker
+    const satBoost = density * 0.08; // slightly more saturated green
+    baseColor = [
+      baseColor[0] * darkening - satBoost,
+      baseColor[1] * darkening + satBoost * 0.3,
+      baseColor[2] * darkening - satBoost,
+    ];
+    baseColor[0] = Math.max(0, baseColor[0]);
+    baseColor[2] = Math.max(0, baseColor[2]);
+  }
 
   // Snow overlay
   const snowFrac = landSnowFraction(surfaceTempC);
