@@ -32,7 +32,7 @@ from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.orographic_effects import OrographicConfig
 from climate_sim.core.grid import create_lat_lon_grid
-from climate_sim.plotting import add_status_readout, plot_monthly_temperature_cycle
+from climate_sim.plotting import add_status_readout, plot_layered_monthly_temperature_cycle, plot_monthly_temperature_cycle
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.runtime.cli import add_common_model_arguments
@@ -406,6 +406,13 @@ def aggregate_humidity_precip_to_sim_grid(
     return result
 
 
+def _q_sat(T_K: np.ndarray) -> np.ndarray:
+    """Saturation specific humidity (kg/kg) from temperature (K)."""
+    T_C = np.clip(T_K - 273.15, -100, 80)
+    e_sat = 6.112 * np.exp(17.67 * T_C / (T_C + 243.5))  # hPa
+    return 0.622 * e_sat / (1013.25 - 0.378 * e_sat)
+
+
 def compute_humidity_precip_statistics(
     sim_humidity: np.ndarray,
     sim_precip: np.ndarray,
@@ -413,6 +420,8 @@ def compute_humidity_precip_statistics(
     obs_precip: np.ndarray,
     land_mask: np.ndarray,
     cell_areas: np.ndarray,
+    sim_t_bl: np.ndarray | None = None,
+    obs_t_sfc: np.ndarray | None = None,
 ) -> None:
     """Print humidity and precipitation evaluation statistics."""
     weights_land = cell_areas * land_mask
@@ -428,7 +437,7 @@ def compute_humidity_precip_statistics(
     p_diff = sim_p_mmday - obs_p_mmday
 
     # Annual stats
-    def stats_for(diff: np.ndarray, weights: np.ndarray) -> tuple[float, float, float]:
+    def stats_for(diff: np.ndarray, weights: np.ndarray) -> tuple[float, float]:
         bias = weighted_mean(diff, weights)
         rmse = weighted_rmse(diff, weights)
         return bias, rmse
@@ -466,6 +475,46 @@ def compute_humidity_precip_statistics(
     obs_q_ocean = weighted_mean(obs_q_gkg, weights_ocean)
     print(f"Mean q:  Sim land={sim_q_land:.1f}  Obs land={obs_q_land:.1f}  "
           f"Sim ocean={sim_q_ocean:.1f}  Obs ocean={obs_q_ocean:.1f}")
+
+    # --- Relative Humidity evaluation (%) ---
+    if sim_t_bl is not None and obs_t_sfc is not None:
+        sim_rh = 100.0 * sim_humidity / _q_sat(sim_t_bl + 273.15)
+        obs_rh = 100.0 * obs_shum / _q_sat(obs_t_sfc + 273.15)
+        sim_rh = np.clip(sim_rh, 0, 100)
+        obs_rh = np.clip(obs_rh, 0, 100)
+        rh_diff = sim_rh - obs_rh
+
+        print("\n" + "=" * 60)
+        print("Relative Humidity Evaluation (%)")
+        print("=" * 60)
+
+        header = f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+        print(header)
+        print("-" * len(header))
+
+        for m in range(12):
+            lb, _ = stats_for(rh_diff[m], weights_land)
+            ob, _ = stats_for(rh_diff[m], weights_ocean)
+            gb, gr = stats_for(rh_diff[m], cell_areas)
+            print(f"{MONTH_NAMES[m]:<12}{lb:>10.1f}{ob:>11.1f}{gb:>12.1f}{gr:>12.1f}")
+
+        lb, lr = stats_for(rh_diff, weights_land)
+        ob, orr = stats_for(rh_diff, weights_ocean)
+        gb, gr = stats_for(rh_diff, cell_areas)
+        print("-" * len(header))
+        print(f"{'Annual':<12}{lb:>10.1f}{ob:>11.1f}{gb:>12.1f}{gr:>12.1f}")
+
+        corr_land = weighted_pattern_correlation(sim_rh, obs_rh, weights_land)
+        corr_ocean = weighted_pattern_correlation(sim_rh, obs_rh, weights_ocean)
+        corr_global = weighted_pattern_correlation(sim_rh, obs_rh, cell_areas)
+        print(f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}")
+
+        sim_rh_land = weighted_mean(sim_rh, weights_land)
+        obs_rh_land = weighted_mean(obs_rh, weights_land)
+        sim_rh_ocean = weighted_mean(sim_rh, weights_ocean)
+        obs_rh_ocean = weighted_mean(obs_rh, weights_ocean)
+        print(f"Mean RH:  Sim land={sim_rh_land:.1f}%  Obs land={obs_rh_land:.1f}%  "
+              f"Sim ocean={sim_rh_ocean:.1f}%  Obs ocean={obs_rh_ocean:.1f}%")
 
     print("\n" + "=" * 60)
     print("Precipitation Evaluation (mm/day)")
@@ -558,6 +607,8 @@ def plot_humidity_precip_anomaly(
     obs_shum: np.ndarray,
     obs_precip: np.ndarray,
     headless: bool = False,
+    sim_t_bl: np.ndarray | None = None,
+    obs_t_sfc: np.ndarray | None = None,
 ) -> None:
     """Plot humidity and precipitation anomaly maps."""
     if headless:
@@ -573,14 +624,42 @@ def plot_humidity_precip_anomaly(
     if not np.isfinite(q_vmax) or q_vmax <= 0:
         q_vmax = 5.0
 
-    plot_monthly_temperature_cycle(
+    # Build layers: always have q, optionally add RH
+    layers: list[tuple[str, np.ndarray]] = [("Specific Humidity", q_with_annual)]
+    styles: list[dict] = [
+        {"cmap": colormaps["BrBG"], "norm": Normalize(vmin=-q_vmax, vmax=q_vmax),
+         "colorbar_label": "Humidity anomaly (g/kg)", "unit": "g/kg"},
+    ]
+
+    if sim_t_bl is not None and obs_t_sfc is not None:
+        sim_rh = 100.0 * sim_humidity / _q_sat(sim_t_bl + 273.15)
+        obs_rh = 100.0 * obs_shum / _q_sat(obs_t_sfc + 273.15)
+        sim_rh = np.clip(sim_rh, 0, 100)
+        obs_rh = np.clip(obs_rh, 0, 100)
+        rh_anomaly = sim_rh - obs_rh
+        rh_with_annual = np.concatenate(
+            [rh_anomaly, np.nanmean(rh_anomaly, axis=0, keepdims=True)], axis=0
+        )
+
+        rh_vmax = min(float(np.nanmax(np.abs(rh_anomaly))), 40.0)
+        if not np.isfinite(rh_vmax) or rh_vmax <= 0:
+            rh_vmax = 20.0
+
+        layers.append(("Relative Humidity", rh_with_annual))
+        styles.append(
+            {"cmap": colormaps["BrBG"], "norm": Normalize(vmin=-rh_vmax, vmax=rh_vmax),
+             "colorbar_label": "RH anomaly (%)", "unit": "%"},
+        )
+
+    plot_layered_monthly_temperature_cycle(
         lon2d,
         lat2d,
-        q_with_annual,
-        title="Specific Humidity Anomaly (Sim − Obs)",
-        cmap=colormaps["BrBG"],
-        norm=Normalize(vmin=-q_vmax, vmax=q_vmax),
-        colorbar_label="Humidity anomaly (g/kg)",
+        layers,
+        title="Humidity Anomaly (Sim − Obs)",
+        cmap=styles[0]["cmap"],
+        norm=styles[0]["norm"],
+        colorbar_label=styles[0]["colorbar_label"],
+        per_layer_styles=styles,
     )
 
     # Precipitation anomaly (mm/day)
@@ -1757,6 +1836,7 @@ def main() -> None:
             obs_precip = hp_agg["precip"]
 
         if obs_shum is not None and obs_precip is not None:
+            sim_t_bl = layers.get("boundary_layer")
             compute_humidity_precip_statistics(
                 sim_humidity,
                 sim_precip,
@@ -1764,6 +1844,8 @@ def main() -> None:
                 obs_precip,
                 land_mask,
                 cell_areas,
+                sim_t_bl=sim_t_bl,
+                obs_t_sfc=obs_surface,
             )
     elif hp_ref is not None:
         print("\nWarning: humidity/precipitation not in simulation output, skipping eval.")
@@ -1842,6 +1924,8 @@ def main() -> None:
             obs_shum,
             obs_precip,
             args.headless,
+            sim_t_bl=layers.get("boundary_layer"),
+            obs_t_sfc=obs_surface,
         )
 
     # --- SLP anomaly plot ---

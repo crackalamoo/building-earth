@@ -251,6 +251,7 @@ def plot_layered_monthly_temperature_cycle(
     colorbar_ticks: Iterable[float] | None = None,
     use_fahrenheit: bool = False,
     value_is_delta: bool = False,
+    per_layer_styles: Sequence[dict] | None = None,
 ) -> None:
     """Interactive monthly cycle viewer with month slider and layer selector."""
 
@@ -285,6 +286,19 @@ def plot_layered_monthly_temperature_cycle(
     if use_fahrenheit and colorbar_label.endswith("°C)"):
         colorbar_label = colorbar_label[:-3] + "°F)"
 
+    # Build per-layer style list (defaults to the shared cmap/norm/label)
+    layer_styles: list[dict] = []
+    for i in range(len(items)):
+        style: dict = {
+            "cmap": cmap,
+            "norm": norm,
+            "colorbar_label": colorbar_label,
+            "unit": unit,
+        }
+        if per_layer_styles is not None and i < len(per_layer_styles):
+            style.update(per_layer_styles[i])
+        layer_styles.append(style)
+
     projection = ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
     ax.set_global()
@@ -303,12 +317,13 @@ def plot_layered_monthly_temperature_cycle(
         for field in data_stack
     ]
 
+    style0 = layer_styles[0]
     mesh = ax.pcolormesh(
         lon2d,
         lat2d,
         data_stack_display[current_state["layer"]][current_state["month"]],
-        cmap=cmap,
-        norm=norm,
+        cmap=style0["cmap"],
+        norm=style0["norm"],
         shading="auto",
         transform=projection,
     )
@@ -323,11 +338,11 @@ def plot_layered_monthly_temperature_cycle(
     ax.set_title(format_title())
 
     cbar = fig.colorbar(mesh, ax=ax, orientation="vertical", pad=0.04, fraction=0.046)
-    if colorbar_label:
-        cbar.set_label(colorbar_label)
+    if style0["colorbar_label"]:
+        cbar.set_label(style0["colorbar_label"])
     if colorbar_ticks is not None:
         cbar.set_ticks(colorbar_ticks)
-    elif cmap is default_cmap:
+    elif style0["cmap"] is default_cmap:
         cbar.set_ticks(bounds)
 
     slider_ax = fig.add_axes([0.15, 0.1, 0.7, 0.03])
@@ -353,14 +368,20 @@ def plot_layered_monthly_temperature_cycle(
         data_container=current_field,
         format_message=lambda lon, lat, data, lon_idx, lat_idx: (
             f"{_format_lat(lat)}  {_format_lon(lon)}  "
-            f"{data['data'][lat_idx, lon_idx]:.1f} {unit}"
+            f"{data['data'][lat_idx, lon_idx]:.1f} {layer_styles[current_state['layer']]['unit']}"
         ),
     )
 
     def update_plot() -> None:
-        data = data_stack_display[current_state["layer"]][current_state["month"]]
+        li = current_state["layer"]
+        data = data_stack_display[li][current_state["month"]]
+        style = layer_styles[li]
+        mesh.set_cmap(style["cmap"])
+        mesh.set_norm(style["norm"])
         mesh.set_array(data.ravel())
         ax.set_title(format_title())
+        cbar.update_normal(mesh)
+        cbar.set_label(style["colorbar_label"])
         current_field["data"] = data
         fig.canvas.draw_idle()
 
