@@ -110,10 +110,15 @@ export async function loadBinaryData(basePath: string = ''): Promise<ClimateLaye
   const result: Record<string, FieldData> = {};
 
   for (const field of manifest.fields) {
-    result[field.name] = {
-      data: decodeField(buffer, field),
-      shape: field.shape,
-    };
+    let data = decodeField(buffer, field);
+    // Decode uint8-quantized temperature_2m back to °C: val * (120/255) - 60
+    if (field.name === 'temperature_2m' && field.dtype === 'uint8') {
+      const u8 = data as Uint8Array;
+      const f32 = new Float32Array(u8.length);
+      for (let i = 0; i < u8.length; i++) f32[i] = u8[i] * (120 / 255) - 60;
+      data = f32;
+    }
+    result[field.name] = { data, shape: field.shape };
   }
 
   return result as unknown as ClimateLayerData;
