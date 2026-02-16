@@ -230,19 +230,23 @@ def monthly_step(
         # oscillation caused by frozen clouds lagging behind humidity changes).
         from climate_sim.physics.atmosphere.pressure import compute_pressure
 
+        # Precompute divergence-based vertical velocity from lagged winds (constant
+        # within a monthly step since winds are lagged).
+        _cached_cloud_vertical_velocity: np.ndarray | None = None
+        if lagged_boundary_layer_wind_field is not None:
+            wind_u_cf, wind_v_cf = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+            _cached_divergence = compute_divergence(wind_u_cf, wind_v_cf, surface_context.lat2d, surface_context.lon2d)
+            _cached_cloud_vertical_velocity = compute_vertical_velocity_from_divergence(_cached_divergence)
+
         def _compute_cloud_fractions(temp: np.ndarray, humidity: np.ndarray):
             """Recompute cloud output from current temperature and humidity."""
             T_bl_cloud = temp[1]
             T_atm_cloud = temp[2]
-            current_itcz_cf = _compute_itcz_from_temp(temp)
-            # Use divergence-based w from lagged winds when available.
-            # This gives proper ITCZ convergence / subtropical subsidence structure.
-            # Falls back to pressure-based w (weak, nearly uniform) if no winds.
-            if lagged_boundary_layer_wind_field is not None:
-                wind_u_cf, wind_v_cf = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
-                divergence = compute_divergence(wind_u_cf, wind_v_cf, surface_context.lat2d, surface_context.lon2d)
-                vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+            # Use precomputed divergence-based w from lagged winds when available.
+            if _cached_cloud_vertical_velocity is not None:
+                vertical_velocity = _cached_cloud_vertical_velocity
             else:
+                current_itcz_cf = _compute_itcz_from_temp(temp)
                 pressure = compute_pressure(
                     temp[0],
                     itcz_rad=current_itcz_cf,
@@ -258,6 +262,7 @@ def monthly_step(
                 dp = pressure - mean_pressure
                 dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
                 vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
+            current_itcz_cf = _compute_itcz_from_temp(temp)
             rh = specific_humidity_to_relative_humidity(
                 humidity, T_bl_cloud,
                 itcz_rad=current_itcz_cf, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d,
@@ -316,6 +321,11 @@ def monthly_step(
         # implicit solver loop
         preconditioner_solve: Callable[[np.ndarray], np.ndarray] | None = None
         preconditioner_age = 10**9
+        # Jacobian lagging: reuse Jacobian when residual is decreasing
+        cached_linearization: "Linearization | None" = None
+        prev_max_residual: float = float('inf')
+        jacobian_age: int = 0
+        JACOBIAN_MAX_AGE = 3  # Recompute after this many reuses
 
         def _solve_linear_system(
             jacobian: sparse.csc_matrix,
@@ -372,9 +382,20 @@ def monthly_step(
                 state_capped, current_itcz = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
                     rhs_value = rhs_fn(state_capped, insolation_W_m2, current_itcz)
-                # Recompute Jacobian every iteration for true Newton solve
-                with time_block("rhs_derivative"):
-                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, current_itcz)
+
+                # Jacobian lagging: skip rhs_derivative when residual is well-behaved
+                need_jacobian = (
+                    cached_linearization is None
+                    or jacobian_age >= JACOBIAN_MAX_AGE
+                )
+                if need_jacobian:
+                    with time_block("rhs_derivative"):
+                        linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, current_itcz)
+                    cached_linearization = linearization
+                    jacobian_age = 0
+                else:
+                    linearization = cached_linearization
+                    jacobian_age += 1
                 preconditioner_age += 1
 
                 nlayers = temp_capped.shape[0]
@@ -628,12 +649,16 @@ def monthly_step(
                 temp_candidate = temp_next
                 residual_candidate = residual
 
-                while damping >= NEWTON_BACKTRACK_CUTOFF:
+                # When using a lagged Jacobian, limit backtracking to save
+                # RHS evaluations — the Newton direction is approximate anyway.
+                backtrack_cutoff = NEWTON_BACKTRACK_CUTOFF if need_jacobian else 0.25
+
+                while damping >= backtrack_cutoff:
                     temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
                     state_candidate, candidate_itcz = _init_state(temp_candidate)
                     with time_block("backtrack_rhs"):
                         rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, candidate_itcz)
-                    
+
                     ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                     nlayers = temp_candidate.shape[0]
                     residual_surface_candidate = ceff_candidate * (temp_candidate[0] - start_temp[0]) - dt_seconds * (base_capacity * rhs_candidate[0])
