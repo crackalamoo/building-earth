@@ -362,13 +362,18 @@ export class TreeInstances {
           }
         }
         const coarseAnnualVeg = isCoarseLand ? coarseVegSum / 12 : 0;
+        const coarseAnnualSoil = isCoarseLand ? Math.min(coarseSoilSum / 12, 1) : 0.5;
 
-        // Tree density from vegetation surplus + tree growing season
-        // Trees need established ground cover (>0.3) and warm summers (>10°C)
-        const treePotential = Math.max(0, (coarseAnnualVeg - 0.3) / 0.7);
+        // Tree density: sigmoid on veg fraction × moisture gate × growing season
+        // Grass/shrub → tree transition is nonlinear: forests appear above ~0.5 veg
+        // Trees need consistent moisture (deep roots) unlike grass
+        const vegU = Math.max(0, Math.min(1, (coarseAnnualVeg - 0.25) / 0.5));
+        const vegSigmoid = vegU * vegU * (3 - 2 * vegU); // smoothstep 0.25→0.75
+        const moistU = Math.max(0, Math.min(1, (coarseAnnualSoil - 0.1) / 0.2));
+        const moistGate = moistU * moistU * (3 - 2 * moistU); // smoothstep 0.1→0.3
         const gsU = Math.max(0, Math.min(1, (monthsAbove10 - 3) / 3));
         const treeGrowingSeason = gsU * gsU * (3 - 2 * gsU); // hermite
-        const treeDensity = treePotential * treeGrowingSeason;
+        const treeDensity = vegSigmoid * moistGate * treeGrowingSeason;
 
         // Max possible trees per coarse cell — try more candidates for
         // cells that are partially ocean at coarse res but have hi-res land
@@ -376,8 +381,6 @@ export class TreeInstances {
           ? Math.floor(treeDensity * 7 + rand())
           : 2; // small budget for coastal spillover
         if (maxCandidates <= 0) { rand(); continue; } // consume one rand for determinism
-
-        const coarseAnnualSoil = isCoarseLand ? Math.min(coarseSoilSum / 12, 1) : 0.5;
         const [pConifer, pBroadleaf, pPalm] = computeTypeProbabilities(
           isCoarseLand ? coldestMonth : 15,
           isCoarseLand ? warmestMonth : 25,
