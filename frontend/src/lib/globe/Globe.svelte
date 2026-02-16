@@ -14,11 +14,7 @@
   import { CityLights } from './CityLights';
   import type { ClimateLayerData } from './loadBinaryData';
   import { ELEVATION_SCALE, NORMAL_BLEND, sampleElevation, displacedNormal, computeHillshadeGrid } from './elevation';
-
-  function smoothstep(edge0: number, edge1: number, x: number): number {
-    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-    return t * t * (3 - 2 * t);
-  }
+  import { getSunDeclination, createSunOrb, createSunBloom, updateSunBloom, disposeSun } from './Sun';
 
   export let data: number[][][] | null = null; // [month][lat][lon] temperature in Celsius
   export let monthProgress: number = 0; // Continuous 0-12 (wraps), controls sun position
@@ -777,14 +773,6 @@
     return mesh;
   }
 
-  // Calculate sun declination based on continuous month progress
-  function getSunDeclination(monthValue: number): number {
-    // Declination: +23.5° in June (month 5), -23.5° in December (month 11)
-    // Using sin wave: peak at month 5 (June), trough at month 11 (December)
-    const declinationDeg = 23.5 * Math.sin((monthValue - 2) / 12 * 2 * Math.PI);
-    return declinationDeg * (Math.PI / 180);
-  }
-
   // Update sun position - either relative to camera (when auto-rotating) or orbiting the globe (when static)
   function updateSunPosition(isAutoRotating: boolean) {
     if (!sunLight || !camera) return;
@@ -918,112 +906,13 @@
     sunLight = new THREE.DirectionalLight(0xffffff, 2.0);
     scene.add(sunLight);
 
-    // Visible sun orb with limb darkening — placed far from globe to minimize parallax
-    const sunOrbGeo = new THREE.SphereGeometry(7.2, 32, 32);
-    const sunOrbMat = new THREE.ShaderMaterial({
-      vertexShader: `
-        varying vec3 vNormal;
-        varying vec3 vViewDir;
-        void main() {
-          vNormal = normalize(normalMatrix * normal);
-          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-          vViewDir = normalize(-mvPos.xyz);
-          gl_Position = projectionMatrix * mvPos;
-        }
-      `,
-      fragmentShader: `
-        varying vec3 vNormal;
-        varying vec3 vViewDir;
-        void main() {
-          float mu = dot(vNormal, vViewDir);
-          float limb = pow(max(mu, 0.0), 0.4);
-          vec3 core = vec3(1.0, 0.95, 0.85);
-          vec3 edge = vec3(1.0, 0.5, 0.1);
-          vec3 col = mix(edge, core, limb);
-          gl_FragColor = vec4(col, 1.0);
-        }
-      `,
-      side: THREE.FrontSide,
-      transparent: true,
-      depthWrite: false,
-    });
-    sunOrb = new THREE.Mesh(sunOrbGeo, sunOrbMat);
+    // Visible sun orb with limb darkening
+    sunOrb = createSunOrb();
     scene.add(sunOrb);
 
-    // Screen-space sun bloom — fullscreen overlay that washes out when looking sunward
-    const screenBloomMat = new THREE.ShaderMaterial({
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = vec4(position.xy, 0.0, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform vec2 sunScreenPos;  // sun position in screen UV space (0-1)
-        uniform float sunVisible;   // 0 = behind camera, 1 = in front
-        uniform float sunIntensity; // how directly we're facing the sun
-        uniform float aspectRatio;  // width / height
-        uniform vec2 globeScreenPos;  // globe center in screen UV space
-        uniform float globeScreenRadius; // globe's apparent radius in UV units (corrected for aspect)
-        varying vec2 vUv;
-
-        void main() {
-          if (sunVisible < 0.01) discard;
-
-          // Fade bloom behind globe disc
-          vec2 toGlobe = vUv - globeScreenPos;
-          toGlobe.x *= aspectRatio;
-          float globeDist = length(toGlobe);
-          float globeMask = smoothstep(globeScreenRadius - 0.003, globeScreenRadius + 0.003, globeDist);
-          if (globeMask < 0.001) discard;
-
-          // Distance from sun's screen position, aspect-corrected
-          vec2 delta = vUv - sunScreenPos;
-          delta.x *= aspectRatio;
-          float d = length(delta);
-
-          // Core bloom — intense near sun position
-          float core = exp(-d * d * 120.0) * 2.5;
-
-          // Mid glow — warm spread
-          float mid = exp(-d * d * 15.0) * 0.6;
-
-          // Wide wash — entire screen tint when facing sun
-          float wash = exp(-d * d * 2.5) * 0.2;
-
-          // Subtle anamorphic horizontal streak (lens artifact)
-          float streak = exp(-abs(delta.y) * 40.0) * exp(-delta.x * delta.x * 3.0) * 0.12;
-
-          float intensity = (core + mid + wash + streak) * sunIntensity * sunVisible * globeMask;
-
-          // White-hot center → warm amber edge
-          vec3 white = vec3(1.0, 1.0, 0.95);
-          vec3 amber = vec3(1.0, 0.75, 0.35);
-          vec3 col = mix(white, amber, smoothstep(0.0, 0.3, d));
-
-          gl_FragColor = vec4(col * intensity, intensity);
-        }
-      `,
-      uniforms: {
-        sunScreenPos: { value: new THREE.Vector2(0.5, 0.5) },
-        sunVisible: { value: 0.0 },
-        sunIntensity: { value: 0.0 },
-        aspectRatio: { value: 1.0 },
-        globeScreenPos: { value: new THREE.Vector2(0.5, 0.5) },
-        globeScreenRadius: { value: 0.3 },
-      },
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      depthWrite: false,
-      depthTest: false,
-    });
-    const screenBloomGeo = new THREE.PlaneGeometry(2, 2);
-    const screenBloomQuad = new THREE.Mesh(screenBloomGeo, screenBloomMat);
-    screenBloomQuad.frustumCulled = false;
-    screenBloomQuad.renderOrder = 999;
-    scene.add(screenBloomQuad);
-    sunGlow = screenBloomQuad;
+    // Screen-space sun bloom
+    sunGlow = createSunBloom();
+    scene.add(sunGlow);
 
     // Initialize display month progress
     displayMonthProgress = monthProgress;
@@ -1184,61 +1073,7 @@
 
     // Update screen-space sun bloom
     if (sunGlow && camera && sunOrb) {
-      const mat = (sunGlow as THREE.Mesh).material as THREE.ShaderMaterial;
-      const sunWorldPos = sunOrb.position.clone();
-      const sunNDC = sunWorldPos.project(camera);
-
-      // Check if sun is in front of camera
-      const camDir = new THREE.Vector3();
-      camera.getWorldDirection(camDir);
-      const toSun = sunOrb.position.clone().normalize();
-      const facing = camDir.dot(toSun);
-
-      // Ray-sphere occlusion: check if sun disc is blocked by globe
-      // Sun orb radius 7.2 at distance 360 → angular radius in radians
-      const sunAngularRadius = 7.2 / 360; // ~0.02 rad
-      const globeRadius = 1.0;
-      const camPos = camera.position;
-      const camDist = camPos.length();
-      // Globe's angular radius as seen from camera
-      const globeAngularRadius = Math.asin(Math.min(1, globeRadius / camDist));
-      // Angle between camera-to-sun direction and camera-to-globe-center
-      const toSunDir = sunOrb.position.clone().sub(camPos).normalize();
-      const toGlobeDir = camPos.clone().negate().normalize();
-      const angleBetween = Math.acos(Math.min(1, Math.max(-1, toSunDir.dot(toGlobeDir))));
-      // Sun edge clears globe when angle > globeAngularRadius + sunAngularRadius
-      const clearAngle = globeAngularRadius + sunAngularRadius;
-      const visibility = smoothstep(clearAngle - 0.04, clearAngle + 0.02, angleBetween);
-
-      if (facing > -0.2 && visibility > 0.001) {
-        mat.uniforms.sunVisible.value = smoothstep(-0.2, 0.1, facing) * visibility;
-        mat.uniforms.sunScreenPos.value.set(
-          sunNDC.x * 0.5 + 0.5,
-          sunNDC.y * 0.5 + 0.5,
-        );
-        const intensity = Math.pow(Math.max(0, facing), 2.0);
-        mat.uniforms.sunIntensity.value = intensity;
-        mat.uniforms.aspectRatio.value = camera.aspect;
-
-        // Globe screen-space disc for masking
-        // Project globe center
-        const globeCenter = new THREE.Vector3(0, 0, 0).clone().project(camera);
-        const gcx = globeCenter.x * 0.5 + 0.5;
-        const gcy = globeCenter.y * 0.5 + 0.5;
-        mat.uniforms.globeScreenPos.value.set(gcx, gcy);
-        // Visible limb angular radius (larger than asin(R/d) due to perspective)
-        const cDist = camera.position.length();
-        const R = 1.0;
-        const limbAngularRadius = Math.asin(Math.min(1, R / cDist));
-        // Convert to screen UV units: angular size → fraction of vertical FOV
-        const vFov = camera.fov * Math.PI / 180;
-        const screenRadiusY = Math.tan(limbAngularRadius) / Math.tan(vFov / 2);
-        // In aspect-corrected UV space (where x is already multiplied by aspect)
-        // screenRadiusY is in NDC half-extent; UV space spans 0–1, so halve it
-        mat.uniforms.globeScreenRadius.value = screenRadiusY * 0.5;
-      } else {
-        mat.uniforms.sunVisible.value = 0.0;
-      }
+      updateSunBloom(sunGlow as THREE.Mesh, sunOrb, camera);
     }
 
     renderer.render(scene, camera);
@@ -1278,14 +1113,7 @@
     window.removeEventListener('resize', onResize);
     renderer?.dispose();
     controls?.dispose();
-    if (sunOrb) {
-      sunOrb.geometry.dispose();
-      (sunOrb.material as THREE.Material).dispose();
-      if (sunGlow) {
-        ((sunGlow as THREE.Mesh).geometry as THREE.BufferGeometry)?.dispose();
-        ((sunGlow as THREE.Mesh).material as THREE.Material)?.dispose();
-      }
-    }
+    disposeSun(sunOrb, sunGlow);
     if (windParticles) {
       windParticles.dispose();
     }
