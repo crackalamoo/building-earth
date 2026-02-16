@@ -145,6 +145,7 @@ def _write_binary_export(
             lat2d,
             output_resolution_deg=output_resolution,
             apply_lapse_rate_to_2m=True,
+            compute_snow_temperature=True,
         )
         print("Interpolation complete.")
     else:
@@ -229,6 +230,14 @@ def _write_binary_export(
     # Keep negative values (bathymetry) for ocean depth shading
     fields.append(("elevation", elevation, "float16"))
     print(f"  elevation: {elevation.shape}")
+
+    # Snow temperature: interpolated surface with lapse correction for snow/ice
+    if "snow_temperature" in interpolated:
+        snow_temp = interpolated["snow_temperature"]
+        # Quantize to uint8: range [-60, +60] °C → [0, 255]
+        snow_temp_u8 = np.clip((snow_temp + 60.0) * (255.0 / 120.0), 0, 255).astype(np.uint8)
+        fields.append(("snow_temperature", snow_temp_u8, "uint8"))
+        print(f"  snow_temperature: {snow_temp_u8.shape}")
 
     # Wind fields: native resolution
     for wind_key in ("wind_u_10m", "wind_v_10m", "wind_speed_10m"):

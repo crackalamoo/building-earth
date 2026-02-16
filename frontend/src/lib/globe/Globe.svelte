@@ -286,7 +286,7 @@
     return { temp: annualMeanTemp, soil: annualMeanSoil };
   }
 
-  function buildBlueMarbleBuffers(ld: ClimateLayerData, monthIdx: number): { rgb: Float32Array; spec: Float32Array } {
+  function buildBlueMarbleBuffers(ld: ClimateLayerData, monthIdx: number, snowMonthIdx?: number): { rgb: Float32Array; spec: Float32Array } {
     const surfaceData = ld.surface.data as Float32Array;
     const landMaskData = ld.land_mask.data as Uint8Array;
     const soilData = ld.soil_moisture?.data as Float32Array | undefined;
@@ -295,6 +295,10 @@
     const elevData = ld.elevation?.data as Float32Array | undefined;
     const elevNlat = ld.elevation?.shape[0] ?? 0;
     const elevNlon = ld.elevation?.shape[1] ?? 0;
+    const snowTempRaw = ld.snow_temperature?.data as Uint8Array | Float32Array | undefined;
+    const snowNlat = ld.snow_temperature?.shape[1] ?? 0;
+    const snowNlon = ld.snow_temperature?.shape[2] ?? 0;
+    const snowMonthOff = (snowMonthIdx ?? monthIdx) * snowNlat * snowNlon;
 
     // High-res grid dimensions (from land_mask, 0.25deg)
     const hiNlat = ld.land_mask.shape[0];
@@ -360,7 +364,16 @@
           isLand, coarseLandMask,
         );
 
-        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT, annMeanSoil);
+        // Snow temperature from backend (interpolated surface + lapse correction)
+        let snowTempC = surfaceTemp;
+        if (snowTempRaw && isLand) {
+          const si = Math.floor(dataLatIdx * snowNlat / hiNlat);
+          const sj = Math.floor(j * snowNlon / hiNlon);
+          const raw = snowTempRaw[snowMonthOff + si * snowNlon + sj];
+          snowTempC = raw * (120.0 / 255.0) - 60.0;
+        }
+
+        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT, annMeanSoil, snowTempC);
         const base = (i * hiNlon + j) * 3;
         rgbBuf[base] = r;
         rgbBuf[base + 1] = g;
@@ -459,74 +472,23 @@
 
   function ensureTempStep(step: number) {
     if (tempStepCache[step]) return;
+    // Snap to nearest base month (no sub-step interpolation for hi-res T2m)
     const m0 = Math.floor(step / SUB_STEPS) % 12;
-    const m1 = (m0 + 1) % 12;
     const t = (step % SUB_STEPS) / SUB_STEPS;
-    if (t < 0.001) { ensureTempBase(m0); tempStepCache[step] = tempBaseCache[m0]!; return; }
-    // Interpolate raw temperatures then apply colormap (preserves sharp 0°C boundary)
-    if (!data) return;
-    const monthData0 = averagePolarTemps(data[m0], nlat, nlon);
-    const monthData1 = averagePolarTemps(data[m1], nlat, nlon);
-    const nVerts = nlat * nlon * 6;
-    const buf = new Float32Array(nVerts * 3);
-    let idx = 0;
-    const s = 1 - t;
-    for (let i = 0; i < nlat; i++) {
-      const dataLatIdx = nlat - 1 - i;
-      for (let j = 0; j < nlon; j++) {
-        const temp = monthData0[dataLatIdx][j] * s + monthData1[dataLatIdx][j] * t;
-        const [r, g, b] = temperatureToColorNormalized(temp);
-        for (let v = 0; v < 6; v++) {
-          buf[idx++] = r; buf[idx++] = g; buf[idx++] = b;
-        }
-      }
-    }
-    tempStepCache[step] = buf;
-  }
-
-  /** Linearly interpolate a monthly slice from a [12, nlat, nlon] flat array. */
-  function lerpMonthlySlice(
-    data: Float32Array, cellCount: number, m0: number, m1: number, t: number,
-  ): Float32Array {
-    const out = new Float32Array(cellCount);
-    const off0 = m0 * cellCount, off1 = m1 * cellCount;
-    const s = 1 - t;
-    for (let i = 0; i < cellCount; i++) out[i] = data[off0 + i] * s + data[off1 + i] * t;
-    return out;
+    const nearest = t < 0.5 ? m0 : (m0 + 1) % 12;
+    ensureTempBase(nearest);
+    tempStepCache[step] = tempBaseCache[nearest]!;
   }
 
   function ensureBmStep(step: number) {
     if (bmStepRgbCache[step]) return;
+    // Snap to nearest base month (no sub-step interpolation to save memory)
     const m0 = Math.floor(step / SUB_STEPS) % 12;
-    const m1 = (m0 + 1) % 12;
     const t = (step % SUB_STEPS) / SUB_STEPS;
-    if (t < 0.001) {
-      ensureBmBase(m0);
-      bmStepRgbCache[step] = bmBaseRgbCache[m0]!;
-      bmStepSpecCache[step] = bmBaseSpecCache[m0]!;
-      return;
-    }
-    // Interpolate coarse-resolution fields, then run full colormap pipeline
-    if (!layerData) return;
-    const ld = layerData;
-    const lowN = ld.surface.shape[1] * ld.surface.shape[2];
-    const interpSurface = lerpMonthlySlice(ld.surface.data as Float32Array, lowN, m0, m1, t);
-    const interpSoil = ld.soil_moisture
-      ? lerpMonthlySlice(ld.soil_moisture.data as Float32Array, lowN, m0, m1, t)
-      : undefined;
-    const interpVeg = ld.vegetation_fraction
-      ? lerpMonthlySlice(ld.vegetation_fraction.data as Float32Array, lowN, m0, m1, t)
-      : undefined;
-    // Build a thin wrapper with interpolated single-month slices (monthIdx=0)
-    const interpLd: ClimateLayerData = {
-      ...ld,
-      surface: { data: interpSurface, shape: [1, ld.surface.shape[1], ld.surface.shape[2]] },
-      ...(interpSoil && ld.soil_moisture ? { soil_moisture: { data: interpSoil, shape: [1, ld.surface.shape[1], ld.surface.shape[2]] } } : {}),
-      ...(interpVeg && ld.vegetation_fraction ? { vegetation_fraction: { data: interpVeg, shape: [1, ld.surface.shape[1], ld.surface.shape[2]] } } : {}),
-    };
-    const r = buildBlueMarbleBuffers(interpLd, 0);
-    bmStepRgbCache[step] = r.rgb;
-    bmStepSpecCache[step] = r.spec;
+    const nearest = t < 0.5 ? m0 : (m0 + 1) % 12;
+    ensureBmBase(nearest);
+    bmStepRgbCache[step] = bmBaseRgbCache[nearest]!;
+    bmStepSpecCache[step] = bmBaseSpecCache[nearest]!;
   }
 
   function progressToStep(progress: number): number {

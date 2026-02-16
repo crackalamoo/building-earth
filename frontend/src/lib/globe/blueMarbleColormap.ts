@@ -109,6 +109,7 @@ export function blueMarbleColor(
   vegetationFraction: number = 0,
   annualMeanTempC: number = 15,
   annualMeanSoilMoisture: number = 0.5,
+  snowTempC: number = surfaceTempC,
 ): [number, number, number] {
   if (!isLand) {
     // ── Ocean ── subtle depth gradient
@@ -192,10 +193,10 @@ export function blueMarbleColor(
   }
 
   // Snow overlay
-  const snowFrac = landSnowFraction(surfaceTempC);
+  const snowFrac = landSnowFraction(snowTempC);
   if (snowFrac > 0.001) {
     // Determine snow type: ice sheet vs seasonal
-    const iceSheetFrac = iceSheetFraction(surfaceTempC);
+    const iceSheetFrac = iceSheetFraction(snowTempC);
     const snowColor = lerp3(SEASONAL_SNOW, ICE_SHEET, iceSheetFrac);
     baseColor = lerp3(baseColor, snowColor, snowFrac);
   }

@@ -46,6 +46,8 @@ export interface ClimateLayerData {
   cloud_convective?: FieldData;
   /** 0.25deg elevation in meters [720, 1440] */
   elevation?: FieldData;
+  /** 0.25deg snow temperature uint8-quantized [12, 720, 1440] */
+  snow_temperature?: FieldData;
 }
 
 /** Decode a Float16 buffer into Float32Array. */
