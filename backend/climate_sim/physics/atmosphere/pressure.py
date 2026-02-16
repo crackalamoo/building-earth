@@ -20,9 +20,9 @@ SUBTROPICS_ITCZ_COUPLING = 0.15
 # Hadley cell pressure anomalies (Pa)
 # These represent CIRCULATION-ONLY effects, separate from thermal pressure.
 # Thermal effects (dp = -β*dT) are computed separately from temperature anomalies.
-DP_ITCZ = -800.0  # Low pressure at ITCZ (rising air in Hadley cell)
+DP_ITCZ = -700.0  # Low pressure at ITCZ (rising air in Hadley cell)
 DP_SUBTROPICS = 800.0  # High pressure at subtropical highs (descending air)
-DP_SUBPOLAR = -1500.0  # Low pressure at subpolar lows (must overcome thermal high from cold)
+DP_SUBPOLAR = -1200.0  # Low pressure at subpolar lows (must overcome thermal high from cold)
 DP_POLES = 0.0  # No explicit polar high (prevents excessive polar easterlies)
 
 # Width of pressure features (radians) - controls smoothness of transitions
