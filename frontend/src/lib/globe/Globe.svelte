@@ -191,6 +191,9 @@
     warmCache(++warmupGeneration);
   }
   $: if (layerData) {
+    hillshadeGridCache = null;
+    annualMeanTempCache = null;
+    annualMeanSoilCache = null;
     bmBaseRgbCache = new Array(12).fill(null);
     bmBaseSpecCache = new Array(12).fill(null);
     bmStepRgbCache = new Array(TOTAL_STEPS).fill(null);
@@ -241,6 +244,52 @@
     return buf;
   }
 
+  /** Cached hillshade grid (computed from elevation, independent of globe mesh). */
+  let hillshadeGridCache: Float32Array | null = null;
+
+  function getHillshadeGrid(ld: ClimateLayerData): Float32Array | null {
+    if (hillshadeGridCache) return hillshadeGridCache;
+    const elevData = ld.elevation?.data as Float32Array | undefined;
+    const elevNlat = ld.elevation?.shape[0] ?? 0;
+    const elevNlon = ld.elevation?.shape[1] ?? 0;
+    const hiNlat = ld.land_mask.shape[0];
+    const hiNlon = ld.land_mask.shape[1];
+    if (elevData && elevNlat && elevNlon) {
+      hillshadeGridCache = computeHillshadeGrid(elevData, elevNlat, elevNlon, hiNlat, hiNlon);
+    }
+    return hillshadeGridCache;
+  }
+
+  /** Compute annual means from full 12-month data (cached to avoid recomputation). */
+  let annualMeanTempCache: Float32Array | null = null;
+  let annualMeanSoilCache: Float32Array | null = null;
+
+  function getAnnualMeans(ld: ClimateLayerData): { temp: Float32Array; soil: Float32Array } {
+    if (annualMeanTempCache) return { temp: annualMeanTempCache, soil: annualMeanSoilCache! };
+    const surfaceData = ld.surface.data as Float32Array;
+    const soilData = ld.soil_moisture?.data as Float32Array | undefined;
+    const lowNlat = ld.surface.shape[1];
+    const lowNlon = ld.surface.shape[2];
+    const n = lowNlat * lowNlon;
+    const annualMeanTemp = new Float32Array(n);
+    const annualMeanSoil = new Float32Array(n);
+    for (let ci = 0; ci < lowNlat; ci++) {
+      for (let cj = 0; cj < lowNlon; cj++) {
+        let tsum = 0, ssum = 0;
+        for (let m = 0; m < 12; m++) {
+          const idx = m * n + ci * lowNlon + cj;
+          tsum += surfaceData[idx];
+          if (soilData) ssum += soilData[idx];
+        }
+        annualMeanTemp[ci * lowNlon + cj] = tsum / 12;
+        annualMeanSoil[ci * lowNlon + cj] = soilData ? ssum / 12 : 0.5;
+      }
+    }
+    annualMeanTempCache = annualMeanTemp;
+    annualMeanSoilCache = annualMeanSoil;
+    return { temp: annualMeanTemp, soil: annualMeanSoil };
+  }
+
   function buildBlueMarbleBuffers(ld: ClimateLayerData, monthIdx: number): { rgb: Float32Array; spec: Float32Array } {
     const surfaceData = ld.surface.data as Float32Array;
     const landMaskData = ld.land_mask.data as Uint8Array;
@@ -260,21 +309,10 @@
     const lowNlon = ld.surface.shape[2];
     const monthOffset = monthIdx * lowNlat * lowNlon;
 
-    // Precompute annual means per coarse cell
-    const annualMeanTemp = new Float32Array(lowNlat * lowNlon);
-    const annualMeanSoil = new Float32Array(lowNlat * lowNlon);
-    for (let ci = 0; ci < lowNlat; ci++) {
-      for (let cj = 0; cj < lowNlon; cj++) {
-        let tsum = 0, ssum = 0;
-        for (let m = 0; m < 12; m++) {
-          const idx = m * lowNlat * lowNlon + ci * lowNlon + cj;
-          tsum += surfaceData[idx];
-          if (soilData) ssum += soilData[idx];
-        }
-        annualMeanTemp[ci * lowNlon + cj] = tsum / 12;
-        annualMeanSoil[ci * lowNlon + cj] = soilData ? ssum / 12 : 0.5;
-      }
-    }
+    // Use cached annual means (computed from full 12-month original data)
+    const annuals = getAnnualMeans(layerData!);
+    const annualMeanTemp = annuals.temp;
+    const annualMeanSoil = annuals.soil;
 
     // First pass: compute per-cell RGB into a flat buffer
     const rgbBuf = new Float32Array(hiNlat * hiNlon * 3);
@@ -368,7 +406,7 @@
     }
 
     // Apply hillshade to RGB buffer and build specular + vertex-expanded buffers
-    const hsGrid = (blueMarbleGlobe as any)?._hillshadeGrid as Float32Array | undefined;
+    const hsGrid = getHillshadeGrid(layerData!);
     const nVerts = hiNlat * hiNlon * 6;
     const outRgb = new Float32Array(nVerts * 3);
     const outSpec = new Float32Array(nVerts);
@@ -427,36 +465,72 @@
     if (tempStepCache[step]) return;
     const m0 = Math.floor(step / SUB_STEPS) % 12;
     const m1 = (m0 + 1) % 12;
-    ensureTempBase(m0); ensureTempBase(m1);
     const t = (step % SUB_STEPS) / SUB_STEPS;
-    if (t < 0.001) { tempStepCache[step] = tempBaseCache[m0]!; return; }
-    const b0 = tempBaseCache[m0]!, b1 = tempBaseCache[m1]!;
-    const out = new Float32Array(b0.length);
+    if (t < 0.001) { ensureTempBase(m0); tempStepCache[step] = tempBaseCache[m0]!; return; }
+    // Interpolate raw temperatures then apply colormap (preserves sharp 0°C boundary)
+    if (!data) return;
+    const monthData0 = averagePolarTemps(data[m0], nlat, nlon);
+    const monthData1 = averagePolarTemps(data[m1], nlat, nlon);
+    const nVerts = nlat * nlon * 6;
+    const buf = new Float32Array(nVerts * 3);
+    let idx = 0;
     const s = 1 - t;
-    for (let i = 0; i < out.length; i++) out[i] = b0[i] * s + b1[i] * t;
-    tempStepCache[step] = out;
+    for (let i = 0; i < nlat; i++) {
+      const dataLatIdx = nlat - 1 - i;
+      for (let j = 0; j < nlon; j++) {
+        const temp = monthData0[dataLatIdx][j] * s + monthData1[dataLatIdx][j] * t;
+        const [r, g, b] = temperatureToColorNormalized(temp);
+        for (let v = 0; v < 6; v++) {
+          buf[idx++] = r; buf[idx++] = g; buf[idx++] = b;
+        }
+      }
+    }
+    tempStepCache[step] = buf;
+  }
+
+  /** Linearly interpolate a monthly slice from a [12, nlat, nlon] flat array. */
+  function lerpMonthlySlice(
+    data: Float32Array, cellCount: number, m0: number, m1: number, t: number,
+  ): Float32Array {
+    const out = new Float32Array(cellCount);
+    const off0 = m0 * cellCount, off1 = m1 * cellCount;
+    const s = 1 - t;
+    for (let i = 0; i < cellCount; i++) out[i] = data[off0 + i] * s + data[off1 + i] * t;
+    return out;
   }
 
   function ensureBmStep(step: number) {
     if (bmStepRgbCache[step]) return;
     const m0 = Math.floor(step / SUB_STEPS) % 12;
     const m1 = (m0 + 1) % 12;
-    ensureBmBase(m0); ensureBmBase(m1);
     const t = (step % SUB_STEPS) / SUB_STEPS;
     if (t < 0.001) {
+      ensureBmBase(m0);
       bmStepRgbCache[step] = bmBaseRgbCache[m0]!;
       bmStepSpecCache[step] = bmBaseSpecCache[m0]!;
       return;
     }
-    const r0 = bmBaseRgbCache[m0]!, r1 = bmBaseRgbCache[m1]!;
-    const s0 = bmBaseSpecCache[m0]!, s1 = bmBaseSpecCache[m1]!;
-    const s = 1 - t;
-    const outR = new Float32Array(r0.length);
-    const outS = new Float32Array(s0.length);
-    for (let i = 0; i < outR.length; i++) outR[i] = r0[i] * s + r1[i] * t;
-    for (let i = 0; i < outS.length; i++) outS[i] = s0[i] * s + s1[i] * t;
-    bmStepRgbCache[step] = outR;
-    bmStepSpecCache[step] = outS;
+    // Interpolate coarse-resolution fields, then run full colormap pipeline
+    if (!layerData) return;
+    const ld = layerData;
+    const lowN = ld.surface.shape[1] * ld.surface.shape[2];
+    const interpSurface = lerpMonthlySlice(ld.surface.data as Float32Array, lowN, m0, m1, t);
+    const interpSoil = ld.soil_moisture
+      ? lerpMonthlySlice(ld.soil_moisture.data as Float32Array, lowN, m0, m1, t)
+      : undefined;
+    const interpVeg = ld.vegetation_fraction
+      ? lerpMonthlySlice(ld.vegetation_fraction.data as Float32Array, lowN, m0, m1, t)
+      : undefined;
+    // Build a thin wrapper with interpolated single-month slices (monthIdx=0)
+    const interpLd: ClimateLayerData = {
+      ...ld,
+      surface: { data: interpSurface, shape: [1, ld.surface.shape[1], ld.surface.shape[2]] },
+      ...(interpSoil && ld.soil_moisture ? { soil_moisture: { data: interpSoil, shape: [1, ld.surface.shape[1], ld.surface.shape[2]] } } : {}),
+      ...(interpVeg && ld.vegetation_fraction ? { vegetation_fraction: { data: interpVeg, shape: [1, ld.surface.shape[1], ld.surface.shape[2]] } } : {}),
+    };
+    const r = buildBlueMarbleBuffers(interpLd, 0);
+    bmStepRgbCache[step] = r.rgb;
+    bmStepSpecCache[step] = r.spec;
   }
 
   function progressToStep(progress: number): number {
