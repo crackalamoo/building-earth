@@ -1353,9 +1353,10 @@ def solve_periodic_climate(
 
     # Create initial guess using radiative equilibrium
     with time_block("initial_guess"):
+        initial_albedo = operators.albedo_model.guess_albedo_field()
         initial_temp_guess = radiation.radiative_equilibrium_initial_guess(
             operators.monthly_insolation,
-            albedo_field=operators.base_albedo_field,
+            albedo_field=initial_albedo,
             config=operators.radiation_config,
             land_mask=operators.land_mask,
             lat2d=operators.lat2d,
@@ -1363,7 +1364,7 @@ def solve_periodic_climate(
         )
         initial_state = ModelState(
             temperature=initial_temp_guess,
-            albedo_field=operators.base_albedo_field,
+            albedo_field=initial_albedo,
             wind_field=None,
             humidity_field=None,
         )
