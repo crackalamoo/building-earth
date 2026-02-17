@@ -369,16 +369,15 @@ export class TreeInstances {
         const coarseAnnualVeg = isCoarseLand ? coarseVegSum / 12 : 0;
         const coarseAnnualSoil = isCoarseLand ? Math.min(coarseSoilSum / 12, 1) : 0.5;
 
-        // Tree density: sigmoid on veg fraction × moisture gate × growing season
-        // Grass/shrub → tree transition is nonlinear: forests appear above ~0.5 veg
-        // Trees need consistent moisture (deep roots) unlike grass
-        const vegU = Math.max(0, Math.min(1, (coarseAnnualVeg - 0.25) / 0.5));
-        const vegSigmoid = vegU * vegU * (3 - 2 * vegU); // smoothstep 0.25→0.75
-        const moistU = Math.max(0, Math.min(1, (coarseAnnualSoil - 0.1) / 0.2));
-        const moistGate = moistU * moistU * (3 - 2 * moistU); // smoothstep 0.1→0.3
+        // Tree density: use minimum thresholds (palm/conifer), reject per-type later
+        // Global gate is permissive; per-type survival checks happen after type selection
+        const vegU = Math.max(0, Math.min(1, (coarseAnnualVeg - 0.1) / 0.6));
+        const vegGate = vegU * vegU * (3 - 2 * vegU); // smoothstep 0.1→0.7
+        const moistU = Math.max(0, Math.min(1, (coarseAnnualSoil - 0.05) / 0.2));
+        const moistGate = moistU * moistU * (3 - 2 * moistU); // smoothstep 0.05→0.25
         const gsU = Math.max(0, Math.min(1, (monthsAbove10 - 3) / 3));
         const treeGrowingSeason = gsU * gsU * (3 - 2 * gsU); // hermite
-        const treeDensity = vegSigmoid * moistGate * treeGrowingSeason;
+        const treeDensity = vegGate * moistGate * treeGrowingSeason;
 
         // Max possible trees per coarse cell — try more candidates for
         // cells that are partially ocean at coarse res but have hi-res land
@@ -464,6 +463,20 @@ export class TreeInstances {
           if (r < localPConifer) type = 0;
           else if (r < localPConifer + localPBroadleaf) type = 1;
           else type = 2;
+
+          // Per-type survival: different veg/moisture thresholds
+          // Conifer: drought-tolerant, grows on thin dry soils (boreal)
+          // Broadleaf: needs most moisture and ground cover
+          // Palm: low veg ok (oases), just needs warmth + some moisture
+          const localMoist = isCoarseLand ? coarseAnnualSoil : 0.5;
+          const localVeg = coarseAnnualVeg;
+          if (type === 0) { // conifer
+            if (localMoist < 0.05 || localVeg < 0.15) continue;
+          } else if (type === 1) { // broadleaf
+            if (localMoist < 0.15 || localVeg < 0.3) continue;
+          } else { // palm
+            if (localMoist < 0.05 || localVeg < 0.08) continue;
+          }
 
           const normal = latLonToNormal(lat, lon);
           const position = normal.clone().multiplyScalar(GLOBE_RADIUS);
