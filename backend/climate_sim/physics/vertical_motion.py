@@ -69,7 +69,7 @@ class VerticalMotionConfig:
     # Background BL-atmosphere mixing timescale (seconds).
     # Represents subsidence, entrainment, and turbulent exchange that
     # returns latent heat from the free atmosphere back to the BL.
-    tau_bl_atm_mixing_s: float = 8.0 * 86400.0  # 8 days (blended processes)
+    tau_bl_atm_mixing_s: float = 7.0 * 86400.0  # 7 days (blended processes)
 
 
 def compute_vertical_motion_heating(
@@ -368,6 +368,7 @@ def compute_bl_atm_mixing_tendencies(
     T_atm: np.ndarray,
     C_bl: float = BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
     C_atm: float = ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
+    tau_s: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Background BL-atmosphere heat exchange via subsidence and mixing.
 
@@ -375,14 +376,11 @@ def compute_bl_atm_mixing_tendencies(
     closing the latent heat return loop: surface evaporation -> condensation
     aloft -> radiative cooling -> subsidence warming back to BL.
 
-    Uses a fixed 10-day timescale representing a blend of radiative
-    subsidence, turbulent entrainment, and convective mixing.
-
     Energy-conserving: C_bl * dT_bl + C_atm * dT_atm = 0.
     """
     theta_atm = T_atm * _ALPHA  # Potential temperature of free atm at surface
 
-    tau = 8.0 * 86400.0  # 8 days
+    tau = tau_s if tau_s is not None else 7.0 * 86400.0
 
     heat_flux = C_bl * (theta_atm - T_bl) / tau  # W/m²
 
