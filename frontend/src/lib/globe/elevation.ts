@@ -6,7 +6,7 @@
  * Hillshade is baked into vertex colors for visibility on the night side.
  */
 
-export const ELEVATION_SCALE = 3e-6;
+export const ELEVATION_SCALE = 6e-6;
 
 /** Blend factor between sphere normal (0) and displaced normal (1). */
 export const NORMAL_BLEND = 0.50;
