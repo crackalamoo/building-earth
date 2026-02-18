@@ -1348,6 +1348,7 @@ def solve_periodic_climate(
             vertical_motion_cfg=operators.vertical_motion_cfg,
             humidity_diffusion_operator=humidity_diffusion_op,
             orographic_model=operators.orographic_model,
+            amoc_velocity=operators.amoc_velocity,
         )
         rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
 

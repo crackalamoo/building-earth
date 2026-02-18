@@ -89,6 +89,7 @@ class RhsBuildInputs:
     vertical_motion_cfg: VerticalMotionConfig | None = None
     humidity_diffusion_operator: DiffusionOperator | None = None
     orographic_model: OrographicModel | None = None
+    amoc_velocity: tuple[FloatArray, FloatArray] | None = None
 
 def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
     """Build RHS and Jacobian functions from physics configuration.
@@ -298,6 +299,18 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 ocean_mask = ~inputs.land_mask
                 cooling_mask = ocean_mask & (T_deep < surface_temperature)
                 radiative[0] += np.where(cooling_mask, entrainment, 0.0)
+
+            # AMOC thermohaline advection (separate from wind-driven currents)
+            if inputs.amoc_velocity is not None and inputs.advection_operator is not None:
+                u_amoc, v_amoc = inputs.amoc_velocity
+                u_safe = np.nan_to_num(u_amoc, nan=0.0)
+                v_safe = np.nan_to_num(v_amoc, nan=0.0)
+                amoc_tendency = inputs.advection_operator.tendency(
+                    surface_temperature, u_safe, v_safe
+                )
+                # Only apply on ocean cells within the AMOC region
+                amoc_mask = ~np.isnan(u_amoc)
+                radiative[0] += np.where(amoc_mask, amoc_tendency, 0.0)
 
             if nlayers == 3:
                 # Three-layer system
