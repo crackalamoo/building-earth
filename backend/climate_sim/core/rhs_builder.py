@@ -781,10 +781,10 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     # Evaporation Jacobian: surface cools when q increases (less evap)
                     dR_Tsfc_dq = -dE_dq * L_v / C_sfc
 
-                    # Precipitation heating split: 5% to BL, 95% to atmosphere
-                    BL_LATENT_FRACTION = 0.05
-                    dR_Tatm_dq = (1 - BL_LATENT_FRACTION) * dP_dq * L_v / C_atm
-                    dR_Tbl_dq = BL_LATENT_FRACTION * dP_dq * L_v / C_bl
+                    # Precipitation heating split: ocean 20% / land 5% to BL
+                    bl_frac = np.where(inputs.land_mask, 0.05, 0.20)
+                    dR_Tatm_dq = (1 - bl_frac) * dP_dq * L_v / C_atm
+                    dR_Tbl_dq = bl_frac * dP_dq * L_v / C_bl
 
                     temp_humidity_coupling = (dR_Tsfc_dq, dR_Tbl_dq, dR_Tatm_dq)
 

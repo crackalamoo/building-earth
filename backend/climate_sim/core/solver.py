@@ -48,7 +48,7 @@ from climate_sim.core.operators import SurfaceHeatCapacityContext, build_model_o
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
 from climate_sim.physics.ocean_currents import compute_ocean_currents, compute_deep_ocean_temperature
 from climate_sim.core.math_core import spherical_cell_area
-from climate_sim.data.constants import R_EARTH_METERS
+from climate_sim.data.constants import R_EARTH_METERS, BOUNDARY_LAYER_HEIGHT_M, STANDARD_LAPSE_RATE_K_PER_M
 from climate_sim.runtime.config import ModelConfig
 
 NEWTON_STEP_TOLERANCE_K = 1.0
@@ -876,8 +876,11 @@ def monthly_step(
         final_vertical_velocity = None
         if lagged_humidity is not None and nlayers_final >= 2:
             # Compute relative humidity
+            # Over ocean, use warmer reference T for q_sat (ocean BL is shallower)
+            ocean_bl_corr = (BOUNDARY_LAYER_HEIGHT_M - 500.0) / 2.0 * STANDARD_LAPSE_RATE_K_PER_M
+            t_for_rh = np.where(surface_context.land_mask, t_for_humidity, t_for_humidity + ocean_bl_corr)
             rh = specific_humidity_to_relative_humidity(
-                lagged_humidity, t_for_humidity,
+                lagged_humidity, t_for_rh,
                 itcz_rad=itcz_rad, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d
             )
             # Compute vertical velocity from wind divergence + frontal lifting
