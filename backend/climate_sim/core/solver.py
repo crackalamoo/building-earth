@@ -67,7 +67,7 @@ ANDERSON_HISTORY_LIMIT = 12
 ANDERSON_RELAXATION = 0.7
 
 # Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
-INEXACT_NEWTON_REFACTORIZE_EVERY = 4
+INEXACT_NEWTON_REFACTORIZE_EVERY = 6
 # GMRES tolerance for inexact Newton linear solves.
 INEXACT_NEWTON_GMRES_RTOL = 1e-4
 INEXACT_NEWTON_GMRES_ATOL = 0.0
@@ -234,19 +234,23 @@ def monthly_step(
         # oscillation caused by frozen clouds lagging behind humidity changes).
         from climate_sim.physics.atmosphere.pressure import compute_pressure
 
+        # Precompute divergence-based vertical velocity from lagged winds (constant
+        # within a monthly step since winds are lagged).
+        _cached_cloud_vertical_velocity: np.ndarray | None = None
+        if lagged_boundary_layer_wind_field is not None:
+            wind_u_cf, wind_v_cf = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
+            _cached_divergence = compute_divergence(wind_u_cf, wind_v_cf, surface_context.lat2d, surface_context.lon2d)
+            _cached_cloud_vertical_velocity = compute_vertical_velocity_from_divergence(_cached_divergence)
+
         def _compute_cloud_fractions(temp: np.ndarray, humidity: np.ndarray):
             """Recompute cloud output from current temperature and humidity."""
             T_bl_cloud = temp[1]
             T_atm_cloud = temp[2]
-            current_itcz_cf = _compute_itcz_from_temp(temp)
-            # Use divergence-based w from lagged winds when available.
-            # This gives proper ITCZ convergence / subtropical subsidence structure.
-            # Falls back to pressure-based w (weak, nearly uniform) if no winds.
-            if lagged_boundary_layer_wind_field is not None:
-                wind_u_cf, wind_v_cf = lagged_boundary_layer_wind_field[0], lagged_boundary_layer_wind_field[1]
-                divergence = compute_divergence(wind_u_cf, wind_v_cf, surface_context.lat2d, surface_context.lon2d)
-                vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
+            # Use precomputed divergence-based w from lagged winds when available.
+            if _cached_cloud_vertical_velocity is not None:
+                vertical_velocity = _cached_cloud_vertical_velocity
             else:
+                current_itcz_cf = _compute_itcz_from_temp(temp)
                 pressure = compute_pressure(
                     temp[0],
                     itcz_rad=current_itcz_cf,
@@ -262,6 +266,7 @@ def monthly_step(
                 dp = pressure - mean_pressure
                 dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
                 vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
+            current_itcz_cf = _compute_itcz_from_temp(temp)
             rh = specific_humidity_to_relative_humidity(
                 humidity, T_bl_cloud,
                 itcz_rad=current_itcz_cf, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d,
@@ -320,6 +325,18 @@ def monthly_step(
         # implicit solver loop
         preconditioner_solve: Callable[[np.ndarray], np.ndarray] | None = None
         preconditioner_age = 10**9
+        # Jacobian lagging: reuse Jacobian when residual is decreasing
+        cached_linearization: "Linearization | None" = None
+        prev_max_residual: float = float('inf')
+        jacobian_age: int = 0
+        JACOBIAN_MAX_AGE = 3  # Recompute after this many reuses
+        # Cache assembled Jacobian and preconditioner for reuse when linearization is lagged.
+        # Only the surface ceff diagonal changes between iterations.
+        cached_assembled_jacobian: sparse.csc_matrix | None = None
+        cached_assembled_preconditioner: sparse.csc_matrix | None = None
+        cached_surface_block: sparse.csc_matrix | None = None
+        cached_ceff_surface: np.ndarray | None = None
+        cached_include_implicit_humidity: bool = False
 
         def _solve_linear_system(
             jacobian: sparse.csc_matrix,
@@ -376,9 +393,20 @@ def monthly_step(
                 state_capped, current_itcz = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
                     rhs_value = rhs_fn(state_capped, insolation_W_m2, current_itcz)
-                # Recompute Jacobian every iteration for true Newton solve
-                with time_block("rhs_derivative"):
-                    linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, current_itcz)
+
+                # Jacobian lagging: skip rhs_derivative when residual is well-behaved
+                need_jacobian = (
+                    cached_linearization is None
+                    or jacobian_age >= JACOBIAN_MAX_AGE
+                )
+                if need_jacobian:
+                    with time_block("rhs_derivative"):
+                        linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, current_itcz)
+                    cached_linearization = linearization
+                    jacobian_age = 0
+                else:
+                    linearization = cached_linearization
+                    jacobian_age += 1
                 preconditioner_age += 1
 
                 nlayers = temp_capped.shape[0]
@@ -430,91 +458,128 @@ def monthly_step(
                         and linearization.humidity_advection_matrix is not None
                     )
 
-                    with time_block("jacobian_assembly"):
-                        surface_block = _build_surface_jacobian_block(
-                            ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds,
-                            advection_matrix=linearization.surface_advection_matrix,
-                        )
+                    # When linearization is reused (lagged Jacobian), only the surface
+                    # ceff diagonal changes. Update the cached Jacobian cheaply instead
+                    # of rebuilding all blocks from scratch.
+                    can_reuse_assembly = (
+                        not need_jacobian
+                        and cached_assembled_jacobian is not None
+                        and cached_ceff_surface is not None
+                        and cached_include_implicit_humidity == include_implicit_humidity
+                    )
 
-                        # Boundary layer block (with diffusion and advection if available)
-                        boundary_block = identity.copy()
-                        boundary_block -= dt_seconds * sparse.diags(boundary_diag.ravel(), format="csc")
-                        if linearization.boundary_layer_diffusion_matrix is not None and linearization.boundary_layer_diffusion_matrix.nnz > 0:
-                            boundary_block -= dt_seconds * linearization.boundary_layer_diffusion_matrix
-                        if linearization.boundary_layer_advection_matrix is not None and linearization.boundary_layer_advection_matrix.nnz > 0:
-                            boundary_block -= dt_seconds * linearization.boundary_layer_advection_matrix
+                    if can_reuse_assembly:
+                        with time_block("jacobian_assembly"):
+                            # Only the surface ceff diagonal changed — update it
+                            delta_ceff = ceff_surface.ravel() - cached_ceff_surface.ravel()
+                            # Build a sparse diagonal correction for the full Jacobian
+                            # (delta_ceff goes in the first `size` diagonal entries)
+                            n_total = cached_assembled_jacobian.shape[0]
+                            full_delta = np.zeros(n_total)
+                            full_delta[:size] = delta_ceff
+                            jacobian = cached_assembled_jacobian + sparse.diags(full_delta, format="csc")
+                            cached_assembled_jacobian = jacobian
 
-                        # Atmosphere block (with diffusion and advection)
-                        atmosphere_block = identity.copy()
-                        atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
-                        if linearization.atmosphere_diffusion_matrix is not None and linearization.atmosphere_diffusion_matrix.nnz > 0:
-                            atmosphere_block -= dt_seconds * linearization.atmosphere_diffusion_matrix
-                        if linearization.atmosphere_advection_matrix is not None and linearization.atmosphere_advection_matrix.nnz > 0:
-                            atmosphere_block -= dt_seconds * linearization.atmosphere_advection_matrix
+                            # Update surface block in preconditioner similarly
+                            surface_block = cached_surface_block + sparse.diags(delta_ceff, format="csc")
+                            cached_surface_block = surface_block
 
-                        # Cross-coupling: includes surface-atmosphere coupling via transmission
-                        if linearization.cross is not None:
-                            coupling_01 = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 1]).ravel(), format="csc")
-                            coupling_02 = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 2]).ravel(), format="csc")
-                            coupling_10 = -dt_seconds * sparse.diags(linearization.cross[1, 0].ravel(), format="csc")
-                            coupling_12 = -dt_seconds * sparse.diags(linearization.cross[1, 2].ravel(), format="csc")
-                            coupling_20 = -dt_seconds * sparse.diags(linearization.cross[2, 0].ravel(), format="csc")
-                            coupling_21 = -dt_seconds * sparse.diags(linearization.cross[2, 1].ravel(), format="csc")
-                        else:
-                            coupling_01 = coupling_02 = coupling_10 = coupling_12 = coupling_20 = coupling_21 = zero_matrix
+                            preconditioner_delta = np.zeros(n_total)
+                            preconditioner_delta[:size] = delta_ceff
+                            preconditioner_matrix = cached_assembled_preconditioner + sparse.diags(preconditioner_delta, format="csc")
+                            cached_assembled_preconditioner = preconditioner_matrix
+                            cached_ceff_surface = ceff_surface.copy()
+                    else:
+                        with time_block("jacobian_assembly"):
+                            surface_block = _build_surface_jacobian_block(
+                                ceff_surface, surface_diag, base_capacity, linearization.surface_diffusion_matrix, dt_seconds,
+                                advection_matrix=linearization.surface_advection_matrix,
+                            )
 
-                        if include_implicit_humidity:
-                            # Build 4×4 block Jacobian including humidity
-                            # Humidity block: I - dt * (dE/dq/M - dP/dq/M + advection_matrix + diffusion_matrix)
-                            humidity_block = identity.copy()
-                            if linearization.humidity_diag is not None:
-                                humidity_block -= dt_seconds * sparse.diags(linearization.humidity_diag.ravel(), format="csc")
-                            if linearization.humidity_advection_matrix is not None and linearization.humidity_advection_matrix.nnz > 0:
-                                humidity_block -= dt_seconds * linearization.humidity_advection_matrix
-                            if linearization.humidity_diffusion_matrix is not None and linearization.humidity_diffusion_matrix.nnz > 0:
-                                humidity_block -= dt_seconds * linearization.humidity_diffusion_matrix
+                            # Boundary layer block (with diffusion and advection if available)
+                            boundary_block = identity.copy()
+                            boundary_block -= dt_seconds * sparse.diags(boundary_diag.ravel(), format="csc")
+                            if linearization.boundary_layer_diffusion_matrix is not None and linearization.boundary_layer_diffusion_matrix.nnz > 0:
+                                boundary_block -= dt_seconds * linearization.boundary_layer_diffusion_matrix
+                            if linearization.boundary_layer_advection_matrix is not None and linearization.boundary_layer_advection_matrix.nnz > 0:
+                                boundary_block -= dt_seconds * linearization.boundary_layer_advection_matrix
 
-                            # Temperature-humidity coupling (dR_T/dq)
-                            if linearization.temp_humidity_coupling is not None:
-                                dR_Tsfc_dq, dR_Tbl_dq, dR_Tatm_dq = linearization.temp_humidity_coupling
-                                coupling_0q = -dt_seconds * sparse.diags((base_capacity * dR_Tsfc_dq).ravel(), format="csc")
-                                coupling_1q = -dt_seconds * sparse.diags(dR_Tbl_dq.ravel(), format="csc") if dR_Tbl_dq is not None else zero_matrix
-                                coupling_2q = -dt_seconds * sparse.diags(dR_Tatm_dq.ravel(), format="csc")
+                            # Atmosphere block (with diffusion and advection)
+                            atmosphere_block = identity.copy()
+                            atmosphere_block -= dt_seconds * sparse.diags(atmosphere_diag.ravel(), format="csc")
+                            if linearization.atmosphere_diffusion_matrix is not None and linearization.atmosphere_diffusion_matrix.nnz > 0:
+                                atmosphere_block -= dt_seconds * linearization.atmosphere_diffusion_matrix
+                            if linearization.atmosphere_advection_matrix is not None and linearization.atmosphere_advection_matrix.nnz > 0:
+                                atmosphere_block -= dt_seconds * linearization.atmosphere_advection_matrix
+
+                            # Cross-coupling: includes surface-atmosphere coupling via transmission
+                            if linearization.cross is not None:
+                                coupling_01 = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 1]).ravel(), format="csc")
+                                coupling_02 = -dt_seconds * sparse.diags((base_capacity * linearization.cross[0, 2]).ravel(), format="csc")
+                                coupling_10 = -dt_seconds * sparse.diags(linearization.cross[1, 0].ravel(), format="csc")
+                                coupling_12 = -dt_seconds * sparse.diags(linearization.cross[1, 2].ravel(), format="csc")
+                                coupling_20 = -dt_seconds * sparse.diags(linearization.cross[2, 0].ravel(), format="csc")
+                                coupling_21 = -dt_seconds * sparse.diags(linearization.cross[2, 1].ravel(), format="csc")
                             else:
-                                coupling_0q = coupling_1q = coupling_2q = zero_matrix
+                                coupling_01 = coupling_02 = coupling_10 = coupling_12 = coupling_20 = coupling_21 = zero_matrix
 
-                            # Humidity-temperature coupling (dR_q/dT)
-                            if linearization.humidity_temp_coupling is not None:
-                                dR_q_dTsfc, dR_q_dTbl, dR_q_dTatm = linearization.humidity_temp_coupling
-                                coupling_q0 = -dt_seconds * sparse.diags(dR_q_dTsfc.ravel(), format="csc")
-                                coupling_q1 = -dt_seconds * sparse.diags(dR_q_dTbl.ravel(), format="csc")
-                                coupling_q2 = -dt_seconds * sparse.diags(dR_q_dTatm.ravel(), format="csc")
+                            if include_implicit_humidity:
+                                # Build 4×4 block Jacobian including humidity
+                                humidity_block = identity.copy()
+                                if linearization.humidity_diag is not None:
+                                    humidity_block -= dt_seconds * sparse.diags(linearization.humidity_diag.ravel(), format="csc")
+                                if linearization.humidity_advection_matrix is not None and linearization.humidity_advection_matrix.nnz > 0:
+                                    humidity_block -= dt_seconds * linearization.humidity_advection_matrix
+                                if linearization.humidity_diffusion_matrix is not None and linearization.humidity_diffusion_matrix.nnz > 0:
+                                    humidity_block -= dt_seconds * linearization.humidity_diffusion_matrix
+
+                                # Temperature-humidity coupling (dR_T/dq)
+                                if linearization.temp_humidity_coupling is not None:
+                                    dR_Tsfc_dq, dR_Tbl_dq, dR_Tatm_dq = linearization.temp_humidity_coupling
+                                    coupling_0q = -dt_seconds * sparse.diags((base_capacity * dR_Tsfc_dq).ravel(), format="csc")
+                                    coupling_1q = -dt_seconds * sparse.diags(dR_Tbl_dq.ravel(), format="csc") if dR_Tbl_dq is not None else zero_matrix
+                                    coupling_2q = -dt_seconds * sparse.diags(dR_Tatm_dq.ravel(), format="csc")
+                                else:
+                                    coupling_0q = coupling_1q = coupling_2q = zero_matrix
+
+                                # Humidity-temperature coupling (dR_q/dT)
+                                if linearization.humidity_temp_coupling is not None:
+                                    dR_q_dTsfc, dR_q_dTbl, dR_q_dTatm = linearization.humidity_temp_coupling
+                                    coupling_q0 = -dt_seconds * sparse.diags(dR_q_dTsfc.ravel(), format="csc")
+                                    coupling_q1 = -dt_seconds * sparse.diags(dR_q_dTbl.ravel(), format="csc")
+                                    coupling_q2 = -dt_seconds * sparse.diags(dR_q_dTatm.ravel(), format="csc")
+                                else:
+                                    coupling_q0 = coupling_q1 = coupling_q2 = zero_matrix
+
+                                jacobian = sparse.bmat([
+                                    [surface_block, coupling_01, coupling_02, coupling_0q],
+                                    [coupling_10, boundary_block, coupling_12, coupling_1q],
+                                    [coupling_20, coupling_21, atmosphere_block, coupling_2q],
+                                    [coupling_q0, coupling_q1, coupling_q2, humidity_block]
+                                ], format="csc")
                             else:
-                                coupling_q0 = coupling_q1 = coupling_q2 = zero_matrix
+                                jacobian = sparse.bmat([
+                                    [surface_block, coupling_01, coupling_02],
+                                    [coupling_10, boundary_block, coupling_12],
+                                    [coupling_20, coupling_21, atmosphere_block]
+                                ], format="csc")
+                            assert isinstance(jacobian, sparse.csc_matrix)
 
-                            jacobian = sparse.bmat([
-                                [surface_block, coupling_01, coupling_02, coupling_0q],
-                                [coupling_10, boundary_block, coupling_12, coupling_1q],
-                                [coupling_20, coupling_21, atmosphere_block, coupling_2q],
-                                [coupling_q0, coupling_q1, coupling_q2, humidity_block]
-                            ], format="csc")
-                        else:
-                            jacobian = sparse.bmat([
-                                [surface_block, coupling_01, coupling_02],
-                                [coupling_10, boundary_block, coupling_12],
-                                [coupling_20, coupling_21, atmosphere_block]
-                            ], format="csc")
-                        assert isinstance(jacobian, sparse.csc_matrix)
+                            # Cache for reuse when linearization is lagged
+                            cached_assembled_jacobian = jacobian.copy()
+                            cached_surface_block = surface_block.copy()
+                            cached_ceff_surface = ceff_surface.copy()
+                            cached_include_implicit_humidity = include_implicit_humidity
 
                     # Build residual and preconditioner
                     residual = np.stack([residual_surface, residual_boundary, residual_atmosphere])
                     temp_residuals = [residual_surface.ravel(), residual_boundary.ravel(), residual_atmosphere.ravel()]
-                    temp_blocks = [surface_block, boundary_block, atmosphere_block]
+                    if can_reuse_assembly:
+                        temp_blocks = [surface_block]  # Only surface block is needed for update
+                    else:
+                        temp_blocks = [surface_block, boundary_block, atmosphere_block]
 
                     if include_implicit_humidity:
-                        # Compute humidity residual
-                        # R_q = q_new - q_old - dt * (dq_evap + dq_precip + dq_advection)
-                        # Get wind for advection (prefer boundary layer wind)
                         if lagged_boundary_layer_wind_field is not None:
                             wind_u_q, wind_v_q = lagged_boundary_layer_wind_field[:2]
                         elif lagged_wind_field is not None:
@@ -600,10 +665,18 @@ def monthly_step(
                         residual_humidity = lagged_humidity - start_humidity - dt_seconds * humidity_tendency
 
                         residual_flat = np.concatenate(temp_residuals + [residual_humidity.ravel()], axis=0)
-                        preconditioner_matrix = sparse.block_diag(temp_blocks + [humidity_block], format="csc")
+                        if can_reuse_assembly:
+                            preconditioner_matrix = cached_assembled_preconditioner
+                        else:
+                            preconditioner_matrix = sparse.block_diag(temp_blocks + [humidity_block], format="csc")
+                            cached_assembled_preconditioner = preconditioner_matrix.copy()
                     else:
                         residual_flat = np.concatenate(temp_residuals, axis=0)
-                        preconditioner_matrix = sparse.block_diag(temp_blocks, format="csc")
+                        if can_reuse_assembly:
+                            preconditioner_matrix = cached_assembled_preconditioner
+                        else:
+                            preconditioner_matrix = sparse.block_diag(temp_blocks, format="csc")
+                            cached_assembled_preconditioner = preconditioner_matrix.copy()
 
                     with time_block("linear_solve"):
                         correction_flat = _solve_linear_system(
@@ -632,12 +705,16 @@ def monthly_step(
                 temp_candidate = temp_next
                 residual_candidate = residual
 
-                while damping >= NEWTON_BACKTRACK_CUTOFF:
+                # When using a lagged Jacobian, limit backtracking to save
+                # RHS evaluations — the Newton direction is approximate anyway.
+                backtrack_cutoff = NEWTON_BACKTRACK_CUTOFF if need_jacobian else 0.25
+
+                while damping >= backtrack_cutoff:
                     temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
                     state_candidate, candidate_itcz = _init_state(temp_candidate)
                     with time_block("backtrack_rhs"):
                         rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, candidate_itcz)
-                    
+
                     ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                     nlayers = temp_candidate.shape[0]
                     residual_surface_candidate = ceff_candidate * (temp_candidate[0] - start_temp[0]) - dt_seconds * (base_capacity * rhs_candidate[0])
