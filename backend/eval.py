@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import struct
 from pathlib import Path
 from typing import Iterable
 
@@ -1469,6 +1470,46 @@ def plot_bias_corrected_anomaly(
     )
 
 
+CITIES_BIN = Path(__file__).resolve().parent.parent / "frontend" / "public" / "data" / "cities.bin"
+
+
+def load_population_weights(
+    lon2d: np.ndarray, lat2d: np.ndarray,
+) -> np.ndarray | None:
+    """Load cities.bin and accumulate population into sim grid cells.
+
+    Returns a 2-D array (nlat, nlon) of total population per cell, or None
+    if the file is missing.
+    """
+    if not CITIES_BIN.exists():
+        return None
+
+    with open(CITIES_BIN, "rb") as f:
+        count = struct.unpack("<I", f.read(4))[0]
+        raw = f.read(count * 12)
+
+    pop_grid = np.zeros_like(lon2d, dtype=float)
+
+    lat_centers = lat2d[:, 0]
+    lon_centers = lon2d[0, :]
+    dlat = float(lat_centers[1] - lat_centers[0]) if lat_centers.size > 1 else 180.0
+    dlon = float(lon_centers[1] - lon_centers[0]) if lon_centers.size > 1 else 360.0
+
+    for i in range(count):
+        lon, lat, pop = struct.unpack_from("<fff", raw, i * 12)
+        if pop <= 0:
+            continue
+        # Convert lon to 0-360 to match grid
+        lon_360 = lon % 360.0
+        j = int(np.round((lon_360 - float(lon_centers[0])) / dlon))
+        j = j % lon_centers.size
+        k = int(np.round((lat - float(lat_centers[0])) / dlat))
+        if 0 <= k < lat_centers.size:
+            pop_grid[k, j] += pop
+
+    return pop_grid
+
+
 def compute_cell_rmse(anomaly: np.ndarray) -> np.ndarray:
     """Compute RMSE at each grid cell across all months.
 
@@ -1656,26 +1697,89 @@ def plot_eval_metrics(
     ax_scatter.set_visible(False)
     cbar_ax_scatter.set_visible(False)
 
+    # Population-weighted RMSE tab
+    pop_weights = load_population_weights(lon2d, lat2d)
+    ax_pop = None
+    cbar_ax_pop = None
+    views = ["RMSE Map", "Correlation"]
+
+    if pop_weights is not None and np.sum(pop_weights) > 0:
+        # Population-weighted per-cell RMSE: sqrt( sum_m(err_m^2 * pop) / (N * sum(pop)) )
+        # Each cell gets its own RMSE but the weighting means unpopulated cells contribute 0
+        pop_frac = pop_weights / np.sum(pop_weights)  # (nlat, nlon), sums to 1
+        valid_pop = np.isfinite(cell_rmse) & (pop_frac > 0)
+
+        # Per-cell MSE across months in display units
+        cell_mse_display = cell_rmse_display ** 2
+
+        # Population-weighted global RMSE
+        pop_weighted_global_rmse = float(
+            np.sqrt(np.nansum(pop_frac * cell_mse_display))
+        )
+
+        # For the map: show each cell's RMSE scaled by its population weight
+        # relative to equal weighting, so heavily populated cells with large errors
+        # stand out and empty cells vanish.
+        n_cells = float(np.sum(valid_pop))
+        pop_rmse_map = cell_rmse_display * np.sqrt(pop_frac * n_cells)
+        pop_rmse_map[~valid_pop] = np.nan
+
+        ax_pop = fig.add_axes([0.1, 0.15, 0.75, 0.75], projection=projection)
+        ax_pop.set_global()
+        ax_pop.coastlines(linewidth=0.4)
+        ax_pop.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
+        ax_pop.add_feature(
+            cfeature.NaturalEarthFeature(
+                "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+            ),
+            linewidth=0.2,
+        )
+
+        mesh_pop = ax_pop.pcolormesh(
+            lon2d,
+            lat2d,
+            pop_rmse_map,
+            cmap=rmse_cmap,
+            norm=rmse_norm,
+            shading="auto",
+            transform=projection,
+        )
+        ax_pop.set_title(
+            f"Population-Weighted RMSE ({unit})  —  "
+            f"Global: {pop_weighted_global_rmse:.2f} {unit}"
+        )
+
+        cbar_ax_pop = fig.add_axes([0.87, 0.15, 0.02, 0.75])
+        cbar_pop = fig.colorbar(mesh_pop, cax=cbar_ax_pop)
+        cbar_pop.set_label(f"Pop-weighted RMSE ({unit})")
+
+        add_status_readout(fig, ax_pop, lon2d, lat2d, pop_rmse_map, unit_label=unit)
+
+        ax_pop.set_visible(False)
+        cbar_ax_pop.set_visible(False)
+        views = ["RMSE Map", "Pop RMSE", "Correlation"]
+
     # State tracking
     current_state = {"view": "RMSE Map"}
 
     def update_view() -> None:
-        if current_state["view"] == "RMSE Map":
-            ax_map.set_visible(True)
-            cbar_ax_map.set_visible(True)
-            ax_scatter.set_visible(False)
-            cbar_ax_scatter.set_visible(False)
-        else:
-            ax_map.set_visible(False)
-            cbar_ax_map.set_visible(False)
-            ax_scatter.set_visible(True)
-            cbar_ax_scatter.set_visible(True)
+        show_map = current_state["view"] == "RMSE Map"
+        show_scatter = current_state["view"] == "Correlation"
+        show_pop = current_state["view"] == "Pop RMSE"
+
+        ax_map.set_visible(show_map)
+        cbar_ax_map.set_visible(show_map)
+        ax_scatter.set_visible(show_scatter)
+        cbar_ax_scatter.set_visible(show_scatter)
+        if ax_pop is not None and cbar_ax_pop is not None:
+            ax_pop.set_visible(show_pop)
+            cbar_ax_pop.set_visible(show_pop)
         fig.canvas.draw_idle()
 
     # Radio buttons for view selection
-    radio_ax = fig.add_axes([0.01, 0.4, 0.08, 0.15])
+    radio_ax = fig.add_axes([0.01, 0.35, 0.08, 0.22])
     radio_ax.set_title("View", fontsize=9)
-    radio = RadioButtons(radio_ax, ["RMSE Map", "Correlation"], active=0)
+    radio = RadioButtons(radio_ax, views, active=0)
 
     def on_view_change(label: str) -> None:
         current_state["view"] = label

@@ -47,7 +47,7 @@ GAMMA_MOIST = STANDARD_LAPSE_RATE_K_PER_M  # ~0.0065 K/m, moist lapse rate (for 
 # Upper troposphere humidity fraction relative to boundary layer
 # Air rising through the troposphere loses most moisture via precipitation
 # By the time it reaches the upper troposphere (~300 hPa), q is ~20% of surface value
-UPPER_TROPOSPHERE_Q_FRACTION = 0.50
+UPPER_TROPOSPHERE_Q_FRACTION = 0.20
 
 
 @dataclass(frozen=True)
@@ -61,14 +61,15 @@ class VerticalMotionConfig:
     # ~1/3 of that due to mass continuity (w scales with height above ground).
     hadley_descent_velocity_m_s: float = 0.001
 
-    # Humidity of air entrained into BL top from the lower free troposphere.
-    # At ~850-700 hPa, q is ~50% of BL value (not 20% which is upper troposphere/300 hPa).
-    upper_troposphere_q_fraction: float = 0.50
+    # Humidity of air entrained into BL top from subsidence.
+    # Descending air has lost most moisture via precipitation during ascent;
+    # upper-tropospheric q is ~15-20% of BL value.
+    upper_troposphere_q_fraction: float = 0.20
 
     # Background BL-atmosphere mixing timescale (seconds).
     # Represents subsidence, entrainment, and turbulent exchange that
     # returns latent heat from the free atmosphere back to the BL.
-    tau_bl_atm_mixing_s: float = 8.0 * 86400.0  # 8 days (blended processes)
+    tau_bl_atm_mixing_s: float = 5.0 * 86400.0  # 5.0 days (blended processes)
 
 
 def compute_vertical_motion_heating(
@@ -367,6 +368,7 @@ def compute_bl_atm_mixing_tendencies(
     T_atm: np.ndarray,
     C_bl: float = BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
     C_atm: float = ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
+    tau_s: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Background BL-atmosphere heat exchange via subsidence and mixing.
 
@@ -374,14 +376,11 @@ def compute_bl_atm_mixing_tendencies(
     closing the latent heat return loop: surface evaporation -> condensation
     aloft -> radiative cooling -> subsidence warming back to BL.
 
-    Uses a fixed 10-day timescale representing a blend of radiative
-    subsidence, turbulent entrainment, and convective mixing.
-
     Energy-conserving: C_bl * dT_bl + C_atm * dT_atm = 0.
     """
     theta_atm = T_atm * _ALPHA  # Potential temperature of free atm at surface
 
-    tau = 8.0 * 86400.0  # 8 days
+    tau = tau_s if tau_s is not None else 7.0 * 86400.0
 
     heat_flux = C_bl * (theta_atm - T_bl) / tau  # W/m²
 

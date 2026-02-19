@@ -400,6 +400,85 @@ def streamfunction_to_velocity(
     return np.where(valid, u, np.nan), np.where(valid, v, np.nan)
 
 
+def compute_ekman_pumping(
+    tau_x: np.ndarray,
+    tau_y: np.ndarray,
+    lat_deg: np.ndarray,
+    resolution_deg: float,
+    ocean_mask: np.ndarray,
+    land_mask: np.ndarray,
+    rho_water: float = RHO_WATER,
+) -> np.ndarray:
+    """Compute coastal upwelling from offshore Ekman transport.
+
+    At each coastal ocean cell, wind-driven Ekman transport has a component
+    directed away from land (offshore). This water cannot be replaced from
+    land, so it must upwell from below. The upwelling velocity is:
+
+        w_E = M_offshore / dx
+
+    where M_offshore is the Ekman transport component perpendicular to
+    and away from the coast. This isolates the coastal upwelling mechanism
+    from the large-scale gyre convergence (which is already captured by
+    the Sverdrup-Stommel ocean advection).
+
+    Only upwelling (offshore transport) is modeled. Onshore transport
+    causes coastal downwelling/piling which doesn't entrain deep water.
+
+    Positive values indicate upwelling.
+    """
+    nlat, nlon = tau_x.shape
+
+    # Compute Ekman transport: M_x = τ_y/(ρf), M_y = -τ_x/(ρf)
+    M_x, M_y = compute_ekman_transport(tau_x, tau_y, lat_deg, rho_water)
+    M_x = np.nan_to_num(M_x, nan=0.0)
+    M_y = np.nan_to_num(M_y, nan=0.0)
+
+    # Grid spacing
+    lat_rad = np.deg2rad(lat_deg)
+    dy = R_EARTH_METERS * np.deg2rad(resolution_deg)
+    cos_lat = np.cos(lat_rad)[:, np.newaxis]
+    dx = R_EARTH_METERS * np.deg2rad(resolution_deg) * cos_lat
+
+    w_E = np.zeros((nlat, nlon))
+
+    # For each direction, find ocean cells with a land neighbor in that direction.
+    # Upwelling = water moving AWAY from land (offshore), creating a deficit
+    # that must be filled from below.
+    # East neighbor is land → offshore = M_x < 0 (westward, away from land)
+    # West neighbor is land → offshore = M_x > 0 (eastward, away from land)
+    # North neighbor is land → offshore = M_y < 0 (southward, away from land)
+    # South neighbor is land → offshore = M_y > 0 (northward, away from land)
+    for di, dj, get_transport, get_dx in [
+        (0, 1, lambda: -M_x, lambda: dx),      # east land → M_x < 0 is offshore
+        (0, -1, lambda: M_x, lambda: dx),       # west land → M_x > 0 is offshore
+        (-1, 0, lambda: -M_y, lambda: dy),       # north land → M_y < 0 is offshore
+        (1, 0, lambda: M_y, lambda: dy),         # south land → M_y > 0 is offshore
+    ]:
+        # Find land neighbors in this direction
+        neighbor_land = np.roll(np.roll(land_mask, -di, axis=0), -dj, axis=1)
+        coastal = ocean_mask & neighbor_land
+
+        # Transport component toward land (positive = offshore = upwelling)
+        M_offshore = get_transport()
+        cell_dx = get_dx()
+
+        # Only offshore transport contributes (water leaving coast)
+        upwelling = np.maximum(M_offshore, 0.0) / cell_dx
+        w_E += np.where(coastal, upwelling, 0.0)
+
+    return w_E
+
+
+def compute_deep_ocean_temperature(lat_deg: np.ndarray) -> np.ndarray:
+    """Compute latitude-dependent deep ocean temperature (~200m thermocline).
+
+    Ranges from ~18°C at equator to ~2°C at poles, converted to Kelvin.
+    """
+    T_deep_C = 18.0 - 16.0 * np.minimum(np.abs(lat_deg) / 70.0, 1.0)
+    return T_deep_C + 273.15
+
+
 def compute_ocean_currents(
     u_wind: np.ndarray,
     v_wind: np.ndarray,
@@ -460,6 +539,12 @@ def compute_ocean_currents(
     u_velocity = np.where(ocean_mask, u_velocity, np.nan)
     v_velocity = np.where(ocean_mask, v_velocity, np.nan)
 
+    # Compute coastal upwelling from offshore Ekman transport
+    w_ekman_pumping = compute_ekman_pumping(
+        tau_x, tau_y, lat_deg, resolution_deg, ocean_mask, ~ocean_mask,
+    )
+    w_ekman_pumping = np.where(ocean_mask, w_ekman_pumping, np.nan)
+
     return {
         'tau_x': tau_x,
         'tau_y': tau_y,
@@ -473,6 +558,7 @@ def compute_ocean_currents(
         'v_ekman': v_ekman,
         'u_velocity': u_velocity,
         'v_velocity': v_velocity,
+        'w_ekman_pumping': w_ekman_pumping,
     }
 
 

@@ -11,7 +11,7 @@ from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, compu
 from climate_sim.physics.atmosphere.pressure import LAT_SUBTROPICS_BASE, SUBTROPICS_ITCZ_COUPLING
 from climate_sim.core.math_core import spherical_cell_area, compute_divergence
 from climate_sim.core.timing import time_block
-from climate_sim.data.constants import R_EARTH_METERS
+from climate_sim.data.constants import R_EARTH_METERS, BOUNDARY_LAYER_HEIGHT_M, STANDARD_LAPSE_RATE_K_PER_M
 from climate_sim.physics.vertical_motion import compute_subsidence_drying
 
 if TYPE_CHECKING:
@@ -478,8 +478,13 @@ def compute_humidity_and_precipitation(
             vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
 
         # Compute relative humidity for cloud physics
+        # Over ocean, use a warmer reference temperature for q_sat.
+        # Our BL (0-1000m, midpoint 500m) is too cold due to radiative cooling.
+        # Real ocean BL is ~500m (midpoint 250m); extrapolate down by lapse rate.
+        ocean_bl_correction = (BOUNDARY_LAYER_HEIGHT_M - 500.0) / 2.0 * STANDARD_LAPSE_RATE_K_PER_M
+        t_for_rh = np.where(land_mask, temperature_field, temperature_field + ocean_bl_correction)
         rh = specific_humidity_to_relative_humidity(
-            humidity_field, temperature_field,
+            humidity_field, t_for_rh,
             itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d
         )
 

@@ -26,6 +26,8 @@ class ModelState:
     stratiform_cloud_frac: np.ndarray | None = None  # Stratiform cloud fraction (0-1)
     marine_sc_cloud_frac: np.ndarray | None = None  # Marine stratocumulus cloud fraction (0-1)
     high_cloud_frac: np.ndarray | None = None  # High cloud (cirrus/anvil) fraction (0-1)
+    ocean_ekman_pumping: np.ndarray | None = None  # Ekman pumping velocity (m/s), positive = upwelling
+    deep_ocean_temperature: np.ndarray | None = None  # Deep ocean temperature (K), for upwelling entrainment
     # Frozen cloud output for Newton solver Jacobian consistency
     # When set, RHS uses this instead of recomputing clouds from temperature
     cloud_output: CloudPrecipOutput | None = None

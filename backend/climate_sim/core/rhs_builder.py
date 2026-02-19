@@ -89,6 +89,7 @@ class RhsBuildInputs:
     vertical_motion_cfg: VerticalMotionConfig | None = None
     humidity_diffusion_operator: DiffusionOperator | None = None
     orographic_model: OrographicModel | None = None
+    amoc_velocity: tuple[FloatArray, FloatArray] | None = None
 
 def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
     """Build RHS and Jacobian functions from physics configuration.
@@ -283,6 +284,34 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     ocean_advection_tendency = np.where(ocean_mask, ocean_advection_tendency, 0.0)
                     radiative[0] += ocean_advection_tendency
 
+            # Ekman pumping: upwelling entrainment of deep ocean water
+            # w_E from offshore Ekman transport at coastal cells (positive = upwelling)
+            if state.ocean_ekman_pumping is not None and state.deep_ocean_temperature is not None:
+                w_E = np.nan_to_num(state.ocean_ekman_pumping, nan=0.0)  # m/s
+                H_mix = 70.0  # m, consistent with ocean heat capacity
+                T_deep = state.deep_ocean_temperature  # K
+                # Cap upwelling velocity to avoid extreme values near equator
+                w_E_up = np.minimum(np.maximum(w_E, 0.0), 5e-6)
+                # dT/dt = w_E/H * (T_deep - T_sfc) [K/s]
+                entrainment = (w_E_up / H_mix) * (T_deep - surface_temperature)
+                # Only apply where upwelling cools (T_deep < T_sfc); at high
+                # latitudes T_deep > T_sfc which would spuriously warm
+                ocean_mask = ~inputs.land_mask
+                cooling_mask = ocean_mask & (T_deep < surface_temperature)
+                radiative[0] += np.where(cooling_mask, entrainment, 0.0)
+
+            # AMOC thermohaline advection (separate from wind-driven currents)
+            if inputs.amoc_velocity is not None and inputs.advection_operator is not None:
+                u_amoc, v_amoc = inputs.amoc_velocity
+                u_safe = np.nan_to_num(u_amoc, nan=0.0)
+                v_safe = np.nan_to_num(v_amoc, nan=0.0)
+                amoc_tendency = inputs.advection_operator.tendency(
+                    surface_temperature, u_safe, v_safe
+                )
+                # Only apply on ocean cells within the AMOC region
+                amoc_mask = ~np.isnan(u_amoc)
+                radiative[0] += np.where(amoc_mask, amoc_tendency, 0.0)
+
             if nlayers == 3:
                 # Three-layer system
                 boundary_temperature = state.temperature[1]
@@ -375,6 +404,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         boundary_temperature, atmosphere_temperature,
                         C_bl=inputs.radiation_config.boundary_layer_heat_capacity,
                         C_atm=inputs.radiation_config.atmosphere_heat_capacity,
+                        tau_s=tau_mix,
                     )
                     radiative[1] += bl_mix
                     radiative[2] += atm_mix
@@ -589,7 +619,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if tau_mix > 0 and nlayers == 3:
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
-                tau = 8.0 * 86400.0  # 8 days, matching vertical_motion.py
+                tau = tau_mix
                 # dT_bl/dt = (α*T_atm - T_bl) / τ
                 diag[1] += -1.0 / tau
                 cross[1, 2] += _ALPHA / tau
@@ -751,10 +781,10 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     # Evaporation Jacobian: surface cools when q increases (less evap)
                     dR_Tsfc_dq = -dE_dq * L_v / C_sfc
 
-                    # Precipitation heating split: 5% to BL, 95% to atmosphere
-                    BL_LATENT_FRACTION = 0.05
-                    dR_Tatm_dq = (1 - BL_LATENT_FRACTION) * dP_dq * L_v / C_atm
-                    dR_Tbl_dq = BL_LATENT_FRACTION * dP_dq * L_v / C_bl
+                    # Precipitation heating split: ocean 20% / land 5% to BL
+                    bl_frac = np.where(inputs.land_mask, 0.05, 0.20)
+                    dR_Tatm_dq = (1 - bl_frac) * dP_dq * L_v / C_atm
+                    dR_Tbl_dq = bl_frac * dP_dq * L_v / C_bl
 
                     temp_humidity_coupling = (dR_Tsfc_dq, dR_Tbl_dq, dR_Tatm_dq)
 

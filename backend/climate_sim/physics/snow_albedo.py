@@ -25,12 +25,6 @@ class SnowAlbedoConfig:
     freeze_temperature_c: float = -5.0
     melt_temperature_c: float = 1.0  # Snow melts above 1°C
 
-    # Ice sheet vs seasonal snow discrimination
-    # Based on actual surface temperature: very cold = permanent ice, warmer = seasonal snow
-    # Smooth hermite blend between these thresholds
-    ice_sheet_temp_c: float = -35.0  # Below this: 100% ice sheet albedo
-    seasonal_snow_temp_c: float = -15.0  # Above this: 100% seasonal snow albedo
-
     latent_melt_center_K: float = 273.15
     latent_melt_halfwidth_K: float = 2.0
     latent_energy_J_per_m2: float = 3.34e7
@@ -234,6 +228,7 @@ class AlbedoModel:
         effective_mu: np.ndarray | None = None,
         cloud_fraction: np.ndarray | None = None,
         ocean_albedo: np.ndarray | None = None,
+        ice_sheet_mask: np.ndarray | None = None,
     ) -> np.ndarray:
         """Return an albedo field with snow, sea ice, and vegetation adjustments applied."""
 
@@ -311,25 +306,10 @@ class AlbedoModel:
         land_snow_fraction = np.where(self.land_mask, snow_fraction, 0.0)
 
         # =====================================================================
-        # 3. Ice sheet vs seasonal snow discrimination
+        # 3. Snow albedo: seasonal snow everywhere, ice_sheet_albedo forced
+        #    for geographic ice sheet cells (Antarctica, Greenland)
         # =====================================================================
-        if abs(self.config.ice_sheet_albedo - self.config.snow_albedo) > 1e-6:
-            ice_sheet_temp = self.config.ice_sheet_temp_c
-            seasonal_snow_temp = self.config.seasonal_snow_temp_c
-            temp_range = seasonal_snow_temp - ice_sheet_temp
-            if abs(temp_range) < 1e-6:
-                ice_sheet_frac = np.zeros_like(temperatures_c)
-            else:
-                u_ice = (seasonal_snow_temp - temperatures_c) / temp_range
-                u_ice_clamped = np.clip(u_ice, 0.0, 1.0)
-                ice_sheet_frac = u_ice_clamped * u_ice_clamped * (3.0 - 2.0 * u_ice_clamped)
-
-            base_snow_albedo = (
-                self.config.snow_albedo
-                + (self.config.ice_sheet_albedo - self.config.snow_albedo) * ice_sheet_frac
-            )
-        else:
-            base_snow_albedo = self.config.snow_albedo
+        base_snow_albedo = self.config.snow_albedo
 
         # Apply zenith-angle correction to snow/ice albedo
         # At low sun angles, specular reflection increases albedo
@@ -363,6 +343,14 @@ class AlbedoModel:
         # Apply snow albedo to land
         adjusted = adjusted + (effective_snow_albedo - adjusted) * land_snow_fraction
 
+        # Force ice sheet albedo for geographic ice sheet cells (bypasses snow fraction)
+        if ice_sheet_mask is not None:
+            ice_sheet_albedo = self.config.ice_sheet_albedo
+            if effective_mu is not None and self.config.snow_ice_zenith_correction > 0:
+                zenith_boost = self.config.snow_ice_zenith_correction * (1.0 - effective_mu)
+                ice_sheet_albedo = np.clip(ice_sheet_albedo + zenith_boost, 0.0, 0.95)
+            adjusted = np.where(ice_sheet_mask, ice_sheet_albedo, adjusted)
+
         # Apply sea ice albedo to ocean
         adjusted = adjusted + (effective_sea_ice_albedo - adjusted) * sea_ice_fraction
 
@@ -375,14 +363,27 @@ class AlbedoModel:
         land_mask: np.ndarray,
         base_C_land: float,
         base_C_ocean: float,
+        ice_sheet_mask: np.ndarray | None = None,
+        ice_sheet_heat_capacity_multiplier: float = 100.0,
     ) -> np.ndarray:
         """Return the latent-heat-adjusted surface heat capacity field.
 
         Includes:
         - Latent heat effects near freezing for land
         - Reduced heat capacity for sea ice covered ocean
+        - Massive heat capacity for ice sheet cells near/above freezing
         """
         ceff = np.where(land_mask, base_C_land, base_C_ocean).astype(float)
+
+        # Ice sheet cells: massive effective heat capacity near/above freezing
+        # This physically represents the latent heat of kilometers of ice,
+        # clamping surface temperature at ~0°C
+        if ice_sheet_mask is not None and np.any(ice_sheet_mask):
+            T_c = T_surface - 273.15
+            # Ramp multiplier from 1x at -10°C to full at -2°C and above
+            ice_ramp = np.clip((T_c + 10.0) / 8.0, 0.0, 1.0)
+            ice_multiplier = 1.0 + (ice_sheet_heat_capacity_multiplier - 1.0) * ice_ramp
+            ceff = np.where(ice_sheet_mask, ceff * ice_multiplier, ceff)
 
         # Sea ice heat capacity reduction for ocean cells
         if self.config.sea_ice_enabled:

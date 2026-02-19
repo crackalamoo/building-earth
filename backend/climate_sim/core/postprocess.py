@@ -165,6 +165,12 @@ def postprocess_periodic_cycle_results(
         layers_map["ocean_u"] = ocean_u
         layers_map["ocean_v"] = ocean_v
 
+    # Extract Ekman pumping from state
+    ekman_pumping_fields = [state.ocean_ekman_pumping for state in monthly_states]
+    if all(ep is not None for ep in ekman_pumping_fields):
+        ekman_pumping = np.stack([ep for ep in ekman_pumping_fields if ep is not None], axis=0)
+        layers_map["w_ekman_pumping"] = ekman_pumping
+
     # Extract soil moisture from state
     soil_moisture_fields = [state.soil_moisture for state in monthly_states]
     if all(sm is not None for sm in soil_moisture_fields):

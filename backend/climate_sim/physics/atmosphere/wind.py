@@ -422,7 +422,7 @@ class WindModel:
         coriolis_abs = np.maximum(np.abs(coriolis), self._config.coriolis_floor_s)
 
         # Effective depth over which surface stress is distributed.
-        h_m = np.where(self._land_mask, 400.0, 1000.0)
+        h_m = np.where(self._land_mask, 400.0, 500.0)
         k = drag_coeff / h_m
 
         Ug = np.maximum(speed_geo, 0.0)

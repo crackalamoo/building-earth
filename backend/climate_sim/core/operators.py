@@ -39,6 +39,7 @@ from climate_sim.physics.solar import (
 )
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.physics.orographic_effects import OrographicModel
+from climate_sim.physics.empirical_corrections import compute_amoc_velocity, compute_ice_sheet_mask, EmpiricalCorrectionsConfig
 from climate_sim.data.elevation import compute_face_elevation_statistics
 from climate_sim.runtime.config import ModelConfig
 
@@ -59,6 +60,9 @@ class SurfaceHeatCapacityContext:
     baseline_capacity: np.ndarray
     topographic_elevation: np.ndarray | None = None
     orographic_model: OrographicModel | None = None
+    amoc_velocity: tuple[np.ndarray, np.ndarray] | None = None
+    ice_sheet_mask: np.ndarray | None = None
+    ice_sheet_heat_capacity_multiplier: float = 100.0
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,7 @@ class ModelOperators:
     ocean_advection_cfg: OceanAdvectionConfig
     vertical_motion_cfg: VerticalMotionConfig
     orographic_model: OrographicModel | None
+    amoc_velocity: tuple[np.ndarray, np.ndarray] | None  # Precomputed AMOC (u, v) in m/s
 
 
 def build_model_operators(
@@ -257,6 +262,18 @@ def build_model_operators(
 
     baseline_capacity = np.where(land_mask, base_C_land, base_C_ocean).astype(float)
 
+    # Precompute geographic ice sheet mask (Antarctica + Greenland)
+    ice_sheet_mask = compute_ice_sheet_mask(
+        lat2d, lon2d, land_mask, model_config.empirical,
+    )
+
+    # Precompute AMOC thermohaline velocity (static, geometry-only)
+    amoc_velocity: tuple[np.ndarray, np.ndarray] | None = None
+    if model_config.empirical.enabled and model_config.empirical.amoc_enabled:
+        amoc_velocity = compute_amoc_velocity(
+            lat2d, lon2d, land_mask, model_config.empirical,
+        )
+
     # Build surface context
     surface_context = SurfaceHeatCapacityContext(
         lat2d=lat2d,
@@ -270,6 +287,9 @@ def build_model_operators(
         base_C_ocean=base_C_ocean,
         baseline_capacity=baseline_capacity,
         orographic_model=orographic_model,
+        amoc_velocity=amoc_velocity,
+        ice_sheet_mask=ice_sheet_mask,
+        ice_sheet_heat_capacity_multiplier=model_config.empirical.ice_sheet_heat_capacity_multiplier,
     )
 
     # Create solver cache
@@ -299,4 +319,5 @@ def build_model_operators(
         ocean_advection_cfg=model_config.ocean_advection,
         vertical_motion_cfg=model_config.vertical_motion,
         orographic_model=orographic_model,
+        amoc_velocity=amoc_velocity,
     )

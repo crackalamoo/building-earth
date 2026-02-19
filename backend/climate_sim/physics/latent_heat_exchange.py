@@ -24,7 +24,7 @@ class LatentHeatExchangeConfig:
     """Configuration for the latent heat exchange model."""
 
     enabled: bool = True
-    minimum_wind_speed_m_s: float = 1.0  # Free convection velocity scale (same as sensible)
+    minimum_wind_speed_m_s: float = 1.0  # Free convection velocity scale
     # Manabe (1969) beta function: β = min(θ/θ_crit, 1)
     # Below field capacity, evapotranspiration scales linearly with soil moisture.
     # Above field capacity, evapotranspiration is at full potential rate.
@@ -187,11 +187,18 @@ class LatentHeatExchangeModel:
         # Three-layer system: BL gets fraction of precipitation heating
         # This compensates for cooling from vertical ascent at the ITCZ
         if boundary_layer_temperature_K is not None:
-            BL_LATENT_FRACTION = 0.05  # 5% to BL, 95% to atmosphere (condensation occurs above BL)
+            # Over ocean, shallow cumulus and stratocumulus release ~47% of
+            # latent heat in the 1-4 km range (Nelson 2018, TRMM).  Our BL
+            # (0-1 km) captures the lowest portion: drizzle re-evaporation,
+            # sub-cloud evaporative cooling reversal, and shallow warm rain.
+            # Over land, deep convection dominates → most heating aloft.
+            BL_LATENT_FRACTION_OCEAN = 0.20
+            BL_LATENT_FRACTION_LAND = 0.05
+            bl_frac = np.where(self._land_mask, BL_LATENT_FRACTION_LAND, BL_LATENT_FRACTION_OCEAN)
             if precipitation_rate is not None:
                 precip_heating = precipitation_rate * LATENT_HEAT_VAPORIZATION_J_KG
-                boundary_tendency = BL_LATENT_FRACTION * precip_heating / self._boundary_layer_heat_capacity
-                atmosphere_tendency = (1 - BL_LATENT_FRACTION) * precip_heating / self._atmosphere_heat_capacity
+                boundary_tendency = bl_frac * precip_heating / self._boundary_layer_heat_capacity
+                atmosphere_tendency = (1 - bl_frac) * precip_heating / self._atmosphere_heat_capacity
             else:
                 boundary_tendency = np.zeros_like(surface_tendency)
             return surface_tendency, boundary_tendency, atmosphere_tendency, evaporation_rate
