@@ -28,6 +28,44 @@ class EmpiricalCorrectionsConfig:
     amoc_enabled: bool = True
     amoc_peak_velocity_m_s: float = 0.07  # ~4 Sv through 100m mixed layer
 
+    # Geographic ice sheet mask parameters
+    # Antarctica: all land south of this latitude
+    ice_sheet_antarctic_lat: float = -60.0
+    # Greenland: lat/lon bounding box
+    ice_sheet_greenland_lat_min: float = 65.0
+    ice_sheet_greenland_lat_max: float = 85.0
+    ice_sheet_greenland_lon_min: float = 310.0  # 50°W
+    ice_sheet_greenland_lon_max: float = 340.0  # 20°W
+    # Heat capacity multiplier for ice sheet cells near/above freezing
+    # Represents massive latent heat of kilometers-thick ice
+    ice_sheet_heat_capacity_multiplier: float = 100.0
+
+
+def compute_ice_sheet_mask(
+    lat2d: np.ndarray,
+    lon2d: np.ndarray,
+    land_mask: np.ndarray,
+    config: EmpiricalCorrectionsConfig,
+) -> np.ndarray:
+    """Compute a boolean mask for permanent ice sheet grid cells.
+
+    Identifies Antarctica (all land south of -60°) and Greenland
+    (land within a lat/lon bounding box).
+    """
+    lon_norm = lon2d % 360
+
+    antarctica = (lat2d < config.ice_sheet_antarctic_lat) & land_mask
+
+    greenland = (
+        (lat2d >= config.ice_sheet_greenland_lat_min)
+        & (lat2d <= config.ice_sheet_greenland_lat_max)
+        & (lon_norm >= config.ice_sheet_greenland_lon_min)
+        & (lon_norm <= config.ice_sheet_greenland_lon_max)
+        & land_mask
+    )
+
+    return antarctica | greenland
+
 
 def compute_amoc_velocity(
     lat2d: np.ndarray,

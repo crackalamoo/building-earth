@@ -132,6 +132,7 @@ def monthly_step(
             vegetation_fraction=state.vegetation_fraction,
             effective_mu=effective_mu,
             ocean_albedo=ocean_albedo,
+            ice_sheet_mask=surface_context.ice_sheet_mask,
         )
         # Compute lagged wind field(s)
         lagged_wind_field = None
@@ -216,6 +217,8 @@ def monthly_step(
                 land_mask=surface_context.land_mask,
                 base_C_land=surface_context.base_C_land,
                 base_C_ocean=surface_context.base_C_ocean,
+                ice_sheet_mask=surface_context.ice_sheet_mask,
+                ice_sheet_heat_capacity_multiplier=surface_context.ice_sheet_heat_capacity_multiplier,
             )
 
         def _compute_itcz_from_temp(temp: np.ndarray) -> np.ndarray:
@@ -940,6 +943,7 @@ def monthly_step(
             vegetation_fraction=state.vegetation_fraction,
             effective_mu=effective_mu,
             ocean_albedo=ocean_albedo,
+            ice_sheet_mask=surface_context.ice_sheet_mask,
         )
 
         # Update wind diagnostics for output using the converged ITCZ.
@@ -1235,6 +1239,7 @@ def find_periodic_climate_cycle(
                                 annual_precip_mm_year=annual_precip_mm,
                                 effective_mu=month_mu,
                                 ocean_albedo=month_ocean_alb,
+                                ice_sheet_mask=surface_context.ice_sheet_mask,
                             )
                     return final_states
 
