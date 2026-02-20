@@ -28,6 +28,8 @@ export interface ClimateLayerData {
   land_mask: FieldData;
   /** Native 5deg land mask [36, 72] — for type-aware interpolation */
   land_mask_native?: FieldData;
+  /** 1deg land mask [180, 360] — matches soil_moisture/precipitation resolution */
+  land_mask_1deg?: FieldData;
   /** Native 5deg vegetation fraction [12, 36, 72] */
   vegetation_fraction?: FieldData;
   /** Native 5deg soil moisture fraction [12, 36, 72] */

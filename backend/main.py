@@ -43,7 +43,7 @@ from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import area_weighted_mean, spherical_cell_area
 from climate_sim.core.solver import solve_periodic_climate
 from climate_sim.core.units import convert_temperature, temperature_unit
-from climate_sim.core.interpolation import interpolate_layer_map
+from climate_sim.export.temperature_interpolation import interpolate_layer_map
 from climate_sim.core.timing import time_block, get_profiler
 from climate_sim.physics.humidity import specific_humidity_to_relative_humidity
 from climate_sim.physics.radiation import compute_cloud_coverage, _compute_pressure_anomaly

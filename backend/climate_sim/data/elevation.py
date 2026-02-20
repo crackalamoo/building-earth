@@ -314,6 +314,7 @@ def compute_cell_elevation_statistics(
     data: xr.DataArray | None = None,
     cache: bool = True,
     n_samples_per_cell: int = 15,
+    cache_name: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return sub-grid elevation statistics for each grid cell.
 
@@ -338,10 +339,12 @@ def compute_cell_elevation_statistics(
     if lon2d.shape != lat2d.shape:
         raise ValueError("Longitude and latitude grids must share the same shape")
 
+    _cache_file = cache_name or "elevation_statistics_cache.npz"
+
     if cache:
         data_dir = os.getenv("DATA_DIR")
         if data_dir is not None:
-            cache_path = Path(data_dir) / "elevation_statistics_cache.npz"
+            cache_path = Path(data_dir) / _cache_file
             if cache_path.exists():
                 try:
                     with np.load(cache_path) as cached:
@@ -423,7 +426,7 @@ def compute_cell_elevation_statistics(
     if cache:
         data_dir_env = os.getenv("DATA_DIR")
         if data_dir_env is not None:
-            cache_path = Path(data_dir_env) / "elevation_statistics_cache.npz"
+            cache_path = Path(data_dir_env) / _cache_file
             np.savez_compressed(
                 cache_path, elevation_std=elevation_std, elevation_max=elevation_max
             )
@@ -436,6 +439,7 @@ def compute_face_elevation_statistics(
     lat2d: np.ndarray,
     cache: bool = True,
     n_samples_per_cell: int = 15,
+    cache_name: str | None = None,
 ) -> dict[str, np.ndarray]:
     """Compute directional cross-sectional blockage ratios at cell faces.
 
@@ -467,7 +471,7 @@ def compute_face_elevation_statistics(
         raise ValueError("Longitude and latitude grids must share the same shape")
 
     nlat, nlon = lon2d.shape
-    cache_name = "face_elevation_cache.npz"
+    _cache_file = cache_name or "face_elevation_cache.npz"
     expected_keys = [
         "r_east_pos", "r_east_neg", "r_north_pos", "r_north_neg",
         "r_east_pos_eddy", "r_east_neg_eddy", "r_north_pos_eddy", "r_north_neg_eddy",
@@ -477,7 +481,7 @@ def compute_face_elevation_statistics(
     if cache:
         data_dir = os.getenv("DATA_DIR")
         if data_dir is not None:
-            cache_path = Path(data_dir) / cache_name
+            cache_path = Path(data_dir) / _cache_file
             if cache_path.exists():
                 try:
                     with np.load(cache_path) as cached:
@@ -695,7 +699,7 @@ def compute_face_elevation_statistics(
     if cache:
         data_dir_env = os.getenv("DATA_DIR")
         if data_dir_env is not None:
-            cache_path = Path(data_dir_env) / cache_name
+            cache_path = Path(data_dir_env) / _cache_file
             np.savez_compressed(cache_path, **result)
 
     return result

@@ -337,6 +337,12 @@ export class TreeInstances {
     const hiNlat = layerData.land_mask.shape[0];
     const hiNlon = layerData.land_mask.shape[1];
 
+    // Soil moisture may be at a different resolution
+    const soilNlat = layerData.soil_moisture!.shape[1];
+    const soilNlon = layerData.soil_moisture!.shape[2];
+    const soilLatRatio = soilNlat / nativeNlat;
+    const soilLonRatio = soilNlon / nativeNlon;
+
     const latStep = 180 / nativeNlat;
     const lonStep = 360 / nativeNlon;
 
@@ -358,7 +364,21 @@ export class TreeInstances {
             if (temp > warmestMonth) warmestMonth = temp;
             if (temp > 10) monthsAbove10++;
             coarseVegSum += vegData[offset];
-            coarseSoilSum += soilData[offset];
+          }
+          // Average soil moisture from (possibly higher-res) soil grid
+          const si0 = Math.floor(i * soilLatRatio);
+          const si1 = Math.min(Math.floor((i + 1) * soilLatRatio), soilNlat);
+          const sj0 = Math.floor(j * soilLonRatio);
+          const sj1 = Math.min(Math.floor((j + 1) * soilLonRatio), soilNlon);
+          const nSub = (si1 - si0) * (sj1 - sj0);
+          for (let m = 0; m < 12; m++) {
+            let subSum = 0;
+            for (let si = si0; si < si1; si++) {
+              for (let sj = sj0; sj < sj1; sj++) {
+                subSum += soilData[m * soilNlat * soilNlon + si * soilNlon + sj];
+              }
+            }
+            coarseSoilSum += subSum / (nSub || 1);
           }
         }
         const coarseAnnualVeg = isCoarseLand ? coarseVegSum / 12 : 0;

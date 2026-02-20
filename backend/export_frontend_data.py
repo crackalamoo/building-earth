@@ -9,7 +9,8 @@ from pathlib import Path
 import numpy as np
 
 from climate_sim.core.grid import create_lat_lon_grid
-from climate_sim.core.interpolation import interpolate_layer_map
+from climate_sim.export.temperature_interpolation import interpolate_layer_map
+from climate_sim.export.orographic_interpolation import recompute_fields_at_1deg
 from climate_sim.core.solver import solve_periodic_climate
 from climate_sim.data.elevation import compute_cell_elevation
 from climate_sim.data.landmask import compute_land_mask
@@ -147,8 +148,13 @@ def _write_binary_export(
             apply_lapse_rate_to_2m=True,
         )
         print("Interpolation complete.")
+
+        # Recompute precipitation, humidity, soil_moisture at 1° with orographic detail
+        print("Recomputing precipitation at 1° with orographic detail...")
+        fine_fields = recompute_fields_at_1deg(native_layers, lon2d, lat2d)
     else:
         interpolated = {}
+        fine_fields = {}
 
     # Compute land masks
     native_land_mask = compute_land_mask(lon2d, lat2d).astype(np.uint8)
@@ -187,6 +193,14 @@ def _write_binary_export(
         fields.append(("land_mask_native", native_land_mask, "uint8"))
         print(f"  land_mask_native: {native_land_mask.shape}")
 
+    # land_mask_1deg: 1° land mask matching soil_moisture/precipitation resolution
+    if interpolate and fine_fields:
+        from climate_sim.core.grid import create_lat_lon_grid as _clg
+        _lon1, _lat1 = _clg(1.0)
+        land_mask_1deg = compute_land_mask(_lon1, _lat1).astype(np.uint8)
+        fields.append(("land_mask_1deg", land_mask_1deg, "uint8"))
+        print(f"  land_mask_1deg: {land_mask_1deg.shape}")
+
     # vegetation_fraction: native resolution, with island fill
     if "vegetation_fraction" in native_layers:
         veg = native_layers["vegetation_fraction"].copy()
@@ -197,10 +211,29 @@ def _write_binary_export(
         fields.append(("vegetation_fraction", veg, "float16"))
         print(f"  vegetation_fraction: {veg.shape}")
 
-    # soil_moisture: native resolution (drives Blue Marble land color)
-    if "soil_moisture" in native_layers:
+    # precipitation: 1° orographic detail when interpolated, else native
+    if "precipitation" in fine_fields:
+        fields.append(("precipitation", fine_fields["precipitation"], "float16"))
+        print(f"  precipitation: {fine_fields['precipitation'].shape} (1° orographic)")
+    elif "precipitation" in native_layers:
+        fields.append(("precipitation", native_layers["precipitation"], "float16"))
+        print(f"  precipitation: {native_layers['precipitation'].shape} (native)")
+
+    # humidity: 1° interpolated when available, else native
+    if "humidity" in fine_fields:
+        fields.append(("humidity", fine_fields["humidity"], "float16"))
+        print(f"  humidity: {fine_fields['humidity'].shape} (1° interpolated)")
+    elif "humidity" in native_layers:
+        fields.append(("humidity", native_layers["humidity"], "float16"))
+        print(f"  humidity: {native_layers['humidity'].shape} (native)")
+
+    # soil_moisture: 1° orographic-adjusted when available, else native
+    if "soil_moisture" in fine_fields:
+        fields.append(("soil_moisture", fine_fields["soil_moisture"], "float16"))
+        print(f"  soil_moisture: {fine_fields['soil_moisture'].shape} (1° orographic)")
+    elif "soil_moisture" in native_layers:
         fields.append(("soil_moisture", native_layers["soil_moisture"], "float16"))
-        print(f"  soil_moisture: {native_layers['soil_moisture'].shape}")
+        print(f"  soil_moisture: {native_layers['soil_moisture'].shape} (native)")
 
     # cloud_fraction: native resolution (combined from cloud components)
     conv = native_layers.get("convective_cloud_frac")

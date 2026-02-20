@@ -229,6 +229,76 @@
     return buf;
   }
 
+  let _annualMeansCache: { ld: ClimateLayerData; temp: Float32Array; soil: Float32Array; soilLandMask: Uint8Array } | null = null;
+  function cachedAnnualMeans(ld: ClimateLayerData): { temp: Float32Array; soil: Float32Array; soilLandMask: Uint8Array } {
+    if (_annualMeansCache && _annualMeansCache.ld === ld) return _annualMeansCache;
+
+    const surfData = ld.surface.data as Float32Array;
+    const sData = ld.soil_moisture?.data as Float32Array | undefined;
+    const lNlat = ld.surface.shape[1];
+    const lNlon = ld.surface.shape[2];
+    const sNlat = ld.soil_moisture?.shape[1] ?? lNlat;
+    const sNlon = ld.soil_moisture?.shape[2] ?? lNlon;
+
+    const temp = new Float32Array(lNlat * lNlon);
+    for (let ci = 0; ci < lNlat; ci++) {
+      for (let cj = 0; cj < lNlon; cj++) {
+        let tsum = 0;
+        for (let m = 0; m < 12; m++) {
+          tsum += surfData[m * lNlat * lNlon + ci * lNlon + cj];
+        }
+        temp[ci * lNlon + cj] = tsum / 12;
+      }
+    }
+
+    const soil = new Float32Array(sNlat * sNlon);
+    if (sData) {
+      for (let ci = 0; ci < sNlat; ci++) {
+        for (let cj = 0; cj < sNlon; cj++) {
+          let ssum = 0;
+          for (let m = 0; m < 12; m++) {
+            ssum += sData[m * sNlat * sNlon + ci * sNlon + cj];
+          }
+          soil[ci * sNlon + cj] = ssum / 12;
+        }
+      }
+    } else {
+      soil.fill(0.5);
+    }
+
+    // Use exported 1° land mask if available, otherwise downsample from 0.25°
+    let soilLandMask: Uint8Array;
+    if (ld.land_mask_1deg) {
+      soilLandMask = ld.land_mask_1deg.data as Uint8Array;
+    } else {
+      // Fallback: downsample from hi-res mask
+      const hiLandMask = ld.land_mask.data as Uint8Array;
+      const hiNlatM = ld.land_mask.shape[0];
+      const hiNlonM = ld.land_mask.shape[1];
+      soilLandMask = new Uint8Array(sNlat * sNlon);
+      const latRatio = hiNlatM / sNlat;
+      const lonRatio = hiNlonM / sNlon;
+      for (let ci = 0; ci < sNlat; ci++) {
+        const hi0 = Math.floor(ci * latRatio);
+        const hi1 = Math.min(Math.floor((ci + 1) * latRatio), hiNlatM);
+        for (let cj = 0; cj < sNlon; cj++) {
+          const hj0 = Math.floor(cj * lonRatio);
+          const hj1 = Math.min(Math.floor((cj + 1) * lonRatio), hiNlonM);
+          let landCount = 0;
+          for (let ii = hi0; ii < hi1; ii++) {
+            for (let jj = hj0; jj < hj1; jj++) {
+              if (hiLandMask[ii * hiNlonM + jj] === 1) landCount++;
+            }
+          }
+          soilLandMask[ci * sNlon + cj] = landCount > 0 ? 1 : 0;
+        }
+      }
+    }
+
+    _annualMeansCache = { ld, temp, soil, soilLandMask };
+    return _annualMeansCache;
+  }
+
   function buildBlueMarbleBuffers(ld: ClimateLayerData, monthIdx: number): { rgb: Float32Array; spec: Float32Array } {
     const surfaceData = ld.surface.data as Float32Array;
     const landMaskData = ld.land_mask.data as Uint8Array;
@@ -248,21 +318,16 @@
     const lowNlon = ld.surface.shape[2];
     const monthOffset = monthIdx * lowNlat * lowNlon;
 
-    // Precompute annual means per coarse cell
-    const annualMeanTemp = new Float32Array(lowNlat * lowNlon);
-    const annualMeanSoil = new Float32Array(lowNlat * lowNlon);
-    for (let ci = 0; ci < lowNlat; ci++) {
-      for (let cj = 0; cj < lowNlon; cj++) {
-        let tsum = 0, ssum = 0;
-        for (let m = 0; m < 12; m++) {
-          const idx = m * lowNlat * lowNlon + ci * lowNlon + cj;
-          tsum += surfaceData[idx];
-          if (soilData) ssum += soilData[idx];
-        }
-        annualMeanTemp[ci * lowNlon + cj] = tsum / 12;
-        annualMeanSoil[ci * lowNlon + cj] = soilData ? ssum / 12 : 0.5;
-      }
-    }
+    // Soil moisture may be at a different resolution (e.g. 1deg = 180x360)
+    const soilNlat = ld.soil_moisture?.shape[1] ?? lowNlat;
+    const soilNlon = ld.soil_moisture?.shape[2] ?? lowNlon;
+    const soilMonthOffset = monthIdx * soilNlat * soilNlon;
+
+    // Precompute annual means (cached across month changes)
+    const cached = cachedAnnualMeans(ld);
+    const annualMeanTemp = cached.temp;
+    const annualMeanSoil = cached.soil;
+    const soilLandMask = cached.soilLandMask;
 
     // First pass: compute per-cell RGB into a flat buffer
     const rgbBuf = new Float32Array(hiNlat * hiNlon * 3);
@@ -278,9 +343,9 @@
         );
         const soilMoisture = soilData
           ? sampleBilinear(
-              soilData, lowNlat, lowNlon, monthOffset,
+              soilData, soilNlat, soilNlon, soilMonthOffset,
               dataLatIdx, j, hiNlat, hiNlon,
-              isLand, coarseLandMask,
+              isLand, soilLandMask,
             )
           : 0;
 
@@ -309,9 +374,9 @@
           isLand, coarseLandMask,
         );
         const annMeanSoil = sampleBilinear(
-          annualMeanSoil, lowNlat, lowNlon, 0,
+          annualMeanSoil, soilNlat, soilNlon, 0,
           dataLatIdx, j, hiNlat, hiNlon,
-          isLand, coarseLandMask,
+          isLand, soilLandMask,
         );
 
         const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT, annMeanSoil);
