@@ -249,6 +249,21 @@ function computeCellCurves(
   }
   const colorQuality = clamp(coolNightFactor * 0.6 + clearSkyFactor * 0.4, 0, 1);
 
+  // Compute day-length fraction per month using solar declination.
+  // Returns ~0.5 at equator, ranges from ~0.3-0.7 at mid-latitudes, more extreme near poles.
+  const DEG2RAD = Math.PI / 180;
+  const latRad = lat * DEG2RAD;
+  // Solar declination mid-month (day-of-year approx: Jan=15, Feb=46, ...)
+  const midMonthDOY = [15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349];
+  const dayLength = new Float32Array(12);
+  for (let m = 0; m < 12; m++) {
+    const decl = 23.44 * DEG2RAD * Math.sin((2 * Math.PI / 365) * (midMonthDOY[m] - 81));
+    const cosHA = -Math.tan(latRad) * Math.tan(decl);
+    // hour angle → day fraction (0-1)
+    const ha = cosHA <= -1 ? Math.PI : cosHA >= 1 ? 0 : Math.acos(cosHA);
+    dayLength[m] = ha / Math.PI; // 0 = polar night, 1 = midnight sun
+  }
+
   // Compute per-month signals by iterating around the year starting from warmest month
   // (when foliage is at max). We simulate foliage state forward.
   const foliageCurve = new Float32Array(12);
@@ -265,17 +280,26 @@ function computeCellCurves(
       const m = (warmestMonth + step) % 12;
       const temp = temps[m];
       const nextTemp = temps[(m + 1) % 12];
-      const cooling = temp > nextTemp; // temperature trending down
+      const nextM = (m + 1) % 12;
+      const daysShortening = dayLength[nextM] < dayLength[m] - 0.005;
+      const daysLengthening = dayLength[nextM] > dayLength[m] + 0.005;
+      // Short-day flag: are we in the short-day half of the year? (below ~12hrs)
+      const shortDays = dayLength[m] < 0.48;
 
-      // Senescence drive: temp below 15°C and cooling
-      const senescence = cooling ? clamp((15 - temp) / 10, 0, 1) : 0;
+      // Senescence: driven by short days AND cool temps.
+      // photoperiod provides the seasonal gate; temperature modulates intensity.
+      const photoSenescence = shortDays ? clamp((0.48 - dayLength[m]) / 0.15, 0, 1) : 0;
+      const tempSenescence = clamp((15 - temp) / 10, 0, 1);
+      const senescence = photoSenescence * tempSenescence;
 
-      // Cold stress: accelerates leaf loss below 5°C
-      const coldStress = clamp((5 - temp) / 10, 0, 0.5);
+      // Cold stress: leaf loss below 5°C, always active but reduced
+      const coldStress = clamp((5 - temp) / 10, 0, 0.4);
 
-      // Growth drive: temp above 10°C and warming (or spring conditions)
-      const warming = !cooling;
-      const growthDrive = warming ? clamp((temp - 5) / 10, 0, 1) : 0;
+      // Growth drive: requires long days OR lengthening days, AND warm temps.
+      // Blocked when days are short (winter) to prevent post-solstice budding.
+      const tempGrowth = clamp((temp - 5) / 10, 0, 1);
+      const longDays = dayLength[m] > 0.48;
+      const growthDrive = (longDays || daysLengthening) ? tempGrowth : 0;
 
       // Update foliage
       const loss = (senescence + coldStress) * 0.4;
@@ -316,7 +340,7 @@ export class TreeInstances {
   private cellFoliageCurves: Float32Array = new Float32Array(0);   // [numCells * 12]
   private cellAutumnTintCurves: Float32Array = new Float32Array(0); // [numCells * 12]
   private cellColorQuality: Float32Array = new Float32Array(0);     // [numCells]
-  private broadleafCellIndex: Uint16Array = new Uint16Array(0);     // per-instance cell index
+  private broadleafCellIndex: Uint32Array = new Uint32Array(0);     // per-instance cell index
   private broadleafEvergreen: Uint8Array = new Uint8Array(0);       // 1 = tropical evergreen
   private lastMonthProgress: number = -1;
   private sunDirUniform: { value: THREE.Vector3 } = { value: new THREE.Vector3(1, 0, 0) };
@@ -572,7 +596,7 @@ export class TreeInstances {
       this.broadleafBaseColors = new Float32Array(count);
       this.broadleafPositions = new Float32Array(count * 3);
       this.broadleafQuaternions = new Float32Array(count * 4);
-      this.broadleafCellIndex = new Uint16Array(count);
+      this.broadleafCellIndex = new Uint32Array(count);
       this.broadleafEvergreen = new Uint8Array(count);
 
       const trunkMesh = new THREE.InstancedMesh(broadleafTrunkGeom, material, count);
@@ -589,14 +613,14 @@ export class TreeInstances {
       const cellKeyToIndex = new Map<number, number>();
       let nextCellIndex = 0;
 
-      // First pass: collect unique cells
+      // First pass: collect unique cells — keyed on T2m pixel (0.25°) for smooth transitions
       for (let k = 0; k < count; k++) {
         const inst = broadleafList[k];
-        const cellKey = inst.cellI * nativeNlon + inst.cellJ;
+        // Map tree position to T2m grid cell
+        const t2mCellI = Math.max(0, Math.min(t2mNlat - 1, Math.floor((inst.lat + 90) / 180 * t2mNlat)));
+        const t2mCellJ = Math.floor(((inst.lon % 360 + 360) % 360) / 360 * t2mNlon) % t2mNlon;
+        const cellKey = t2mCellI * t2mNlon + t2mCellJ;
         if (!curveCache.has(cellKey)) {
-          // Use T2m (air temp) for leaf shedding — sample at coarse cell center
-          const t2mCellI = Math.floor((inst.cellI + 0.5) * t2mNlat / nativeNlat);
-          const t2mCellJ = Math.floor((inst.cellJ + 0.5) * t2mNlon / nativeNlon);
           const curves = computeCellCurves(
             t2mData, t2mNlat, t2mNlon, t2mCellI, t2mCellJ,
             inst.lat, cloudData, cloudField?.shape[1] ?? 0, cloudField?.shape[2] ?? 0,
@@ -646,7 +670,9 @@ export class TreeInstances {
         this.broadleafQuaternions[k * 4 + 2] = inst.quaternion.z;
         this.broadleafQuaternions[k * 4 + 3] = inst.quaternion.w;
 
-        const cellKey = inst.cellI * nativeNlon + inst.cellJ;
+        const t2mCI = Math.max(0, Math.min(t2mNlat - 1, Math.floor((inst.lat + 90) / 180 * t2mNlat)));
+        const t2mCJ = Math.floor(((inst.lon % 360 + 360) % 360) / 360 * t2mNlon) % t2mNlon;
+        const cellKey = t2mCI * t2mNlon + t2mCJ;
         this.broadleafCellIndex[k] = cellKeyToIndex.get(cellKey)!;
         this.broadleafEvergreen[k] = curveCache.get(cellKey)!.evergreen ? 1 : 0;
       }
