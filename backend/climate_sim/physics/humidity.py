@@ -81,6 +81,14 @@ def advect_moisture_from_ocean(
     p_hPa = 1013.25  # Approximate surface pressure
     q_sat = (0.622 * e_sat) / (p_hPa - (1 - 0.622) * e_sat)
 
+    # Over ocean, our BL layer (midpoint ~500m) is colder than the near-surface
+    # marine BL (~250m midpoint for a real ~500m ocean BL). Correct q_sat cap
+    # downward by the lapse rate difference so moisture isn't artificially wrung out.
+    ocean_bl_correction_K = (BOUNDARY_LAYER_HEIGHT_M - 500.0) / 2.0 * STANDARD_LAPSE_RATE_K_PER_M
+    T_ocean_corrected_C = temperature_C + np.where(ocean_mask, ocean_bl_correction_K, 0.0)
+    e_sat_ocean = 6.112 * np.exp(17.67 * T_ocean_corrected_C / (T_ocean_corrected_C + 243.5))
+    q_sat_cap = (0.622 * e_sat_ocean) / (p_hPa - (1 - 0.622) * e_sat_ocean)
+
     # Ocean boundary layer humidity: set based on AIR temperature q_sat, not SST
     # The marine BL maintains ~85% RH due to rapid mixing with the surface.
     # Using a FIXED RH (not latitude-dependent) lets the evaporation physics
@@ -91,7 +99,7 @@ def advect_moisture_from_ocean(
     # humidity in the marine BL is set by air temperature. This allows evaporative
     # cooling to work: hot SST → large q_sat(SST) - q_air deficit → strong evaporation
     # → cooling. If we set q = f(SST), this feedback breaks.
-    q_ocean = RH_OCEAN_SOURCE * q_sat
+    q_ocean = RH_OCEAN_SOURCE * q_sat_cap
 
     # Initialize: ocean = source q, land = 0
     q = np.where(ocean_mask, q_ocean, 0.0)
@@ -130,8 +138,9 @@ def advect_moisture_from_ocean(
         q = np.where(ocean_mask, q_ocean, q_upwind * decay)
 
     # Ensure valid range (small positive floor, capped at saturation)
+    # Use corrected cap over ocean (warmer near-surface BL), uncorrected over land
     q = np.maximum(q, 1e-6)
-    q = np.minimum(q, q_sat)
+    q = np.minimum(q, q_sat_cap)
 
     return q
 
@@ -522,5 +531,6 @@ def compute_humidity_and_precipitation(
 
 
 # Column mass for moisture budget (kg/m²)
-# Water vapor is concentrated in lower troposphere with scale height ~2 km
-COLUMN_MASS_KG_M2 = 5000.0
+# Effective column mass = TPW / q_surface ≈ 45 kg/m² / 0.018 kg/kg ≈ 2500 kg/m²
+# Water vapor scale height ~2 km, so mass ≈ p_sfc/g × (H_q/H_atm) ≈ 10300 × 0.25
+COLUMN_MASS_KG_M2 = 3500.0

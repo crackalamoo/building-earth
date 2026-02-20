@@ -22,6 +22,7 @@ from climate_sim.physics.clouds import (
     compute_vertical_velocity_from_warm_advection,
 )
 from climate_sim.core.math_core import compute_divergence
+from climate_sim.data.constants import BOUNDARY_LAYER_HEIGHT_M, STANDARD_LAPSE_RATE_K_PER_M
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.diffusion import DiffusionOperator
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeModel
@@ -787,7 +788,12 @@ def monthly_step(
         # breaking Newton convergence. Allow supersaturation for numerical stability.
         if lagged_humidity is not None:
             t_for_cap = final_temp[1] if nlayers_final == 3 else final_temp[0]
-            q_sat = compute_saturation_specific_humidity(t_for_cap)
+            # Over ocean, our BL midpoint (~500m) is colder than the real
+            # near-surface marine BL (~250m midpoint for a ~500m ocean BL).
+            # Correct q_sat cap upward so moisture isn't artificially wrung out.
+            ocean_bl_correction_K = (BOUNDARY_LAYER_HEIGHT_M - 500.0) / 2.0 * STANDARD_LAPSE_RATE_K_PER_M
+            t_for_cap_corrected = t_for_cap + np.where(surface_context.land_mask, 0.0, ocean_bl_correction_K)
+            q_sat = compute_saturation_specific_humidity(t_for_cap_corrected)
             q_max = q_sat  # Cap at saturation — excess should precipitate out
             lagged_humidity = np.clip(lagged_humidity, 1e-6, q_max)
 
