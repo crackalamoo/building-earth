@@ -193,12 +193,13 @@ function clamp(x: number, lo: number, hi: number): number {
  * - autumnTint: present when foliage is declining, fades when growing
  */
 function computeCellCurves(
-  surfaceData: Float32Array,
+  tempData: Float32Array,
   nlat: number, nlon: number,
   cellI: number, cellJ: number,
   lat: number,
   cloudData: Float32Array | undefined,
   cloudNlat: number, cloudNlon: number,
+  cloudCellI?: number, cloudCellJ?: number,
 ): {
   foliageCurve: Float32Array;   // 12 values, 0-1
   autumnTintCurve: Float32Array; // 12 values, 0-1
@@ -208,7 +209,7 @@ function computeCellCurves(
   // Get 12 monthly temperatures
   const temps: number[] = [];
   for (let m = 0; m < 12; m++) {
-    temps.push(surfaceData[m * nlat * nlon + cellI * nlon + cellJ]);
+    temps.push(tempData[m * nlat * nlon + cellI * nlon + cellJ]);
   }
 
   let warmestTemp = -Infinity, coldestTemp = Infinity;
@@ -242,10 +243,26 @@ function computeCellCurves(
   const coolNightFactor = clamp((7 - autumnTemp) / 7, 0, 1) * clamp((autumnTemp + 5) / 10, 0, 1);
   let clearSkyFactor = 0.5;
   if (cloudData && cloudNlat > 0) {
-    const clouds = cloudData[peakAutumnMonth * cloudNlat * cloudNlon + cellI * cloudNlon + cellJ];
+    const ci = cloudCellI ?? cellI, cj = cloudCellJ ?? cellJ;
+    const clouds = cloudData[peakAutumnMonth * cloudNlat * cloudNlon + ci * cloudNlon + cj];
     clearSkyFactor = 1 - clamp(clouds, 0, 1);
   }
   const colorQuality = clamp(coolNightFactor * 0.6 + clearSkyFactor * 0.4, 0, 1);
+
+  // Compute day-length fraction per month using solar declination.
+  // Returns ~0.5 at equator, ranges from ~0.3-0.7 at mid-latitudes, more extreme near poles.
+  const DEG2RAD = Math.PI / 180;
+  const latRad = lat * DEG2RAD;
+  // Solar declination mid-month (day-of-year approx: Jan=15, Feb=46, ...)
+  const midMonthDOY = [15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349];
+  const dayLength = new Float32Array(12);
+  for (let m = 0; m < 12; m++) {
+    const decl = 23.44 * DEG2RAD * Math.sin((2 * Math.PI / 365) * (midMonthDOY[m] - 81));
+    const cosHA = -Math.tan(latRad) * Math.tan(decl);
+    // hour angle → day fraction (0-1)
+    const ha = cosHA <= -1 ? Math.PI : cosHA >= 1 ? 0 : Math.acos(cosHA);
+    dayLength[m] = ha / Math.PI; // 0 = polar night, 1 = midnight sun
+  }
 
   // Compute per-month signals by iterating around the year starting from warmest month
   // (when foliage is at max). We simulate foliage state forward.
@@ -263,17 +280,26 @@ function computeCellCurves(
       const m = (warmestMonth + step) % 12;
       const temp = temps[m];
       const nextTemp = temps[(m + 1) % 12];
-      const cooling = temp > nextTemp; // temperature trending down
+      const nextM = (m + 1) % 12;
+      const daysShortening = dayLength[nextM] < dayLength[m] - 0.005;
+      const daysLengthening = dayLength[nextM] > dayLength[m] + 0.005;
+      // Short-day flag: are we in the short-day half of the year? (below ~12hrs)
+      const shortDays = dayLength[m] < 0.48;
 
-      // Senescence drive: temp below 15°C and cooling
-      const senescence = cooling ? clamp((15 - temp) / 10, 0, 1) : 0;
+      // Senescence: driven by short days AND cool temps.
+      // photoperiod provides the seasonal gate; temperature modulates intensity.
+      const photoSenescence = shortDays ? clamp((0.48 - dayLength[m]) / 0.15, 0, 1) : 0;
+      const tempSenescence = clamp((15 - temp) / 10, 0, 1);
+      const senescence = photoSenescence * tempSenescence;
 
-      // Cold stress: accelerates leaf loss below 5°C
-      const coldStress = clamp((5 - temp) / 10, 0, 0.5);
+      // Cold stress: leaf loss below 5°C, always active but reduced
+      const coldStress = clamp((5 - temp) / 10, 0, 0.4);
 
-      // Growth drive: temp above 10°C and warming (or spring conditions)
-      const warming = !cooling;
-      const growthDrive = warming ? clamp((temp - 5) / 10, 0, 1) : 0;
+      // Growth drive: requires long days OR lengthening days, AND warm temps.
+      // Blocked when days are short (winter) to prevent post-solstice budding.
+      const tempGrowth = clamp((temp - 5) / 10, 0, 1);
+      const longDays = dayLength[m] > 0.48;
+      const growthDrive = (longDays || daysLengthening) ? tempGrowth : 0;
 
       // Update foliage
       const loss = (senescence + coldStress) * 0.4;
@@ -314,7 +340,7 @@ export class TreeInstances {
   private cellFoliageCurves: Float32Array = new Float32Array(0);   // [numCells * 12]
   private cellAutumnTintCurves: Float32Array = new Float32Array(0); // [numCells * 12]
   private cellColorQuality: Float32Array = new Float32Array(0);     // [numCells]
-  private broadleafCellIndex: Uint16Array = new Uint16Array(0);     // per-instance cell index
+  private broadleafCellIndex: Uint32Array = new Uint32Array(0);     // per-instance cell index
   private broadleafEvergreen: Uint8Array = new Uint8Array(0);       // 1 = tropical evergreen
   private lastMonthProgress: number = -1;
   private sunDirUniform: { value: THREE.Vector3 } = { value: new THREE.Vector3(1, 0, 0) };
@@ -325,6 +351,9 @@ export class TreeInstances {
     const rand = mulberry32(SEED);
 
     const surfaceData = layerData.surface.data as Float32Array;
+    const t2mData = layerData.temperature_2m.data as Float32Array;
+    const t2mNlat = layerData.temperature_2m.shape[1];
+    const t2mNlon = layerData.temperature_2m.shape[2];
     const vegData = layerData.vegetation_fraction!.data as Float32Array;
     const soilData = layerData.soil_moisture!.data as Float32Array;
     const landMaskNative = layerData.land_mask_native!.data as Uint8Array;
@@ -353,16 +382,16 @@ export class TreeInstances {
       for (let j = 0; j < nativeNlon; j++) {
         // Coarse cell stats for tree type probabilities (only if coarse land)
         const isCoarseLand = landMaskNative[i * nativeNlon + j] === 1;
-        let coldestMonth = Infinity, warmestMonth = -Infinity;
         let coarseVegSum = 0, coarseSoilSum = 0;
         let monthsAbove10 = 0;
         if (isCoarseLand) {
+          // Use T2m at coarse cell center for growing season estimate
+          const t2mCI = Math.floor((i + 0.5) * t2mNlat / nativeNlat);
+          const t2mCJ = Math.floor((j + 0.5) * t2mNlon / nativeNlon);
           for (let m = 0; m < 12; m++) {
+            const t2mTemp = t2mData[m * t2mNlat * t2mNlon + t2mCI * t2mNlon + t2mCJ];
+            if (t2mTemp > 10) monthsAbove10++;
             const offset = m * nativeNlat * nativeNlon + i * nativeNlon + j;
-            const temp = surfaceData[offset];
-            if (temp < coldestMonth) coldestMonth = temp;
-            if (temp > warmestMonth) warmestMonth = temp;
-            if (temp > 10) monthsAbove10++;
             coarseVegSum += vegData[offset];
           }
           // Average soil moisture from (possibly higher-res) soil grid
@@ -382,13 +411,17 @@ export class TreeInstances {
           }
         }
         const coarseAnnualVeg = isCoarseLand ? coarseVegSum / 12 : 0;
+        const coarseAnnualSoil = isCoarseLand ? Math.min(coarseSoilSum / 12, 1) : 0.5;
 
-        // Tree density from vegetation surplus + tree growing season
-        // Trees need established ground cover (>0.3) and warm summers (>10°C)
-        const treePotential = Math.max(0, (coarseAnnualVeg - 0.3) / 0.7);
+        // Tree density: use minimum thresholds (palm/conifer), reject per-type later
+        // Global gate is permissive; per-type survival checks happen after type selection
+        const vegU = Math.max(0, Math.min(1, (coarseAnnualVeg - 0.1) / 0.6));
+        const vegGate = vegU * vegU * (3 - 2 * vegU); // smoothstep 0.1→0.7
+        const moistU = Math.max(0, Math.min(1, (coarseAnnualSoil - 0.05) / 0.2));
+        const moistGate = moistU * moistU * (3 - 2 * moistU); // smoothstep 0.05→0.25
         const gsU = Math.max(0, Math.min(1, (monthsAbove10 - 3) / 3));
         const treeGrowingSeason = gsU * gsU * (3 - 2 * gsU); // hermite
-        const treeDensity = treePotential * treeGrowingSeason;
+        const treeDensity = vegGate * moistGate * treeGrowingSeason;
 
         // Max possible trees per coarse cell — try more candidates for
         // cells that are partially ocean at coarse res but have hi-res land
@@ -396,13 +429,6 @@ export class TreeInstances {
           ? Math.floor(treeDensity * 7 + rand())
           : 2; // small budget for coastal spillover
         if (maxCandidates <= 0) { rand(); continue; } // consume one rand for determinism
-
-        const coarseAnnualSoil = isCoarseLand ? Math.min(coarseSoilSum / 12, 1) : 0.5;
-        const [pConifer, pBroadleaf, pPalm] = computeTypeProbabilities(
-          isCoarseLand ? coldestMonth : 15,
-          isCoarseLand ? warmestMonth : 25,
-          coarseAnnualSoil,
-        );
 
         const cellLatSouth = -90 + i * latStep;
         const cellLonWest = j * lonStep;
@@ -428,13 +454,27 @@ export class TreeInstances {
 
           if (!valid) continue;
 
-          // For non-coarse-land cells, sample interpolated veg + temp to decide if tree lives
+          // Sample T2m at this tree's position for treeline check and type selection
+          const hiRenderI = Math.floor(((90 - lat) / 180) * hiNlat);
+          const hiDataI = hiNlat - 1 - Math.min(hiRenderI, hiNlat - 1);
+          const hiJ = Math.floor((lon / 360) * hiNlon) % hiNlon;
+          // Map hi-res pixel to T2m grid
+          const t2mI = Math.floor(hiDataI * t2mNlat / hiNlat);
+          const t2mJ = Math.floor(hiJ * t2mNlon / hiNlon);
+          let t2mWarmest = -Infinity, t2mColdest = Infinity;
+          let t2mWarmCount = 0;
+          for (let m = 0; m < 12; m++) {
+            const t = t2mData[m * t2mNlat * t2mNlon + t2mI * t2mNlon + t2mJ];
+            if (t > t2mWarmest) t2mWarmest = t;
+            if (t < t2mColdest) t2mColdest = t;
+            if (t > 10) t2mWarmCount++;
+          }
+          // Treeline: reject if warmest month < 10°C (no trees above alpine treeline)
+          if (t2mWarmest < 10) continue;
+
+          // For non-coarse-land cells, also check veg density
           if (!isCoarseLand) {
-            const hiRenderI = Math.floor(((90 - lat) / 180) * hiNlat);
-            const hiDataI = hiNlat - 1 - Math.min(hiRenderI, hiNlat - 1);
-            const hiJ = Math.floor((lon / 360) * hiNlon) % hiNlon;
-            let vegAtPoint = 0;
-            let warmCount = 0;
+            let vegAtPoint = 0, localSoilSum = 0;
             for (let m = 0; m < 12; m++) {
               const mOff = m * nativeNlat * nativeNlon;
               vegAtPoint += sampleBilinear(
@@ -442,25 +482,45 @@ export class TreeInstances {
                 hiDataI, hiJ, hiNlat, hiNlon,
                 true, landMaskNative,
               );
-              const tempAtPoint = sampleBilinear(
-                surfaceData, nativeNlat, nativeNlon, mOff,
+              localSoilSum += sampleBilinear(
+                soilData, nativeNlat, nativeNlon, mOff,
                 hiDataI, hiJ, hiNlat, hiNlon,
                 true, landMaskNative,
               );
-              if (tempAtPoint > 10) warmCount++;
             }
             vegAtPoint /= 12;
-            const tp = Math.max(0, (vegAtPoint - 0.3) / 0.7);
-            const gsU2 = Math.max(0, Math.min(1, (warmCount - 3) / 3));
-            const td = tp * gsU2 * gsU2 * (3 - 2 * gsU2);
+            const vU = Math.max(0, Math.min(1, (vegAtPoint - 0.25) / 0.5));
+            const vS = vU * vU * (3 - 2 * vU);
+            const localSoil = Math.min(localSoilSum / 12, 1);
+            const mU = Math.max(0, Math.min(1, (localSoil - 0.1) / 0.2));
+            const mG = mU * mU * (3 - 2 * mU);
+            const gsU2 = Math.max(0, Math.min(1, (t2mWarmCount - 3) / 3));
+            const td = vS * mG * gsU2 * gsU2 * (3 - 2 * gsU2);
             if (td < 0.01 || rand() > td) continue;
           }
+          // Type selection from T2m at tree position
+          const localSoilForType = isCoarseLand ? coarseAnnualSoil : 0.5;
+          const [localPConifer, localPBroadleaf] = computeTypeProbabilities(t2mColdest, t2mWarmest, localSoilForType);
 
           const r = rand();
           let type: 0 | 1 | 2;
-          if (r < pConifer) type = 0;
-          else if (r < pConifer + pBroadleaf) type = 1;
+          if (r < localPConifer) type = 0;
+          else if (r < localPConifer + localPBroadleaf) type = 1;
           else type = 2;
+
+          // Per-type survival: different veg/moisture thresholds
+          // Conifer: drought-tolerant, grows on thin dry soils (boreal)
+          // Broadleaf: needs most moisture and ground cover
+          // Palm: low veg ok (oases), just needs warmth + some moisture
+          const localMoist = isCoarseLand ? coarseAnnualSoil : 0.5;
+          const localVeg = coarseAnnualVeg;
+          if (type === 0) { // conifer
+            if (localMoist < 0.05 || localVeg < 0.15) continue;
+          } else if (type === 1) { // broadleaf
+            if (localMoist < 0.15 || localVeg < 0.3) continue;
+          } else { // palm
+            if (localMoist < 0.05 || localVeg < 0.08) continue;
+          }
 
           const normal = latLonToNormal(lat, lon);
           const position = normal.clone().multiplyScalar(GLOBE_RADIUS);
@@ -556,7 +616,7 @@ export class TreeInstances {
       this.broadleafBaseColors = new Float32Array(count);
       this.broadleafPositions = new Float32Array(count * 3);
       this.broadleafQuaternions = new Float32Array(count * 4);
-      this.broadleafCellIndex = new Uint16Array(count);
+      this.broadleafCellIndex = new Uint32Array(count);
       this.broadleafEvergreen = new Uint8Array(count);
 
       const trunkMesh = new THREE.InstancedMesh(broadleafTrunkGeom, material, count);
@@ -573,14 +633,18 @@ export class TreeInstances {
       const cellKeyToIndex = new Map<number, number>();
       let nextCellIndex = 0;
 
-      // First pass: collect unique cells
+      // First pass: collect unique cells — keyed on T2m pixel (0.25°) for smooth transitions
       for (let k = 0; k < count; k++) {
         const inst = broadleafList[k];
-        const cellKey = inst.cellI * nativeNlon + inst.cellJ;
+        // Map tree position to T2m grid cell
+        const t2mCellI = Math.max(0, Math.min(t2mNlat - 1, Math.floor((inst.lat + 90) / 180 * t2mNlat)));
+        const t2mCellJ = Math.floor(((inst.lon % 360 + 360) % 360) / 360 * t2mNlon) % t2mNlon;
+        const cellKey = t2mCellI * t2mNlon + t2mCellJ;
         if (!curveCache.has(cellKey)) {
           const curves = computeCellCurves(
-            surfaceData, nativeNlat, nativeNlon, inst.cellI, inst.cellJ,
+            t2mData, t2mNlat, t2mNlon, t2mCellI, t2mCellJ,
             inst.lat, cloudData, cloudField?.shape[1] ?? 0, cloudField?.shape[2] ?? 0,
+            inst.cellI, inst.cellJ,
           );
           curveCache.set(cellKey, curves);
           cellKeyToIndex.set(cellKey, nextCellIndex++);
@@ -626,7 +690,9 @@ export class TreeInstances {
         this.broadleafQuaternions[k * 4 + 2] = inst.quaternion.z;
         this.broadleafQuaternions[k * 4 + 3] = inst.quaternion.w;
 
-        const cellKey = inst.cellI * nativeNlon + inst.cellJ;
+        const t2mCI = Math.max(0, Math.min(t2mNlat - 1, Math.floor((inst.lat + 90) / 180 * t2mNlat)));
+        const t2mCJ = Math.floor(((inst.lon % 360 + 360) % 360) / 360 * t2mNlon) % t2mNlon;
+        const cellKey = t2mCI * t2mNlon + t2mCJ;
         this.broadleafCellIndex[k] = cellKeyToIndex.get(cellKey)!;
         this.broadleafEvergreen[k] = curveCache.get(cellKey)!.evergreen ? 1 : 0;
       }

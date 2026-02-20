@@ -1,17 +1,13 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { ClimateLayerData } from './loadBinaryData';
 
 const DEG2RAD = Math.PI / 180;
-const CLOUD_RADIUS = 1.025;
+const CLOUD_RADIUS = 1.015;
 const SEED = 7919;
 
-const MIN_FRACTION = 0.12;
-const MAX_CLOUDS = 500;
-
-// Puff size range
-const PUFF_BASE = 0.008;
-const PUFF_VARY = 0.006;
+const MIN_FRACTION = 0.05;
+const MAX_CLOUDS = 800;
+const NUM_STYLES = 4; // texture atlas columns
 
 function mulberry32(seed: number): () => number {
   let s = seed | 0;
@@ -23,174 +19,174 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const Y_UP = new THREE.Vector3(0, 1, 0);
-
-function latLonToNormal(lat: number, lon: number): THREE.Vector3 {
+function latLonToXYZ(lat: number, lon: number, radius: number): [number, number, number] {
   const phi = (90 - lat) * DEG2RAD;
   const theta = lon * DEG2RAD;
-  return new THREE.Vector3(
-    -Math.sin(phi) * Math.cos(theta),
-    Math.cos(phi),
-    Math.sin(phi) * Math.sin(theta),
-  );
+  return [
+    -radius * Math.sin(phi) * Math.cos(theta),
+    radius * Math.cos(phi),
+    radius * Math.sin(phi) * Math.sin(theta),
+  ];
 }
 
-function latLonToPosition(lat: number, lon: number, radius: number): THREE.Vector3 {
-  return latLonToNormal(lat, lon).multiplyScalar(radius);
+// ---- Texture atlas: 4 styles packed horizontally ----
+
+type CloudStyle = 'smallPuff' | 'bigCumulus' | 'towering' | 'cluster';
+
+function createCloudAtlas(): THREE.Texture {
+  const tileSize = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = tileSize * NUM_STYLES;
+  canvas.height = tileSize;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const styles: CloudStyle[] = ['smallPuff', 'bigCumulus', 'towering', 'cluster'];
+
+  for (let s = 0; s < styles.length; s++) {
+    const ox = s * tileSize;
+    const cx = ox + tileSize / 2;
+    const cy = tileSize / 2;
+    const rand = mulberry32(10000 + s * 777);
+
+    const blobs: { x: number; y: number; r: number; a: number }[] = [];
+
+    if (styles[s] === 'smallPuff') {
+      blobs.push(
+        { x: cx, y: cy, r: 38, a: 0.4 },
+        { x: cx - 12, y: cy + 4, r: 30, a: 0.3 },
+        { x: cx + 14, y: cy + 2, r: 32, a: 0.3 },
+        { x: cx, y: cy - 14, r: 26, a: 0.28 },
+      );
+      for (let i = 0; i < 6; i++) {
+        blobs.push({
+          x: cx + (rand() - 0.5) * 50,
+          y: cy + (rand() - 0.5) * 40,
+          r: 10 + rand() * 16,
+          a: 0.12 + rand() * 0.12,
+        });
+      }
+    } else if (styles[s] === 'bigCumulus') {
+      blobs.push(
+        { x: cx, y: cy + 5, r: 52, a: 0.38 },
+        { x: cx - 24, y: cy + 8, r: 44, a: 0.32 },
+        { x: cx + 26, y: cy + 6, r: 46, a: 0.32 },
+        { x: cx - 8, y: cy - 18, r: 34, a: 0.28 },
+        { x: cx + 10, y: cy - 22, r: 30, a: 0.26 },
+        { x: cx, y: cy - 32, r: 24, a: 0.22 },
+        { x: cx - 40, y: cy + 10, r: 32, a: 0.22 },
+        { x: cx + 42, y: cy + 8, r: 30, a: 0.22 },
+      );
+      for (let i = 0; i < 14; i++) {
+        blobs.push({
+          x: cx + (rand() - 0.5) * 80,
+          y: cy + (rand() - 0.5) * 60 - 5,
+          r: 14 + rand() * 22,
+          a: 0.1 + rand() * 0.15,
+        });
+      }
+    } else if (styles[s] === 'towering') {
+      blobs.push(
+        { x: cx, y: cy + 10, r: 40, a: 0.36 },
+        { x: cx - 14, y: cy - 8, r: 36, a: 0.32 },
+        { x: cx + 12, y: cy - 12, r: 34, a: 0.32 },
+        { x: cx, y: cy - 30, r: 30, a: 0.28 },
+        { x: cx - 8, y: cy - 44, r: 24, a: 0.24 },
+        { x: cx + 6, y: cy - 50, r: 20, a: 0.2 },
+      );
+      for (let i = 0; i < 8; i++) {
+        blobs.push({
+          x: cx + (rand() - 0.5) * 50,
+          y: cy + (rand() - 0.5) * 80 - 10,
+          r: 10 + rand() * 18,
+          a: 0.1 + rand() * 0.14,
+        });
+      }
+    } else {
+      // cluster
+      for (let i = 0; i < 5; i++) {
+        const bx = (rand() - 0.5) * 80;
+        const by = (rand() - 0.5) * 60;
+        blobs.push({ x: cx + bx, y: cy + by, r: 20 + rand() * 16, a: 0.3 + rand() * 0.1 });
+        for (let k = 0; k < 3; k++) {
+          blobs.push({
+            x: cx + bx + (rand() - 0.5) * 30,
+            y: cy + by + (rand() - 0.5) * 24,
+            r: 8 + rand() * 12,
+            a: 0.12 + rand() * 0.1,
+          });
+        }
+      }
+    }
+
+    for (const b of blobs) {
+      const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+      grad.addColorStop(0, `rgba(255,255,255,${b.a})`);
+      grad.addColorStop(0.3, `rgba(255,255,255,${b.a * 0.8})`);
+      grad.addColorStop(0.6, `rgba(248,250,255,${b.a * 0.4})`);
+      grad.addColorStop(0.85, `rgba(240,244,255,${b.a * 0.1})`);
+      grad.addColorStop(1, 'rgba(235,240,250,0)');
+      ctx.fillStyle = grad;
+      // Clip to this tile
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(ox, 0, tileSize, tileSize);
+      ctx.clip();
+      ctx.fillRect(ox, 0, tileSize, tileSize);
+      ctx.restore();
+    }
+
+    // Bottom shadow per tile
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ox, 0, tileSize, tileSize);
+    ctx.clip();
+    const bellyGrad = ctx.createLinearGradient(0, 0, 0, tileSize);
+    bellyGrad.addColorStop(0, 'rgba(0,0,0,0)');
+    bellyGrad.addColorStop(0.6, 'rgba(0,0,0,0)');
+    bellyGrad.addColorStop(1, 'rgba(30,40,60,0.08)');
+    ctx.globalCompositeOperation = 'source-atop';
+    ctx.fillStyle = bellyGrad;
+    ctx.fillRect(ox, 0, tileSize, tileSize);
+    ctx.restore();
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
 }
 
-// Cloud shape types for variety
-function buildCloudGeometry(rand: () => number, shapeType: number): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
+// ---- Cloud data (SoA layout for cache-friendly updates) ----
 
-  // Different shapes: 0=small cumulus, 1=big cumulus, 2=elongated, 3=towering, 4=wispy, 5=cluster
-  let numPuffs: number;
-  let spreadX: number;
-  let spreadZ: number;
-  let heightRange: number;
-  let sizeMin: number;
-  let sizeMax: number;
-
-  switch (shapeType) {
-    case 0: // small cumulus — compact dome
-      numPuffs = 4 + Math.floor(rand() * 2);
-      spreadX = 0.008; spreadZ = 0.008; heightRange = 0.008;
-      sizeMin = 0.006; sizeMax = 0.012;
-      break;
-    case 1: // big cumulus — large puffy dome
-      numPuffs = 8 + Math.floor(rand() * 4);
-      spreadX = 0.014; spreadZ = 0.014; heightRange = 0.014;
-      sizeMin = 0.008; sizeMax = 0.016;
-      break;
-    case 2: // elongated — stretched along one axis
-      numPuffs = 6 + Math.floor(rand() * 3);
-      spreadX = 0.025; spreadZ = 0.006; heightRange = 0.005;
-      sizeMin = 0.006; sizeMax = 0.011;
-      break;
-    case 3: // towering — tall cumulonimbus-like
-      numPuffs = 10 + Math.floor(rand() * 4);
-      spreadX = 0.010; spreadZ = 0.010; heightRange = 0.020;
-      sizeMin = 0.007; sizeMax = 0.014;
-      break;
-    case 4: // wispy — few scattered small puffs
-      numPuffs = 3 + Math.floor(rand() * 2);
-      spreadX = 0.018; spreadZ = 0.012; heightRange = 0.003;
-      sizeMin = 0.004; sizeMax = 0.008;
-      break;
-    default: // cluster — group of distinct blobs
-      numPuffs = 7 + Math.floor(rand() * 3);
-      spreadX = 0.020; spreadZ = 0.016; heightRange = 0.010;
-      sizeMin = 0.005; sizeMax = 0.013;
-      break;
-  }
-
-  for (let i = 0; i < numPuffs; i++) {
-    const r = sizeMin + rand() * (sizeMax - sizeMin);
-    const sphere = new THREE.IcosahedronGeometry(r, 2);
-
-    const pos = sphere.attributes.position;
-    const colors = new Float32Array(pos.count * 3);
-    colors.fill(1.0);
-    sphere.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-    // Position: bigger puffs near center and top (dome shape)
-    const angle = rand() * Math.PI * 2;
-    const distFrac = rand();
-    const px = Math.cos(angle) * distFrac * spreadX;
-    const pz = Math.sin(angle) * distFrac * spreadZ;
-    // Higher puffs near center, lower at edges
-    const py = (1.0 - distFrac * 0.7) * heightRange * rand();
-    sphere.translate(px, py, pz);
-
-    parts.push(sphere);
-  }
-
-  const merged = mergeGeometries(parts, false);
-  for (const p of parts) p.dispose();
-  return merged!;
+interface CloudData {
+  count: number;
+  baseLat: Float32Array;
+  baseLon: Float32Array;
+  driftLat: Float32Array;
+  driftLon: Float32Array;
+  windU: Float32Array;
+  windV: Float32Array;
+  radius: Float32Array;
+  cellI: Uint16Array;
+  cellJ: Uint16Array;
+  currentOpacity: Float32Array;
+  targetOpacity: Float32Array;
 }
-
-// ---- Cloud placement ----
-
-interface CloudInfo {
-  baseLat: number;
-  baseLon: number;
-  driftLat: number;
-  driftLon: number;
-  windU: number; // current interpolated wind in deg/s
-  windV: number;
-  cellI: number;
-  cellJ: number;
-  currentOpacity: number;
-  targetOpacity: number;
-  index: number; // index within its InstancedMesh
-  meshIndex: number; // which InstancedMesh template
-}
-
-// Custom shader for clouds: Lambert + sun-aware + opacity
-const cloudVertexShader = `
-  attribute float instanceOpacity;
-  varying vec3 vColor;
-  varying vec3 vNormal;
-  varying vec3 vWorldPos;
-  varying float vOpacity;
-
-  void main() {
-    vColor = color;
-    vNormal = normalize(mat3(modelMatrix) * normal);
-    vec4 worldPos = modelMatrix * instanceMatrix * vec4(position, 1.0);
-    vWorldPos = worldPos.xyz;
-    vOpacity = instanceOpacity;
-    gl_Position = projectionMatrix * viewMatrix * worldPos;
-  }
-`;
-
-const cloudFragmentShader = `
-  uniform vec3 sunDirection;
-
-  varying vec3 vColor;
-  varying vec3 vNormal;
-  varying vec3 vWorldPos;
-  varying float vOpacity;
-
-  void main() {
-    if (vOpacity < 0.01) discard;
-
-    vec3 normal = normalize(vNormal);
-    vec3 cloudDir = normalize(vWorldPos); // radial direction from globe center
-
-    // Sun illumination based on cloud's position on globe
-    float sunDot = dot(cloudDir, sunDirection);
-    float daylight = smoothstep(-0.15, 0.3, sunDot);
-
-    // Diffuse lighting on the puff surface
-    float NdotL = max(dot(normal, sunDirection), 0.0);
-    float ambient = 0.45; // clouds are bright even in shadow
-    float diffuse = ambient + (1.0 - ambient) * NdotL;
-
-    // Warm sunlit → cool shadow color
-    vec3 litColor = vec3(1.0, 0.99, 0.95);
-    vec3 shadowColor = vec3(0.65, 0.70, 0.82);
-    vec3 baseColor = mix(shadowColor, litColor, daylight);
-
-    // Night dimming
-    float brightness = 0.12 + 0.88 * daylight;
-
-    if (vOpacity < 0.01) discard;
-    gl_FragColor = vec4(baseColor * diffuse * brightness, vOpacity);
-  }
-`;
 
 export class CloudInstances {
   private group: THREE.Group;
-  private clouds: CloudInfo[] = [];
+  private data: CloudData | null = null;
+  private points: THREE.Points | null = null;
   private sunDir: THREE.Vector3 = new THREE.Vector3(1, 0, 0);
   private nlat: number = 0;
   private nlon: number = 0;
   private lastMonthProgress: number = -1;
-  private meshes: THREE.InstancedMesh[] = [];
-  private opacityAttrs: THREE.InstancedBufferAttribute[] = [];
-  private dummy = new THREE.Object3D();
+  private atlas: THREE.Texture | null = null;
+  private windUData: Float32Array | null = null;
+  private windVData: Float32Array | null = null;
+  private monthFrac: number = 0;
+  private m0: number = 0;
+  private m1: number = 0;
 
   constructor(layerData: ClimateLayerData) {
     this.group = new THREE.Group();
@@ -204,23 +200,36 @@ export class CloudInstances {
     const nlon = this.nlon;
     const latStep = 180 / nlat;
     const lonStep = 360 / nlon;
-    const data = totalField.data as Float32Array;
+    const cfData = totalField.data as Float32Array;
 
     // Compute annual means per cell
     const annualMean = new Float32Array(nlat * nlon);
+    const annualWindU = new Float32Array(nlat * nlon);
+    const annualWindV = new Float32Array(nlat * nlon);
+    const windUData = layerData.wind_u_10m?.data as Float32Array | undefined;
+    const windVData = layerData.wind_v_10m?.data as Float32Array | undefined;
     for (let i = 0; i < nlat; i++) {
       for (let j = 0; j < nlon; j++) {
-        let csum = 0;
+        let csum = 0, usum = 0, vsum = 0;
         for (let m = 0; m < 12; m++) {
-          csum += data[m * nlat * nlon + i * nlon + j];
+          const idx = m * nlat * nlon + i * nlon + j;
+          csum += cfData[idx];
+          if (windUData) usum += windUData[idx];
+          if (windVData) vsum += windVData[idx];
         }
-        annualMean[i * nlon + j] = csum / 12;
+        const ci = i * nlon + j;
+        annualMean[ci] = csum / 12;
+        annualWindU[ci] = usum / 12;
+        annualWindV[ci] = vsum / 12;
       }
     }
 
+    // Create texture atlas
+    this.atlas = createCloudAtlas();
+
     const rand = mulberry32(SEED);
 
-    // Collect cloudy cells
+    // Collect and shuffle candidate cells
     const cells: { i: number; j: number; mean: number }[] = [];
     for (let i = 0; i < nlat; i++) {
       for (let j = 0; j < nlon; j++) {
@@ -230,22 +239,23 @@ export class CloudInstances {
         }
       }
     }
-    // Shuffle
     for (let n = cells.length - 1; n > 0; n--) {
       const swap = Math.floor(rand() * (n + 1));
       [cells[n], cells[swap]] = [cells[swap], cells[n]];
     }
 
-    // Build several varied cloud geometry templates
-    const NUM_TEMPLATES = 6;
-    const cloudGeos: THREE.BufferGeometry[] = [];
-    for (let t = 0; t < NUM_TEMPLATES; t++) {
-      cloudGeos.push(buildCloudGeometry(mulberry32(12345 + t * 997), t));
-    }
+    // First pass: collect cloud params into temp arrays
+    const tmpLat: number[] = [];
+    const tmpLon: number[] = [];
+    const tmpRadius: number[] = [];
+    const tmpCellI: number[] = [];
+    const tmpCellJ: number[] = [];
+    const tmpWindU: number[] = [];
+    const tmpWindV: number[] = [];
+    const tmpSize: number[] = [];
+    const tmpStyle: number[] = [];
+    const tmpAspect: number[] = []; // scaleX / scaleY ratio
 
-    // Place clouds, assigning each to a random template
-    const cloudInfos: CloudInfo[] = [];
-    const perTemplate: number[] = new Array(NUM_TEMPLATES).fill(0);
     let placed = 0;
     for (const cell of cells) {
       if (placed >= MAX_CLOUDS) break;
@@ -259,193 +269,266 @@ export class CloudInstances {
       for (let k = 0; k < count && placed < MAX_CLOUDS; k++) {
         const lat = -90 + i * latStep + rand() * latStep;
         const lon = (j * lonStep + rand() * lonStep) % 360;
+        const r = CLOUD_RADIUS + rand() * 0.01;
 
-        // Wind will be set dynamically in setMonth()
-        const windU = 0;
-        const windV = 0;
+        const styleRoll = rand();
+        let styleIdx: number;
+        if (styleRoll < 0.35) styleIdx = 0;       // smallPuff
+        else if (styleRoll < 0.65) styleIdx = 1;   // bigCumulus
+        else if (styleRoll < 0.85) styleIdx = 2;   // towering
+        else styleIdx = 3;                          // cluster
 
-        const meshIdx = Math.floor(rand() * NUM_TEMPLATES);
-        const idxInMesh = perTemplate[meshIdx];
-        perTemplate[meshIdx]++;
+        const baseSize = 0.06 + mean * 0.06 + rand() * 0.03;
+        const aspectJitter = 0.85 + rand() * 0.3;
+        let scaleX = baseSize * aspectJitter * 1.3;
+        let scaleY = baseSize / aspectJitter * 0.9;
+        if (styleIdx === 2) { scaleX *= 0.8; scaleY *= 1.3; }
+        if (styleIdx === 3) { scaleX *= 1.2; scaleY *= 1.1; }
 
-        cloudInfos.push({
-          baseLat: lat, baseLon: lon,
-          driftLat: 0, driftLon: 0,
-          windU, windV,
-          cellI: i, cellJ: j,
-          currentOpacity: 0, targetOpacity: 0,
-          index: idxInMesh,
-          meshIndex: meshIdx,
-        });
+        const cosLat = Math.cos(lat * DEG2RAD);
+        const ci = i * nlon + j;
+        const windScale = 5000.0;
+        const wU = (annualWindU[ci] / (111000 * Math.max(cosLat, 0.15))) * windScale;
+        const wV = (annualWindV[ci] / 111000) * windScale;
+
+        tmpLat.push(lat);
+        tmpLon.push(lon);
+        tmpRadius.push(r);
+        tmpCellI.push(i);
+        tmpCellJ.push(j);
+        tmpWindU.push(wU);
+        tmpWindV.push(wV);
+        tmpSize.push(Math.max(scaleX, scaleY)); // point size = max dimension
+        tmpStyle.push(styleIdx);
+        tmpAspect.push(scaleX / scaleY); // >1 = wider, <1 = taller
         placed++;
       }
     }
-    this.clouds = cloudInfos;
 
-    // Create one InstancedMesh per template
-    for (let t = 0; t < NUM_TEMPLATES; t++) {
-      const count = perTemplate[t];
-      if (count === 0) continue;
+    const N = placed;
+    if (N === 0) return;
 
-      const material = new THREE.ShaderMaterial({
-        vertexShader: cloudVertexShader,
-        fragmentShader: cloudFragmentShader,
-        uniforms: {
-          sunDirection: { value: this.sunDir },
-        },
-        vertexColors: true,
-        transparent: true,
-        depthWrite: false,
-        side: THREE.FrontSide,
-      });
+    // Allocate SoA
+    const data: CloudData = {
+      count: N,
+      baseLat: new Float32Array(tmpLat),
+      baseLon: new Float32Array(tmpLon),
+      driftLat: new Float32Array(N),
+      driftLon: new Float32Array(N),
+      windU: new Float32Array(tmpWindU),
+      windV: new Float32Array(tmpWindV),
+      radius: new Float32Array(tmpRadius),
+      cellI: new Uint16Array(tmpCellI),
+      cellJ: new Uint16Array(tmpCellJ),
+      currentOpacity: new Float32Array(N),
+      targetOpacity: new Float32Array(N),
+    };
+    this.data = data;
 
-      const mesh = new THREE.InstancedMesh(cloudGeos[t], material, count);
-      mesh.renderOrder = 10;
+    // Build geometry
+    const positions = new Float32Array(N * 3);
+    const sizes = new Float32Array(tmpSize);
+    const styles = new Float32Array(tmpStyle);
+    const opacities = new Float32Array(N); // starts at 0
+    const aspects = new Float32Array(tmpAspect);
 
-      const opacities = new Float32Array(count);
-      const attr = new THREE.InstancedBufferAttribute(opacities, 1);
-      mesh.geometry.setAttribute('instanceOpacity', attr);
-
-      this.meshes.push(mesh);
-      this.opacityAttrs.push(attr);
-      this.group.add(mesh);
+    for (let idx = 0; idx < N; idx++) {
+      const [x, y, z] = latLonToXYZ(data.baseLat[idx], data.baseLon[idx], data.radius[idx]);
+      positions[idx * 3] = x;
+      positions[idx * 3 + 1] = y;
+      positions[idx * 3 + 2] = z;
     }
 
-    // Map template index to mesh array index (some templates may have 0 clouds)
-    // Build lookup: meshIndex -> index in this.meshes
-    const templateToMeshIdx: number[] = [];
-    let meshIdx = 0;
-    for (let t = 0; t < NUM_TEMPLATES; t++) {
-      if (perTemplate[t] > 0) {
-        templateToMeshIdx.push(meshIdx++);
-      } else {
-        templateToMeshIdx.push(-1);
-      }
-    }
-    // Remap cloud meshIndex to actual mesh array index
-    for (const cloud of this.clouds) {
-      cloud.meshIndex = templateToMeshIdx[cloud.meshIndex];
-    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+    geom.setAttribute('aStyle', new THREE.BufferAttribute(styles, 1));
+    geom.setAttribute('aOpacity', new THREE.BufferAttribute(opacities, 1));
+    geom.setAttribute('aAspect', new THREE.BufferAttribute(aspects, 1));
 
-    // Set initial transforms
-    for (const cloud of this.clouds) {
-      this.updateCloudTransform(cloud);
-    }
-    for (const mesh of this.meshes) {
-      mesh.instanceMatrix.needsUpdate = true;
-    }
-  }
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        atlas: { value: this.atlas },
+        sunDir: { value: this.sunDir },
+        viewportHeight: { value: 1.0 },
+      },
+      vertexShader: `
+        attribute float aSize;
+        attribute float aStyle;
+        attribute float aOpacity;
+        attribute float aAspect;
+        varying float vOpacity;
+        varying float vStyle;
+        varying float vAspect;
+        varying float vBrightness;
+        uniform vec3 sunDir;
+        uniform float viewportHeight;
+        void main() {
+          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mvPos;
+          // Size in pixels: scale by distance
+          gl_PointSize = aSize * viewportHeight / -mvPos.z;
+          vOpacity = aOpacity;
+          vStyle = aStyle;
+          vAspect = aAspect;
+          // Day/night brightness
+          vec3 normal = normalize(position);
+          float surfaceDot = dot(normal, sunDir);
+          vBrightness = 0.12 + 0.88 * clamp((surfaceDot + 0.05) / 0.2, 0.0, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D atlas;
+        varying float vOpacity;
+        varying float vStyle;
+        varying float vAspect;
+        varying float vBrightness;
+        void main() {
+          if (vOpacity < 0.005) discard;
+          vec2 uv = gl_PointCoord;
+          // Apply aspect ratio: stretch UV to sample correctly
+          // For wide clouds (aspect>1): compress x sampling
+          // For tall clouds (aspect<1): compress y sampling
+          if (vAspect > 1.0) {
+            uv.y = 0.5 + (uv.y - 0.5) * vAspect;
+          } else {
+            uv.x = 0.5 + (uv.x - 0.5) / vAspect;
+          }
+          // Discard if UV out of 0-1 range (outside the cloud shape)
+          if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
+          // Map to atlas tile
+          float styleIdx = floor(vStyle + 0.5);
+          float atlasU = (styleIdx + uv.x) / ${NUM_STYLES}.0;
+          vec4 texColor = texture2D(atlas, vec2(atlasU, uv.y));
+          if (texColor.a < 0.01) discard;
+          vec3 color = texColor.rgb * vBrightness;
+          gl_FragColor = vec4(color, texColor.a * vOpacity);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
 
-  private updateCloudTransform(cloud: CloudInfo): void {
-    const lon = ((cloud.baseLon + cloud.driftLon) % 360 + 360) % 360;
-    const lat = Math.max(-89, Math.min(89, cloud.baseLat + cloud.driftLat));
-    const r = CLOUD_RADIUS;
-
-    const normal = latLonToNormal(lat, lon);
-    const pos = normal.clone().multiplyScalar(r);
-
-    this.dummy.position.copy(pos);
-    // Orient cloud to face outward from globe
-    this.dummy.quaternion.setFromUnitVectors(Y_UP, normal);
-    // Scale variation per cloud
-    const hash = (cloud.index * 7 + cloud.meshIndex * 13) % 17;
-    const s = 0.75 + hash * 0.04;
-    this.dummy.scale.set(s, s * 0.8, s);
-    this.dummy.updateMatrix();
-    this.meshes[cloud.meshIndex].setMatrixAt(cloud.index, this.dummy.matrix);
+    this.points = new THREE.Points(geom, mat);
+    this.points.renderOrder = 10;
+    this.points.frustumCulled = false;
+    this.group.add(this.points);
   }
 
   setMonth(monthProgress: number, layerData: ClimateLayerData): void {
+    if (!this.data) return;
     if (Math.abs(monthProgress - this.lastMonthProgress) < 0.005) return;
     this.lastMonthProgress = monthProgress;
 
     const mp = ((monthProgress % 12) + 12) % 12;
-    const m0 = Math.floor(mp) % 12;
-    const m1 = (m0 + 1) % 12;
-    const frac = mp - Math.floor(mp);
+    this.m0 = Math.floor(mp) % 12;
+    this.m1 = (this.m0 + 1) % 12;
+    this.monthFrac = mp - Math.floor(mp);
 
     const nlat = this.nlat;
     const nlon = this.nlon;
 
     const totalField = layerData.cloud_fraction;
     if (!totalField) return;
-    const data = totalField.data as Float32Array;
+    const cfData = totalField.data as Float32Array;
 
-    const windUField = layerData.wind_u_10m;
-    const windVField = layerData.wind_v_10m;
-    const windUData = windUField?.data as Float32Array | undefined;
-    const windVData = windVField?.data as Float32Array | undefined;
-    const windScale = 5000.0;
+    this.windUData = layerData.wind_u_10m?.data as Float32Array ?? null;
+    this.windVData = layerData.wind_v_10m?.data as Float32Array ?? null;
 
-    const latStep = 180 / nlat;
-    const lonStep = 360 / nlon;
-
-    for (const cloud of this.clouds) {
-      // Use current drifted position for wind/cloud lookups
-      const curLat = Math.max(-89, Math.min(89, cloud.baseLat + cloud.driftLat));
-      const curLon = ((cloud.baseLon + cloud.driftLon) % 360 + 360) % 360;
-      const ci = Math.min(nlat - 1, Math.max(0, Math.floor((curLat + 90) / latStep)));
-      const cj = Math.min(nlon - 1, Math.floor(curLon / lonStep));
-
-      const idx0 = m0 * nlat * nlon + ci * nlon + cj;
-      const idx1 = m1 * nlat * nlon + ci * nlon + cj;
-
-      const v0 = data[idx0];
-      const v1 = data[idx1];
-      const fraction = Math.max(0, Math.min(1, v0 + (v1 - v0) * frac));
-      cloud.targetOpacity = Math.min(1, fraction * 1.4);
-
-      // Sample wind at current position
-      if (windUData && windVData) {
-        const cosLat = Math.cos(curLat * DEG2RAD);
-        const u = windUData[idx0] + (windUData[idx1] - windUData[idx0]) * frac;
-        const v = windVData[idx0] + (windVData[idx1] - windVData[idx0]) * frac;
-        cloud.windU = (u / (111000 * Math.max(cosLat, 0.15))) * windScale;
-        cloud.windV = (v / 111000) * windScale;
-      }
+    const d = this.data;
+    for (let idx = 0; idx < d.count; idx++) {
+      const v0 = cfData[this.m0 * nlat * nlon + d.cellI[idx] * nlon + d.cellJ[idx]];
+      const v1 = cfData[this.m1 * nlat * nlon + d.cellI[idx] * nlon + d.cellJ[idx]];
+      const fraction = Math.max(0, Math.min(1, v0 + (v1 - v0) * this.monthFrac));
+      d.targetOpacity[idx] = Math.min(1, fraction * 1.3);
     }
   }
 
-  update(dt: number, camera?: THREE.Camera): void {
-    if (this.meshes.length === 0) return;
+  update(dt: number): void {
+    if (!this.data || !this.points) return;
 
-    for (const cloud of this.clouds) {
+    const d = this.data;
+    const geom = this.points.geometry;
+    const posAttr = geom.getAttribute('position') as THREE.BufferAttribute;
+    const opAttr = geom.getAttribute('aOpacity') as THREE.BufferAttribute;
+    const positions = posAttr.array as Float32Array;
+    const opacities = opAttr.array as Float32Array;
+
+    const nlat = this.nlat;
+    const nlon = this.nlon;
+    const latStep = 180 / nlat;
+    const lonStep = 360 / nlon;
+    const hasWind = this.windUData !== null && this.windVData !== null;
+
+    for (let idx = 0; idx < d.count; idx++) {
       // Smooth opacity
-      const diff = cloud.targetOpacity - cloud.currentOpacity;
+      const diff = d.targetOpacity[idx] - d.currentOpacity[idx];
       if (Math.abs(diff) > 0.001) {
-        cloud.currentOpacity += Math.sign(diff) * Math.min(Math.abs(diff), 0.08 * dt);
+        d.currentOpacity[idx] += Math.sign(diff) * Math.min(Math.abs(diff), 0.08 * dt);
+      }
+      opacities[idx] = d.currentOpacity[idx];
+
+      if (d.currentOpacity[idx] < 0.005) continue;
+
+      // Re-sample wind at drifted position
+      if (hasWind) {
+        const curLat = Math.max(-89, Math.min(89, d.baseLat[idx] + d.driftLat[idx]));
+        const curLon = ((d.baseLon[idx] + d.driftLon[idx]) % 360 + 360) % 360;
+        const ci = Math.min(nlat - 1, Math.max(0, Math.floor((curLat + 90) / latStep)));
+        const cj = Math.min(nlon - 1, Math.floor(curLon / lonStep));
+        const i0 = this.m0 * nlat * nlon + ci * nlon + cj;
+        const i1 = this.m1 * nlat * nlon + ci * nlon + cj;
+        const u = this.windUData![i0] + (this.windUData![i1] - this.windUData![i0]) * this.monthFrac;
+        const v = this.windVData![i0] + (this.windVData![i1] - this.windVData![i0]) * this.monthFrac;
+        const cosLat = Math.cos(curLat * DEG2RAD);
+        d.windU[idx] = (u / (111000 * Math.max(cosLat, 0.15))) * 5000.0;
+        d.windV[idx] = (v / 111000) * 5000.0;
       }
 
-      this.opacityAttrs[cloud.meshIndex].array[cloud.index] = cloud.currentOpacity;
-
       // Drift
-      cloud.driftLon += cloud.windU * dt;
-      cloud.driftLat += cloud.windV * dt;
+      d.driftLon[idx] += d.windU[idx] * dt;
+      d.driftLat[idx] += d.windV[idx] * dt;
 
-      this.updateCloudTransform(cloud);
+      const lon = ((d.baseLon[idx] + d.driftLon[idx]) % 360 + 360) % 360;
+      const lat = Math.max(-89, Math.min(89, d.baseLat[idx] + d.driftLat[idx]));
+      const [x, y, z] = latLonToXYZ(lat, lon, d.radius[idx]);
+      positions[idx * 3] = x;
+      positions[idx * 3 + 1] = y;
+      positions[idx * 3 + 2] = z;
     }
 
-    for (let i = 0; i < this.meshes.length; i++) {
-      this.meshes[i].instanceMatrix.needsUpdate = true;
-      this.opacityAttrs[i].needsUpdate = true;
-    }
+    posAttr.needsUpdate = true;
+    opAttr.needsUpdate = true;
   }
 
   setSunDirection(dir: THREE.Vector3): void {
     this.sunDir.copy(dir);
+    if (this.points) {
+      (this.points.material as THREE.ShaderMaterial).uniforms.sunDir.value.copy(dir);
+    }
   }
 
   getObject(): THREE.Object3D {
     return this.group;
   }
 
-  dispose(): void {
-    for (const mesh of this.meshes) {
-      mesh.geometry.dispose();
-      (mesh.material as THREE.Material).dispose();
+  /** Call when viewport size or camera FOV changes for correct point sizing. */
+  setViewportHeight(h: number, fovDeg: number = 45): void {
+    if (this.points) {
+      // projectionScale converts world-space size to pixel size at unit distance
+      const projScale = h / (2 * Math.tan((fovDeg * DEG2RAD) / 2));
+      (this.points.material as THREE.ShaderMaterial).uniforms.viewportHeight.value = projScale;
     }
-    this.meshes = [];
-    this.opacityAttrs = [];
-    this.clouds = [];
+  }
+
+  dispose(): void {
+    if (this.points) {
+      this.points.geometry.dispose();
+      (this.points.material as THREE.ShaderMaterial).dispose();
+    }
+    if (this.atlas) this.atlas.dispose();
+    this.data = null;
+    this.atlas = null;
   }
 }

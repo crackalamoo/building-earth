@@ -146,6 +146,7 @@ def _write_binary_export(
             lat2d,
             output_resolution_deg=output_resolution,
             apply_lapse_rate_to_2m=True,
+            compute_snow_temperature=True,
         )
         print("Interpolation complete.")
 
@@ -168,16 +169,23 @@ def _write_binary_export(
     # Each entry: (array, dtype_str) — dtype_str is 'float16' or 'uint8'
     fields: list[tuple[str, np.ndarray, str]] = []
 
-    # temperature_2m: interpolated (0.25deg) or native
+    # temperature_2m: interpolated (0.25deg) or native — quantized to uint8
+    # Range [-60, +60] °C → [0, 255], decode: val * (120/255) - 60
+    t2m_src = None
+    t2m_label = ""
     if "temperature_2m" in interpolated:
-        fields.append(("temperature_2m", interpolated["temperature_2m"], "float16"))
-        print(f"  temperature_2m: {interpolated['temperature_2m'].shape} (interpolated)")
+        t2m_src = interpolated["temperature_2m"]
+        t2m_label = "interpolated"
     elif "temperature_2m" in native_layers:
-        fields.append(("temperature_2m", native_layers["temperature_2m"], "float16"))
-        print(f"  temperature_2m: {native_layers['temperature_2m'].shape} (native)")
+        t2m_src = native_layers["temperature_2m"]
+        t2m_label = "native"
     elif "surface" in native_layers:
-        fields.append(("temperature_2m", native_layers["surface"], "float16"))
-        print(f"  temperature_2m: {native_layers['surface'].shape} (from surface)")
+        t2m_src = native_layers["surface"]
+        t2m_label = "from surface"
+    if t2m_src is not None:
+        t2m_u8 = np.clip((t2m_src + 60.0) * (255.0 / 120.0), 0, 255).astype(np.uint8)
+        fields.append(("temperature_2m", t2m_u8, "uint8"))
+        print(f"  temperature_2m: {t2m_u8.shape} ({t2m_label}, uint8)")
 
     # surface: always native resolution (for Blue Marble snow/ice detection)
     if "surface" in native_layers:
@@ -262,6 +270,14 @@ def _write_binary_export(
     # Keep negative values (bathymetry) for ocean depth shading
     fields.append(("elevation", elevation, "float16"))
     print(f"  elevation: {elevation.shape}")
+
+    # Snow temperature: interpolated surface with lapse correction for snow/ice
+    if "snow_temperature" in interpolated:
+        snow_temp = interpolated["snow_temperature"]
+        # Quantize to uint8: range [-60, +60] °C → [0, 255]
+        snow_temp_u8 = np.clip((snow_temp + 60.0) * (255.0 / 120.0), 0, 255).astype(np.uint8)
+        fields.append(("snow_temperature", snow_temp_u8, "uint8"))
+        print(f"  snow_temperature: {snow_temp_u8.shape}")
 
     # Wind fields: native resolution
     for wind_key in ("wind_u_10m", "wind_v_10m", "wind_speed_10m"):

@@ -14,11 +14,7 @@
   import { CityLights } from './CityLights';
   import type { ClimateLayerData } from './loadBinaryData';
   import { ELEVATION_SCALE, NORMAL_BLEND, sampleElevation, displacedNormal, computeHillshadeGrid } from './elevation';
-
-  function smoothstep(edge0: number, edge1: number, x: number): number {
-    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-    return t * t * (3 - 2 * t);
-  }
+  import { getSunDeclination, createSunOrb, createSunBloom, updateSunBloom, disposeSun } from './Sun';
 
   export let data: number[][][] | null = null; // [month][lat][lon] temperature in Celsius
   export let monthProgress: number = 0; // Continuous 0-12 (wraps), controls sun position
@@ -50,6 +46,10 @@
   let sunGlow: THREE.Object3D | null = null;
   let starField: StarField | null = null;
   let cityLights: CityLights | null = null;
+  let markerMesh: THREE.Mesh | null = null;
+  let markerWorldPos: THREE.Vector3 | null = null;
+  let raycaster = new THREE.Raycaster();
+  let mouseDownPos = { x: 0, y: 0 };
 
   // Cached color buffers: 12 base months + sub-step interpolations
   const SUB_STEPS = 3;
@@ -149,30 +149,33 @@
   // Build one cache item per idle callback, yielding to the browser between each
   function warmCache(gen: number) {
     if (gen !== warmupGeneration) return;
-    const ric = typeof requestIdleCallback === 'function' ? requestIdleCallback : (cb: () => void) => setTimeout(cb, 50);
-    // Phase 1: build 12 base months, Phase 2: build 24 sub-step lerps
+    const ric = typeof requestIdleCallback === 'function'
+      ? (cb: IdleRequestCallback) => requestIdleCallback(cb, { timeout: 100 })
+      : (cb: () => void) => setTimeout(cb, 16);
+    // Phase 1: build 12 base months, Phase 2: build sub-step lerps
     let baseMonth = 0;
     let step = 0;
-    function next() {
+    function next(deadline?: IdleDeadline) {
       if (gen !== warmupGeneration) return;
+      const hasTime = () => !deadline || deadline.timeRemaining() > 2;
       // Build base months first (expensive)
-      if (baseMonth < 12) {
+      while (baseMonth < 12 && hasTime()) {
         if (data && !tempBaseCache[baseMonth]) tempBaseCache[baseMonth] = buildTemperatureColorBuffer(data, baseMonth);
         if (layerData && !bmBaseRgbCache[baseMonth]) {
           const r = buildBlueMarbleBuffers(layerData, baseMonth);
           bmBaseRgbCache[baseMonth] = r.rgb; bmBaseSpecCache[baseMonth] = r.spec;
         }
         baseMonth++;
-        ric(next);
-      } else if (step < TOTAL_STEPS) {
-        // Sub-steps: skip whole-month steps (t=0), only build intermediate lerps
+      }
+      // Sub-steps: skip whole-month steps (t=0), build multiple per callback
+      while (step < TOTAL_STEPS && hasTime()) {
         if (step % SUB_STEPS !== 0) {
           if (data) ensureTempStep(step);
           if (layerData) ensureBmStep(step);
         }
         step++;
-        ric(next);
       }
+      if (baseMonth < 12 || step < TOTAL_STEPS) ric(next);
     }
     ric(next);
   }
@@ -181,14 +184,27 @@
   $: if (data) {
     tempBaseCache = new Array(12).fill(null);
     tempStepCache = new Array(TOTAL_STEPS).fill(null);
+    for (let m = 0; m < 12; m++) {
+      tempBaseCache[m] = buildTemperatureColorBuffer(data, m);
+    }
     lastAppliedStep = -1;
     warmCache(++warmupGeneration);
   }
   $: if (layerData) {
+    hillshadeGridCache = null;
+    annualMeanTempCache = null;
+    annualMeanSoilCache = null;
+    soilLandMaskCache = null;
     bmBaseRgbCache = new Array(12).fill(null);
     bmBaseSpecCache = new Array(12).fill(null);
     bmStepRgbCache = new Array(TOTAL_STEPS).fill(null);
     bmStepSpecCache = new Array(TOTAL_STEPS).fill(null);
+    // Build all 12 base months eagerly to avoid lag on first month transition
+    for (let m = 0; m < 12; m++) {
+      const r = buildBlueMarbleBuffers(layerData, m);
+      bmBaseRgbCache[m] = r.rgb;
+      bmBaseSpecCache[m] = r.spec;
+    }
     lastAppliedStep = -1;
     warmCache(++warmupGeneration);
   }
@@ -229,41 +245,60 @@
     return buf;
   }
 
-  let _annualMeansCache: { ld: ClimateLayerData; temp: Float32Array; soil: Float32Array; soilLandMask: Uint8Array } | null = null;
-  function cachedAnnualMeans(ld: ClimateLayerData): { temp: Float32Array; soil: Float32Array; soilLandMask: Uint8Array } {
-    if (_annualMeansCache && _annualMeansCache.ld === ld) return _annualMeansCache;
+  /** Cached hillshade grid (computed from elevation, independent of globe mesh). */
+  let hillshadeGridCache: Float32Array | null = null;
 
-    const surfData = ld.surface.data as Float32Array;
-    const sData = ld.soil_moisture?.data as Float32Array | undefined;
-    const lNlat = ld.surface.shape[1];
-    const lNlon = ld.surface.shape[2];
-    const sNlat = ld.soil_moisture?.shape[1] ?? lNlat;
-    const sNlon = ld.soil_moisture?.shape[2] ?? lNlon;
+  function getHillshadeGrid(ld: ClimateLayerData): Float32Array | null {
+    if (hillshadeGridCache) return hillshadeGridCache;
+    const elevData = ld.elevation?.data as Float32Array | undefined;
+    const elevNlat = ld.elevation?.shape[0] ?? 0;
+    const elevNlon = ld.elevation?.shape[1] ?? 0;
+    const hiNlat = ld.land_mask.shape[0];
+    const hiNlon = ld.land_mask.shape[1];
+    if (elevData && elevNlat && elevNlon) {
+      hillshadeGridCache = computeHillshadeGrid(elevData, elevNlat, elevNlon, hiNlat, hiNlon);
+    }
+    return hillshadeGridCache;
+  }
 
-    const temp = new Float32Array(lNlat * lNlon);
-    for (let ci = 0; ci < lNlat; ci++) {
-      for (let cj = 0; cj < lNlon; cj++) {
+  /** Compute annual means from full 12-month data (cached to avoid recomputation). */
+  let annualMeanTempCache: Float32Array | null = null;
+  let annualMeanSoilCache: Float32Array | null = null;
+  let soilLandMaskCache: Uint8Array | null = null;
+
+  function getAnnualMeans(ld: ClimateLayerData): { temp: Float32Array; soil: Float32Array; soilLandMask: Uint8Array } {
+    if (annualMeanTempCache) return { temp: annualMeanTempCache, soil: annualMeanSoilCache!, soilLandMask: soilLandMaskCache! };
+    const surfaceData = ld.surface.data as Float32Array;
+    const soilData = ld.soil_moisture?.data as Float32Array | undefined;
+    const lowNlat = ld.surface.shape[1];
+    const lowNlon = ld.surface.shape[2];
+    const sNlat = ld.soil_moisture?.shape[1] ?? lowNlat;
+    const sNlon = ld.soil_moisture?.shape[2] ?? lowNlon;
+
+    const annualMeanTemp = new Float32Array(lowNlat * lowNlon);
+    for (let ci = 0; ci < lowNlat; ci++) {
+      for (let cj = 0; cj < lowNlon; cj++) {
         let tsum = 0;
         for (let m = 0; m < 12; m++) {
-          tsum += surfData[m * lNlat * lNlon + ci * lNlon + cj];
+          tsum += surfaceData[m * lowNlat * lowNlon + ci * lowNlon + cj];
         }
-        temp[ci * lNlon + cj] = tsum / 12;
+        annualMeanTemp[ci * lowNlon + cj] = tsum / 12;
       }
     }
 
-    const soil = new Float32Array(sNlat * sNlon);
-    if (sData) {
+    const annualMeanSoil = new Float32Array(sNlat * sNlon);
+    if (soilData) {
       for (let ci = 0; ci < sNlat; ci++) {
         for (let cj = 0; cj < sNlon; cj++) {
           let ssum = 0;
           for (let m = 0; m < 12; m++) {
-            ssum += sData[m * sNlat * sNlon + ci * sNlon + cj];
+            ssum += soilData[m * sNlat * sNlon + ci * sNlon + cj];
           }
-          soil[ci * sNlon + cj] = ssum / 12;
+          annualMeanSoil[ci * sNlon + cj] = ssum / 12;
         }
       }
     } else {
-      soil.fill(0.5);
+      annualMeanSoil.fill(0.5);
     }
 
     // Use exported 1° land mask if available, otherwise downsample from 0.25°
@@ -271,7 +306,6 @@
     if (ld.land_mask_1deg) {
       soilLandMask = ld.land_mask_1deg.data as Uint8Array;
     } else {
-      // Fallback: downsample from hi-res mask
       const hiLandMask = ld.land_mask.data as Uint8Array;
       const hiNlatM = ld.land_mask.shape[0];
       const hiNlonM = ld.land_mask.shape[1];
@@ -295,11 +329,13 @@
       }
     }
 
-    _annualMeansCache = { ld, temp, soil, soilLandMask };
-    return _annualMeansCache;
+    annualMeanTempCache = annualMeanTemp;
+    annualMeanSoilCache = annualMeanSoil;
+    soilLandMaskCache = soilLandMask;
+    return { temp: annualMeanTemp, soil: annualMeanSoil, soilLandMask };
   }
 
-  function buildBlueMarbleBuffers(ld: ClimateLayerData, monthIdx: number): { rgb: Float32Array; spec: Float32Array } {
+  function buildBlueMarbleBuffers(ld: ClimateLayerData, monthIdx: number, snowMonthIdx?: number): { rgb: Float32Array; spec: Float32Array } {
     const surfaceData = ld.surface.data as Float32Array;
     const landMaskData = ld.land_mask.data as Uint8Array;
     const soilData = ld.soil_moisture?.data as Float32Array | undefined;
@@ -308,6 +344,10 @@
     const elevData = ld.elevation?.data as Float32Array | undefined;
     const elevNlat = ld.elevation?.shape[0] ?? 0;
     const elevNlon = ld.elevation?.shape[1] ?? 0;
+    const snowTempRaw = ld.snow_temperature?.data as Uint8Array | Float32Array | undefined;
+    const snowNlat = ld.snow_temperature?.shape[1] ?? 0;
+    const snowNlon = ld.snow_temperature?.shape[2] ?? 0;
+    const snowMonthOff = (snowMonthIdx ?? monthIdx) * snowNlat * snowNlon;
 
     // High-res grid dimensions (from land_mask, 0.25deg)
     const hiNlat = ld.land_mask.shape[0];
@@ -323,11 +363,11 @@
     const soilNlon = ld.soil_moisture?.shape[2] ?? lowNlon;
     const soilMonthOffset = monthIdx * soilNlat * soilNlon;
 
-    // Precompute annual means (cached across month changes)
-    const cached = cachedAnnualMeans(ld);
-    const annualMeanTemp = cached.temp;
-    const annualMeanSoil = cached.soil;
-    const soilLandMask = cached.soilLandMask;
+    // Use cached annual means (computed from full 12-month original data)
+    const annuals = getAnnualMeans(ld);
+    const annualMeanTemp = annuals.temp;
+    const annualMeanSoil = annuals.soil;
+    const soilLandMask = annuals.soilLandMask;
 
     // First pass: compute per-cell RGB into a flat buffer
     const rgbBuf = new Float32Array(hiNlat * hiNlon * 3);
@@ -379,7 +419,16 @@
           isLand, soilLandMask,
         );
 
-        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT, annMeanSoil);
+        // Snow temperature from backend (interpolated surface + lapse correction)
+        let snowTempC = surfaceTemp;
+        if (snowTempRaw && isLand) {
+          const si = Math.floor(dataLatIdx * snowNlat / hiNlat);
+          const sj = Math.floor(j * snowNlon / hiNlon);
+          const raw = snowTempRaw[snowMonthOff + si * snowNlon + sj];
+          snowTempC = raw * (120.0 / 255.0) - 60.0;
+        }
+
+        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT, annMeanSoil, snowTempC);
         const base = (i * hiNlon + j) * 3;
         rgbBuf[base] = r;
         rgbBuf[base + 1] = g;
@@ -421,7 +470,7 @@
     }
 
     // Apply hillshade to RGB buffer and build specular + vertex-expanded buffers
-    const hsGrid = (blueMarbleGlobe as any)?._hillshadeGrid as Float32Array | undefined;
+    const hsGrid = getHillshadeGrid(layerData!);
     const nVerts = hiNlat * hiNlon * 6;
     const outRgb = new Float32Array(nVerts * 3);
     const outSpec = new Float32Array(nVerts);
@@ -478,38 +527,23 @@
 
   function ensureTempStep(step: number) {
     if (tempStepCache[step]) return;
+    // Snap to nearest base month (no sub-step interpolation for hi-res T2m)
     const m0 = Math.floor(step / SUB_STEPS) % 12;
-    const m1 = (m0 + 1) % 12;
-    ensureTempBase(m0); ensureTempBase(m1);
     const t = (step % SUB_STEPS) / SUB_STEPS;
-    if (t < 0.001) { tempStepCache[step] = tempBaseCache[m0]!; return; }
-    const b0 = tempBaseCache[m0]!, b1 = tempBaseCache[m1]!;
-    const out = new Float32Array(b0.length);
-    const s = 1 - t;
-    for (let i = 0; i < out.length; i++) out[i] = b0[i] * s + b1[i] * t;
-    tempStepCache[step] = out;
+    const nearest = t < 0.5 ? m0 : (m0 + 1) % 12;
+    ensureTempBase(nearest);
+    tempStepCache[step] = tempBaseCache[nearest]!;
   }
 
   function ensureBmStep(step: number) {
     if (bmStepRgbCache[step]) return;
+    // Snap to nearest base month (no sub-step interpolation to save memory)
     const m0 = Math.floor(step / SUB_STEPS) % 12;
-    const m1 = (m0 + 1) % 12;
-    ensureBmBase(m0); ensureBmBase(m1);
     const t = (step % SUB_STEPS) / SUB_STEPS;
-    if (t < 0.001) {
-      bmStepRgbCache[step] = bmBaseRgbCache[m0]!;
-      bmStepSpecCache[step] = bmBaseSpecCache[m0]!;
-      return;
-    }
-    const r0 = bmBaseRgbCache[m0]!, r1 = bmBaseRgbCache[m1]!;
-    const s0 = bmBaseSpecCache[m0]!, s1 = bmBaseSpecCache[m1]!;
-    const s = 1 - t;
-    const outR = new Float32Array(r0.length);
-    const outS = new Float32Array(s0.length);
-    for (let i = 0; i < outR.length; i++) outR[i] = r0[i] * s + r1[i] * t;
-    for (let i = 0; i < outS.length; i++) outS[i] = s0[i] * s + s1[i] * t;
-    bmStepRgbCache[step] = outR;
-    bmStepSpecCache[step] = outS;
+    const nearest = t < 0.5 ? m0 : (m0 + 1) % 12;
+    ensureBmBase(nearest);
+    bmStepRgbCache[step] = bmBaseRgbCache[nearest]!;
+    bmStepSpecCache[step] = bmBaseSpecCache[nearest]!;
   }
 
   function progressToStep(progress: number): number {
@@ -756,14 +790,6 @@
     return mesh;
   }
 
-  // Calculate sun declination based on continuous month progress
-  function getSunDeclination(monthValue: number): number {
-    // Declination: +23.5° in June (month 5), -23.5° in December (month 11)
-    // Using sin wave: peak at month 5 (June), trough at month 11 (December)
-    const declinationDeg = 23.5 * Math.sin((monthValue - 2) / 12 * 2 * Math.PI);
-    return declinationDeg * (Math.PI / 180);
-  }
-
   // Update sun position - either relative to camera (when auto-rotating) or orbiting the globe (when static)
   function updateSunPosition(isAutoRotating: boolean) {
     if (!sunLight || !camera) return;
@@ -862,6 +888,7 @@
       cloudInstances.dispose();
     }
     cloudInstances = new CloudInstances(layerData!);
+    if (container) cloudInstances.setViewportHeight(container.clientHeight * Math.min(window.devicePixelRatio, 2), camera.fov);
     const obj = cloudInstances.getObject();
     obj.visible = activeLayer === 'blue-marble';
     if (globe) obj.rotation.y = globe.rotation.y;
@@ -883,6 +910,75 @@
     scene.add(obj);
   }
 
+  function onMouseDown(e: MouseEvent) {
+    mouseDownPos = { x: e.clientX, y: e.clientY };
+  }
+
+  function onMouseUp(e: MouseEvent) {
+    const dx = e.clientX - mouseDownPos.x;
+    const dy = e.clientY - mouseDownPos.y;
+    if (dx * dx + dy * dy > 25) return; // drag, not click
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    raycaster.setFromCamera(mouse, camera);
+
+    // Intersect whichever globe is visible
+    const target = activeLayer === 'blue-marble' ? blueMarbleGlobe : globe;
+    if (!target) return;
+    const hits = raycaster.intersectObject(target);
+    if (hits.length === 0) {
+      dismissMarker();
+      return;
+    }
+
+    const hit = hits[0].point;
+    // Transform to local mesh coords (undo globe rotation)
+    const local = target.worldToLocal(hit.clone());
+    const r = local.length();
+    const lat = Math.asin(local.y / r) * (180 / Math.PI);
+    const lon = Math.atan2(local.z, -local.x) * (180 / Math.PI);
+
+    placeMarker(lat, lon, target);
+    dispatch('pick', { lat, lon, screenX: e.clientX, screenY: e.clientY });
+  }
+
+  function placeMarker(lat: number, lon: number, parentMesh: THREE.Mesh) {
+    if (!markerMesh) {
+      const ring = new THREE.RingGeometry(0.012, 0.018, 32);
+      const mat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.9 });
+      markerMesh = new THREE.Mesh(ring, mat);
+      markerMesh.renderOrder = 999;
+    }
+    // Position on sphere surface
+    const phi = (90 - lat) * (Math.PI / 180);
+    const theta = lon * (Math.PI / 180);
+    const r = 1.008; // offset above terrain
+    const x = -r * Math.sin(phi) * Math.cos(theta);
+    const y = r * Math.cos(phi);
+    const z = r * Math.sin(phi) * Math.sin(theta);
+    markerMesh.position.set(x, y, z);
+    // Orient along surface normal
+    markerMesh.lookAt(0, 0, 0);
+
+    if (!markerMesh.parent) {
+      scene.add(markerMesh);
+    }
+    // Store unrotated local position for per-frame updates
+    markerWorldPos = new THREE.Vector3(x, y, z);
+  }
+
+  export function dismissMarker() {
+    if (markerMesh && markerMesh.parent) {
+      markerMesh.parent.remove(markerMesh);
+    }
+    markerWorldPos = null;
+    dispatch('pick', null);
+  }
+
   function init() {
     // Scene
     scene = new THREE.Scene();
@@ -896,112 +992,13 @@
     sunLight = new THREE.DirectionalLight(0xffffff, 2.0);
     scene.add(sunLight);
 
-    // Visible sun orb with limb darkening — placed far from globe to minimize parallax
-    const sunOrbGeo = new THREE.SphereGeometry(7.2, 32, 32);
-    const sunOrbMat = new THREE.ShaderMaterial({
-      vertexShader: `
-        varying vec3 vNormal;
-        varying vec3 vViewDir;
-        void main() {
-          vNormal = normalize(normalMatrix * normal);
-          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-          vViewDir = normalize(-mvPos.xyz);
-          gl_Position = projectionMatrix * mvPos;
-        }
-      `,
-      fragmentShader: `
-        varying vec3 vNormal;
-        varying vec3 vViewDir;
-        void main() {
-          float mu = dot(vNormal, vViewDir);
-          float limb = pow(max(mu, 0.0), 0.4);
-          vec3 core = vec3(1.0, 0.95, 0.85);
-          vec3 edge = vec3(1.0, 0.5, 0.1);
-          vec3 col = mix(edge, core, limb);
-          gl_FragColor = vec4(col, 1.0);
-        }
-      `,
-      side: THREE.FrontSide,
-      transparent: true,
-      depthWrite: false,
-    });
-    sunOrb = new THREE.Mesh(sunOrbGeo, sunOrbMat);
+    // Visible sun orb with limb darkening
+    sunOrb = createSunOrb();
     scene.add(sunOrb);
 
-    // Screen-space sun bloom — fullscreen overlay that washes out when looking sunward
-    const screenBloomMat = new THREE.ShaderMaterial({
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = vec4(position.xy, 0.0, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform vec2 sunScreenPos;  // sun position in screen UV space (0-1)
-        uniform float sunVisible;   // 0 = behind camera, 1 = in front
-        uniform float sunIntensity; // how directly we're facing the sun
-        uniform float aspectRatio;  // width / height
-        uniform vec2 globeScreenPos;  // globe center in screen UV space
-        uniform float globeScreenRadius; // globe's apparent radius in UV units (corrected for aspect)
-        varying vec2 vUv;
-
-        void main() {
-          if (sunVisible < 0.01) discard;
-
-          // Fade bloom behind globe disc
-          vec2 toGlobe = vUv - globeScreenPos;
-          toGlobe.x *= aspectRatio;
-          float globeDist = length(toGlobe);
-          float globeMask = smoothstep(globeScreenRadius - 0.003, globeScreenRadius + 0.003, globeDist);
-          if (globeMask < 0.001) discard;
-
-          // Distance from sun's screen position, aspect-corrected
-          vec2 delta = vUv - sunScreenPos;
-          delta.x *= aspectRatio;
-          float d = length(delta);
-
-          // Core bloom — intense near sun position
-          float core = exp(-d * d * 120.0) * 2.5;
-
-          // Mid glow — warm spread
-          float mid = exp(-d * d * 15.0) * 0.6;
-
-          // Wide wash — entire screen tint when facing sun
-          float wash = exp(-d * d * 2.5) * 0.2;
-
-          // Subtle anamorphic horizontal streak (lens artifact)
-          float streak = exp(-abs(delta.y) * 40.0) * exp(-delta.x * delta.x * 3.0) * 0.12;
-
-          float intensity = (core + mid + wash + streak) * sunIntensity * sunVisible * globeMask;
-
-          // White-hot center → warm amber edge
-          vec3 white = vec3(1.0, 1.0, 0.95);
-          vec3 amber = vec3(1.0, 0.75, 0.35);
-          vec3 col = mix(white, amber, smoothstep(0.0, 0.3, d));
-
-          gl_FragColor = vec4(col * intensity, intensity);
-        }
-      `,
-      uniforms: {
-        sunScreenPos: { value: new THREE.Vector2(0.5, 0.5) },
-        sunVisible: { value: 0.0 },
-        sunIntensity: { value: 0.0 },
-        aspectRatio: { value: 1.0 },
-        globeScreenPos: { value: new THREE.Vector2(0.5, 0.5) },
-        globeScreenRadius: { value: 0.3 },
-      },
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      depthWrite: false,
-      depthTest: false,
-    });
-    const screenBloomGeo = new THREE.PlaneGeometry(2, 2);
-    const screenBloomQuad = new THREE.Mesh(screenBloomGeo, screenBloomMat);
-    screenBloomQuad.frustumCulled = false;
-    screenBloomQuad.renderOrder = 999;
-    scene.add(screenBloomQuad);
-    sunGlow = screenBloomQuad;
+    // Screen-space sun bloom
+    sunGlow = createSunBloom();
+    scene.add(sunGlow);
 
     // Initialize display month progress
     displayMonthProgress = monthProgress;
@@ -1020,9 +1017,9 @@
     camera.lookAt(0, 0, 0);
 
     // Renderer
-    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer = new THREE.WebGLRenderer({ antialias: false });
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(renderer.domElement);
 
     // Controls
@@ -1093,6 +1090,10 @@
     // Handle resize
     window.addEventListener('resize', onResize);
 
+    // Click-to-inspect: raycasting
+    renderer.domElement.addEventListener('mousedown', onMouseDown);
+    renderer.domElement.addEventListener('mouseup', onMouseUp);
+
     // Animation loop
     animate();
   }
@@ -1143,7 +1144,7 @@
       cloudInstances.setMonth(displayMonthProgress, layerData);
       if (time !== undefined && lastAnimateTime !== null) {
         const cdt = (time - lastAnimateTime) / 1000;
-        cloudInstances.update(cdt, camera);
+        cloudInstances.update(cdt);
       }
     }
 
@@ -1162,61 +1163,31 @@
 
     // Update screen-space sun bloom
     if (sunGlow && camera && sunOrb) {
-      const mat = (sunGlow as THREE.Mesh).material as THREE.ShaderMaterial;
-      const sunWorldPos = sunOrb.position.clone();
-      const sunNDC = sunWorldPos.project(camera);
+      updateSunBloom(sunGlow as THREE.Mesh, sunOrb, camera);
+    }
 
-      // Check if sun is in front of camera
-      const camDir = new THREE.Vector3();
-      camera.getWorldDirection(camDir);
-      const toSun = sunOrb.position.clone().normalize();
-      const facing = camDir.dot(toSun);
+    // Sync marker with globe rotation and project to screen
+    if (markerMesh && markerWorldPos) {
+      const refMesh = activeLayer === 'blue-marble' ? blueMarbleGlobe : globe;
+      const rotY = refMesh?.rotation.y ?? 0;
 
-      // Ray-sphere occlusion: check if sun disc is blocked by globe
-      // Sun orb radius 7.2 at distance 360 → angular radius in radians
-      const sunAngularRadius = 7.2 / 360; // ~0.02 rad
-      const globeRadius = 1.0;
-      const camPos = camera.position;
-      const camDist = camPos.length();
-      // Globe's angular radius as seen from camera
-      const globeAngularRadius = Math.asin(Math.min(1, globeRadius / camDist));
-      // Angle between camera-to-sun direction and camera-to-globe-center
-      const toSunDir = sunOrb.position.clone().sub(camPos).normalize();
-      const toGlobeDir = camPos.clone().negate().normalize();
-      const angleBetween = Math.acos(Math.min(1, Math.max(-1, toSunDir.dot(toGlobeDir))));
-      // Sun edge clears globe when angle > globeAngularRadius + sunAngularRadius
-      const clearAngle = globeAngularRadius + sunAngularRadius;
-      const visibility = smoothstep(clearAngle - 0.04, clearAngle + 0.02, angleBetween);
+      // Apply globe rotation to get world position
+      const worldPos = markerWorldPos.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+      markerMesh.position.copy(worldPos);
+      markerMesh.lookAt(0, 0, 0);
 
-      if (facing > -0.2 && visibility > 0.001) {
-        mat.uniforms.sunVisible.value = smoothstep(-0.2, 0.1, facing) * visibility;
-        mat.uniforms.sunScreenPos.value.set(
-          sunNDC.x * 0.5 + 0.5,
-          sunNDC.y * 0.5 + 0.5,
-        );
-        const intensity = Math.pow(Math.max(0, facing), 2.0);
-        mat.uniforms.sunIntensity.value = intensity;
-        mat.uniforms.aspectRatio.value = camera.aspect;
+      // Visibility: is marker facing camera?
+      const toCamera = new THREE.Vector3().subVectors(camera.position, worldPos).normalize();
+      const surfaceNormal = worldPos.clone().normalize();
+      const visible = surfaceNormal.dot(toCamera) > 0;
+      markerMesh.visible = visible;
 
-        // Globe screen-space disc for masking
-        // Project globe center
-        const globeCenter = new THREE.Vector3(0, 0, 0).clone().project(camera);
-        const gcx = globeCenter.x * 0.5 + 0.5;
-        const gcy = globeCenter.y * 0.5 + 0.5;
-        mat.uniforms.globeScreenPos.value.set(gcx, gcy);
-        // Visible limb angular radius (larger than asin(R/d) due to perspective)
-        const cDist = camera.position.length();
-        const R = 1.0;
-        const limbAngularRadius = Math.asin(Math.min(1, R / cDist));
-        // Convert to screen UV units: angular size → fraction of vertical FOV
-        const vFov = camera.fov * Math.PI / 180;
-        const screenRadiusY = Math.tan(limbAngularRadius) / Math.tan(vFov / 2);
-        // In aspect-corrected UV space (where x is already multiplied by aspect)
-        // screenRadiusY is in NDC half-extent; UV space spans 0–1, so halve it
-        mat.uniforms.globeScreenRadius.value = screenRadiusY * 0.5;
-      } else {
-        mat.uniforms.sunVisible.value = 0.0;
-      }
+      // Project to screen
+      const projPos = worldPos.clone().project(camera);
+      const rect = renderer.domElement.getBoundingClientRect();
+      const sx = (projPos.x * 0.5 + 0.5) * rect.width + rect.left;
+      const sy = (-projPos.y * 0.5 + 0.5) * rect.height + rect.top;
+      dispatch('markerScreen', { x: sx, y: sy, visible });
     }
 
     renderer.render(scene, camera);
@@ -1226,6 +1197,7 @@
     camera.aspect = container.clientWidth / container.clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(container.clientWidth, container.clientHeight);
+    if (cloudInstances) cloudInstances.setViewportHeight(container.clientHeight * Math.min(window.devicePixelRatio, 2), camera.fov);
   }
 
   // Recreate temperature globe when data changes
@@ -1253,16 +1225,11 @@
   onDestroy(() => {
     cancelAnimationFrame(animationId);
     window.removeEventListener('resize', onResize);
+    renderer?.domElement.removeEventListener('mousedown', onMouseDown);
+    renderer?.domElement.removeEventListener('mouseup', onMouseUp);
     renderer?.dispose();
     controls?.dispose();
-    if (sunOrb) {
-      sunOrb.geometry.dispose();
-      (sunOrb.material as THREE.Material).dispose();
-      if (sunGlow) {
-        ((sunGlow as THREE.Mesh).geometry as THREE.BufferGeometry)?.dispose();
-        ((sunGlow as THREE.Mesh).material as THREE.Material)?.dispose();
-      }
-    }
+    disposeSun(sunOrb, sunGlow);
     if (windParticles) {
       windParticles.dispose();
     }
