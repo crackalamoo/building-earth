@@ -46,6 +46,10 @@
   let sunGlow: THREE.Object3D | null = null;
   let starField: StarField | null = null;
   let cityLights: CityLights | null = null;
+  let markerMesh: THREE.Mesh | null = null;
+  let markerWorldPos: THREE.Vector3 | null = null;
+  let raycaster = new THREE.Raycaster();
+  let mouseDownPos = { x: 0, y: 0 };
 
   // Cached color buffers: 12 base months + sub-step interpolations
   const SUB_STEPS = 3;
@@ -855,6 +859,75 @@
     scene.add(obj);
   }
 
+  function onMouseDown(e: MouseEvent) {
+    mouseDownPos = { x: e.clientX, y: e.clientY };
+  }
+
+  function onMouseUp(e: MouseEvent) {
+    const dx = e.clientX - mouseDownPos.x;
+    const dy = e.clientY - mouseDownPos.y;
+    if (dx * dx + dy * dy > 25) return; // drag, not click
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    raycaster.setFromCamera(mouse, camera);
+
+    // Intersect whichever globe is visible
+    const target = activeLayer === 'blue-marble' ? blueMarbleGlobe : globe;
+    if (!target) return;
+    const hits = raycaster.intersectObject(target);
+    if (hits.length === 0) {
+      dismissMarker();
+      return;
+    }
+
+    const hit = hits[0].point;
+    // Transform to local mesh coords (undo globe rotation)
+    const local = target.worldToLocal(hit.clone());
+    const r = local.length();
+    const lat = Math.asin(local.y / r) * (180 / Math.PI);
+    const lon = Math.atan2(local.z, -local.x) * (180 / Math.PI);
+
+    placeMarker(lat, lon, target);
+    dispatch('pick', { lat, lon, screenX: e.clientX, screenY: e.clientY });
+  }
+
+  function placeMarker(lat: number, lon: number, parentMesh: THREE.Mesh) {
+    if (!markerMesh) {
+      const ring = new THREE.RingGeometry(0.012, 0.018, 32);
+      const mat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.9 });
+      markerMesh = new THREE.Mesh(ring, mat);
+      markerMesh.renderOrder = 999;
+    }
+    // Position on sphere surface
+    const phi = (90 - lat) * (Math.PI / 180);
+    const theta = lon * (Math.PI / 180);
+    const r = 1.008; // offset above terrain
+    const x = -r * Math.sin(phi) * Math.cos(theta);
+    const y = r * Math.cos(phi);
+    const z = r * Math.sin(phi) * Math.sin(theta);
+    markerMesh.position.set(x, y, z);
+    // Orient along surface normal
+    markerMesh.lookAt(0, 0, 0);
+
+    if (!markerMesh.parent) {
+      scene.add(markerMesh);
+    }
+    // Store unrotated local position for per-frame updates
+    markerWorldPos = new THREE.Vector3(x, y, z);
+  }
+
+  export function dismissMarker() {
+    if (markerMesh && markerMesh.parent) {
+      markerMesh.parent.remove(markerMesh);
+    }
+    markerWorldPos = null;
+    dispatch('pick', null);
+  }
+
   function init() {
     // Scene
     scene = new THREE.Scene();
@@ -966,6 +1039,10 @@
     // Handle resize
     window.addEventListener('resize', onResize);
 
+    // Click-to-inspect: raycasting
+    renderer.domElement.addEventListener('mousedown', onMouseDown);
+    renderer.domElement.addEventListener('mouseup', onMouseUp);
+
     // Animation loop
     animate();
   }
@@ -1038,6 +1115,30 @@
       updateSunBloom(sunGlow as THREE.Mesh, sunOrb, camera);
     }
 
+    // Sync marker with globe rotation and project to screen
+    if (markerMesh && markerWorldPos) {
+      const refMesh = activeLayer === 'blue-marble' ? blueMarbleGlobe : globe;
+      const rotY = refMesh?.rotation.y ?? 0;
+
+      // Apply globe rotation to get world position
+      const worldPos = markerWorldPos.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+      markerMesh.position.copy(worldPos);
+      markerMesh.lookAt(0, 0, 0);
+
+      // Visibility: is marker facing camera?
+      const toCamera = new THREE.Vector3().subVectors(camera.position, worldPos).normalize();
+      const surfaceNormal = worldPos.clone().normalize();
+      const visible = surfaceNormal.dot(toCamera) > 0;
+      markerMesh.visible = visible;
+
+      // Project to screen
+      const projPos = worldPos.clone().project(camera);
+      const rect = renderer.domElement.getBoundingClientRect();
+      const sx = (projPos.x * 0.5 + 0.5) * rect.width + rect.left;
+      const sy = (-projPos.y * 0.5 + 0.5) * rect.height + rect.top;
+      dispatch('markerScreen', { x: sx, y: sy, visible });
+    }
+
     renderer.render(scene, camera);
   }
 
@@ -1073,6 +1174,8 @@
   onDestroy(() => {
     cancelAnimationFrame(animationId);
     window.removeEventListener('resize', onResize);
+    renderer?.domElement.removeEventListener('mousedown', onMouseDown);
+    renderer?.domElement.removeEventListener('mouseup', onMouseUp);
     renderer?.dispose();
     controls?.dispose();
     disposeSun(sunOrb, sunGlow);

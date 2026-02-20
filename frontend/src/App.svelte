@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import GIF from 'gif.js-upgrade';
   import Globe from './lib/globe/Globe.svelte';
+  import InspectPopup from './lib/globe/InspectPopup.svelte';
   import { loadBinaryData, fieldToNestedArray } from './lib/globe/loadBinaryData';
   import type { ClimateLayerData } from './lib/globe/loadBinaryData';
 
@@ -18,6 +19,8 @@
   let recording = false;
   let recordingProgress = '';
   let uniformLighting = false;
+  let pickLoc: { lat: number; lon: number } | null = null;
+  let popupPos = { x: 0, y: 0, visible: false };
 
   // Derive discrete month for UI display
   $: displayMonth = Math.round(monthProgress) % 12;
@@ -67,6 +70,29 @@
       stopPlaying();
     } else {
       startPlaying();
+    }
+  }
+
+  function handlePick(e: CustomEvent<{ lat: number; lon: number; screenX: number; screenY: number } | null>) {
+    if (!e.detail) {
+      pickLoc = null;
+      return;
+    }
+    const { lat, lon, screenX, screenY } = e.detail;
+    pickLoc = { lat, lon };
+    popupPos = { x: screenX, y: screenY, visible: true };
+  }
+
+  function handleMarkerScreen(e: CustomEvent<{ x: number; y: number; visible: boolean }>) {
+    if (pickLoc) {
+      popupPos = { x: e.detail.x, y: e.detail.y, visible: e.detail.visible };
+    }
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && pickLoc) {
+      pickLoc = null;
+      globeComponent?.dismissMarker();
     }
   }
 
@@ -156,6 +182,7 @@
   });
 </script>
 
+<svelte:window on:keydown={handleKeydown} />
 <main>
   {#if loading}
     <div class="loading">Loading climate data...</div>
@@ -171,8 +198,21 @@
         {layerData}
         {uniformLighting}
         on:interact={stopAutoRotate}
+        on:pick={handlePick}
+        on:markerScreen={handleMarkerScreen}
       />
     </div>
+    {#if pickLoc && popupPos.visible}
+      <InspectPopup
+        lat={pickLoc.lat}
+        lon={pickLoc.lon}
+        screenX={popupPos.x}
+        screenY={popupPos.y}
+        {monthProgress}
+        {temperatureData}
+        {layerData}
+      />
+    {/if}
     <div class="controls">
       <div class="layer-tabs">
         <button
