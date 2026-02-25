@@ -127,6 +127,101 @@ export async function loadBinaryData(basePath: string = ''): Promise<ClimateLaye
 }
 
 /**
+ * Fetch and decode binary climate data using a Web Worker (off main thread).
+ * The onLayerData callback fires first (typed arrays ready), then onTemperatureData
+ * fires after the nested array is built incrementally via idle callbacks.
+ */
+export async function loadBinaryDataInWorker(
+  basePath: string,
+  onLayerData: (ld: ClimateLayerData) => void,
+  onTemperatureData: (td: number[][][]) => void,
+  onError: (err: Error) => void,
+): Promise<void> {
+  let manifestData: Manifest;
+  let buffer: ArrayBuffer;
+
+  try {
+    const [manifestRes, binRes] = await Promise.all([
+      fetch(`${basePath}/main.manifest.json`),
+      fetch(`${basePath}/main.bin`),
+    ]);
+
+    if (!manifestRes.ok) throw new Error(`Failed to load manifest: ${manifestRes.status}`);
+    if (!binRes.ok) throw new Error(`Failed to load binary data: ${binRes.status}`);
+
+    manifestData = await manifestRes.json();
+    buffer = await binRes.arrayBuffer();
+  } catch (e) {
+    onError(e instanceof Error ? e : new Error(String(e)));
+    return;
+  }
+
+  const worker = new Worker(new URL('./decodeWorker.ts', import.meta.url), { type: 'module' });
+
+  worker.onmessage = (e: MessageEvent) => {
+    const result = e.data.fields as Record<string, FieldData>;
+    worker.terminate();
+
+    const layerData = result as unknown as ClimateLayerData;
+    onLayerData(layerData);
+
+    // Build nested temperature array incrementally (one month per idle callback)
+    const t2m = layerData.temperature_2m;
+    if (t2m) {
+      const [nmonths, nlat, nlon] = t2m.shape;
+      const data = t2m.data as Float32Array;
+      const nested: number[][][] = [];
+      let month = 0;
+
+      const ric = typeof requestIdleCallback === 'function'
+        ? (cb: IdleRequestCallback) => requestIdleCallback(cb, { timeout: 200 })
+        : (cb: () => void) => setTimeout(cb, 16);
+
+      function buildNextMonth() {
+        if (month >= nmonths) {
+          onTemperatureData(nested);
+          return;
+        }
+        const m: number[][] = [];
+        for (let i = 0; i < nlat; i++) {
+          const row: number[] = [];
+          const base = month * nlat * nlon + i * nlon;
+          for (let j = 0; j < nlon; j++) {
+            row.push(data[base + j]);
+          }
+          m.push(row);
+        }
+        nested.push(m);
+        month++;
+        ric(buildNextMonth);
+      }
+
+      ric(buildNextMonth);
+    }
+  };
+
+  worker.onerror = (err) => {
+    worker.terminate();
+    onError(new Error(`Decode worker error: ${err.message}`));
+  };
+
+  // Transfer the buffer to the worker (zero-copy)
+  worker.postMessage({ buffer, manifest: manifestData }, [buffer]);
+}
+
+/**
+ * Fetch the standalone 1° land mask (180×360 Uint8Array) for the primordial globe.
+ */
+export async function loadLandMask1deg(basePath: string = ''): Promise<{ data: Uint8Array; nlat: number; nlon: number }> {
+  const res = await fetch(`${basePath}/landmask1deg.bin`);
+  if (!res.ok) throw new Error(`Failed to load land mask: ${res.status}`);
+  const buf = await res.arrayBuffer();
+  const data = new Uint8Array(buf);
+  // 1° grid: 180 lat × 360 lon
+  return { data, nlat: 180, nlon: 360 };
+}
+
+/**
  * Read a single value from a field at [month, lat, lon] indices.
  * Uses flat indexing: index = month * (nlat * nlon) + lat * nlon + lon
  */

@@ -22,6 +22,8 @@
   export let activeLayer: 'temperature' | 'blue-marble' = 'temperature';
   export let layerData: ClimateLayerData | null = null;
   export let uniformLighting: boolean = false;
+  export let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
+  export let revealed: boolean = false;
 
   const dispatch = createEventDispatcher();
 
@@ -50,6 +52,12 @@
   let markerWorldPos: THREE.Vector3 | null = null;
   let raycaster = new THREE.Raycaster();
   let mouseDownPos = { x: 0, y: 0 };
+  let primordialGlobe: THREE.Mesh | null = null;
+  let flashQuad: THREE.Mesh | null = null;
+  let flashStartTime: number | null = null;  // wall-clock ms when bloom begins
+  let flashFadeStart: number | null = null;  // wall-clock ms when fade-out begins
+  const FLASH_BLOOM_DURATION = 0.6;  // seconds to bloom in
+  const FLASH_FADE_DURATION = 1.5;   // seconds to fade out
 
   // Cached color buffers: 12 base months + sub-step interpolations
   const SUB_STEPS = 3;
@@ -144,51 +152,76 @@
   $: nlat = data ? data[0].length : 0;
   $: nlon = data ? data[0][0].length : 0;
 
-  // Precompute all cached steps in background (one step per frame to avoid blocking)
+  // Background cache worker — builds all 12 base months off-thread
+  let cacheWorker: Worker | null = null;
+  let cacheWorkerReady = false; // true when worker has finished
 
-  // Build one cache item per idle callback, yielding to the browser between each
-  function warmCache(gen: number) {
-    if (gen !== warmupGeneration) return;
-    const ric = typeof requestIdleCallback === 'function'
-      ? (cb: IdleRequestCallback) => requestIdleCallback(cb, { timeout: 100 })
-      : (cb: () => void) => setTimeout(cb, 16);
-    // Phase 1: build 12 base months, Phase 2: build sub-step lerps
-    let baseMonth = 0;
-    let step = 0;
-    function next(deadline?: IdleDeadline) {
-      if (gen !== warmupGeneration) return;
-      const hasTime = () => !deadline || deadline.timeRemaining() > 2;
-      // Build base months first (expensive)
-      while (baseMonth < 12 && hasTime()) {
-        if (data && !tempBaseCache[baseMonth]) tempBaseCache[baseMonth] = buildTemperatureColorBuffer(data, baseMonth);
-        if (layerData && !bmBaseRgbCache[baseMonth]) {
-          const r = buildBlueMarbleBuffers(layerData, baseMonth);
-          bmBaseRgbCache[baseMonth] = r.rgb; bmBaseSpecCache[baseMonth] = r.spec;
+  function launchCacheWorker() {
+    if (cacheWorker) { cacheWorker.terminate(); cacheWorker = null; }
+    cacheWorkerReady = false;
+    if (!data || !layerData) return;
+
+    // Gather typed arrays from layerData (read-only, no transfer — worker gets copies via structured clone)
+    const ld = layerData;
+    const t2m = ld.temperature_2m;
+    const layers = {
+      surfaceData: ld.surface.data as Float32Array,
+      surfaceShape: ld.surface.shape,
+      landMaskData: ld.land_mask.data as Uint8Array,
+      landMaskShape: ld.land_mask.shape,
+      coarseLandMask: ld.land_mask_native?.data as Uint8Array | undefined,
+      soilData: ld.soil_moisture?.data as Float32Array | undefined,
+      soilShape: ld.soil_moisture?.shape,
+      landMask1deg: ld.land_mask_1deg?.data as Uint8Array | undefined,
+      landMask1degShape: ld.land_mask_1deg?.shape,
+      vegData: ld.vegetation_fraction?.data as Float32Array | undefined,
+      vegShape: ld.vegetation_fraction?.shape,
+      elevData: ld.elevation?.data as Float32Array | undefined,
+      elevShape: ld.elevation?.shape,
+      snowTempData: ld.snow_temperature?.data as Uint8Array | Float32Array | undefined,
+      snowTempShape: ld.snow_temperature?.shape,
+    };
+    const temp = {
+      data: t2m.data as Float32Array,
+      nlat: t2m.shape[1],
+      nlon: t2m.shape[2],
+    };
+
+    const worker = new Worker(new URL('./cacheWorker.ts', import.meta.url), { type: 'module' });
+    cacheWorker = worker;
+    const gen = ++warmupGeneration;
+
+    worker.onmessage = (e: MessageEvent) => {
+      if (gen !== warmupGeneration) { worker.terminate(); return; }
+      if (e.data.type === 'progress') return; // ignore progress for now
+      if (e.data.type === 'done') {
+        const { tempBuffers, bmRgbBuffers, bmSpecBuffers } = e.data;
+        for (let m = 0; m < 12; m++) {
+          tempBaseCache[m] = tempBuffers[m];
+          bmBaseRgbCache[m] = bmRgbBuffers[m];
+          bmBaseSpecCache[m] = bmSpecBuffers[m];
         }
-        baseMonth++;
-      }
-      // Sub-steps: skip whole-month steps (t=0), build multiple per callback
-      while (step < TOTAL_STEPS && hasTime()) {
-        if (step % SUB_STEPS !== 0) {
-          if (data) ensureTempStep(step);
-          if (layerData) ensureBmStep(step);
+        // Build sub-steps (cheap, synchronous)
+        for (let step = 0; step < TOTAL_STEPS; step++) {
+          if (step % SUB_STEPS !== 0) {
+            ensureTempStep(step);
+            ensureBmStep(step);
+          }
         }
-        step++;
+        cacheWorkerReady = true;
+        worker.terminate();
+        cacheWorker = null;
       }
-      if (baseMonth < 12 || step < TOTAL_STEPS) ric(next);
-    }
-    ric(next);
+    };
+    worker.onerror = () => { worker.terminate(); cacheWorker = null; };
+    worker.postMessage({ layers, temp });
   }
 
-  // Invalidate caches when data changes and start idle-time warmup
+  // Invalidate caches and launch worker as soon as both data sources are available
   $: if (data) {
     tempBaseCache = new Array(12).fill(null);
     tempStepCache = new Array(TOTAL_STEPS).fill(null);
-    for (let m = 0; m < 12; m++) {
-      tempBaseCache[m] = buildTemperatureColorBuffer(data, m);
-    }
     lastAppliedStep = -1;
-    warmCache(++warmupGeneration);
   }
   $: if (layerData) {
     hillshadeGridCache = null;
@@ -199,14 +232,11 @@
     bmBaseSpecCache = new Array(12).fill(null);
     bmStepRgbCache = new Array(TOTAL_STEPS).fill(null);
     bmStepSpecCache = new Array(TOTAL_STEPS).fill(null);
-    // Build all 12 base months eagerly to avoid lag on first month transition
-    for (let m = 0; m < 12; m++) {
-      const r = buildBlueMarbleBuffers(layerData, m);
-      bmBaseRgbCache[m] = r.rgb;
-      bmBaseSpecCache[m] = r.spec;
-    }
     lastAppliedStep = -1;
-    warmCache(++warmupGeneration);
+  }
+  // Launch cache worker as soon as both data sources exist (even before reveal)
+  $: if (data && layerData) {
+    launchCacheWorker();
   }
 
   let ambientLight: THREE.AmbientLight;
@@ -979,25 +1009,228 @@
     dispatch('pick', null);
   }
 
+  function createPrimordialGlobe(landMask: { data: Uint8Array; nlat: number; nlon: number }): THREE.Mesh {
+    const { data: mask, nlat: latCount, nlon: lonCount } = landMask;
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const radius = 1;
+    const latStep = 180 / latCount;
+    const lonStep = 360 / lonCount;
+
+    for (let i = 0; i < latCount; i++) {
+      const lat0 = 90 - i * latStep;
+      const lat1 = 90 - (i + 1) * latStep;
+      const dataLatIdx = latCount - 1 - i;
+
+      for (let j = 0; j < lonCount; j++) {
+        const lon0 = j * lonStep;
+        const lon1 = (j + 1) * lonStep;
+        const isLand = mask[dataLatIdx * lonCount + j] === 1;
+        const [r, g, b] = isLand ? [0.003, 0.003, 0.0025] : [0.001, 0.001, 0.003];
+
+        // Two triangles per cell
+        for (const [la, lo] of [[lat0, lon0], [lat1, lon0], [lat1, lon1], [lat0, lon0], [lat1, lon1], [lat0, lon1]]) {
+          const phi = (90 - la) * (Math.PI / 180);
+          const theta = lo * (Math.PI / 180);
+          positions.push(
+            -radius * Math.sin(phi) * Math.cos(theta),
+            radius * Math.cos(phi),
+            radius * Math.sin(phi) * Math.sin(theta)
+          );
+          colors.push(r, g, b);
+        }
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geometry.computeVertexNormals();
+
+    const material = new THREE.MeshBasicMaterial({ vertexColors: true });
+    return new THREE.Mesh(geometry, material);
+  }
+
+
+  function createFlashQuad(aspect: number, sunScreenPos: THREE.Vector2): THREE.Mesh {
+    const geo = new THREE.PlaneGeometry(2, 2);
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = position.xy * 0.5 + 0.5;
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uIntensity;
+        uniform float uRadius;
+        uniform float uAspect;
+        uniform vec2 uCenter;
+        varying vec2 vUv;
+        void main() {
+          vec2 d = vUv - uCenter;
+          d.x *= uAspect;
+          float dist = length(d);
+          // Solid core up to 60% of radius, then smooth falloff to edge
+          float coreEnd = uRadius * 0.6;
+          float bloom = dist < coreEnd ? 1.0 : smoothstep(uRadius, coreEnd, dist);
+          float alpha = bloom * uIntensity;
+          gl_FragColor = vec4(1.0, 0.98, 0.95, alpha);
+        }
+      `,
+      uniforms: {
+        uIntensity: { value: 0.0 },
+        uRadius: { value: 0.1 },
+        uAspect: { value: aspect },
+        uCenter: { value: sunScreenPos },
+      },
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 9999;
+    return mesh;
+  }
+
+  /** Compute where the sun would be on screen (UV 0-1) for the current view. */
+  function getSunScreenPos(): THREE.Vector2 {
+    if (!camera) return new THREE.Vector2(0.5, 0.5);
+
+    // Compute sun direction the same way updateSunPosition does
+    const declination = getSunDeclination(monthProgress);
+    const isAutoRotating = controls?.autoRotate ?? true;
+
+    let horizontalDir: THREE.Vector3;
+    if (isAutoRotating) {
+      const cameraDir = new THREE.Vector3();
+      camera.getWorldDirection(cameraDir);
+      const worldUp = new THREE.Vector3(0, 1, 0);
+      const leftDir = new THREE.Vector3().crossVectors(worldUp, cameraDir).normalize();
+      const backwardBias = 0.4;
+      horizontalDir = new THREE.Vector3(
+        leftDir.x - cameraDir.x * backwardBias, 0, leftDir.z - cameraDir.z * backwardBias
+      ).normalize();
+    } else {
+      horizontalDir = new THREE.Vector3(Math.cos(sunOrbitAngle), 0, Math.sin(sunOrbitAngle));
+    }
+
+    const sunDir = new THREE.Vector3(
+      horizontalDir.x * Math.cos(declination),
+      Math.sin(declination),
+      horizontalDir.z * Math.cos(declination)
+    ).normalize();
+
+    // Project a point along sun direction (use a moderate distance, not 360)
+    const sunWorldPos = sunDir.clone().multiplyScalar(10);
+    const projected = sunWorldPos.clone().project(camera);
+    // Clamp to screen bounds — sun may be behind/off screen
+    return new THREE.Vector2(
+      Math.max(0, Math.min(1, projected.x * 0.5 + 0.5)),
+      Math.max(0, Math.min(1, projected.y * 0.5 + 0.5))
+    );
+  }
+
+  /** Start the bloom-in effect centered on the sun. Stays at peak until startFlashFade(). */
+  export function triggerFlash() {
+    if (!scene) return;
+    const aspect = camera ? camera.aspect : 1;
+    const sunPos = getSunScreenPos();
+    flashQuad = createFlashQuad(aspect, sunPos);
+    scene.add(flashQuad);
+    flashStartTime = performance.now();
+    flashFadeStart = null;
+  }
+
+  /** Begin fading the flash from current intensity to zero. */
+  export function startFlashFade() {
+    flashFadeStart = performance.now();
+  }
+
+  // When revealed and data ready, swap primordial → full scene
+  // App.svelte handles sequencing: triggerFlash → rAF → revealed=true → rAF → startFlashFade
+  let revealScheduled = false;
+  $: if (revealed && scene && data && layerData && !revealScheduled) {
+    revealScheduled = true;
+
+    // Remove primordial globe
+    if (primordialGlobe) {
+      scene.remove(primordialGlobe);
+      primordialGlobe.geometry.dispose();
+      (primordialGlobe.material as THREE.Material).dispose();
+      primordialGlobe = null;
+    }
+
+    // Create full globes
+    if (!globe && data) {
+      globe = createTemperatureGlobe(data);
+      globe.visible = activeLayer === 'temperature';
+      scene.add(globe);
+      applyTemperatureColors(progressToStep(displayMonthProgress));
+    }
+    if (!blueMarbleGlobe && layerData) {
+      blueMarbleGlobe = createBlueMarbleGlobe(layerData);
+      blueMarbleGlobe.visible = activeLayer === 'blue-marble';
+      scene.add(blueMarbleGlobe);
+      applyBlueMarbleColors(progressToStep(displayMonthProgress));
+      initWindParticles();
+      initTreeInstances();
+      initCloudInstances();
+    }
+
+    // Show sun
+    if (sunOrb) sunOrb.visible = true;
+    if (sunGlow) sunGlow.visible = true;
+    sunLight.intensity = 2.0;
+    ambientLight.intensity = 0.15;
+
+    // Create atmosphere and city lights
+    if (!atmosphereMesh) {
+      atmosphereMesh = createAtmosphere();
+      atmosphereMesh.visible = activeLayer === 'blue-marble';
+      scene.add(atmosphereMesh);
+    } else {
+      atmosphereMesh.visible = activeLayer === 'blue-marble';
+    }
+    if (!cityLights) {
+      cityLights = new CityLights();
+      const cityObj = cityLights.getObject();
+      cityObj.visible = activeLayer === 'blue-marble';
+      scene.add(cityObj);
+    } else {
+      cityLights.getObject().visible = activeLayer === 'blue-marble';
+    }
+  }
+
+  // Show primordial globe when land mask arrives (before reveal)
+  $: if (primordialLandMask && scene && !revealed && !primordialGlobe) {
+    primordialGlobe = createPrimordialGlobe(primordialLandMask);
+    scene.add(primordialGlobe);
+  }
+
   function init() {
     // Scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
     // Dim ambient light so night side is slightly visible
-    ambientLight = new THREE.AmbientLight(0xffffff, 0.15);
+    ambientLight = new THREE.AmbientLight(0xffffff, revealed ? 0.15 : 0.0);
     scene.add(ambientLight);
 
     // Directional light as sun - position updated each frame relative to camera
-    sunLight = new THREE.DirectionalLight(0xffffff, 2.0);
+    sunLight = new THREE.DirectionalLight(0xffffff, revealed ? 2.0 : 0.0);
     scene.add(sunLight);
 
     // Visible sun orb with limb darkening
     sunOrb = createSunOrb();
+    sunOrb.visible = revealed;
     scene.add(sunOrb);
 
     // Screen-space sun bloom
     sunGlow = createSunBloom();
+    (sunGlow as THREE.Mesh).visible = revealed;
     scene.add(sunGlow);
 
     // Initialize display month progress
@@ -1037,16 +1270,21 @@
       dispatch('interact');
     });
 
-    // Create temperature globe if data is available
-    if (data) {
+    // Create primordial globe if land mask is available and not yet revealed
+    if (primordialLandMask && !revealed) {
+      primordialGlobe = createPrimordialGlobe(primordialLandMask);
+      scene.add(primordialGlobe);
+    }
+
+    // Create full globes only if already revealed
+    if (revealed && data) {
       globe = createTemperatureGlobe(data);
       globe.visible = activeLayer === 'temperature';
       scene.add(globe);
       applyTemperatureColors(progressToStep(displayMonthProgress));
     }
 
-    // Create blue marble globe if layerData is available
-    if (layerData) {
+    if (revealed && layerData) {
       blueMarbleGlobe = createBlueMarbleGlobe(layerData);
       blueMarbleGlobe.visible = activeLayer === 'blue-marble';
       scene.add(blueMarbleGlobe);
@@ -1056,16 +1294,17 @@
       initCloudInstances();
     }
 
-    // City lights (nightside glow)
-    cityLights = new CityLights();
-    const cityObj = cityLights.getObject();
-    cityObj.visible = activeLayer === 'blue-marble';
-    scene.add(cityObj);
+    // City lights and atmosphere — only create after reveal
+    if (revealed) {
+      cityLights = new CityLights();
+      const cityObj = cityLights.getObject();
+      cityObj.visible = activeLayer === 'blue-marble';
+      scene.add(cityObj);
 
-    // Atmosphere glow
-    atmosphereMesh = createAtmosphere();
-    atmosphereMesh.visible = activeLayer === 'blue-marble';
-    scene.add(atmosphereMesh);
+      atmosphereMesh = createAtmosphere();
+      atmosphereMesh.visible = activeLayer === 'blue-marble';
+      scene.add(atmosphereMesh);
+    }
 
     // Load star field
     createStarField().then(sf => {
@@ -1148,10 +1387,8 @@
       }
     }
 
-    lastAnimateTime = time ?? null;
-
-    // Update sun position
-    updateSunPosition(isAutoRotating);
+    // Update sun position (only after reveal)
+    if (revealed) updateSunPosition(isAutoRotating);
 
     // Rotate stars to match sun's RA with its world-space orbit angle.
     // Use sunOrbitAngle (not the camera-relative sun position) so stars
@@ -1161,8 +1398,8 @@
       updateStarRotation(starField, sunOrbitAngle, displayMonthProgress);
     }
 
-    // Update screen-space sun bloom
-    if (sunGlow && camera && sunOrb) {
+    // Update screen-space sun bloom (only after reveal)
+    if (revealed && sunGlow && camera && sunOrb) {
       updateSunBloom(sunGlow as THREE.Mesh, sunOrb, camera);
     }
 
@@ -1190,6 +1427,65 @@
       dispatch('markerScreen', { x: sx, y: sy, visible });
     }
 
+    // Flash bloom: bloom-in → hold → fade-out
+    if (flashQuad && flashStartTime !== null) {
+      const uniforms = (flashQuad.material as THREE.ShaderMaterial).uniforms;
+      const now = performance.now();
+
+      if (flashFadeStart !== null) {
+        // Fade-out phase
+        const elapsed = (now - flashFadeStart) / 1000;
+        const t = Math.min(1, elapsed / FLASH_FADE_DURATION);
+        // Ease out
+        const fadeT = t * t;
+        uniforms.uIntensity.value = 1 - fadeT;
+        // Hold radius at full coverage during fade
+        const aspect = uniforms.uAspect.value;
+        const cx = uniforms.uCenter.value.x;
+        const cy = uniforms.uCenter.value.y;
+        let maxDist = 0;
+        for (const [px, py] of [[0,0],[1,0],[0,1],[1,1]]) {
+          const dx = (px - cx) * aspect;
+          const dy = py - cy;
+          maxDist = Math.max(maxDist, Math.sqrt(dx * dx + dy * dy));
+        }
+        uniforms.uRadius.value = maxDist * 2.0 + 0.05;
+        if (t >= 1) {
+          scene.remove(flashQuad);
+          flashQuad.geometry.dispose();
+          (flashQuad.material as THREE.Material).dispose();
+          flashQuad = null;
+          flashStartTime = null;
+          flashFadeStart = null;
+        }
+      } else {
+        // Bloom-in phase: intensity and radius grow from sun position outward
+        const elapsed = (now - flashStartTime) / 1000;
+        const t = Math.min(1, elapsed / FLASH_BLOOM_DURATION);
+        // Ease in-out for smooth bloom
+        const bloomT = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        uniforms.uIntensity.value = bloomT;
+        // Radius must cover the farthest corner from the bloom center (in aspect-corrected space)
+        const aspect = uniforms.uAspect.value;
+        const cx = uniforms.uCenter.value.x;
+        const cy = uniforms.uCenter.value.y;
+        const corners = [
+          [0, 0], [1, 0], [0, 1], [1, 1]
+        ];
+        let maxDist = 0;
+        for (const [px, py] of corners) {
+          const dx = (px - cx) * aspect;
+          const dy = py - cy;
+          maxDist = Math.max(maxDist, Math.sqrt(dx * dx + dy * dy));
+        }
+        // Overshoot by 2x so smoothstep falloff is well beyond screen edges
+        const maxRadius = maxDist * 2.0;
+        uniforms.uRadius.value = 0.05 + bloomT * maxRadius;
+      }
+    }
+
+    lastAnimateTime = time ?? null;
+
     renderer.render(scene, camera);
   }
 
@@ -1200,16 +1496,16 @@
     if (cloudInstances) cloudInstances.setViewportHeight(container.clientHeight * Math.min(window.devicePixelRatio, 2), camera.fov);
   }
 
-  // Recreate temperature globe when data changes
-  $: if (scene && data && !globe) {
+  // Recreate temperature globe when data changes (only after reveal)
+  $: if (scene && data && !globe && revealed) {
     globe = createTemperatureGlobe(data);
     globe.visible = activeLayer === 'temperature';
     scene.add(globe);
     applyTemperatureColors(progressToStep(displayMonthProgress));
   }
 
-  // Create blue marble globe when layerData arrives
-  $: if (scene && layerData && !blueMarbleGlobe) {
+  // Create blue marble globe when layerData arrives (only after reveal)
+  $: if (scene && layerData && !blueMarbleGlobe && revealed) {
     blueMarbleGlobe = createBlueMarbleGlobe(layerData);
     blueMarbleGlobe.visible = activeLayer === 'blue-marble';
     scene.add(blueMarbleGlobe);
@@ -1224,12 +1520,21 @@
 
   onDestroy(() => {
     cancelAnimationFrame(animationId);
+    if (cacheWorker) { cacheWorker.terminate(); cacheWorker = null; }
     window.removeEventListener('resize', onResize);
     renderer?.domElement.removeEventListener('mousedown', onMouseDown);
     renderer?.domElement.removeEventListener('mouseup', onMouseUp);
     renderer?.dispose();
     controls?.dispose();
     disposeSun(sunOrb, sunGlow);
+    if (primordialGlobe) {
+      primordialGlobe.geometry.dispose();
+      (primordialGlobe.material as THREE.Material).dispose();
+    }
+    if (flashQuad) {
+      flashQuad.geometry.dispose();
+      (flashQuad.material as THREE.Material).dispose();
+    }
     if (windParticles) {
       windParticles.dispose();
     }

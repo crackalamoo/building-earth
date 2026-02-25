@@ -3,14 +3,14 @@
   import GIF from 'gif.js-upgrade';
   import Globe from './lib/globe/Globe.svelte';
   import InspectPopup from './lib/globe/InspectPopup.svelte';
-  import { loadBinaryData, fieldToNestedArray } from './lib/globe/loadBinaryData';
+  import { loadBinaryDataInWorker, loadLandMask1deg } from './lib/globe/loadBinaryData';
   import type { ClimateLayerData } from './lib/globe/loadBinaryData';
 
   let temperatureData: number[][][] | null = null;
   let layerData: ClimateLayerData | null = null;
   let activeLayer: 'temperature' | 'blue-marble' = 'blue-marble';
   let monthProgress = 0; // Continuous 0-12 value
-  let loading = true;
+  let loading = true; // true until main data is loaded
   let error: string | null = null;
   let playing = true;
   let animationFrameId: number | null = null;
@@ -21,6 +21,14 @@
   let uniformLighting = false;
   let pickLoc: { lat: number; lon: number } | null = null;
   let popupPos = { x: 0, y: 0, visible: false };
+
+  // Two-phase state
+  let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
+  let landMaskReady = false;
+  let revealed = false;
+  let controlsVisible = false;
+  let revealClicked = false;
+  let controlsCheckInterval: ReturnType<typeof setInterval> | null = null;
 
   // Derive discrete month for UI display
   $: displayMonth = Math.round(monthProgress) % 12;
@@ -33,8 +41,6 @@
   function animateMonth(time: number) {
     if (lastTime !== null) {
       const dt = (time - lastTime) / 1000;
-      // When auto-rotating: 1 month per second
-      // When not auto-rotating: 1 year per 3 minutes (12 days per year, 1 day per 15 sec)
       const isAutoRotating = globeComponent?.isAutoRotating() ?? true;
       const speed = isAutoRotating ? 1 : (1 / 15);
       monthProgress = (monthProgress + dt * speed) % 12;
@@ -106,6 +112,36 @@
     }
   }
 
+  function handleReveal() {
+    revealClicked = true;
+    // Start the bloom-in effect
+    globeComponent?.triggerFlash();
+
+    // Wait for bloom to reach full intensity (~600ms), then build the globe behind it
+    setTimeout(() => {
+      revealed = true;
+
+      // After the build, let the globe render then start the fade-out
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        globeComponent?.startFlashFade();
+      }));
+
+      // Fade in controls after flash fades
+      const showControls = () => setTimeout(() => { controlsVisible = true; }, 1500);
+      if (!loading && temperatureData) {
+        showControls();
+      } else {
+        controlsCheckInterval = setInterval(() => {
+          if (!loading && temperatureData) {
+            clearInterval(controlsCheckInterval!);
+            controlsCheckInterval = null;
+            showControls();
+          }
+        }, 100);
+      }
+    }, 650); // slightly after bloom completes
+  }
+
   async function recordGif() {
     if (recording || !globeComponent) return;
 
@@ -128,20 +164,16 @@
       workerScript: '/gif.worker.js',
     });
 
-    // Capture 12 months, rotating full 360 degrees over the year
     const framesPerMonth = 10;
     const totalFrames = 12 * framesPerMonth;
-    const rotationPerFrame = (2 * Math.PI) / totalFrames; // Full rotation over all frames
+    const rotationPerFrame = (2 * Math.PI) / totalFrames;
 
     for (let i = 0; i < totalFrames; i++) {
       monthProgress = i / framesPerMonth;
       const currentMonth = Math.floor(monthProgress);
       recordingProgress = `Capturing ${MONTH_NAMES[currentMonth]}... (${i + 1}/${totalFrames})`;
 
-      // Rotate globe
       globeComponent.rotateGlobe(rotationPerFrame);
-
-      // Render and wait a frame
       globeComponent.renderFrame();
       await new Promise(r => requestAnimationFrame(r));
 
@@ -164,31 +196,51 @@
     gif.render();
   }
 
-  onMount(async () => {
-    try {
-      const binData = await loadBinaryData('');
-      layerData = binData;
-      temperatureData = fieldToNestedArray(binData.temperature_2m);
-      loading = false;
-      startPlaying();
-    } catch (e) {
-      error = e instanceof Error ? e.message : 'Unknown error';
-      loading = false;
-    }
+  onMount(() => {
+    // Start animation immediately so auto-rotate and controls work
+    startPlaying();
+
+    // Fetch land mask and main data in parallel
+    loadLandMask1deg('').then(lm => {
+      primordialLandMask = lm;
+      landMaskReady = true;
+    }).catch(e => {
+      console.error('Failed to load land mask:', e);
+    });
+
+    loadBinaryDataInWorker(
+      '',
+      (ld) => { layerData = ld; },
+      (td) => { temperatureData = td; loading = false; },
+      (e) => { error = e.message; loading = false; },
+    );
 
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      if (controlsCheckInterval) clearInterval(controlsCheckInterval);
     };
   });
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
 <main>
-  {#if loading}
-    <div class="loading">Loading climate data...</div>
-  {:else if error}
-    <div class="error">Error: {error}</div>
-  {:else if temperatureData}
+  {#if error}
+    <div class="globe-wrapper">
+      {#if landMaskReady}
+        <Globe
+          bind:this={globeComponent}
+          data={null}
+          {monthProgress}
+          {activeLayer}
+          layerData={null}
+          {uniformLighting}
+          {primordialLandMask}
+          revealed={false}
+        />
+      {/if}
+    </div>
+    <div class="error-overlay">Error: {error}</div>
+  {:else}
     <div class="globe-wrapper">
       <Globe
         bind:this={globeComponent}
@@ -197,12 +249,14 @@
         {activeLayer}
         {layerData}
         {uniformLighting}
+        {primordialLandMask}
+        {revealed}
         on:interact={stopAutoRotate}
         on:pick={handlePick}
         on:markerScreen={handleMarkerScreen}
       />
     </div>
-    {#if pickLoc && popupPos.visible}
+    {#if revealed && pickLoc && popupPos.visible}
       <InspectPopup
         lat={pickLoc.lat}
         lon={pickLoc.lon}
@@ -213,65 +267,72 @@
         {layerData}
       />
     {/if}
-    <div class="controls">
-      <div class="layer-tabs">
-        <button
-          class="layer-tab"
-          class:active={activeLayer === 'temperature'}
-          on:click={() => activeLayer = 'temperature'}
-          disabled={recording}
-        >Temperature</button>
-        <button
-          class="layer-tab"
-          class:active={activeLayer === 'blue-marble'}
-          on:click={() => activeLayer = 'blue-marble'}
-          disabled={recording || !layerData}
-        >Blue Marble</button>
+    {#if !revealed && !revealClicked}
+      <button class="reveal-btn" on:click={handleReveal}>
+        Let there be light
+      </button>
+    {/if}
+    {#if revealed}
+      <div class="controls" class:visible={controlsVisible}>
+        <div class="layer-tabs">
+          <button
+            class="layer-tab"
+            class:active={activeLayer === 'temperature'}
+            on:click={() => activeLayer = 'temperature'}
+            disabled={recording}
+          >Temperature</button>
+          <button
+            class="layer-tab"
+            class:active={activeLayer === 'blue-marble'}
+            on:click={() => activeLayer = 'blue-marble'}
+            disabled={recording || !layerData}
+          >Blue Marble</button>
+        </div>
+        <div class="layer-tabs">
+          <button
+            class="layer-tab"
+            class:active={!uniformLighting}
+            on:click={() => uniformLighting = false}
+            disabled={recording}
+          >Day/Night</button>
+          <button
+            class="layer-tab"
+            class:active={uniformLighting}
+            on:click={() => uniformLighting = true}
+            disabled={recording}
+          >Always Day</button>
+        </div>
+        <div class="separator"></div>
+        <label>
+          <span class="month-label">{MONTH_NAMES[displayMonth]}</span>
+          <input
+            type="range"
+            min="0"
+            max="11.99"
+            step="0.01"
+            bind:value={monthProgress}
+            on:input={stopPlaying}
+          />
+        </label>
+        <button on:click={togglePlay} disabled={recording}>
+          {#if playing}
+            Pause
+          {:else}
+            Play
+          {/if}
+        </button>
+        <button on:click={resetView} disabled={recording}>
+          Reset
+        </button>
+        <button on:click={recordGif} disabled={recording}>
+          {#if recording}
+            {recordingProgress}
+          {:else}
+            Record GIF
+          {/if}
+        </button>
       </div>
-      <div class="layer-tabs">
-        <button
-          class="layer-tab"
-          class:active={!uniformLighting}
-          on:click={() => uniformLighting = false}
-          disabled={recording}
-        >Day/Night</button>
-        <button
-          class="layer-tab"
-          class:active={uniformLighting}
-          on:click={() => uniformLighting = true}
-          disabled={recording}
-        >Always Day</button>
-      </div>
-      <div class="separator"></div>
-      <label>
-        <span class="month-label">{MONTH_NAMES[displayMonth]}</span>
-        <input
-          type="range"
-          min="0"
-          max="11.99"
-          step="0.01"
-          bind:value={monthProgress}
-          on:input={stopPlaying}
-        />
-      </label>
-      <button on:click={togglePlay} disabled={recording}>
-        {#if playing}
-          Pause
-        {:else}
-          Play
-        {/if}
-      </button>
-      <button on:click={resetView} disabled={recording}>
-        Reset
-      </button>
-      <button on:click={recordGif} disabled={recording}>
-        {#if recording}
-          {recordingProgress}
-        {:else}
-          Record GIF
-        {/if}
-      </button>
-    </div>
+    {/if}
   {/if}
 </main>
 
@@ -295,11 +356,44 @@
     height: 100vh;
     display: flex;
     flex-direction: column;
+    position: relative;
   }
 
   .globe-wrapper {
     flex: 1;
     min-height: 0;
+  }
+
+  .reveal-btn {
+    position: absolute;
+    bottom: 3rem;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 0.8rem 2rem;
+    font-size: 1.1rem;
+    color: #fff;
+    background: linear-gradient(to bottom, #1a6b6b, #0e4a4a);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 6px;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    z-index: 10;
+    transition: background 0.2s, border-color 0.2s;
+  }
+
+  .reveal-btn:hover {
+    background: linear-gradient(to bottom, #155a5a, #0a3838);
+    border-color: rgba(255, 255, 255, 0.4);
+  }
+
+  .error-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #ff4444;
+    font-size: 1.2rem;
+    z-index: 10;
   }
 
   .controls {
@@ -310,6 +404,12 @@
     align-items: center;
     gap: 1.5rem;
     background: rgba(0, 0, 0, 0.8);
+    opacity: 0;
+    transition: opacity 0.6s ease;
+  }
+
+  .controls.visible {
+    opacity: 1;
   }
 
   .layer-tabs {
@@ -379,7 +479,7 @@
     min-width: 80px;
   }
 
-  button:hover:not(:disabled) {
+  button:hover:not(:disabled):not(.reveal-btn) {
     background: #444;
   }
 
@@ -388,7 +488,7 @@
     opacity: 0.7;
   }
 
-  .loading, .error {
+  .loading {
     display: flex;
     align-items: center;
     justify-content: center;

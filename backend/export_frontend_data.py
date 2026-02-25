@@ -203,9 +203,8 @@ def _write_binary_export(
 
     # land_mask_1deg: 1° land mask matching soil_moisture/precipitation resolution
     if interpolate and fine_fields:
-        from climate_sim.core.grid import create_lat_lon_grid as _clg
-        _lon1, _lat1 = _clg(1.0)
-        land_mask_1deg = compute_land_mask(_lon1, _lat1).astype(np.uint8)
+        lon1deg, lat1deg = create_lat_lon_grid(1.0)
+        land_mask_1deg = compute_land_mask(lon1deg, lat1deg).astype(np.uint8)
         fields.append(("land_mask_1deg", land_mask_1deg, "uint8"))
         print(f"  land_mask_1deg: {land_mask_1deg.shape}")
 
@@ -324,6 +323,14 @@ def _write_binary_export(
     bin_size = bin_path.stat().st_size / (1024 * 1024)
     print(f"Wrote {bin_path} ({bin_size:.2f} MB)")
     print(f"Wrote {manifest_path}")
+
+    # Write standalone 1° land mask for fast initial load (primordial globe)
+    lon1d, lat1d = create_lat_lon_grid(1.0)
+    lm1deg = compute_land_mask(lon1d, lat1d).astype(np.uint8)
+    lm_path = output_dir / "landmask1deg.bin"
+    with open(lm_path, "wb") as f:
+        f.write(lm1deg.tobytes())
+    print(f"Wrote {lm_path} ({lm_path.stat().st_size / 1024:.1f} KB, {lm1deg.shape})")
 
 
 def main() -> None:

@@ -216,4 +216,5 @@ utils/*
 frontend/node_modules/
 frontend/dist/
 frontend/public/main.bin
+frontend/public/landmask1deg.bin
 frontend/public/main.manifest.json
