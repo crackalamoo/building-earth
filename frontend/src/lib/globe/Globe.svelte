@@ -1558,6 +1558,22 @@
         }
       });
     }
+    if (globe) {
+      globe.geometry.dispose();
+      (globe.material as THREE.Material).dispose();
+    }
+    if (blueMarbleGlobe) {
+      blueMarbleGlobe.geometry.dispose();
+      (blueMarbleGlobe.material as THREE.Material).dispose();
+    }
+    if (atmosphereMesh) {
+      atmosphereMesh.geometry.dispose();
+      (atmosphereMesh.material as THREE.Material).dispose();
+    }
+    if (markerMesh) {
+      markerMesh.geometry.dispose();
+      (markerMesh.material as THREE.Material).dispose();
+    }
   });
 </script>
 
