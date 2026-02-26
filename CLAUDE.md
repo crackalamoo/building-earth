@@ -8,10 +8,15 @@ A real-time, visually beautiful, educational climate simulator that explains the
 
 | Task | Command |
 |------|---------|
-| Setup | `uv sync` |
 | Run simulation | `uv run python backend/main.py --resolution 5 --headless` |
 | Evaluate vs NOAA | `uv run python backend/eval.py --cache --headless --resolution 5` |
 | Export for frontend | `uv run python backend/export_frontend_data.py --cache --resolution 5 --interpolate` |
+
+To get a compact summary of eval metrics, use:
+```bash
+uv run python backend/eval.py --cache --headless --resolution 5 2>&1 | grep -E "^(Area-weighted (RMSE|Bias|Pattern)|Annual|Pattern corr|U comp|Mean )"
+```
+This shows labeled T RMSE/bias/corr, then humidity, RH, precipitation, SLP, and wind sections. The "Annual" rows are: `Land Ocean Global [RMSE]`.
 
 ## Vision
 
@@ -69,10 +74,6 @@ Located in `climate_sim/physics/`. Each module has a config dataclass and implem
 
 Run `backend/eval.py` to check current model performance against NOAA climatology.
 
-## Development notes
-
-Use `--resolution 5` for fast iteration, `--resolution 1` for production quality.
-
 ## Coding guidelines
 
 - **Type hints everywhere**: precise annotations on all public functions
@@ -88,6 +89,7 @@ Pipeline: `physics/` module with config dataclass + operator class (`tendency()`
 - Run simulations via scripts, analyze `data/main.npz`
 - Physics parameters should match observations from first principles — don't tune to fit output
 - Use `backend/eval.py` to check RMSE/bias/correlation against NOAA
+- Don't jump to conclusions like "this is a fundamental resolution limitation" or "this is a fundamental 2 layer limitation" without physically justifying why this is the case. For example, 5 degree resolution can't resolve the Sierra Nevada, but it can resolve the Rockies just fine.
 
 ## Visualization design philosophy
 
