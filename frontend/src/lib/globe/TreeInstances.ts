@@ -71,14 +71,25 @@ function buildConiferGeometry(): THREE.BufferGeometry {
     0.40, 0.26, 0.13,
   );
   trunk.translate(0, h * 0.175, 0);
-  const foliage = prepareForMerge(
-    new THREE.ConeGeometry(h * 0.28, h * 0.65, 6, 1),
-    0.10, 0.45, 0.12,
+
+  // Two overlapping cones: wider lower skirt + narrower upper tip
+  const baseY = h * 0.35;
+  const lower = prepareForMerge(
+    new THREE.ConeGeometry(h * 0.30, h * 0.42, 6, 1),
+    0.06, 0.35, 0.08,
   );
-  foliage.translate(0, h * 0.35 + h * 0.325, 0);
-  const merged = mergeGeometries([trunk, foliage], false);
+  lower.translate(0, baseY + h * 0.21, 0);
+
+  const upper = prepareForMerge(
+    new THREE.ConeGeometry(h * 0.19, h * 0.36, 6, 1),
+    0.08, 0.38, 0.09,
+  );
+  upper.translate(0, baseY + h * 0.28 + h * 0.18, 0);
+
+  const merged = mergeGeometries([trunk, lower, upper], false);
   trunk.dispose();
-  foliage.dispose();
+  lower.dispose();
+  upper.dispose();
   return merged!;
 }
 
@@ -333,6 +344,7 @@ export class TreeInstances {
   private broadleafOrigScaleXZ: Float32Array = new Float32Array(0);
   private broadleafOrigScaleY: Float32Array = new Float32Array(0);
   private broadleafBaseColors: Float32Array = new Float32Array(0); // per-instance brightness
+  private broadleafHueShift: Float32Array = new Float32Array(0);  // per-instance hue shift
   private broadleafPositions: Float32Array = new Float32Array(0); // per-instance [x,y,z]
   private broadleafQuaternions: Float32Array = new Float32Array(0); // per-instance [x,y,z,w]
   // Pre-computed monthly curves per cell (shared across instances in same cell)
@@ -375,8 +387,10 @@ export class TreeInstances {
     const latStep = 180 / nativeNlat;
     const lonStep = 360 / nativeNlon;
 
-    // Collect instances per type
+    // Collect instances per type, with minimum spacing to avoid overlaps
     const instances: [TreeInstance[], TreeInstance[], TreeInstance[]] = [[], [], []];
+    const placedPositions: THREE.Vector3[] = [];
+    const MIN_SPACING_SQ = (TREE_HEIGHT * 0.5) * (TREE_HEIGHT * 0.5);
 
     for (let i = 0; i < nativeNlat; i++) {
       for (let j = 0; j < nativeNlon; j++) {
@@ -426,7 +440,7 @@ export class TreeInstances {
         // Max possible trees per coarse cell — try more candidates for
         // cells that are partially ocean at coarse res but have hi-res land
         const maxCandidates = isCoarseLand
-          ? Math.floor(treeDensity * 7 + rand())
+          ? Math.floor(treeDensity * 14 + rand())
           : 2; // small budget for coastal spillover
         if (maxCandidates <= 0) { rand(); continue; } // consume one rand for determinism
 
@@ -533,6 +547,16 @@ export class TreeInstances {
             position.addScaledVector(normal, elev * ELEVATION_SCALE);
           }
 
+          // Reject trees too close to existing ones
+          let tooClose = false;
+          for (let p = placedPositions.length - 1; p >= Math.max(0, placedPositions.length - 50); p--) {
+            if (position.distanceToSquared(placedPositions[p]) < MIN_SPACING_SQ) {
+              tooClose = true;
+              break;
+            }
+          }
+          if (tooClose) continue;
+
           const quaternion = new THREE.Quaternion();
           quaternion.setFromUnitVectors(Y_UP, normal);
           const twist = new THREE.Quaternion();
@@ -544,13 +568,14 @@ export class TreeInstances {
             scaleXZ = 0.85 + rand() * 0.3;
             scaleY = 0.8 + rand() * 0.4;
           } else if (type === 1) {
-            scaleXZ = 0.7 + rand() * 0.6;
-            scaleY = 0.6 + rand() * 0.8;
+            scaleXZ = 0.9 + rand() * 0.3;
+            scaleY = 0.9 + rand() * 0.3;
           } else {
             scaleXZ = 0.8 + rand() * 0.3;
-            scaleY = 0.5 + rand() * 1.0;
+            scaleY = 0.6 + rand() * 0.5;
           }
 
+          placedPositions.push(position);
           instances[type].push({ type, position, quaternion, scaleXZ, scaleY, lat, lon, cellI: i, cellJ: j });
         }
       }
@@ -593,8 +618,13 @@ export class TreeInstances {
         const inst = coniferList[k];
         dummy.compose(inst.position, inst.quaternion, new THREE.Vector3(inst.scaleXZ, inst.scaleY, inst.scaleXZ));
         mesh.setMatrixAt(k, dummy);
-        const variation = 0.85 + rand() * 0.30;
-        color.setRGB(variation, variation, variation);
+        const brightness = 0.85 + rand() * 0.30;
+        const hueShift = (rand() - 0.5) * 0.6;
+        color.setRGB(
+          brightness * (1.0 + hueShift * 0.5),
+          brightness * (1.0 + hueShift * 0.15),
+          brightness * (1.0 - hueShift * 0.7),
+        );
         mesh.setColorAt(k, color);
       }
       mesh.instanceMatrix.needsUpdate = true;
@@ -614,6 +644,7 @@ export class TreeInstances {
       this.broadleafOrigScaleXZ = new Float32Array(count);
       this.broadleafOrigScaleY = new Float32Array(count);
       this.broadleafBaseColors = new Float32Array(count);
+      this.broadleafHueShift = new Float32Array(count);
       this.broadleafPositions = new Float32Array(count * 3);
       this.broadleafQuaternions = new Float32Array(count * 4);
       this.broadleafCellIndex = new Uint32Array(count);
@@ -676,12 +707,18 @@ export class TreeInstances {
         color.setRGB(variation, variation, variation);
         trunkMesh.setColorAt(k, color);
         const greenVar = 0.85 + rand() * 0.3;
-        color.setRGB(0.15 * greenVar, 0.55 * greenVar, 0.10 * greenVar);
+        const hueShift = (rand() - 0.5) * 0.8;
+        color.setRGB(
+          (0.10 + hueShift * 0.12) * greenVar,
+          (0.42 - Math.abs(hueShift) * 0.08) * greenVar,
+          (0.07 - hueShift * 0.08) * greenVar,
+        );
         foliageMesh.setColorAt(k, color);
 
         this.broadleafOrigScaleXZ[k] = inst.scaleXZ;
         this.broadleafOrigScaleY[k] = inst.scaleY;
         this.broadleafBaseColors[k] = greenVar;
+        this.broadleafHueShift[k] = hueShift;
         this.broadleafPositions[k * 3] = inst.position.x;
         this.broadleafPositions[k * 3 + 1] = inst.position.y;
         this.broadleafPositions[k * 3 + 2] = inst.position.z;
@@ -769,9 +806,15 @@ export class TreeInstances {
     for (let k = 0; k < count; k++) {
       const v = this.broadleafBaseColors[k];
 
+      const hs = this.broadleafHueShift[k];
+
       // Evergreen: always green, full foliage
       if (this.broadleafEvergreen[k]) {
-        color.setRGB(0.15 * v, 0.55 * v, 0.10 * v);
+        color.setRGB(
+          (0.10 + hs * 0.12) * v,
+          (0.42 - Math.abs(hs) * 0.08) * v,
+          (0.07 - hs * 0.08) * v,
+        );
         foliage.setColorAt(k, color);
         continue;
       }
@@ -793,7 +836,7 @@ export class TreeInstances {
       const cq = this.cellColorQuality[ci];
 
       // Color: blend green and autumn based on tint
-      const greenR = 0.15 * v, greenG = 0.55 * v, greenB = 0.10 * v;
+      const greenR = (0.10 + hs * 0.12) * v, greenG = (0.42 - Math.abs(hs) * 0.08) * v, greenB = (0.07 - hs * 0.08) * v;
       const vividR = 0.70 * v, vividG = 0.25 * v, vividB = 0.05 * v;
       const dullR = 0.45 * v, dullG = 0.35 * v, dullB = 0.12 * v;
       const autR = dullR + (vividR - dullR) * cq;
