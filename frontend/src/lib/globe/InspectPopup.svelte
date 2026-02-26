@@ -150,7 +150,7 @@
   .inspect-popup {
     position: fixed;
     background: rgba(0, 0, 0, 0.85);
-    border: 1px solid #00e5ff;
+    border: 1px solid #1a6b6b;
     border-radius: 6px;
     padding: 0.5rem 0.75rem;
     pointer-events: auto;
