@@ -979,7 +979,7 @@
   function placeMarker(lat: number, lon: number, parentMesh: THREE.Mesh) {
     if (!markerMesh) {
       const ring = new THREE.RingGeometry(0.012, 0.018, 32);
-      const mat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.9 });
+      const mat = new THREE.MeshBasicMaterial({ color: 0x2aabab, side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.9 });
       markerMesh = new THREE.Mesh(ring, mat);
       markerMesh.renderOrder = 999;
     }
