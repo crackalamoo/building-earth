@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ClimateLayerData } from './loadBinaryData';
+  import { useImperial } from '../stores';
 
   export let lat: number;
   export let lon: number;
@@ -82,7 +83,6 @@
     return { speed, dir };
   }
 
-  // Reference monthProgress explicitly so Svelte re-runs when it changes
   function sampleElevation(lat: number, lon: number): number | null {
     if (!layerData?.elevation) return null;
     const data = layerData.elevation.data as Float32Array;
@@ -94,6 +94,15 @@
     return data[li * nlon + lj];
   }
 
+  function toggleUnits() {
+    useImperial.update(v => !v);
+  }
+
+  function cToF(c: number): number { return c * 9 / 5 + 32; }
+  function mToFt(m: number): number { return m * 3.28084; }
+  function kphToMph(kph: number): number { return kph * 0.621371; }
+
+  $: imp = $useImperial;
   $: elevation = sampleElevation(lat, lon);
   $: tempC = (monthProgress, sampleT2m(lat, lon));
   $: ocean = (monthProgress, sampleOceanInfo(lat, lon));
@@ -102,16 +111,38 @@
 
 <div class="inspect-popup" style="left: {screenX + 12}px; top: {screenY - 40}px;">
   <div class="inspect-coords">{Math.abs(lat).toFixed(1)}°{lat >= 0 ? 'N' : 'S'}, {Math.abs(lon).toFixed(1)}°{lon >= 0 ? 'E' : 'W'}</div>
-  <div class="inspect-stat">{tempC.toFixed(1)}°C</div>
+  <div class="inspect-stat">
+    <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+      {imp ? cToF(tempC).toFixed(1) + '°F' : tempC.toFixed(1) + '°C'}
+    </span>
+  </div>
   {#if ocean.isOcean && ocean.sstC !== null}
-    <div class="inspect-stat inspect-sst">SST: {ocean.sstC.toFixed(1)}°C</div>
+    <div class="inspect-stat inspect-sst">
+      Sea: <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+        {imp ? cToF(ocean.sstC).toFixed(1) + '°F' : ocean.sstC.toFixed(1) + '°C'}
+      </span>
+    </div>
   {/if}
   {#if elevation !== null}
-    <div class="inspect-stat inspect-elev">{ocean.isOcean ? 'Depth' : 'Elev'}: {ocean.isOcean ? Math.abs(Math.round(elevation)).toLocaleString() : Math.round(elevation).toLocaleString()} m</div>
+    <div class="inspect-stat inspect-elev">
+      {ocean.isOcean ? 'Depth' : 'Elev'}: <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+        {#if imp}
+          {ocean.isOcean ? Math.abs(Math.round(mToFt(elevation))).toLocaleString() : Math.round(mToFt(elevation)).toLocaleString()} ft
+        {:else}
+          {ocean.isOcean ? Math.abs(Math.round(elevation)).toLocaleString() : Math.round(elevation).toLocaleString()} m
+        {/if}
+      </span>
+    </div>
   {/if}
   <div class="inspect-stat inspect-wind">
     <span class="wind-arrow" style="transform: rotate({wind.dir}deg)">↓</span>
-    {(wind.speed * 3.6).toFixed(0)} km/h
+    <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+      {#if imp}
+        {kphToMph(wind.speed * 3.6).toFixed(0)} mph
+      {:else}
+        {(wind.speed * 3.6).toFixed(0)} km/h
+      {/if}
+    </span>
   </div>
 </div>
 
@@ -122,7 +153,7 @@
     border: 1px solid #00e5ff;
     border-radius: 6px;
     padding: 0.5rem 0.75rem;
-    pointer-events: none;
+    pointer-events: auto;
     z-index: 100;
     font-size: 0.85rem;
     line-height: 1.4;
@@ -156,5 +187,14 @@
     display: inline-block;
     font-size: 1rem;
     line-height: 1;
+  }
+
+  .unit-toggle {
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .unit-toggle:hover {
+    opacity: 0.65;
   }
 </style>
