@@ -468,13 +468,18 @@ def compute_stratiform_clouds(
 
     Formula: C_strat = C_max * RH * sigma(w + w_crit) * sigma(LTS - threshold)
     """
-    # RH factor: moderate moisture dependence
-    # RH factor: Gompertz function, same logic as convective but lower threshold.
-    # Stratiform needs less moisture than deep convection.
-    GOMPERTZ_K_STRATIFORM = 10.0
-    RH_CRIT_STRATIFORM = 0.60
-    rh_clipped = np.clip(rh, 0.0, 1.0)
-    rh_factor = np.exp(-np.exp(-GOMPERTZ_K_STRATIFORM * (rh_clipped - RH_CRIT_STRATIFORM)))
+    # RH factor: Sundqvist (1989) diagnostic scheme.
+    # C = 1 - sqrt((1 - RH) / (1 - RH_crit)) for RH > RH_crit, else 0.
+    # More conservative than Gompertz at moderate RH — zero below threshold,
+    # then concave-up onset. Physically: sub-grid humidity variability means
+    # grid-mean RH must exceed ~0.70 before any fraction is truly saturated.
+    RH_CRIT_STRATIFORM = 0.65
+    rh_clipped = np.clip(rh, 0.0, 0.999)
+    rh_factor = np.where(
+        rh_clipped > RH_CRIT_STRATIFORM,
+        1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - RH_CRIT_STRATIFORM)),
+        0.0,
+    )
 
     # Rising motion factor: sigma(w + w_crit)
     # w > -w_crit → factor approaches 1 (allow weak subsidence)
