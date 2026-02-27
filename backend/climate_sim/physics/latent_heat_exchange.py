@@ -24,7 +24,7 @@ class LatentHeatExchangeConfig:
     """Configuration for the latent heat exchange model."""
 
     enabled: bool = True
-    minimum_wind_speed_m_s: float = 1.0  # Free convection velocity scale
+    minimum_wind_speed_m_s: float = 1.5  # Free convection velocity scale
     # Manabe (1969) beta function: β = min(θ/θ_crit, 1)
     # Below field capacity, evapotranspiration scales linearly with soil moisture.
     # Above field capacity, evapotranspiration is at full potential rate.

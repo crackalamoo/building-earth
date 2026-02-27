@@ -84,13 +84,16 @@ def hadley_pressure_anomaly(lat_rad: np.ndarray, itcz_rad: np.ndarray) -> np.nda
     lat_subtrop_north = LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
     lat_subtrop_south = -LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
 
+    subtrop_strength_north = DP_SUBTROPICS
+    subtrop_strength_south = DP_SUBTROPICS
+
     # ITCZ low pressure trough
     dp_itcz = DP_ITCZ * np.exp(-((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2)
 
-    # Subtropical highs (follow ITCZ)
-    dp_subtrop = DP_SUBTROPICS * (
-        np.exp(-((lat_rad - lat_subtrop_south) / SIGMA_SUBTROPICS) ** 2)
-        + np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_SUBTROPICS) ** 2)
+    # Subtropical highs (follow ITCZ, strength modulated by cell width)
+    dp_subtrop = (
+        subtrop_strength_south * np.exp(-((lat_rad - lat_subtrop_south) / SIGMA_SUBTROPICS) ** 2)
+        + subtrop_strength_north * np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_SUBTROPICS) ** 2)
     )
 
     # Subpolar lows (fixed latitudes)

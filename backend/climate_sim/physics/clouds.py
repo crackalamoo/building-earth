@@ -67,14 +67,17 @@ RH_EXPONENT_STRATIFORM = 1.0   # Stratiform: linear RH sensitivity
 # Precipitation picks up sharply at column RH ~ 0.7-0.8 over tropical oceans.
 # Below this threshold, the atmosphere is too dry for deep moist convection to
 # produce surface precipitation (sub-cloud evaporation, insufficient moisture depth).
-RH_CRIT_CONVECTIVE = 0.65      # Critical RH for convective onset
-RH_EXPONENT_CONVECTIVE = 1.5   # Super-linear above threshold (smoother than quadratic)
+RH_CRIT_CONVECTIVE = 0.60      # Critical RH for convective onset
+# Gompertz rate parameter: controls asymmetry of RH onset.
+# Left tail (dry air) decays double-exponentially, right tail (moist) saturates fast.
+GOMPERTZ_K_CONVECTIVE = 8.0
 
 # High cloud parameters
 # Increase factors to get ~20-30% high cloud coverage
 HIGH_CLOUD_CONVECTIVE_FACTOR = 0.8   # Fraction of convective clouds that produce anvils
 HIGH_CLOUD_FRONTAL_FACTOR = 0.5      # Fraction of frontal precip that produces cirrus
-HIGH_CLOUD_BACKGROUND = 0.10         # Background cirrus coverage (large-scale ascent)
+HIGH_CLOUD_BACKGROUND_MIN = 0.05     # Minimum background thin cirrus
+HIGH_CLOUD_BACKGROUND_Q_SCALE = 15.0 # Cirrus scales with column moisture (q in kg/kg)
 
 # Layer heights for cloud geometry
 CONVECTIVE_CLOUD_TOP_HEIGHT_M = 10000.0  # Deep convective clouds reach ~10 km
@@ -107,6 +110,10 @@ MARINE_SC_CLOUD_TAU_LW = 10.0    # Water cloud: τ_LW = τ_SW
 
 HIGH_CLOUD_TAU_SW = 0.8          # Ice cloud: thin in SW
 HIGH_CLOUD_TAU_LW = 1.5          # Ice cloud: thicker in LW (more absorbing)
+# q-dependent LW optical depth: cirrus IWP scales with moisture availability.
+# Tropical cirrus (q~0.013) → tau~1.5, polar cirrus (q~0.001) → tau~1.04.
+HIGH_CLOUD_TAU_LW_BASE = 1.3     # Minimum LW optical depth (dry polar cirrus)
+HIGH_CLOUD_TAU_LW_Q_SCALE = 15.0 # tau_LW = base + scale * q
 
 # Two-stream G parameter for albedo: α = τ/(τ+G)
 TWO_STREAM_G_WATER = 7.0         # Water clouds
@@ -418,12 +425,12 @@ def compute_convective_clouds(
     tuple[np.ndarray, np.ndarray]
         (convective_frac, convective_albedo)
     """
-    # RH factor: need moist boundary layer for deep moist convection.
-    # Bretherton et al. (2004): precipitation onset at CRH ~ 0.7.
-    # Below RH_CRIT, air is too dry — any condensate re-evaporates (virga).
-    # Use sigmoid for smooth transition (solver convergence).
+    # RH factor: Gompertz function — asymmetric onset.
+    # Left tail (dry) decays double-exponentially (near zero below RH~0.5),
+    # right tail (moist) saturates gradually. Suppresses desert convection
+    # more effectively than symmetric sigmoid.
     rh_clipped = np.clip(rh, 0.0, 1.0)
-    rh_factor = sigmoid(rh_clipped - RH_CRIT_CONVECTIVE, scale=0.12) ** RH_EXPONENT_CONVECTIVE
+    rh_factor = np.exp(-np.exp(-GOMPERTZ_K_CONVECTIVE * (rh_clipped - RH_CRIT_CONVECTIVE)))
 
     # Rising motion factor: sigma(w - w_crit)
     # w > w_crit → factor approaches 1
@@ -462,23 +469,25 @@ def compute_stratiform_clouds(
     Formula: C_strat = C_max * RH * sigma(w + w_crit) * sigma(LTS - threshold)
     """
     # RH factor: moderate moisture dependence
-    rh_factor = np.power(np.clip(rh, 0.0, 1.0), RH_EXPONENT_STRATIFORM)
+    # RH factor: Gompertz function, same logic as convective but lower threshold.
+    # Stratiform needs less moisture than deep convection.
+    GOMPERTZ_K_STRATIFORM = 10.0
+    RH_CRIT_STRATIFORM = 0.60
+    rh_clipped = np.clip(rh, 0.0, 1.0)
+    rh_factor = np.exp(-np.exp(-GOMPERTZ_K_STRATIFORM * (rh_clipped - RH_CRIT_STRATIFORM)))
 
     # Rising motion factor: sigma(w + w_crit)
     # w > -w_crit → factor approaches 1 (allow weak subsidence)
     # w << -w_crit → factor approaches 0 (strong subsidence suppresses)
     w_factor = sigmoid(vertical_velocity + W_CRIT, scale=W_CRIT)
 
-    # LTS factor: stratiform clouds suppressed at low LTS (unstable air)
-    # where convection dominates. Use a lower threshold than marine Sc.
-    # LTS > LTS_crit - 5 K → factor approaches 1 (stable enough for stratiform)
-    # LTS < LTS_crit - 10 K → factor approaches 0 (too unstable, convection dominates)
-    lts_threshold_strat = LTS_CRIT - 5.0  # 13 K with LTS_CRIT=18
-    lts_factor = sigmoid(lts - lts_threshold_strat, scale=3.0)
+    # Note: LTS gating removed. Our 2-layer model's LTS (T_atm - T_bl ≈ -40K)
+    # bears no relation to real LTS (θ_700 - θ_sfc ≈ +15K). The LTS factor was
+    # effectively zero everywhere, killing all stratiform clouds.
 
     # Stratiform cloud fraction
     # Max ~0.70 in frontal zones
-    stratiform_frac = 0.70 * rh_factor * w_factor * lts_factor
+    stratiform_frac = 0.70 * rh_factor * w_factor
     stratiform_frac = np.clip(stratiform_frac, 0.0, 0.70)
 
     # Cloud albedo from config
@@ -533,15 +542,20 @@ def compute_marine_stratocumulus(
     # Subsidence factor: sigma(-w)
     # w < 0 (subsidence) → factor approaches 1
     # w > 0 (rising) → factor approaches 0 (convection breaks up deck)
-    w_factor = sigmoid(-vertical_velocity, scale=W_CRIT)
+    # Subsidence factor: Gompertz on -w for sharp onset.
+    # Marine Sc only form in genuine subsidence (w < -0.002 m/s), not
+    # in neutral or weakly rising air. Gompertz gives near-zero at w=0
+    # but ~0.8 at w=-0.004 (real Sc regions like SE Pacific, California).
+    GOMPERTZ_K_SUBSIDENCE = 800.0
+    W_CRIT_SUBSIDENCE = 0.002
+    neg_w = -vertical_velocity
+    w_factor = np.exp(-np.exp(-GOMPERTZ_K_SUBSIDENCE * (neg_w - W_CRIT_SUBSIDENCE)))
 
-    # Stability factor: sigma(LTS - LTS_crit)
-    # LTS > LTS_crit → factor approaches 1 (stable, inversion present)
-    # LTS < LTS_crit → factor approaches 0 (unstable, no inversion)
-    lts_factor = sigmoid(lts - LTS_CRIT, scale=5.0)  # 5 K transition width
+    # Note: LTS gating removed (model LTS structurally broken at -40K).
+    # Marine Sc controlled by ocean mask + subsidence + moisture.
 
     # Marine Sc fraction: high coverage where conditions are right
-    marine_sc_frac = 0.90 * over_ocean * rh_factor * w_factor * lts_factor
+    marine_sc_frac = 0.90 * over_ocean * rh_factor * w_factor
     marine_sc_frac = np.clip(marine_sc_frac, 0.0, 0.90)
 
     # Albedo from config
@@ -596,6 +610,7 @@ def compute_cloud_top_temperatures(
 def compute_high_cloud_fraction(
     convective_frac: np.ndarray,
     stratiform_precip: np.ndarray,
+    q: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute high cloud (cirrus/anvil) fraction.
 
@@ -603,7 +618,7 @@ def compute_high_cloud_fraction(
     1. Detrainment of convective anvils (α × convective_frac)
     2. Frontal precipitation lifting moisture to high altitudes (β × stratiform_precip)
 
-    Formula: C_high = α × C_conv + β × P_strat_normalized
+    Formula: C_high = α × C_conv + β × P_strat_normalized + background
 
     Parameters
     ----------
@@ -611,6 +626,8 @@ def compute_high_cloud_fraction(
         Convective cloud fraction (0-1). Anvils detrain from convective towers.
     stratiform_precip : np.ndarray
         Stratiform precipitation rate (kg/m²/s). Frontal systems lift moisture.
+    q : np.ndarray | None
+        Specific humidity (kg/kg) for moisture-dependent background.
 
     Returns
     -------
@@ -619,9 +636,9 @@ def compute_high_cloud_fraction(
 
     Notes
     -----
-    - Convective contribution: 50% of convective clouds produce anvils
+    - Convective contribution: anvil detrainment from deep convective towers
     - Frontal contribution: scaled by precipitation intensity
-    - Background minimum ~5% (thin cirrus from general subsidence)
+    - Background: thin cirrus scales with column moisture
     """
     # Convective anvil contribution: fraction of deep convection that detrains
     anvil_contribution = HIGH_CLOUD_CONVECTIVE_FACTOR * convective_frac
@@ -632,31 +649,36 @@ def compute_high_cloud_fraction(
     frontal_normalized = np.clip(stratiform_precip / frontal_precip_scale, 0.0, 1.0)
     frontal_contribution = HIGH_CLOUD_FRONTAL_FACTOR * frontal_normalized
 
-    # Total high cloud fraction with background cirrus
-    high_frac = HIGH_CLOUD_BACKGROUND + anvil_contribution + frontal_contribution
+    # Background cirrus: scales with column moisture (upper-tropospheric humidity).
+    # More moisture → more ice supersaturation → more thin cirrus.
+    # Tropical q~0.012 → background~0.17, polar q~0.002 → background~0.07.
+    if q is not None:
+        background = HIGH_CLOUD_BACKGROUND_MIN + HIGH_CLOUD_BACKGROUND_Q_SCALE * np.maximum(q, 0.0)
+        background = np.clip(background, HIGH_CLOUD_BACKGROUND_MIN, 0.30)
+    else:
+        background = HIGH_CLOUD_BACKGROUND_MIN
+
+    # Total high cloud fraction
+    high_frac = background + anvil_contribution + frontal_contribution
     high_frac = np.clip(high_frac, 0.0, 0.70)
 
     return high_frac
 
 
-def compute_high_cloud_albedo(shape: tuple) -> np.ndarray:
+def compute_high_cloud_albedo(tau_sw: np.ndarray | float) -> np.ndarray | float:
     """Compute high cloud albedo using two-stream approximation.
-
-    High clouds (cirrus/anvils) have fixed optical depth τ = 2.
 
     Parameters
     ----------
-    shape : tuple
-        Shape of output array.
+    tau_sw : np.ndarray or float
+        Shortwave optical depth.
 
     Returns
     -------
-    np.ndarray
-        High cloud albedo (uniform value).
+    np.ndarray or float
+        High cloud albedo.
     """
-    tau = HIGH_CLOUD_TAU
-    albedo = tau / (tau + HIGH_CLOUD_G)
-    return np.full(shape, albedo)
+    return tau_sw / (tau_sw + HIGH_CLOUD_G)
 
 
 def compute_vertical_velocity_from_divergence(
@@ -920,7 +942,9 @@ def compute_clouds_and_precipitation(
     eps_conv = compute_cloud_emissivity(CONVECTIVE_CLOUD_TAU_LW)
     eps_strat = compute_cloud_emissivity(STRATIFORM_CLOUD_TAU_LW)
     eps_marine = compute_cloud_emissivity(MARINE_SC_CLOUD_TAU_LW)
-    eps_high = compute_cloud_emissivity(HIGH_CLOUD_TAU_LW)
+    # q-dependent high cloud LW optical depth: IWP scales with moisture
+    tau_lw_high = HIGH_CLOUD_TAU_LW_BASE + HIGH_CLOUD_TAU_LW_Q_SCALE * np.maximum(q, 0.0)
+    eps_high = compute_cloud_emissivity(tau_lw_high)
 
     # ============================================================
     # COMPUTE SHORTWAVE OPTICAL PROPERTIES (absorptances from τ_SW)
@@ -950,11 +974,11 @@ def compute_clouds_and_precipitation(
         q,
     )
 
-    # Stratiform: uses large-scale vertical velocity (w > 0 regions)
+    # Stratiform: autoconversion of excess moisture above saturation
     stratiform_precip = compute_stratiform_precipitation(
         stratiform_frac,
         q,
-        vertical_velocity,  # large-scale w
+        T_bl_K,
     )
 
     # Marine Sc: drizzle via slow autoconversion (these form in subsiding air)
@@ -965,8 +989,8 @@ def compute_clouds_and_precipitation(
     )
 
     # 8. Compute high clouds (anvils from convection + frontal cirrus)
-    high_cloud_frac = compute_high_cloud_fraction(convective_frac, stratiform_precip)
-    high_cloud_albedo = compute_high_cloud_albedo(T_bl_K.shape)
+    high_cloud_frac = compute_high_cloud_fraction(convective_frac, stratiform_precip, q=q)
+    high_cloud_albedo = compute_high_cloud_albedo(HIGH_CLOUD_TAU_SW)
 
     return CloudPrecipOutput(
         convective_frac=convective_frac,

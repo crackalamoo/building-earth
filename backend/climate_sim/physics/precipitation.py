@@ -29,10 +29,13 @@ SPECIFIC_HEAT_AIR = HEAT_CAPACITY_AIR_J_KG_K
 RHO_AIR = 1.2
 
 # Precipitation efficiency - fraction of moisture flux converted to precipitation
-# Stratiform: ~20% (steady, widespread)
-# Convective: ~30% (intense, localized)
-STRATIFORM_PRECIP_EFFICIENCY = 0.20
 CONVECTIVE_PRECIP_EFFICIENCY = 0.30
+
+# Stratiform autoconversion timescale (seconds)
+# Large-scale ascent creates the cloud (encoded in strat_frac), then excess
+# moisture above saturation rains out via collision-coalescence. 5 days is
+# slower than convective but faster than marine Sc drizzle (14 days).
+STRATIFORM_AUTOCONVERSION_TIMESCALE = 15.0 * 86400
 
 # Grid-mean convective vertical velocity contribution (m/s)
 # This represents the effective grid-mean vertical motion from convection.
@@ -193,55 +196,41 @@ def compute_convective_precipitation(
 def compute_stratiform_precipitation(
     stratiform_frac: np.ndarray,
     q: np.ndarray,
-    w_largescale: np.ndarray,
-    efficiency: float = STRATIFORM_PRECIP_EFFICIENCY,
-    rho: float = RHO_AIR,
+    T_bl_K: np.ndarray,
+    tau: float = STRATIFORM_AUTOCONVERSION_TIMESCALE,
 ) -> np.ndarray:
-    """Compute stratiform precipitation from large-scale moisture flux.
+    """Compute stratiform precipitation via autoconversion of excess moisture.
 
-    Stratiform precipitation = cloud_fraction × efficiency × max(w, 0) × q × ρ
+    Large-scale ascent creates the cloud (encoded in strat_frac via w_factor).
+    Once the cloud exists, excess moisture above saturation rains out via
+    collision-coalescence on a timescale of ~5 days.
 
-    Precipitation occurs where there are stratiform clouds AND large-scale
-    rising motion (w > 0). The rate scales with the moisture flux through
-    the cloud layer.
+    P_strat = strat_frac × softplus(q - q_sat) × column_mass / tau
 
     Parameters
     ----------
     stratiform_frac : np.ndarray
-        Stratiform cloud fraction (0-1).
+        Stratiform cloud fraction (0-1). Already encodes rising motion.
     q : np.ndarray
         Specific humidity (kg/kg).
-    w_largescale : np.ndarray
-        Large-scale vertical velocity (m/s). Positive = rising.
-    efficiency : float
-        Precipitation efficiency (0-1). Default 0.20.
-    rho : float
-        Air density (kg/m³). Default 1.2.
+    T_bl_K : np.ndarray
+        Boundary layer temperature (K). Used to compute q_sat.
+    tau : float
+        Autoconversion timescale (s). Default 5 days.
 
     Returns
     -------
     np.ndarray
         Stratiform precipitation rate (kg/m²/s).
-
-    Notes
-    -----
-    Physical interpretation:
-    - Only rising air (w > 0) produces precipitation
-    - Moisture flux = ρ × w × q (kg/m²/s of water vapor lifted)
-    - Precipitation = efficiency × moisture_flux × cloud_fraction
-
-    The large-scale w includes both:
-    - Pressure-driven ascent (ITCZ convergence, frontal lifting)
-    - Warm advection at fronts (from temperature gradients)
-
-    Example: strat_frac=0.3, q=0.010, w=0.02 m/s, eff=0.2, ρ=1.2
-    → P = 0.3 × 0.2 × 0.02 × 0.010 × 1.2 = 1.4e-5 kg/m²/s ≈ 1.2 mm/day
     """
-    # Only precipitate where air is rising
-    w_rising = np.maximum(w_largescale, 0.0)
+    # Gentle formulation: precipitation scales as strat_frac × q × RH².
+    # RH² gives nonlinear moisture dependence (drier air → much less rain)
+    # without the sharp q_sat threshold that breaks convergence.
+    # Units: (fraction) × (kg/kg) × (kg/m²) / (s) = kg/m²/s
+    q_sat = compute_saturation_specific_humidity(T_bl_K)
+    rh = np.clip(q / np.maximum(q_sat, 1e-10), 0.0, 1.0)
 
-    # Moisture flux through stratiform clouds
-    P_stratiform = stratiform_frac * efficiency * w_rising * q * rho
+    P_stratiform = stratiform_frac * q * rh**2 * COLUMN_MASS_KG_M2 / tau
 
     return P_stratiform
 
@@ -287,13 +276,11 @@ def compute_precipitation_jacobian(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute Jacobian of precipitation rate w.r.t. temperatures and humidity.
 
-    With the moisture flux formulation:
-    - P_conv = conv_frac × eff × w_updraft × q × ρ  (linear in q)
-    - P_strat = strat_frac × eff × max(w, 0) × q × ρ  (linear in q)
-    - P_drizzle = marine_frac × excess_q × column_mass / tau  (depends on q, T_bl)
-
-    The main derivative is ∂P/∂q since precipitation scales linearly with moisture.
-    Temperature dependence is weak (only through marine Sc drizzle saturation).
+    Note: cloud fractions are treated as frozen (no d(cloud_frac)/dq terms).
+    Including the full Gompertz cloud-fraction coupling pushes the solver
+    toward a cold basin where strong moisture-precipitation feedback drains
+    the atmosphere. The incomplete Jacobian acts as implicit damping that
+    keeps the solver in the physically reasonable warm basin.
 
     Parameters
     ----------
@@ -306,7 +293,7 @@ def compute_precipitation_jacobian(
     q : np.ndarray
         Specific humidity (kg/kg).
     w_largescale : np.ndarray
-        Large-scale vertical velocity (m/s).
+        Large-scale vertical velocity (m/s). Kept for signature compat.
     T_bl : np.ndarray
         Boundary layer temperature (K).
 
@@ -324,7 +311,7 @@ def compute_precipitation_jacobian(
     # =========================================================================
     # 1. Convective precipitation Jacobian
     # P_conv = conv_frac × eff × w_updraft × q × ρ
-    # ∂P_conv/∂q = conv_frac × eff × w_updraft × ρ
+    # ∂P_conv/∂q = conv_frac × eff × w_updraft × ρ  (cloud frac frozen)
     # =========================================================================
     dP_conv_dq = (
         convective_frac
@@ -336,17 +323,27 @@ def compute_precipitation_jacobian(
 
     # =========================================================================
     # 2. Stratiform precipitation Jacobian
-    # P_strat = strat_frac × eff × max(w, 0) × q × ρ
-    # ∂P_strat/∂q = strat_frac × eff × max(w, 0) × ρ  (only where w > 0)
+    # P_strat = strat_frac × q × RH² × column_mass / tau
+    #         = strat_frac × q³ / q_sat² × column_mass / tau  (cloud frac frozen)
+    # dP/dq = strat_frac × 3q²/q_sat² × column_mass / tau = 3 × rh²
+    # dP/dT = -2 × strat_frac × q × rh² / q_sat × dq_sat/dT × M / tau
     # =========================================================================
-    w_rising = np.maximum(w_largescale, 0.0)
-    dP_strat_dq = (
-        stratiform_frac
-        * STRATIFORM_PRECIP_EFFICIENCY
-        * w_rising
-        * RHO_AIR
-    )
-    dP_dq += dP_strat_dq
+    q_sat_bl = compute_saturation_specific_humidity(T_bl)
+    tau_strat = STRATIFORM_AUTOCONVERSION_TIMESCALE
+    rh_bl = np.clip(q / np.maximum(q_sat_bl, 1e-10), 0.0, 1.0)
+
+    strat_coeff = stratiform_frac * COLUMN_MASS_KG_M2 / tau_strat
+    dP_dq += strat_coeff * 3.0 * rh_bl**2
+
+    # dP/dT_bl via Clausius-Clapeyron
+    T_bl_C = T_bl - 273.15
+    e_sat_bl = 6.112 * np.exp(17.67 * T_bl_C / (T_bl_C + 243.5))
+    de_sat_bl_dT = e_sat_bl * 17.67 * 243.5 / np.power(T_bl_C + 243.5, 2)
+    p_hPa = 1013.25
+    denom_bl = p_hPa - 0.378 * e_sat_bl
+    dq_sat_bl_dT = 0.622 * p_hPa / (denom_bl * denom_bl) * de_sat_bl_dT
+
+    dP_dT_bl += -strat_coeff * 2.0 * q * rh_bl**2 / np.maximum(q_sat_bl, 1e-10) * dq_sat_bl_dT
 
     # =========================================================================
     # 3. Marine Sc drizzle Jacobian
