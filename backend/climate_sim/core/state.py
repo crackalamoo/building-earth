@@ -34,6 +34,7 @@ class ModelState:
     vertical_velocity: np.ndarray | None = None  # Large-scale w for clouds (m/s, positive=rising)
     surface_pressure: np.ndarray | None = None  # Surface pressure (Pa)
     orographic_w: np.ndarray | None = None  # Precomputed from unblocked wind
+    itcz_rad: np.ndarray | None = None  # ITCZ latitude per longitude (radians)
 
 
 def select_wind_temperature(temperature: np.ndarray) -> np.ndarray:

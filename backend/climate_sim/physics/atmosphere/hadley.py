@@ -18,55 +18,42 @@ def compute_itcz_latitude(
     temperature: np.ndarray,
     lat2d: np.ndarray,
     cell_areas: np.ndarray,
+    tau: float = 0.5,
 ) -> np.ndarray:
     """Compute ITCZ latitude from area-weighted maximum temperature position.
 
-    For each longitude column, computes a weighted centroid latitude using:
-    - Area weighting: cell areas
-    - Temperature weighting: exp((T - T_max) / tau) where T_max is the max temp for that longitude
-    - Only considers latitudes between 30°S and 30°N (tropical band)
-
-    This gives more weight to warmer cells relative to the maximum temperature at each longitude.
-    The warmest cell gets weight 1.0, and cooler cells get exponentially smaller weights.
+    Uses a softmax centroid with sharpness parameter tau. Smaller tau tracks
+    the thermal equator more tightly; larger tau gives a broader, more stable
+    centroid.
     """
-    # Temperature scale for exponential weighting (K or °C, doesn't matter for relative weights)
-    tau = 2.0
-
     # Create tropical mask: only consider latitudes between -30° and 30°
-    # lat2d is in degrees
     tropical_mask = (lat2d >= -30.0) & (lat2d <= 30.0)
 
     # Apply mask to temperature for finding max (set non-tropical to -inf)
     temp_masked = np.where(tropical_mask, temperature, -np.inf)
 
-    # Vectorized computation across all longitudes
     # Find max temperature per longitude within tropical band: shape (nlon,)
-    temp_max = np.max(temp_masked, axis=0)  # (nlon,)
+    temp_max = np.max(temp_masked, axis=0)
 
     # Broadcast to compute temperature weights: exp((T - T_max) / tau)
-    # Shape: (nlat, nlon) - (1, nlon) -> (nlat, nlon)
     temp_weights = np.exp((temperature - temp_max[np.newaxis, :]) / tau)
 
     # Zero out weights outside tropical band
     temp_weights = np.where(tropical_mask, temp_weights, 0.0)
 
     # Compute weighted sum: sum over latitude dimension
-    numerator = np.sum(lat2d * cell_areas * temp_weights, axis=0)  # (nlon,)
-    denominator = np.sum(cell_areas * temp_weights, axis=0)  # (nlon,)
+    numerator = np.sum(lat2d * cell_areas * temp_weights, axis=0)
+    denominator = np.sum(cell_areas * temp_weights, axis=0)
 
     # Compute centroid latitude per longitude
     max_temp_lat = numerator / np.maximum(denominator, 1e-10)
 
     # Smooth ITCZ longitudinally to avoid jaggedness
-    # Use sigma = 15 degrees in longitude space
     nlon = len(max_temp_lat)
     lon_spacing_deg = 360.0 / nlon
-    sigma_lon = 10.0 / lon_spacing_deg  # sigma in grid cells
+    sigma_lon = 10.0 / lon_spacing_deg
 
-    # ITCZ is typically between 30°S and 30°N
     max_temp_lat = np.clip(max_temp_lat, -30.0, 30.0)
-
-    # Use mode='wrap' for periodic boundary conditions
     max_temp_lat = gaussian_filter1d(max_temp_lat, sigma=sigma_lon, mode='wrap')
 
     itcz_lat_rad = np.deg2rad(max_temp_lat)

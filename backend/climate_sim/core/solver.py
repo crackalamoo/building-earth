@@ -61,7 +61,7 @@ NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 50
 
 # Anderson acceleration parameters for periodic cycle solver
-ANDERSON_HISTORY_LIMIT = 12
+ANDERSON_HISTORY_LIMIT = 20
 # Under-relaxation factor for outer (year-to-year) state updates.
 # Blends Anderson output with previous state: x_new = α*x_anderson + (1-α)*x_old.
 # Values < 1.0 stabilize strong pressure-wind-temperature coupling.
@@ -246,18 +246,20 @@ def monthly_step(
             _cached_divergence = compute_divergence(wind_u_cf, wind_v_cf, surface_context.lat2d, surface_context.lon2d)
             _cached_cloud_vertical_velocity = compute_vertical_velocity_from_divergence(_cached_divergence)
 
-        def _compute_cloud_fractions(temp: np.ndarray, humidity: np.ndarray):
+        def _compute_cloud_fractions(temp: np.ndarray, humidity: np.ndarray,
+                                     itcz: np.ndarray | None = None):
             """Recompute cloud output from current temperature and humidity."""
             T_bl_cloud = temp[1]
             T_atm_cloud = temp[2]
+            # Use provided ITCZ or compute from temperature as fallback
+            itcz_cf = itcz if itcz is not None else _compute_itcz_from_temp(temp)
             # Use precomputed divergence-based w from lagged winds when available.
             if _cached_cloud_vertical_velocity is not None:
                 vertical_velocity = _cached_cloud_vertical_velocity
             else:
-                current_itcz_cf = _compute_itcz_from_temp(temp)
                 pressure = compute_pressure(
                     temp[0],
-                    itcz_rad=current_itcz_cf,
+                    itcz_rad=itcz_cf,
                     lat2d=surface_context.lat2d,
                     lon2d=surface_context.lon2d,
                 )
@@ -270,10 +272,9 @@ def monthly_step(
                 dp = pressure - mean_pressure
                 dp_norm = np.clip(dp / 1000.0, -1.0, 1.0)
                 vertical_velocity = compute_vertical_velocity_from_pressure(dp_norm)
-            current_itcz_cf = _compute_itcz_from_temp(temp)
             rh = specific_humidity_to_relative_humidity(
                 humidity, T_bl_cloud,
-                itcz_rad=current_itcz_cf, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d,
+                itcz_rad=itcz_cf, lat2d=surface_context.lat2d, lon2d=surface_context.lon2d,
             )
             return compute_clouds_and_precipitation(
                 T_bl_K=T_bl_cloud,
@@ -285,11 +286,16 @@ def monthly_step(
                 ocean_mask=~surface_context.land_mask,
             )
 
+        # Use the ITCZ passed in as the parameter (itcz_rad). When called from
+        # evolve_year with precomputed monthly_itcz, this is lagged by one
+        # periodic iteration. This prevents oscillation with sharp tau.
+        lagged_itcz = itcz_rad
+
         # Bootstrap cloud output from start-of-month state
         lagged_cloud_output = None
         nlayers = start_temp_capped.shape[0]
         if lagged_humidity is not None and nlayers >= 2:
-            lagged_cloud_output = _compute_cloud_fractions(start_temp_capped, lagged_humidity)
+            lagged_cloud_output = _compute_cloud_fractions(start_temp_capped, lagged_humidity, itcz=lagged_itcz)
 
         # Precompute orographic vertical velocity from UNBLOCKED wind.
         # Orographic uplift represents air forced upward over terrain, which uses the
@@ -301,15 +307,13 @@ def monthly_step(
                 lagged_bl_wind_unblocked[0], lagged_bl_wind_unblocked[1]  # type: ignore[possibly-undefined]
             )
 
-        def _init_state(temp: np.ndarray) -> tuple[ModelState, np.ndarray]:
+        def _init_state(temp: np.ndarray) -> ModelState:
             """Create model state for RHS evaluation during Newton iterations.
 
-            Uses lagged fields (albedo, wind, humidity, clouds) for Jacobian consistency.
-            Returns the state and the computed ITCZ.
+            Uses lagged fields (albedo, wind, humidity, clouds, ITCZ) for
+            Jacobian consistency.
             """
             with time_block("_init_state"):
-                current_itcz = _compute_itcz_from_temp(temp)
-
                 return ModelState(
                     temperature=temp,
                     albedo_field=lagged_albedo_field,
@@ -324,7 +328,8 @@ def monthly_step(
                     cloud_output=lagged_cloud_output,  # Unified clouds (frozen for Jacobian consistency)
                     soil_moisture=lagged_soil_moisture,
                     orographic_w=lagged_orographic_w,
-                ), current_itcz
+                    itcz_rad=lagged_itcz,
+                )
 
         # implicit solver loop
         preconditioner_solve: Callable[[np.ndarray], np.ndarray] | None = None
@@ -392,11 +397,11 @@ def monthly_step(
                 # Update cloud fractions from current iterate so clouds track
                 # the evolving humidity (prevents month-to-month oscillation).
                 if lagged_humidity is not None and temp_capped.shape[0] >= 2:
-                    lagged_cloud_output = _compute_cloud_fractions(temp_capped, lagged_humidity)
+                    lagged_cloud_output = _compute_cloud_fractions(temp_capped, lagged_humidity, itcz=lagged_itcz)
 
-                state_capped, current_itcz = _init_state(temp_capped)
+                state_capped = _init_state(temp_capped)
                 with time_block("rhs_evaluation"):
-                    rhs_value = rhs_fn(state_capped, insolation_W_m2, current_itcz)
+                    rhs_value = rhs_fn(state_capped, insolation_W_m2, state_capped.itcz_rad)
 
                 # Jacobian lagging: skip rhs_derivative when residual is well-behaved
                 need_jacobian = (
@@ -405,7 +410,7 @@ def monthly_step(
                 )
                 if need_jacobian:
                     with time_block("rhs_derivative"):
-                        linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, current_itcz)
+                        linearization = rhs_temperature_derivative_fn(state_capped, insolation_W_m2, state_capped.itcz_rad)
                     cached_linearization = linearization
                     jacobian_age = 0
                 else:
@@ -715,9 +720,9 @@ def monthly_step(
 
                 while damping >= backtrack_cutoff:
                     temp_candidate = np.maximum(prev_temp - damping * correction, temperature_floor)
-                    state_candidate, candidate_itcz = _init_state(temp_candidate)
+                    state_candidate = _init_state(temp_candidate)
                     with time_block("backtrack_rhs"):
-                        rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, candidate_itcz)
+                        rhs_candidate = rhs_fn(state_candidate, insolation_W_m2, state_candidate.itcz_rad)
 
                     ceff_candidate = _effective_surface_capacity(temp_candidate[0])
                     nlayers = temp_candidate.shape[0]
@@ -923,8 +928,9 @@ def monthly_step(
                     lagged_orographic_w, lagged_humidity, final_temp[1],
                 )
 
-        # Build final state with converged humidity
-        final_itcz = _compute_itcz_from_temp(final_temp)
+        # Use the lagged ITCZ (passed in, dampened) for consistency with the solve.
+        # This ensures the output winds/pressure match what was used during Newton.
+        final_itcz = lagged_itcz
         final_state = ModelState(
             temperature=final_temp,
             albedo_field=lagged_albedo_field,
@@ -990,6 +996,9 @@ def monthly_step(
             lon2d=surface_context.lon2d,
         )
 
+        # Store ITCZ on state so next month can blend with it
+        final_state.itcz_rad = final_itcz
+
         return final_state
 
 def evolve_year(
@@ -1009,22 +1018,24 @@ def evolve_year(
     vertical_motion_cfg: VerticalMotionConfig | None = None,
     monthly_effective_mu: np.ndarray | None = None,
     monthly_ocean_albedo: np.ndarray | None = None,
+    monthly_itcz: list[np.ndarray] | None = None,
 ) -> list[ModelState]:
     """Propagate the state through 12 implicit steps."""
     states: list[ModelState] = []
     with time_block("evolve_year"):
+        cell_areas = spherical_cell_area(surface_context.lon2d, surface_context.lat2d, earth_radius_m=R_EARTH_METERS)
         for month_n in range(12):
             month = (month_n + 2) % 12 # start from March so initial guess is better
-            # Compute ITCZ from temperature field
-            # Use boundary layer temperature to avoid cold high-elevation surfaces biasing ITCZ
-            with time_block("compute_itcz_monthly"):
-                cell_areas = spherical_cell_area(surface_context.lon2d, surface_context.lat2d, earth_radius_m=R_EARTH_METERS)
+            # Use precomputed ITCZ if available, otherwise compute from temperature
+            if monthly_itcz is not None:
+                itcz_rad = monthly_itcz[month]
+            else:
                 nlayers = state.temperature.shape[0]
                 itcz_temp = state.temperature[1] if nlayers >= 3 else state.temperature[0]
                 itcz_rad = compute_itcz_latitude(
                     np.maximum(itcz_temp, temperature_floor),
                     surface_context.lat2d,
-                    cell_areas
+                    cell_areas,
                 )
             state = monthly_step(
                 state,
@@ -1117,6 +1128,19 @@ def find_periodic_climate_cycle(
     T_SCALE = 300.0   # ~order of magnitude for Kelvin
     Q_SCALE = 0.01    # ~order of magnitude for specific humidity (kg/kg)
     SOIL_SCALE = 1.0  # already 0-1
+    cell_areas_periodic = spherical_cell_area(
+        surface_context.lon2d, surface_context.lat2d, earth_radius_m=R_EARTH_METERS
+    )
+
+    def _itcz_from_temp(temp: np.ndarray, tau: float = 2.0) -> np.ndarray:
+        nlayers = temp.shape[0]
+        itcz_temp = temp[1] if nlayers >= 3 else temp[0]
+        return compute_itcz_latitude(
+            np.maximum(itcz_temp, temperature_floor),
+            surface_context.lat2d,
+            cell_areas_periodic,
+            tau=tau,
+        )
 
     # Determine which prognostic variables are enabled based on model configuration
     # (not based on initial state, since initial state may not have them yet)
@@ -1142,6 +1166,25 @@ def find_periodic_climate_cycle(
                 # (computed from previous year's precipitation)
                 state.vegetation_fraction = current_vegetation_fraction
 
+                # Precompute ITCZ for each month from previous iteration's states.
+                # Use sharp tau (0.5) to tightly track the thermal equator.
+                # Dampen updates: blend new ITCZ with previous to prevent the
+                # ITCZ→pressure→T→ITCZ feedback loop from overshooting.
+                # The gain of this loop is >1 at tau=0.5, so we need alpha < 1/gain.
+                ITCZ_UPDATE_ALPHA = 0.3  # fraction of new ITCZ to use each iteration
+                monthly_itcz: list[np.ndarray] = [None] * 12  # type: ignore[list-item]
+                for month_n in range(12):
+                    cal_month = (month_n + 2) % 12
+                    s = states[month_n]
+                    new_itcz = _itcz_from_temp(s.temperature, tau=0.5)
+                    if s.itcz_rad is not None:
+                        monthly_itcz[cal_month] = (
+                            ITCZ_UPDATE_ALPHA * new_itcz
+                            + (1.0 - ITCZ_UPDATE_ALPHA) * s.itcz_rad
+                        )
+                    else:
+                        monthly_itcz[cal_month] = new_itcz
+
                 advanced_states = evolve_year(
                     state,
                     monthly_insolation,
@@ -1158,6 +1201,7 @@ def find_periodic_climate_cycle(
                     vertical_motion_cfg=vertical_motion_cfg,
                     monthly_effective_mu=monthly_effective_mu,
                     monthly_ocean_albedo=monthly_ocean_albedo,
+                    monthly_itcz=monthly_itcz,
                 )
 
                 advanced = advanced_states[-1]
@@ -1190,6 +1234,8 @@ def find_periodic_climate_cycle(
                     soil_residual = np.array([])
 
                 # Combined residual for Anderson acceleration (scaled)
+                # ITCZ is not included — it's fully lagged from previous iteration's
+                # temperatures and updated implicitly through temperature changes.
                 residual_combined = np.concatenate([
                     temp_residual.ravel(),
                     humidity_residual.ravel(),
@@ -1330,7 +1376,7 @@ def find_periodic_climate_cycle(
                             q_next = None
 
                         if has_soil:
-                            soil_next = combined[n_temp+n_humidity:].reshape(
+                            soil_next = combined[n_temp+n_humidity:n_temp+n_humidity+n_soil].reshape(
                                 advanced.soil_moisture.shape
                             ) * SOIL_SCALE
                             # Clip soil moisture to [0, 1]
@@ -1412,12 +1458,10 @@ def solve_periodic_climate(
     with time_block("build_operators"):
         operators = build_model_operators(resolution_deg, model_config)
 
-    # Use same diffusion operator for humidity as atmosphere (Lewis number ≈ 1)
-    # Turbulent eddies transport both heat and moisture equally
-    # If orographic barriers exist, use the barrier-modified humidity operator
+    # Humidity diffusion uses a reduced diffusivity (Lewis number < 1) because
+    # moisture precipitates out during eddy transport, reducing effective flux.
     humidity_diffusion_op = (
         operators.diffusion_operator.humidity
-        or operators.diffusion_operator.atmosphere
     ) if operators.latent_heat_cfg.enabled else None
 
     # Build RHS functions from operators

@@ -140,6 +140,14 @@ class DiffusionConfig:
     # already ensures BL carries only ~12% of total diffusive transport.
     boundary_layer_diffusivity_scale: float = 1.0
 
+    # Effective Lewis number for moisture diffusion (κ_moisture / κ_heat).
+    # Turbulent eddies transport both heat and moisture, but moisture
+    # precipitates out during transport: rising air in an eddy saturates and
+    # loses water, so the net moisture flux is less efficient than the heat
+    # flux.  A ratio < 1 captures this precipitation scavenging effect
+    # without needing explicit condensation in eddies.
+    moisture_lewis_number: float = 0.9
+
     def surface_diffusivity(self, grid_resolution_deg: float) -> float:
         return self.surface_kappa_ref_m2_s
 
@@ -527,19 +535,20 @@ def create_diffusion_operator(
             barrier_factors=barrier_factors,
         )
 
-    # Build humidity diffusion operator (same as atmosphere but with orographic barriers)
-    humidity_operator = None
-    if barrier_factors is not None:
-        humidity_operator = _build_single_layer_operator(
-            lon2d,
-            lat2d,
-            atmosphere_heat_capacity_field,
-            cell_area_field,
-            config=config,
-            diffusivity_m2_s=atmosphere_diffusivity_m2_s,
-            use_latitude_scaling=True,
-            barrier_factors=barrier_factors,
-        )
+    # Build humidity diffusion operator with reduced diffusivity (Lewis number < 1).
+    # Moisture precipitates out during eddy transport, reducing the effective
+    # diffusivity relative to heat.
+    humidity_diffusivity_m2_s = atmosphere_diffusivity_m2_s * config.moisture_lewis_number
+    humidity_operator = _build_single_layer_operator(
+        lon2d,
+        lat2d,
+        atmosphere_heat_capacity_field,
+        cell_area_field,
+        config=config,
+        diffusivity_m2_s=humidity_diffusivity_m2_s,
+        use_latitude_scaling=True,
+        barrier_factors=barrier_factors,
+    )
 
     return LayeredDiffusionOperator(
         surface=surface_operator,
