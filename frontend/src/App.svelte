@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import GIF from 'gif.js-upgrade';
-  import { Thermometer, Globe as GlobeIcon, SunMoon, Sun, Play, Pause, Home } from 'lucide-svelte';
   import Globe from './lib/globe/Globe.svelte';
   import InspectPanel from './lib/InspectPanel.svelte';
+  import ControlBar from './lib/ControlBar.svelte';
   import { loadBinaryDataInWorker, loadLandMask1deg } from './lib/globe/loadBinaryData';
   import type { ClimateLayerData } from './lib/globe/loadBinaryData';
 
@@ -264,69 +264,21 @@
       </button>
     {/if}
     {#if revealed}
-      <div class="controls" class:visible={controlsVisible}>
-        <div class="layer-tabs">
-          <button
-            class="layer-tab"
-            class:active={activeLayer === 'temperature'}
-            on:click={() => activeLayer = 'temperature'}
-            disabled={recording}
-            data-tooltip="Temperature"
-          ><Thermometer size={16} /></button>
-          <button
-            class="layer-tab"
-            class:active={activeLayer === 'blue-marble'}
-            on:click={() => activeLayer = 'blue-marble'}
-            disabled={recording || !layerData}
-            data-tooltip="Blue Marble"
-          ><GlobeIcon size={16} /></button>
-        </div>
-        <div class="layer-tabs">
-          <button
-            class="layer-tab"
-            class:active={!uniformLighting}
-            on:click={() => uniformLighting = false}
-            disabled={recording}
-            data-tooltip="Day / Night"
-          ><SunMoon size={16} /></button>
-          <button
-            class="layer-tab"
-            class:active={uniformLighting}
-            on:click={() => uniformLighting = true}
-            disabled={recording}
-            data-tooltip="Always Day"
-          ><Sun size={16} /></button>
-        </div>
-        <div class="separator"></div>
-        <label>
-          <span class="month-label">{MONTH_NAMES[displayMonth]}</span>
-          <input
-            type="range"
-            min="0"
-            max="11.99"
-            step="0.01"
-            bind:value={monthProgress}
-            on:input={stopPlaying}
-          />
-        </label>
-        <button class="action-btn" on:click={togglePlay} disabled={recording} data-tooltip={playing ? 'Pause' : 'Play'}>
-          {#if playing}
-            <Pause size={16} />
-          {:else}
-            <Play size={16} />
-          {/if}
-        </button>
-        <button class="action-btn" on:click={resetView} disabled={recording} data-tooltip="Reset View">
-          <Home size={16} />
-        </button>
-        <button class="action-btn" on:click={recordGif} disabled={recording}>
-          {#if recording}
-            {recordingProgress}
-          {:else}
-            Record GIF
-          {/if}
-        </button>
-      </div>
+      <ControlBar
+        bind:activeLayer
+        bind:uniformLighting
+        bind:monthProgress
+        {playing}
+        {recording}
+        {recordingProgress}
+        layerDataLoaded={!!layerData}
+        {displayMonth}
+        visible={controlsVisible}
+        on:togglePlay={togglePlay}
+        on:stopPlaying={stopPlaying}
+        on:resetView={resetView}
+        on:recordGif={recordGif}
+      />
     {/if}
   {/if}
 </main>
@@ -389,185 +341,6 @@
     color: #ff4444;
     font-size: 1.2rem;
     z-index: 10;
-  }
-
-  .controls {
-    padding: 0.75rem 1rem;
-    padding-bottom: 1.5rem;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 1.5rem;
-    background: rgba(0, 0, 0, 0.8);
-    opacity: 0;
-    transition: opacity 0.6s ease;
-  }
-
-  .controls.visible {
-    opacity: 1;
-  }
-
-  .layer-tabs {
-    display: flex;
-    gap: 0;
-  }
-
-  .layer-tab {
-    padding: 0.4rem 0.8rem;
-    background: rgba(14, 74, 74, 0.3);
-    color: #fff;
-    border: 1px solid rgba(26, 107, 107, 0.5);
-    cursor: pointer;
-    font-size: 0.85rem;
-    min-width: auto;
-    transition: background 0.15s, color 0.15s;
-  }
-
-  .layer-tab:first-child {
-    border-radius: 4px 0 0 4px;
-  }
-
-  .layer-tab:last-child {
-    border-radius: 0 4px 4px 0;
-    margin-left: -1px;
-  }
-
-  .layer-tab.active {
-    background: #1a6b6b;
-    color: #fff;
-    border-color: rgba(255, 255, 255, 0.3);
-    z-index: 1;
-    position: relative;
-  }
-
-  .layer-tab:hover:not(:disabled):not(.active) {
-    background: rgba(14, 74, 74, 0.5);
-  }
-
-  .layer-tab.active:hover:not(:disabled) {
-    background: #156060 !important;
-  }
-
-  .separator {
-    width: 1px;
-    height: 24px;
-    background: rgba(26, 107, 107, 0.5);
-  }
-
-  .controls label {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-  }
-
-  .month-label {
-    min-width: 100px;
-    text-align: right;
-    color: #fff;
-  }
-
-  input[type="range"] {
-    width: 300px;
-    cursor: pointer;
-    -webkit-appearance: none;
-    appearance: none;
-    height: 4px;
-    background: #2a9e9e;
-    border-radius: 2px;
-    outline: none;
-  }
-
-  input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: #2a9e9e;
-    border: 2px solid rgba(255, 255, 255, 0.4);
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-
-  input[type="range"]::-webkit-slider-thumb:hover {
-    background: #3fc0c0;
-  }
-
-  input[type="range"]::-webkit-slider-thumb:active {
-    background: #1a8080;
-  }
-
-  input[type="range"]::-moz-range-thumb {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: #2a9e9e;
-    border: 2px solid rgba(255, 255, 255, 0.4);
-    cursor: pointer;
-  }
-
-  input[type="range"]::-moz-range-thumb:active {
-    background: #1a8080;
-  }
-
-  input[type="range"]::-moz-range-track {
-    height: 4px;
-    background: #2a9e9e;
-    border-radius: 2px;
-  }
-
-  [data-tooltip] {
-    position: relative;
-  }
-
-  [data-tooltip]::after {
-    content: attr(data-tooltip);
-    position: absolute;
-    bottom: calc(100% + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 0.35rem 0.6rem;
-    background: rgba(14, 74, 74, 0.9);
-    color: #fff;
-    font-size: 0.85rem;
-    white-space: nowrap;
-    border-radius: 4px;
-    border: 1px solid rgba(26, 107, 107, 0.6);
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.15s ease;
-  }
-
-  [data-tooltip]:hover::after {
-    opacity: 1;
-  }
-
-  button {
-    padding: 0.5rem 1rem;
-    background: rgba(14, 74, 74, 0.3);
-    color: #fff;
-    border: 1px solid rgba(26, 107, 107, 0.5);
-    border-radius: 4px;
-    cursor: pointer;
-    min-width: auto;
-    transition: background 0.15s;
-  }
-
-  .action-btn {
-    background: #1a6b6b;
-    border-color: rgba(255, 255, 255, 0.3);
-  }
-
-  .action-btn:hover:not(:disabled) {
-    background: #156060;
-  }
-
-  button:hover:not(:disabled):not(.reveal-btn):not(.action-btn) {
-    background: rgba(14, 74, 74, 0.5);
-  }
-
-  button:disabled {
-    cursor: wait;
-    opacity: 0.7;
   }
 
   .loading {
