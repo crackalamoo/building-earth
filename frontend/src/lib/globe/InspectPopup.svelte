@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { createEventDispatcher } from 'svelte';
   import type { ClimateLayerData } from './loadBinaryData';
   import { useImperial } from '../stores';
+
+  const dispatch = createEventDispatcher();
 
   export let lat: number;
   export let lon: number;
@@ -110,6 +113,7 @@
 </script>
 
 <div class="inspect-popup" style="left: {screenX + 12}px; top: {screenY - 40}px;">
+  <button class="close-btn" on:click|stopPropagation={() => dispatch('close')}>×</button>
   <div class="inspect-coords">{Math.abs(lat).toFixed(1)}°{lat >= 0 ? 'N' : 'S'}, {Math.abs(lon).toFixed(1)}°{lon >= 0 ? 'E' : 'W'}</div>
   <div class="inspect-stat">
     <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
@@ -153,6 +157,7 @@
     border: 1px solid #1a6b6b;
     border-radius: 6px;
     padding: 0.5rem 0.75rem;
+    padding-right: 1.5rem;
     pointer-events: auto;
     z-index: 100;
     font-size: 0.85rem;
@@ -196,5 +201,23 @@
 
   .unit-toggle:hover {
     opacity: 0.65;
+  }
+
+  .close-btn {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    background: none;
+    border: none;
+    color: #666;
+    font-size: 0.9rem;
+    cursor: pointer;
+    padding: 0 3px;
+    line-height: 1;
+    min-width: auto;
+  }
+
+  .close-btn:hover {
+    color: #aaa;
   }
 </style>

@@ -265,6 +265,7 @@
         {monthProgress}
         {temperatureData}
         {layerData}
+        on:close={() => { pickLoc = null; globeComponent?.dismissMarker(); }}
       />
     {/if}
     {#if !revealed && !revealClicked}
