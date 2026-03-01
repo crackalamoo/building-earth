@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import GIF from 'gif.js-upgrade';
+  import { Thermometer, Globe as GlobeIcon, SunMoon, Sun, Play, Pause, Home } from 'lucide-svelte';
   import Globe from './lib/globe/Globe.svelte';
   import InspectPanel from './lib/InspectPanel.svelte';
   import { loadBinaryDataInWorker, loadLandMask1deg } from './lib/globe/loadBinaryData';
@@ -270,13 +271,15 @@
             class:active={activeLayer === 'temperature'}
             on:click={() => activeLayer = 'temperature'}
             disabled={recording}
-          >Temperature</button>
+            data-tooltip="Temperature"
+          ><Thermometer size={16} /></button>
           <button
             class="layer-tab"
             class:active={activeLayer === 'blue-marble'}
             on:click={() => activeLayer = 'blue-marble'}
             disabled={recording || !layerData}
-          >Blue Marble</button>
+            data-tooltip="Blue Marble"
+          ><GlobeIcon size={16} /></button>
         </div>
         <div class="layer-tabs">
           <button
@@ -284,13 +287,15 @@
             class:active={!uniformLighting}
             on:click={() => uniformLighting = false}
             disabled={recording}
-          >Day/Night</button>
+            data-tooltip="Day / Night"
+          ><SunMoon size={16} /></button>
           <button
             class="layer-tab"
             class:active={uniformLighting}
             on:click={() => uniformLighting = true}
             disabled={recording}
-          >Always Day</button>
+            data-tooltip="Always Day"
+          ><Sun size={16} /></button>
         </div>
         <div class="separator"></div>
         <label>
@@ -304,15 +309,15 @@
             on:input={stopPlaying}
           />
         </label>
-        <button on:click={togglePlay} disabled={recording}>
+        <button on:click={togglePlay} disabled={recording} data-tooltip={playing ? 'Pause' : 'Play'}>
           {#if playing}
-            Pause
+            <Pause size={16} />
           {:else}
-            Play
+            <Play size={16} />
           {/if}
         </button>
-        <button on:click={resetView} disabled={recording}>
-          Reset
+        <button on:click={resetView} disabled={recording} data-tooltip="Reset View">
+          <Home size={16} />
         </button>
         <button on:click={recordGif} disabled={recording}>
           {#if recording}
@@ -459,6 +464,32 @@
     cursor: pointer;
   }
 
+  [data-tooltip] {
+    position: relative;
+  }
+
+  [data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 0.35rem 0.6rem;
+    background: #1a1a1a;
+    color: #e0e0e0;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    border-radius: 4px;
+    border: 1px solid #444;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  [data-tooltip]:hover::after {
+    opacity: 1;
+  }
+
   button {
     padding: 0.5rem 1rem;
     background: #333;
@@ -466,7 +497,7 @@
     border: 1px solid #555;
     border-radius: 4px;
     cursor: pointer;
-    min-width: 80px;
+    min-width: auto;
   }
 
   button:hover:not(:disabled):not(.reveal-btn) {
