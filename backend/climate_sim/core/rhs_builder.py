@@ -27,7 +27,7 @@ from climate_sim.physics.vertical_motion import (
     _ALPHA,
 )
 from climate_sim.physics.orographic_effects import OrographicModel
-from climate_sim.physics.precipitation import compute_precipitation_jacobian
+from climate_sim.physics.precipitation import compute_precipitation_jacobian, compute_precipitation_recycling_jacobian
 from climate_sim.physics.humidity import (
     COLUMN_MASS_KG_M2,
     compute_saturation_specific_humidity,
@@ -723,7 +723,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
                     dP_dT_bl, dP_dT_atm, dP_dq = compute_precipitation_jacobian(
                         conv_frac, strat_frac, marine_frac,
-                        state.humidity_field, w_largescale, t_bl
+                        state.humidity_field, w_largescale, t_bl,
+                        vertical_velocity=w_largescale,
                     )
 
                     # Orographic precipitation Jacobian: dP_oro/dq = η * max(w, 0) * ρ
@@ -733,8 +734,35 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         dP_oro_dq = eff * np.maximum(state.orographic_w, 0.0) * rho
                         dP_dq = dP_dq + dP_oro_dq
 
+                    # Precipitation recycling Jacobian: dR/dq (always negative, stabilising)
+                    if inputs.land_mask is not None:
+                        grid_deg = abs(inputs.lat2d[1, 0] - inputs.lat2d[0, 0])
+                        if state.boundary_layer_wind_field is not None:
+                            ws_recycle = state.boundary_layer_wind_field[2]
+                        elif state.wind_field is not None:
+                            ws_recycle = state.wind_field[2]
+                        else:
+                            ws_recycle = np.full_like(state.humidity_field, 3.0)
+                        # Approximate evaporation for recycling Jacobian
+                        q_sat_sfc = compute_saturation_specific_humidity(state.temperature[0])
+                        rho_sfc = 101325.0 / (287.05 * state.temperature[0])
+                        ch_approx = np.where(inputs.land_mask, 1.0e-3, 1.2e-3)
+                        evap_approx = rho_sfc * ch_approx * np.maximum(ws_recycle, 1.0) * np.maximum(q_sat_sfc - state.humidity_field, 0.0)
+                        if state.soil_moisture is not None:
+                            manabe_beta = np.minimum(state.soil_moisture / 0.75, 1.0)
+                            evap_approx = np.where(inputs.land_mask, evap_approx * manabe_beta, evap_approx)
+                        dP_recycling_dq = compute_precipitation_recycling_jacobian(
+                            evap_approx, state.humidity_field, ws_recycle,
+                            inputs.land_mask, resolution_deg=grid_deg,
+                        )
+                        dP_dq = dP_dq + dP_recycling_dq
+
                     # Humidity diagonal: dE/dq / M - dP/dq / M + Hadley subsidence
                     # (dE/dq is negative, dP/dq is positive)
+                    # Clamp: total dP/dq must stay non-negative to keep humidity_diag
+                    # strictly stabilising.  The recycling Jacobian can make dP/dq negative
+                    # at dry cells where recycling dominates cloud precipitation.
+                    dP_dq = np.maximum(dP_dq, 0.0)
                     humidity_diag = dE_dq / COLUMN_MASS_KG_M2 - dP_dq / COLUMN_MASS_KG_M2
 
                     # Hadley subsidence drying Jacobian (stabilizing: always negative)

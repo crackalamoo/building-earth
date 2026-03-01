@@ -977,6 +977,7 @@ def compute_clouds_and_precipitation(
     convective_precip = compute_convective_precipitation(
         convective_frac,
         q,
+        vertical_velocity=vertical_velocity,
     )
 
     # Stratiform: autoconversion of excess moisture above saturation

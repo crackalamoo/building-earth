@@ -53,6 +53,12 @@ MARINE_SC_DRIZZLE_TIMESCALE = 14 * 86400  # 2 weeks - very slow
 # Cloud top heights for precipitation calculations (must match clouds.py)
 MARINE_SC_CLOUD_TOP_HEIGHT_M = 1000.0  # Marine Sc tops at ~1 km (below inversion)
 
+# Sub-cloud evaporation (virga) parameters.
+# In subsidence zones, rain falling from isolated convective cells evaporates
+# in the dry, descending environmental air before reaching the surface.
+VIRGA_FLOOR = 0.25   # minimum fraction reaching surface in strongest descent
+VIRGA_SCALE = 0.003  # m/s, sigmoid transition width
+
 
 def compute_moist_adiabatic_lapse_rate(T_K: np.ndarray, q: np.ndarray) -> np.ndarray:
     """Compute moist adiabatic lapse rate (K/m).
@@ -150,14 +156,20 @@ def compute_convective_precipitation(
     w_updraft: float = CONVECTIVE_UPDRAFT_VELOCITY,
     efficiency: float = CONVECTIVE_PRECIP_EFFICIENCY,
     rho: float = RHO_AIR,
+    vertical_velocity: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute convective precipitation from moisture flux in convective updrafts.
 
-    Convective precipitation = cloud_fraction × efficiency × w_updraft × q × ρ
+    Convective precipitation = cloud_fraction × efficiency × w_updraft × q × ρ × virga_factor
 
     The cloud fraction already encodes where convection is active (via LTS,
     vertical velocity, and humidity in the cloud scheme). Once convective
     clouds exist, precipitation scales with moisture flux through the updrafts.
+
+    In subsidence zones (large-scale descent), rain falling from isolated
+    convective cells evaporates in the dry sub-cloud layer before reaching
+    the surface (virga).  The virga factor smoothly suppresses surface
+    precipitation where the environment is dominated by descent.
 
     Parameters
     ----------
@@ -171,24 +183,27 @@ def compute_convective_precipitation(
         Precipitation efficiency (0-1). Default 0.30.
     rho : float
         Air density (kg/m³). Default 1.2.
+    vertical_velocity : np.ndarray | None
+        Large-scale vertical velocity (m/s, positive = rising). When
+        negative (descent), sub-cloud evaporation reduces precipitation
+        reaching the surface.
 
-    Returns
-    -------
-    np.ndarray
-        Convective precipitation rate (kg/m²/s).
-
-    Notes
-    -----
-    Physical interpretation:
-    - Moisture flux = ρ × w × q (kg/m²/s of water vapor moving upward)
-    - Precipitation = efficiency × moisture_flux × cloud_fraction
-    - cloud_fraction accounts for fractional area of convection in grid cell
-
-    Example: conv_frac=0.1, q=0.015, w=2 m/s, eff=0.3, ρ=1.2
-    → P = 0.1 × 0.3 × 2 × 0.015 × 1.2 = 1.1e-3 kg/m²/s ≈ 1 mm/day
     """
     # Moisture flux through convective updrafts
     P_convective = convective_frac * efficiency * w_updraft * q * rho
+
+    # Sub-cloud evaporation (virga) in subsidence zones.
+    # Rain falls through dry, descending environmental air and partially
+    # evaporates before reaching the surface.  Stronger subsidence = drier
+    # sub-cloud layer = more evaporation.
+    # Factor: 1 where w >= 0 (ascent), tapering to ~0.3 in strong descent.
+    # Uses sigmoid centered at w=0 with scale 0.003 m/s.
+    if vertical_velocity is not None:
+        # w > 0 → factor ≈ 1 (ascending: rain reaches surface)
+        # w < 0 → factor drops toward VIRGA_FLOOR (descending: rain evaporates)
+        sigmoid_w = 1.0 / (1.0 + np.exp(-vertical_velocity / VIRGA_SCALE))
+        virga_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        P_convective = P_convective * virga_factor
 
     return P_convective
 
@@ -273,6 +288,7 @@ def compute_precipitation_jacobian(
     q: np.ndarray,
     w_largescale: np.ndarray,
     T_bl: np.ndarray,
+    vertical_velocity: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute Jacobian of precipitation rate w.r.t. temperatures and humidity.
 
@@ -319,6 +335,11 @@ def compute_precipitation_jacobian(
         * CONVECTIVE_UPDRAFT_VELOCITY
         * RHO_AIR
     )
+    # Apply virga factor (sub-cloud evaporation in subsidence zones)
+    if vertical_velocity is not None:
+        sigmoid_w = 1.0 / (1.0 + np.exp(-vertical_velocity / VIRGA_SCALE))
+        virga_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        dP_conv_dq = dP_conv_dq * virga_factor
     dP_dq += dP_conv_dq
 
     # =========================================================================
@@ -390,11 +411,13 @@ def compute_precipitation_recycling(
     wind_speed: np.ndarray,
     land_mask: np.ndarray,
     resolution_deg: float = 5.0,
+    vertical_velocity: np.ndarray | None = None,
 ) -> np.ndarray:
     """Precipitation recycling (Eltahir & Bras 1996): ρ = E·L / (q·U·H + E·L).
 
     Local convection recaptures evaporated moisture before wind transports
-    it out of the grid cell.  Land only; zero free parameters.
+    it out of the grid cell.  Land only.  Suppressed by sub-cloud evaporation
+    (virga) in subsidence zones, same as convective precipitation.
     """
     L = R_EARTH_METERS * np.deg2rad(resolution_deg)
     H = 2000.0  # moisture scale height (m)
@@ -404,4 +427,46 @@ def compute_precipitation_recycling(
     local_supply = E * L
 
     recycled = E * local_supply / (moisture_flux + local_supply)
+
+    # Sub-cloud evaporation suppresses recycling in subsidence zones
+    if vertical_velocity is not None:
+        sigmoid_w = 1.0 / (1.0 + np.exp(-vertical_velocity / VIRGA_SCALE))
+        virga_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        recycled = recycled * virga_factor
+
     return np.where(land_mask, recycled, 0.0)
+
+
+def compute_precipitation_recycling_jacobian(
+    evap_rate: np.ndarray,
+    humidity_q: np.ndarray,
+    wind_speed: np.ndarray,
+    land_mask: np.ndarray,
+    resolution_deg: float = 5.0,
+    vertical_velocity: np.ndarray | None = None,
+) -> np.ndarray:
+    """Jacobian of precipitation recycling w.r.t. humidity.
+
+    dP_rec/dq = dR/dq × virga_factor
+
+    The virga factor depends only on vertical_velocity (lagged), so it's
+    a constant multiplier on dR/dq.  dR/dq is always negative (more q →
+    larger denominator → lower recycling ratio).
+    """
+    L = R_EARTH_METERS * np.deg2rad(resolution_deg)
+    H = 2000.0
+
+    E = np.maximum(evap_rate, 0.0)
+    V = np.maximum(wind_speed, 0.5)
+    q = np.maximum(humidity_q, 1e-6)
+    denom = q * V * H + E * L
+    dR_dq = -E * E * L * V * H / np.maximum(denom * denom, 1e-30)
+
+    if vertical_velocity is not None:
+        sigmoid_w = 1.0 / (1.0 + np.exp(-vertical_velocity / VIRGA_SCALE))
+        virga_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        result = dR_dq * virga_factor
+    else:
+        result = dR_dq
+
+    return np.where(land_mask, result, 0.0)

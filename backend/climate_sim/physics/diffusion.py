@@ -146,7 +146,7 @@ class DiffusionConfig:
     # loses water, so the net moisture flux is less efficient than the heat
     # flux.  A ratio < 1 captures this precipitation scavenging effect
     # without needing explicit condensation in eddies.
-    moisture_lewis_number: float = 0.9
+    moisture_lewis_number: float = 0.7
 
     def surface_diffusivity(self, grid_resolution_deg: float) -> float:
         return self.surface_kappa_ref_m2_s

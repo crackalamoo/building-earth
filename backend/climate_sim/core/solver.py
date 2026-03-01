@@ -61,11 +61,11 @@ NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 50
 
 # Anderson acceleration parameters for periodic cycle solver
-ANDERSON_HISTORY_LIMIT = 20
+ANDERSON_HISTORY_LIMIT = 12
 # Under-relaxation factor for outer (year-to-year) state updates.
 # Blends Anderson output with previous state: x_new = α*x_anderson + (1-α)*x_old.
 # Values < 1.0 stabilize strong pressure-wind-temperature coupling.
-ANDERSON_RELAXATION = 0.7
+ANDERSON_RELAXATION = 0.5
 
 # Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
 INEXACT_NEWTON_REFACTORIZE_EVERY = 6
@@ -1171,7 +1171,7 @@ def find_periodic_climate_cycle(
                 # Dampen updates: blend new ITCZ with previous to prevent the
                 # ITCZ→pressure→T→ITCZ feedback loop from overshooting.
                 # The gain of this loop is >1 at tau=0.5, so we need alpha < 1/gain.
-                ITCZ_UPDATE_ALPHA = 0.3  # fraction of new ITCZ to use each iteration
+                ITCZ_UPDATE_ALPHA = 0.15  # fraction of new ITCZ to use each iteration
                 monthly_itcz: list[np.ndarray] = [None] * 12  # type: ignore[list-item]
                 for month_n in range(12):
                     cal_month = (month_n + 2) % 12
@@ -1404,6 +1404,14 @@ def find_periodic_climate_cycle(
                     if soil_next is not None and state.soil_moisture is not None:
                         soil_next = alpha * soil_next + (1.0 - alpha) * state.soil_moisture
                         soil_next = np.clip(soil_next, 0.0, 1.0)
+
+                # Clamp per-cell changes to prevent oscillation at a few
+                # tropical cells (ITCZ migration zone) from blocking
+                # convergence while the rest of the globe has settled.
+                MAX_TEMP_STEP_K = 5.0
+                delta_T = T_next - state.temperature
+                delta_T = np.clip(delta_T, -MAX_TEMP_STEP_K, MAX_TEMP_STEP_K)
+                T_next = state.temperature + delta_T
 
                 # Apply Anderson-accelerated state with mixed prognostic variables
                 # Diagnostics (albedo, wind, precipitation, clouds) will be recomputed
