@@ -60,7 +60,6 @@
     width: 14px;
     height: 120px;
     border-radius: 2px;
-    border: 1px solid rgba(255, 255, 255, 0.15);
   }
 
   .legend-ticks {
