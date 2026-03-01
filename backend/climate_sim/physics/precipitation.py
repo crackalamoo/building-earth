@@ -192,17 +192,16 @@ def compute_convective_precipitation(
     # Moisture flux through convective updrafts
     P_convective = convective_frac * efficiency * w_updraft * q * rho
 
-    # Sub-cloud evaporation (virga) in subsidence zones.
-    # Rain falls through dry, descending environmental air and partially
-    # evaporates before reaching the surface.  Stronger subsidence = drier
-    # sub-cloud layer = more evaporation.
-    # Factor: 1 where w >= 0 (ascent), tapering to ~0.3 in strong descent.
-    # Uses sigmoid centered at w=0 with scale 0.003 m/s.
+    # Sub-cloud evaporation (virga) in subsidence zones ONLY.
+    # Where w >= 0 (ascent or neutral), factor is exactly 1.0 — no effect.
+    # Where w < 0 (descent), rain evaporates in the dry sub-cloud layer.
+    # Stronger descent → more evaporation → factor approaches VIRGA_FLOOR.
     if vertical_velocity is not None:
-        # w > 0 → factor ≈ 1 (ascending: rain reaches surface)
-        # w < 0 → factor drops toward VIRGA_FLOOR (descending: rain evaporates)
+        # Sigmoid ramp in descent region: w=0 → ~0.625, w<<0 → VIRGA_FLOOR
         sigmoid_w = 1.0 / (1.0 + np.exp(-vertical_velocity / VIRGA_SCALE))
-        virga_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        descent_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        # Hard cutoff: exactly 1.0 in ascent, smooth ramp only in descent
+        virga_factor = np.where(vertical_velocity >= 0.0, 1.0, descent_factor)
         P_convective = P_convective * virga_factor
 
     return P_convective
@@ -335,10 +334,11 @@ def compute_precipitation_jacobian(
         * CONVECTIVE_UPDRAFT_VELOCITY
         * RHO_AIR
     )
-    # Apply virga factor (sub-cloud evaporation in subsidence zones)
+    # Apply virga factor (sub-cloud evaporation in descent zones only)
     if vertical_velocity is not None:
         sigmoid_w = 1.0 / (1.0 + np.exp(-vertical_velocity / VIRGA_SCALE))
-        virga_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        descent_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        virga_factor = np.where(vertical_velocity >= 0.0, 1.0, descent_factor)
         dP_conv_dq = dP_conv_dq * virga_factor
     dP_dq += dP_conv_dq
 
@@ -428,10 +428,11 @@ def compute_precipitation_recycling(
 
     recycled = E * local_supply / (moisture_flux + local_supply)
 
-    # Sub-cloud evaporation suppresses recycling in subsidence zones
+    # Sub-cloud evaporation suppresses recycling in descent zones only
     if vertical_velocity is not None:
         sigmoid_w = 1.0 / (1.0 + np.exp(-vertical_velocity / VIRGA_SCALE))
-        virga_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        descent_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        virga_factor = np.where(vertical_velocity >= 0.0, 1.0, descent_factor)
         recycled = recycled * virga_factor
 
     return np.where(land_mask, recycled, 0.0)
@@ -464,7 +465,8 @@ def compute_precipitation_recycling_jacobian(
 
     if vertical_velocity is not None:
         sigmoid_w = 1.0 / (1.0 + np.exp(-vertical_velocity / VIRGA_SCALE))
-        virga_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        descent_factor = VIRGA_FLOOR + (1.0 - VIRGA_FLOOR) * sigmoid_w
+        virga_factor = np.where(vertical_velocity >= 0.0, 1.0, descent_factor)
         result = dR_dq * virga_factor
     else:
         result = dR_dq
