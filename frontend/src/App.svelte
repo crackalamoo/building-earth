@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import GIF from 'gif.js-upgrade';
   import Globe from './lib/globe/Globe.svelte';
-  import InspectPopup from './lib/globe/InspectPopup.svelte';
+  import InspectPanel from './lib/InspectPanel.svelte';
   import { loadBinaryDataInWorker, loadLandMask1deg } from './lib/globe/loadBinaryData';
   import type { ClimateLayerData } from './lib/globe/loadBinaryData';
 
@@ -20,7 +20,6 @@
   let recordingProgress = '';
   let uniformLighting = false;
   let pickLoc: { lat: number; lon: number } | null = null;
-  let popupPos = { x: 0, y: 0, visible: false };
 
   // Two-phase state
   let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
@@ -84,15 +83,8 @@
       pickLoc = null;
       return;
     }
-    const { lat, lon, screenX, screenY } = e.detail;
+    const { lat, lon } = e.detail;
     pickLoc = { lat, lon };
-    popupPos = { x: screenX, y: screenY, visible: true };
-  }
-
-  function handleMarkerScreen(e: CustomEvent<{ x: number; y: number; visible: boolean }>) {
-    if (pickLoc) {
-      popupPos = { x: e.detail.x, y: e.detail.y, visible: e.detail.visible };
-    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -253,15 +245,12 @@
         {revealed}
         on:interact={stopAutoRotate}
         on:pick={handlePick}
-        on:markerScreen={handleMarkerScreen}
       />
     </div>
-    {#if revealed && pickLoc && popupPos.visible}
-      <InspectPopup
+    {#if revealed && pickLoc}
+      <InspectPanel
         lat={pickLoc.lat}
         lon={pickLoc.lon}
-        screenX={popupPos.x}
-        screenY={popupPos.y}
         {monthProgress}
         {temperatureData}
         {layerData}

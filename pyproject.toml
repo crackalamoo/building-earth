@@ -17,6 +17,9 @@ dependencies = [
     "scipy-stubs[scipy]==1.16.2",
     "pooch>=1.8.2",
     "netcdf4>=1.7.3",
+    "openai>=2.23.0",
+    "fastapi>=0.134.0",
+    "uvicorn>=0.41.0",
 ]
 
 [build-system]
