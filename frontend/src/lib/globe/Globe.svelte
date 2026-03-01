@@ -3,6 +3,7 @@
   import * as THREE from 'three';
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   import { temperatureToColorNormalized } from './colormap';
+  import { precipitationToColorNormalized } from './precipitationColormap';
   import { blueMarbleColor } from './blueMarbleColormap';
   import { sampleBilinear, averagePolarTemps } from './gridSampling';
   import { loadBorders } from './borders';
@@ -19,7 +20,7 @@
   export let data: number[][][] | null = null; // [month][lat][lon] temperature in Celsius
   export let monthProgress: number = 0; // Continuous 0-12 (wraps), controls sun position
   export let showBorders: boolean = true;
-  export let activeLayer: 'temperature' | 'blue-marble' = 'temperature';
+  export let activeLayer: 'temperature' | 'precipitation' | 'blue-marble' = 'temperature';
   export let layerData: ClimateLayerData | null = null;
   export let uniformLighting: boolean = false;
   export let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
@@ -34,6 +35,7 @@
   let controls: OrbitControls;
   let globe: THREE.Mesh | null = null;
   let blueMarbleGlobe: THREE.Mesh | null = null;
+  let precipGlobe: THREE.Mesh | null = null;
   let bordersGroup: THREE.Group | null = null;
   let animationId: number;
   let sunLight: THREE.DirectionalLight;
@@ -65,6 +67,8 @@
   let tempBaseCache: (Float32Array | null)[] = new Array(12).fill(null);
   let bmBaseRgbCache: (Float32Array | null)[] = new Array(12).fill(null);
   let bmBaseSpecCache: (Float32Array | null)[] = new Array(12).fill(null);
+  let precipBaseCache: (Float32Array | null)[] = new Array(12).fill(null);
+  let precipStepCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
   let tempStepCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
   let bmStepRgbCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
   let bmStepSpecCache: (Float32Array | null)[] = new Array(TOTAL_STEPS).fill(null);
@@ -91,6 +95,9 @@
     }
     if (blueMarbleGlobe) {
       blueMarbleGlobe.rotation.y += radians;
+    }
+    if (precipGlobe) {
+      precipGlobe.rotation.y += radians;
     }
     if (bordersGroup) {
       bordersGroup.rotation.y += radians;
@@ -119,6 +126,9 @@
     }
     if (blueMarbleGlobe) {
       blueMarbleGlobe.rotation.y = 0;
+    }
+    if (precipGlobe) {
+      precipGlobe.rotation.y = 0;
     }
     if (bordersGroup) {
       bordersGroup.rotation.y = 0;
@@ -232,6 +242,8 @@
     bmBaseSpecCache = new Array(12).fill(null);
     bmStepRgbCache = new Array(TOTAL_STEPS).fill(null);
     bmStepSpecCache = new Array(TOTAL_STEPS).fill(null);
+    precipBaseCache = new Array(12).fill(null);
+    precipStepCache = new Array(TOTAL_STEPS).fill(null);
     lastAppliedStep = -1;
   }
   // Launch cache worker as soon as both data sources exist (even before reveal)
@@ -247,6 +259,7 @@
     const layer = activeLayer;
     if (scene) {
       if (globe) globe.visible = layer === 'temperature';
+      if (precipGlobe) precipGlobe.visible = layer === 'precipitation';
       if (blueMarbleGlobe) blueMarbleGlobe.visible = layer === 'blue-marble';
       if (windParticles) windParticles.getObject().visible = layer === 'blue-marble';
       if (treeInstances) treeInstances.getObject().visible = layer === 'blue-marble';
@@ -273,6 +286,52 @@
       }
     }
     return buf;
+  }
+
+  function buildPrecipitationColorBuffer(ld: ClimateLayerData, monthIdx: number): Float32Array {
+    const precip = ld.precipitation;
+    if (!precip) return new Float32Array(0);
+    const pNlat = precip.shape[1];
+    const pNlon = precip.shape[2];
+    const precipData = precip.data as Float32Array;
+    const nVerts = pNlat * pNlon * 6;
+    const buf = new Float32Array(nVerts * 3);
+    const monthOffset = monthIdx * pNlat * pNlon;
+
+    let idx = 0;
+    for (let i = 0; i < pNlat; i++) {
+      const dataLatIdx = pNlat - 1 - i;
+      for (let j = 0; j < pNlon; j++) {
+        const val = precipData[monthOffset + dataLatIdx * pNlon + j];
+        const [r, g, b] = precipitationToColorNormalized(val);
+        for (let v = 0; v < 6; v++) {
+          buf[idx++] = r; buf[idx++] = g; buf[idx++] = b;
+        }
+      }
+    }
+    return buf;
+  }
+
+  function ensurePrecipBase(month: number) {
+    if (precipBaseCache[month] || !layerData?.precipitation) return;
+    precipBaseCache[month] = buildPrecipitationColorBuffer(layerData, month);
+  }
+
+  function ensurePrecipStep(step: number) {
+    if (precipStepCache[step]) return;
+    const m0 = Math.floor(step / SUB_STEPS) % 12;
+    const t = (step % SUB_STEPS) / SUB_STEPS;
+    const nearest = t < 0.5 ? m0 : (m0 + 1) % 12;
+    ensurePrecipBase(nearest);
+    precipStepCache[step] = precipBaseCache[nearest]!;
+  }
+
+  function applyPrecipitationColors(step: number) {
+    if (!precipGlobe || !layerData?.precipitation) return;
+    ensurePrecipStep(step);
+    const colors = precipGlobe.geometry.attributes.color;
+    ((colors as any).array as Float32Array).set(precipStepCache[step]!);
+    colors.needsUpdate = true;
   }
 
   /** Cached hillshade grid (computed from elevation, independent of globe mesh). */
@@ -1179,6 +1238,13 @@
       initTreeInstances();
       initCloudInstances();
     }
+    if (!precipGlobe && layerData?.precipitation) {
+      const p = layerData.precipitation;
+      precipGlobe = createGlobeMesh(p.shape[1], p.shape[2], 1);
+      precipGlobe.visible = activeLayer === 'precipitation';
+      scene.add(precipGlobe);
+      applyPrecipitationColors(progressToStep(displayMonthProgress));
+    }
 
     // Show sun
     if (sunOrb) sunOrb.visible = true;
@@ -1292,6 +1358,14 @@
       initWindParticles();
       initTreeInstances();
       initCloudInstances();
+
+      if (layerData.precipitation) {
+        const p = layerData.precipitation;
+        precipGlobe = createGlobeMesh(p.shape[1], p.shape[2], 1);
+        precipGlobe.visible = activeLayer === 'precipitation';
+        scene.add(precipGlobe);
+        applyPrecipitationColors(progressToStep(displayMonthProgress));
+      }
     }
 
     // City lights and atmosphere — only create after reveal
@@ -1351,6 +1425,8 @@
     if (step !== lastAppliedStep) {
       if (activeLayer === 'temperature') {
         applyTemperatureColors(step);
+      } else if (activeLayer === 'precipitation') {
+        applyPrecipitationColors(step);
       } else if (activeLayer === 'blue-marble') {
         applyBlueMarbleColors(step);
       }
@@ -1405,7 +1481,7 @@
 
     // Sync marker with globe rotation and project to screen
     if (markerMesh && markerWorldPos) {
-      const refMesh = activeLayer === 'blue-marble' ? blueMarbleGlobe : globe;
+      const refMesh = activeLayer === 'blue-marble' ? blueMarbleGlobe : activeLayer === 'precipitation' ? precipGlobe : globe;
       const rotY = refMesh?.rotation.y ?? 0;
 
       // Apply globe rotation to get world position
@@ -1514,6 +1590,15 @@
     initTreeInstances();
   }
 
+  // Create precipitation globe when layerData arrives (only after reveal)
+  $: if (scene && layerData?.precipitation && !precipGlobe && revealed) {
+    const p = layerData.precipitation!;
+    precipGlobe = createGlobeMesh(p.shape[1], p.shape[2], 1);
+    precipGlobe.visible = activeLayer === 'precipitation';
+    scene.add(precipGlobe);
+    applyPrecipitationColors(progressToStep(displayMonthProgress));
+  }
+
   onMount(() => {
     init();
   });
@@ -1565,6 +1650,10 @@
     if (blueMarbleGlobe) {
       blueMarbleGlobe.geometry.dispose();
       (blueMarbleGlobe.material as THREE.Material).dispose();
+    }
+    if (precipGlobe) {
+      precipGlobe.geometry.dispose();
+      (precipGlobe.material as THREE.Material).dispose();
     }
     if (atmosphereMesh) {
       atmosphereMesh.geometry.dispose();

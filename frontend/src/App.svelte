@@ -4,12 +4,47 @@
   import Globe from './lib/globe/Globe.svelte';
   import InspectPanel from './lib/InspectPanel.svelte';
   import ControlBar from './lib/ControlBar.svelte';
+  import Legend from './lib/Legend.svelte';
   import { loadBinaryDataInWorker, loadLandMask1deg } from './lib/globe/loadBinaryData';
   import type { ClimateLayerData } from './lib/globe/loadBinaryData';
+  import { useImperial } from './lib/stores';
 
   let temperatureData: number[][][] | null = null;
   let layerData: ClimateLayerData | null = null;
-  let activeLayer: 'temperature' | 'blue-marble' = 'blue-marble';
+  let activeLayer: 'temperature' | 'precipitation' | 'blue-marble' = 'blue-marble';
+
+  function cToF(c: number): number { return c * 9 / 5 + 32; }
+  function mmToIn(mm: number): number { return mm / 25.4; }
+
+  $: tempLegendStops = $useImperial ? [
+    { value: cToF(-30).toFixed(0) + '', color: 'rgb(59,30,109)' },
+    { value: cToF(0).toFixed(0) + '', color: 'rgb(30,136,229)' },
+    { value: cToF(10).toFixed(0) + '', color: 'rgb(102,187,106)' },
+    { value: cToF(25).toFixed(0) + '', color: 'rgb(251,140,0)' },
+    { value: cToF(40).toFixed(0) + '', color: 'rgb(138,0,0)' },
+  ] : [
+    { value: '-30', color: 'rgb(59,30,109)' },
+    { value: '0', color: 'rgb(30,136,229)' },
+    { value: '10', color: 'rgb(102,187,106)' },
+    { value: '25', color: 'rgb(251,140,0)' },
+    { value: '40', color: 'rgb(138,0,0)' },
+  ];
+  $: tempLegendLabel = $useImperial ? '°F' : '°C';
+
+  $: precipLegendStops = $useImperial ? [
+    { value: '0', color: 'rgb(210,200,180)' },
+    { value: mmToIn(1).toFixed(2), color: 'rgb(180,210,170)' },
+    { value: mmToIn(3).toFixed(1), color: 'rgb(100,190,120)' },
+    { value: mmToIn(6).toFixed(1), color: 'rgb(40,150,100)' },
+    { value: mmToIn(15).toFixed(1), color: 'rgb(20,50,120)' },
+  ] : [
+    { value: '0', color: 'rgb(210,200,180)' },
+    { value: '1', color: 'rgb(180,210,170)' },
+    { value: '3', color: 'rgb(100,190,120)' },
+    { value: '6', color: 'rgb(40,150,100)' },
+    { value: '15', color: 'rgb(20,50,120)' },
+  ];
+  $: precipLegendLabel = $useImperial ? 'in/day' : 'mm/day';
   let monthProgress = 0; // Continuous 0-12 value
   let loading = true; // true until main data is loaded
   let error: string | null = null;
@@ -262,6 +297,20 @@
       <button class="reveal-btn" on:click={handleReveal}>
         Let there be light
       </button>
+    {/if}
+    {#if revealed && activeLayer === 'temperature'}
+      <Legend
+        stops={tempLegendStops}
+        label={tempLegendLabel}
+        visible={controlsVisible}
+      />
+    {/if}
+    {#if revealed && activeLayer === 'precipitation'}
+      <Legend
+        stops={precipLegendStops}
+        label={precipLegendLabel}
+        visible={controlsVisible}
+      />
     {/if}
     {#if revealed}
       <ControlBar

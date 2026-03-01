@@ -50,6 +50,8 @@ export interface ClimateLayerData {
   elevation?: FieldData;
   /** 0.25deg snow temperature uint8-quantized [12, 720, 1440] */
   snow_temperature?: FieldData;
+  /** 1deg precipitation in kg/m²/s [12, 180, 360] */
+  precipitation?: FieldData;
 }
 
 /** Decode a Float16 buffer into Float32Array. */

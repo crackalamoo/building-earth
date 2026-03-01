@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import { Thermometer, Globe as GlobeIcon, SunMoon, Sun, Play, Pause, Home } from 'lucide-svelte';
+  import { Thermometer, Globe as GlobeIcon, CloudRain, SunMoon, Sun, Play, Pause, Home } from 'lucide-svelte';
 
   const dispatch = createEventDispatcher();
 
@@ -9,7 +9,7 @@
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
 
-  export let activeLayer: 'temperature' | 'blue-marble' = 'blue-marble';
+  export let activeLayer: 'temperature' | 'precipitation' | 'blue-marble' = 'blue-marble';
   export let uniformLighting = false;
   export let monthProgress = 0;
   export let playing = false;
@@ -29,6 +29,14 @@
       disabled={recording}
       data-tooltip="Temperature"
     ><Thermometer size={16} /></button>
+    <button
+      class="layer-tab"
+      class:active={activeLayer === 'precipitation'}
+      on:click={() => activeLayer = 'precipitation'}
+      disabled={recording || !layerDataLoaded}
+      data-tooltip="Precipitation"
+      style="border-radius: 0; margin-left: -1px;"
+    ><CloudRain size={16} /></button>
     <button
       class="layer-tab"
       class:active={activeLayer === 'blue-marble'}
