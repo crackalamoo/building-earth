@@ -2,10 +2,6 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import * as THREE from 'three';
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-  import { temperatureToColorNormalized } from './colormap';
-  import { precipitationToColorNormalized } from './precipitationColormap';
-  import { blueMarbleColor } from './blueMarbleColormap';
-  import { sampleBilinear, averagePolarTemps } from './gridSampling';
   import { loadBorders } from './borders';
   import { WindParticles } from './WindParticles';
   import { TreeInstances } from './TreeInstances';
@@ -14,8 +10,9 @@
   import { createStarField, updateStarRotation, type StarField } from './Stars';
   import { CityLights } from './CityLights';
   import type { ClimateLayerData } from './loadBinaryData';
-  import { ELEVATION_SCALE, NORMAL_BLEND, sampleElevation, displacedNormal, computeHillshadeGrid } from './elevation';
   import { getSunDeclination, createSunOrb, createSunBloom, updateSunBloom, disposeSun } from './Sun';
+  import { createGlobeMesh, createTemperatureGlobe, createBlueMarbleGlobe, createPrimordialGlobe } from './globeFactory';
+  import { buildTemperatureColorBuffer, buildBlueMarbleBuffers, buildPrecipitationColorBuffer, invalidateColorBuilderCaches } from './colorBufferBuilders';
 
   export let data: number[][][] | null = null; // [month][lat][lon] temperature in Celsius
   export let monthProgress: number = 0; // Continuous 0-12 (wraps), controls sun position
@@ -234,10 +231,7 @@
     lastAppliedStep = -1;
   }
   $: if (layerData) {
-    hillshadeGridCache = null;
-    annualMeanTempCache = null;
-    annualMeanSoilCache = null;
-    soilLandMaskCache = null;
+    invalidateColorBuilderCaches();
     bmBaseRgbCache = new Array(12).fill(null);
     bmBaseSpecCache = new Array(12).fill(null);
     bmStepRgbCache = new Array(TOTAL_STEPS).fill(null);
@@ -269,49 +263,6 @@
     }
   }
 
-  function buildTemperatureColorBuffer(climateData: number[][][], monthIdx: number): Float32Array {
-    const monthData = averagePolarTemps(climateData[monthIdx], nlat, nlon);
-    const nVerts = nlat * nlon * 6;
-    const buf = new Float32Array(nVerts * 3);
-
-    let idx = 0;
-    for (let i = 0; i < nlat; i++) {
-      const dataLatIdx = nlat - 1 - i;
-      for (let j = 0; j < nlon; j++) {
-        const temp = monthData[dataLatIdx][j];
-        const [r, g, b] = temperatureToColorNormalized(temp);
-        for (let v = 0; v < 6; v++) {
-          buf[idx++] = r; buf[idx++] = g; buf[idx++] = b;
-        }
-      }
-    }
-    return buf;
-  }
-
-  function buildPrecipitationColorBuffer(ld: ClimateLayerData, monthIdx: number): Float32Array {
-    const precip = ld.precipitation;
-    if (!precip) return new Float32Array(0);
-    const pNlat = precip.shape[1];
-    const pNlon = precip.shape[2];
-    const precipData = precip.data as Float32Array;
-    const nVerts = pNlat * pNlon * 6;
-    const buf = new Float32Array(nVerts * 3);
-    const monthOffset = monthIdx * pNlat * pNlon;
-
-    let idx = 0;
-    for (let i = 0; i < pNlat; i++) {
-      const dataLatIdx = pNlat - 1 - i;
-      for (let j = 0; j < pNlon; j++) {
-        const val = precipData[monthOffset + dataLatIdx * pNlon + j];
-        const [r, g, b] = precipitationToColorNormalized(val);
-        for (let v = 0; v < 6; v++) {
-          buf[idx++] = r; buf[idx++] = g; buf[idx++] = b;
-        }
-      }
-    }
-    return buf;
-  }
-
   function ensurePrecipBase(month: number) {
     if (precipBaseCache[month] || !layerData?.precipitation) return;
     precipBaseCache[month] = buildPrecipitationColorBuffer(layerData, month);
@@ -332,275 +283,6 @@
     const colors = precipGlobe.geometry.attributes.color;
     ((colors as any).array as Float32Array).set(precipStepCache[step]!);
     colors.needsUpdate = true;
-  }
-
-  /** Cached hillshade grid (computed from elevation, independent of globe mesh). */
-  let hillshadeGridCache: Float32Array | null = null;
-
-  function getHillshadeGrid(ld: ClimateLayerData): Float32Array | null {
-    if (hillshadeGridCache) return hillshadeGridCache;
-    const elevData = ld.elevation?.data as Float32Array | undefined;
-    const elevNlat = ld.elevation?.shape[0] ?? 0;
-    const elevNlon = ld.elevation?.shape[1] ?? 0;
-    const hiNlat = ld.land_mask.shape[0];
-    const hiNlon = ld.land_mask.shape[1];
-    if (elevData && elevNlat && elevNlon) {
-      hillshadeGridCache = computeHillshadeGrid(elevData, elevNlat, elevNlon, hiNlat, hiNlon);
-    }
-    return hillshadeGridCache;
-  }
-
-  /** Compute annual means from full 12-month data (cached to avoid recomputation). */
-  let annualMeanTempCache: Float32Array | null = null;
-  let annualMeanSoilCache: Float32Array | null = null;
-  let soilLandMaskCache: Uint8Array | null = null;
-
-  function getAnnualMeans(ld: ClimateLayerData): { temp: Float32Array; soil: Float32Array; soilLandMask: Uint8Array } {
-    if (annualMeanTempCache) return { temp: annualMeanTempCache, soil: annualMeanSoilCache!, soilLandMask: soilLandMaskCache! };
-    const surfaceData = ld.surface.data as Float32Array;
-    const soilData = ld.soil_moisture?.data as Float32Array | undefined;
-    const lowNlat = ld.surface.shape[1];
-    const lowNlon = ld.surface.shape[2];
-    const sNlat = ld.soil_moisture?.shape[1] ?? lowNlat;
-    const sNlon = ld.soil_moisture?.shape[2] ?? lowNlon;
-
-    const annualMeanTemp = new Float32Array(lowNlat * lowNlon);
-    for (let ci = 0; ci < lowNlat; ci++) {
-      for (let cj = 0; cj < lowNlon; cj++) {
-        let tsum = 0;
-        for (let m = 0; m < 12; m++) {
-          tsum += surfaceData[m * lowNlat * lowNlon + ci * lowNlon + cj];
-        }
-        annualMeanTemp[ci * lowNlon + cj] = tsum / 12;
-      }
-    }
-
-    const annualMeanSoil = new Float32Array(sNlat * sNlon);
-    if (soilData) {
-      for (let ci = 0; ci < sNlat; ci++) {
-        for (let cj = 0; cj < sNlon; cj++) {
-          let ssum = 0;
-          for (let m = 0; m < 12; m++) {
-            ssum += soilData[m * sNlat * sNlon + ci * sNlon + cj];
-          }
-          annualMeanSoil[ci * sNlon + cj] = ssum / 12;
-        }
-      }
-    } else {
-      annualMeanSoil.fill(0.5);
-    }
-
-    // Use exported 1° land mask if available, otherwise downsample from 0.25°
-    let soilLandMask: Uint8Array;
-    if (ld.land_mask_1deg) {
-      soilLandMask = ld.land_mask_1deg.data as Uint8Array;
-    } else {
-      const hiLandMask = ld.land_mask.data as Uint8Array;
-      const hiNlatM = ld.land_mask.shape[0];
-      const hiNlonM = ld.land_mask.shape[1];
-      soilLandMask = new Uint8Array(sNlat * sNlon);
-      const latRatio = hiNlatM / sNlat;
-      const lonRatio = hiNlonM / sNlon;
-      for (let ci = 0; ci < sNlat; ci++) {
-        const hi0 = Math.floor(ci * latRatio);
-        const hi1 = Math.min(Math.floor((ci + 1) * latRatio), hiNlatM);
-        for (let cj = 0; cj < sNlon; cj++) {
-          const hj0 = Math.floor(cj * lonRatio);
-          const hj1 = Math.min(Math.floor((cj + 1) * lonRatio), hiNlonM);
-          let landCount = 0;
-          for (let ii = hi0; ii < hi1; ii++) {
-            for (let jj = hj0; jj < hj1; jj++) {
-              if (hiLandMask[ii * hiNlonM + jj] === 1) landCount++;
-            }
-          }
-          soilLandMask[ci * sNlon + cj] = landCount > 0 ? 1 : 0;
-        }
-      }
-    }
-
-    annualMeanTempCache = annualMeanTemp;
-    annualMeanSoilCache = annualMeanSoil;
-    soilLandMaskCache = soilLandMask;
-    return { temp: annualMeanTemp, soil: annualMeanSoil, soilLandMask };
-  }
-
-  function buildBlueMarbleBuffers(ld: ClimateLayerData, monthIdx: number, snowMonthIdx?: number): { rgb: Float32Array; spec: Float32Array } {
-    const surfaceData = ld.surface.data as Float32Array;
-    const landMaskData = ld.land_mask.data as Uint8Array;
-    const soilData = ld.soil_moisture?.data as Float32Array | undefined;
-    const vegData = ld.vegetation_fraction?.data as Float32Array | undefined;
-    const coarseLandMask = ld.land_mask_native?.data as Uint8Array | undefined;
-    const elevData = ld.elevation?.data as Float32Array | undefined;
-    const elevNlat = ld.elevation?.shape[0] ?? 0;
-    const elevNlon = ld.elevation?.shape[1] ?? 0;
-    const snowTempRaw = ld.snow_temperature?.data as Uint8Array | Float32Array | undefined;
-    const snowNlat = ld.snow_temperature?.shape[1] ?? 0;
-    const snowNlon = ld.snow_temperature?.shape[2] ?? 0;
-    const snowMonthOff = (snowMonthIdx ?? monthIdx) * snowNlat * snowNlon;
-
-    // High-res grid dimensions (from land_mask, 0.25deg)
-    const hiNlat = ld.land_mask.shape[0];
-    const hiNlon = ld.land_mask.shape[1];
-
-    // Low-res grid dimensions (from surface, 5deg)
-    const lowNlat = ld.surface.shape[1];
-    const lowNlon = ld.surface.shape[2];
-    const monthOffset = monthIdx * lowNlat * lowNlon;
-
-    // Soil moisture may be at a different resolution (e.g. 1deg = 180x360)
-    const soilNlat = ld.soil_moisture?.shape[1] ?? lowNlat;
-    const soilNlon = ld.soil_moisture?.shape[2] ?? lowNlon;
-    const soilMonthOffset = monthIdx * soilNlat * soilNlon;
-
-    // Use cached annual means (computed from full 12-month original data)
-    const annuals = getAnnualMeans(ld);
-    const annualMeanTemp = annuals.temp;
-    const annualMeanSoil = annuals.soil;
-    const soilLandMask = annuals.soilLandMask;
-
-    // First pass: compute per-cell RGB into a flat buffer
-    const rgbBuf = new Float32Array(hiNlat * hiNlon * 3);
-    for (let i = 0; i < hiNlat; i++) {
-      const dataLatIdx = hiNlat - 1 - i;
-      for (let j = 0; j < hiNlon; j++) {
-        const isLand = landMaskData[dataLatIdx * hiNlon + j] === 1;
-
-        const surfaceTemp = sampleBilinear(
-          surfaceData, lowNlat, lowNlon, monthOffset,
-          dataLatIdx, j, hiNlat, hiNlon,
-          isLand, coarseLandMask,
-        );
-        const soilMoisture = soilData
-          ? sampleBilinear(
-              soilData, soilNlat, soilNlon, soilMonthOffset,
-              dataLatIdx, j, hiNlat, hiNlon,
-              isLand, soilLandMask,
-            )
-          : 0;
-
-        // Sample elevation for bathymetry shading
-        let elev = 0;
-        if (elevData && elevNlat > 0) {
-          // Map hi-res grid index to elevation grid index
-          const ei = Math.floor(dataLatIdx * elevNlat / hiNlat);
-          const ej = Math.floor(j * elevNlon / hiNlon);
-          elev = elevData[ei * elevNlon + ej];
-        }
-
-        // Sample vegetation fraction (same grid as soil moisture)
-        const vegFrac = vegData
-          ? sampleBilinear(
-              vegData, lowNlat, lowNlon, monthOffset,
-              dataLatIdx, j, hiNlat, hiNlon,
-              isLand, coarseLandMask,
-            )
-          : 0;
-
-        // Sample annual means bilinearly (offset=0, single 2D fields)
-        const annMeanT = sampleBilinear(
-          annualMeanTemp, lowNlat, lowNlon, 0,
-          dataLatIdx, j, hiNlat, hiNlon,
-          isLand, coarseLandMask,
-        );
-        const annMeanSoil = sampleBilinear(
-          annualMeanSoil, soilNlat, soilNlon, 0,
-          dataLatIdx, j, hiNlat, hiNlon,
-          isLand, soilLandMask,
-        );
-
-        // Snow temperature from backend (interpolated surface + lapse correction)
-        let snowTempC = surfaceTemp;
-        if (snowTempRaw && isLand) {
-          const si = Math.floor(dataLatIdx * snowNlat / hiNlat);
-          const sj = Math.floor(j * snowNlon / hiNlon);
-          const raw = snowTempRaw[snowMonthOff + si * snowNlon + sj];
-          snowTempC = raw * (120.0 / 255.0) - 60.0;
-        }
-
-        const [r, g, b] = blueMarbleColor(isLand, surfaceTemp, soilMoisture, elev, vegFrac, annMeanT, annMeanSoil, snowTempC);
-        const base = (i * hiNlon + j) * 3;
-        rgbBuf[base] = r;
-        rgbBuf[base + 1] = g;
-        rgbBuf[base + 2] = b;
-      }
-    }
-
-    // Second pass: polar smoothing on the high-res RGB rows (same logic as averagePolarTemps)
-    const latStep = 180 / hiNlat;
-    for (let i = 0; i < hiNlat; i++) {
-      const lat = 90 - (i + 0.5) * latStep; // i=0 is north pole in render order
-      const absLat = Math.abs(lat);
-      if (absLat <= 75) continue;
-
-      const t = (absLat - 75) / 15;
-      const maxWindow = hiNlon / 24;
-      let windowSize = 1 + t * t * maxWindow;
-      windowSize = Math.floor(windowSize);
-      if (windowSize < 2) continue;
-      if (windowSize % 2 === 0) windowSize++;
-      const halfWindow = Math.floor(windowSize / 2);
-      const rowBase = i * hiNlon * 3;
-
-      // Smooth each channel independently using a temp buffer for the row
-      for (let ch = 0; ch < 3; ch++) {
-        const tmp = new Float32Array(hiNlon);
-        for (let j = 0; j < hiNlon; j++) {
-          let sum = 0;
-          for (let k = -halfWindow; k <= halfWindow; k++) {
-            const idx = ((j + k) % hiNlon + hiNlon) % hiNlon;
-            sum += rgbBuf[rowBase + idx * 3 + ch];
-          }
-          tmp[j] = sum / windowSize;
-        }
-        for (let j = 0; j < hiNlon; j++) {
-          rgbBuf[rowBase + j * 3 + ch] = tmp[j];
-        }
-      }
-    }
-
-    // Apply hillshade to RGB buffer and build specular + vertex-expanded buffers
-    const hsGrid = getHillshadeGrid(layerData!);
-    const nVerts = hiNlat * hiNlon * 6;
-    const outRgb = new Float32Array(nVerts * 3);
-    const outSpec = new Float32Array(nVerts);
-    let idx = 0;
-    for (let i = 0; i < hiNlat; i++) {
-      const dataLatIdx = hiNlat - 1 - i;
-      for (let j = 0; j < hiNlon; j++) {
-        const base = (i * hiNlon + j) * 3;
-        let r = rgbBuf[base];
-        let g = rgbBuf[base + 1];
-        let b = rgbBuf[base + 2];
-        const isLand = landMaskData[dataLatIdx * hiNlon + j] === 1;
-        if (hsGrid && isLand) {
-          const hs = hsGrid[i * hiNlon + j];
-          r = Math.min(1, r * hs);
-          g = Math.min(1, g * hs);
-          b = Math.min(1, b * hs);
-        }
-
-        // Compute specular mask: 0 for land/ice, 1 for open ocean
-        let spec = 0.0;
-        if (!isLand) {
-          const temp = sampleBilinear(
-            surfaceData, lowNlat, lowNlon, monthOffset,
-            dataLatIdx, j, hiNlat, hiNlon,
-            false, coarseLandMask,
-          );
-          const ICE_FREEZE = -1.8, ICE_FULL = -8.0, ICE_MAX = 0.70;
-          const u = Math.max(0, Math.min(1, (ICE_FREEZE - temp) / (ICE_FREEZE - ICE_FULL)));
-          const iceFrac = u * u * (3 - 2 * u) * ICE_MAX;
-          spec = 1.0 - iceFrac;
-        }
-
-        for (let v = 0; v < 6; v++) {
-          outRgb[idx * 3] = r; outRgb[idx * 3 + 1] = g; outRgb[idx * 3 + 2] = b;
-          outSpec[idx] = spec;
-          idx++;
-        }
-      }
-    }
-    return { rgb: outRgb, spec: outSpec };
   }
 
   function ensureTempBase(m: number) {
@@ -663,221 +345,7 @@
     }
   }
 
-  function createGlobeMesh(
-    latCount: number, lonCount: number, radius: number,
-    elevationData?: Float32Array, elevNlat?: number, elevNlon?: number,
-    landMaskData?: Uint8Array, maskNlat?: number, maskNlon?: number,
-  ): THREE.Mesh {
-    // Build geometry manually with per-face colors (no interpolation)
-    const positions: number[] = [];
-    const colors: number[] = [];
-
-    function getVertex(lat: number, lon: number): [number, number, number] {
-      let r = radius;
-      if (elevationData && elevNlat && elevNlon) {
-        const elev = sampleElevation(elevationData, elevNlat, elevNlon, lat, lon);
-        r += Math.max(0, elev) * ELEVATION_SCALE;
-      }
-      const phi = (90 - lat) * (Math.PI / 180);
-      const theta = lon * (Math.PI / 180);
-      return [
-        -r * Math.sin(phi) * Math.cos(theta),
-        r * Math.cos(phi),
-        r * Math.sin(phi) * Math.sin(theta)
-      ];
-    }
-
-    const blendedNormals: number[] = [];
-
-    function addVertex(lat: number, lon: number, r: number, g: number, b: number, isLand: boolean) {
-      const [x, y, z] = getVertex(lat, lon);
-      positions.push(x, y, z);
-      colors.push(r, g, b);
-
-      const phi = (90 - lat) * (Math.PI / 180);
-      const theta = lon * (Math.PI / 180);
-      const snx = -Math.sin(phi) * Math.cos(theta);
-      const sny = Math.cos(phi);
-      const snz = Math.sin(phi) * Math.sin(theta);
-
-      // Ocean: use pure sphere normals (bathymetry shouldn't affect lighting)
-      if (elevationData && elevNlat && elevNlon && isLand) {
-        const [dnx, dny, dnz] = displacedNormal(elevationData, elevNlat, elevNlon, lat, lon, radius);
-        let nx = snx + NORMAL_BLEND * (dnx - snx);
-        let ny = sny + NORMAL_BLEND * (dny - sny);
-        let nz = snz + NORMAL_BLEND * (dnz - snz);
-        const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-        blendedNormals.push(nx / len, ny / len, nz / len);
-      } else {
-        blendedNormals.push(snx, sny, snz);
-      }
-    }
-
-    const latStep = 180 / latCount;
-    const lonStep = 360 / lonCount;
-
-    // Pre-compute per-cell hillshade if elevation data provided
-    const hillshadeGrid = (elevationData && elevNlat && elevNlon)
-      ? computeHillshadeGrid(elevationData, elevNlat, elevNlon, latCount, lonCount)
-      : null;
-
-    for (let i = 0; i < latCount; i++) {
-      const lat0 = 90 - i * latStep;
-      const lat1 = 90 - (i + 1) * latStep;
-      const dataLatIdx = latCount - 1 - i;
-
-      for (let j = 0; j < lonCount; j++) {
-        const lon0 = j * lonStep;
-        const lon1 = (j + 1) * lonStep;
-
-        // Check if this cell is land for normal computation
-        const cellIsLand = (landMaskData && maskNlat && maskNlon)
-          ? landMaskData[dataLatIdx * maskNlon + j] === 1
-          : false;
-
-        // Default color (will be updated immediately)
-        const r = 0.1, g = 0.1, b = 0.1;
-
-        addVertex(lat0, lon0, r, g, b, cellIsLand);
-        addVertex(lat1, lon0, r, g, b, cellIsLand);
-        addVertex(lat1, lon1, r, g, b, cellIsLand);
-
-        addVertex(lat0, lon0, r, g, b, cellIsLand);
-        addVertex(lat1, lon1, r, g, b, cellIsLand);
-        addVertex(lat0, lon1, r, g, b, cellIsLand);
-      }
-    }
-
-    // Build per-vertex isOcean attribute if land mask provided
-    const isOceanArr: number[] = [];
-    if (landMaskData && maskNlat && maskNlon) {
-      const latStep2 = 180 / latCount;
-      const lonStep2 = 360 / lonCount;
-      for (let i = 0; i < latCount; i++) {
-        const lat0 = 90 - i * latStep2;
-        const lat1 = 90 - (i + 1) * latStep2;
-        const cellLat = (lat0 + lat1) / 2;
-        // Convert to data index (data is south-to-north)
-        const dataLatIdx = latCount - 1 - i;
-        for (let j = 0; j < lonCount; j++) {
-          const lon0 = j * (360 / lonCount);
-          const lon1 = (j + 1) * (360 / lonCount);
-          const isLand = landMaskData[dataLatIdx * maskNlon + j] === 1;
-          const val = isLand ? 0.0 : 1.0;
-          for (let v = 0; v < 6; v++) isOceanArr.push(val);
-        }
-      }
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(blendedNormals, 3));
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    if (isOceanArr.length > 0) {
-      geometry.setAttribute('isOcean', new THREE.Float32BufferAttribute(isOceanArr, 1));
-    }
-
-    const material = new THREE.MeshLambertMaterial({
-      vertexColors: true,
-      side: THREE.FrontSide,
-    });
-
-    const mesh = new THREE.Mesh(geometry, material);
-    // Attach hillshade grid for use in color updates
-    if (hillshadeGrid) {
-      (mesh as any)._hillshadeGrid = hillshadeGrid;
-    }
-    return mesh;
-  }
-
-  function createTemperatureGlobe(climateData: number[][][]) {
-    const latCount = climateData[0].length;
-    const lonCount = climateData[0][0].length;
-    const mesh = createGlobeMesh(latCount, lonCount, 1);
-    return mesh;
-  }
-
   let bmShaderMaterial: THREE.ShaderMaterial | null = null;
-
-  function createOceanSpecularMaterial(): THREE.ShaderMaterial {
-    bmShaderMaterial = new THREE.ShaderMaterial({
-      vertexShader: `
-        attribute float isOcean;
-        varying vec3 vColor;
-        varying vec3 vNormal;
-        varying vec3 vWorldPos;
-        varying float vIsOcean;
-        void main() {
-          vColor = color;
-          // Transform normal to world space (not view space)
-          vNormal = mat3(modelMatrix) * normal;
-          vec4 worldPos = modelMatrix * vec4(position, 1.0);
-          vWorldPos = worldPos.xyz;
-          vIsOcean = isOcean;
-          gl_Position = projectionMatrix * viewMatrix * worldPos;
-        }
-      `,
-      fragmentShader: `
-        uniform vec3 sunDirection;
-        uniform float ambientIntensity;
-        varying vec3 vColor;
-        varying vec3 vNormal;
-        varying vec3 vWorldPos;
-        varying float vIsOcean;
-
-        void main() {
-          vec3 normal = normalize(vNormal);
-          float rawNdotL = dot(normal, sunDirection);
-          // Soften terminator for ocean — wrap lighting slightly into shadow
-          float NdotL = vIsOcean > 0.01
-            ? smoothstep(-0.15, 0.3, rawNdotL)
-            : max(rawNdotL, 0.0);
-          vec3 diffuse = vColor * (ambientIntensity + NdotL * (1.0 - ambientIntensity));
-
-          vec3 viewDir = normalize(cameraPosition - vWorldPos);
-
-          // Fresnel: view-angle effect, applies day and night
-          float fresnel = 1.0 - max(dot(viewDir, normal), 0.0);
-          fresnel = fresnel * fresnel; // quadratic
-          float fresnelStrength = fresnel * 0.4 * vIsOcean;
-          vec3 fresnelColor = vec3(0.5, 0.65, 0.85) * fresnelStrength;
-
-          // Specular: fade smoothly across terminator
-          vec3 specColor = vec3(0.0);
-          if (vIsOcean > 0.01) {
-            vec3 halfVec = normalize(sunDirection + viewDir);
-            float specSharp = pow(max(dot(normal, halfVec), 0.0), 60.0) * 0.6;
-            float specBroad = pow(max(dot(normal, halfVec), 0.0), 8.0) * 0.15;
-            float specFade = smoothstep(-0.05, 0.15, rawNdotL);
-            specColor = vec3(1.0, 0.97, 0.90) * (specSharp + specBroad) * vIsOcean * specFade;
-          }
-
-          gl_FragColor = vec4(diffuse + specColor + fresnelColor, 1.0);
-        }
-      `,
-      uniforms: {
-        sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-        ambientIntensity: { value: 0.15 },
-      },
-      vertexColors: true,
-      side: THREE.FrontSide,
-    });
-    return bmShaderMaterial;
-  }
-
-  function createBlueMarbleGlobe(ld: ClimateLayerData) {
-    // Use land_mask resolution (0.25deg, same as temperature) for crisp coastlines
-    const bmNlat = ld.land_mask.shape[0];
-    const bmNlon = ld.land_mask.shape[1];
-    const elevData = ld.elevation?.data as Float32Array | undefined;
-    const elevNlat = ld.elevation?.shape[0];
-    const elevNlon = ld.elevation?.shape[1];
-    const landMaskData = ld.land_mask.data as Uint8Array;
-    const mesh = createGlobeMesh(bmNlat, bmNlon, 1, elevData, elevNlat, elevNlon, landMaskData, bmNlat, bmNlon);
-    // Replace default Lambert material with ocean specular shader
-    mesh.material = createOceanSpecularMaterial();
-    return mesh;
-  }
 
   // Update sun position - either relative to camera (when auto-rotating) or orbiting the globe (when static)
   function updateSunPosition(isAutoRotating: boolean) {
@@ -1068,49 +536,6 @@
     dispatch('pick', null);
   }
 
-  function createPrimordialGlobe(landMask: { data: Uint8Array; nlat: number; nlon: number }): THREE.Mesh {
-    const { data: mask, nlat: latCount, nlon: lonCount } = landMask;
-    const positions: number[] = [];
-    const colors: number[] = [];
-    const radius = 1;
-    const latStep = 180 / latCount;
-    const lonStep = 360 / lonCount;
-
-    for (let i = 0; i < latCount; i++) {
-      const lat0 = 90 - i * latStep;
-      const lat1 = 90 - (i + 1) * latStep;
-      const dataLatIdx = latCount - 1 - i;
-
-      for (let j = 0; j < lonCount; j++) {
-        const lon0 = j * lonStep;
-        const lon1 = (j + 1) * lonStep;
-        const isLand = mask[dataLatIdx * lonCount + j] === 1;
-        const [r, g, b] = isLand ? [0.003, 0.003, 0.0025] : [0.001, 0.001, 0.003];
-
-        // Two triangles per cell
-        for (const [la, lo] of [[lat0, lon0], [lat1, lon0], [lat1, lon1], [lat0, lon0], [lat1, lon1], [lat0, lon1]]) {
-          const phi = (90 - la) * (Math.PI / 180);
-          const theta = lo * (Math.PI / 180);
-          positions.push(
-            -radius * Math.sin(phi) * Math.cos(theta),
-            radius * Math.cos(phi),
-            radius * Math.sin(phi) * Math.sin(theta)
-          );
-          colors.push(r, g, b);
-        }
-      }
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    geometry.computeVertexNormals();
-
-    const material = new THREE.MeshBasicMaterial({ vertexColors: true });
-    return new THREE.Mesh(geometry, material);
-  }
-
-
   function createFlashQuad(aspect: number, sunScreenPos: THREE.Vector2): THREE.Mesh {
     const geo = new THREE.PlaneGeometry(2, 2);
     const mat = new THREE.ShaderMaterial({
@@ -1231,6 +656,7 @@
     }
     if (!blueMarbleGlobe && layerData) {
       blueMarbleGlobe = createBlueMarbleGlobe(layerData);
+      bmShaderMaterial = blueMarbleGlobe.material as THREE.ShaderMaterial;
       blueMarbleGlobe.visible = activeLayer === 'blue-marble';
       scene.add(blueMarbleGlobe);
       applyBlueMarbleColors(progressToStep(displayMonthProgress));
@@ -1352,6 +778,7 @@
 
     if (revealed && layerData) {
       blueMarbleGlobe = createBlueMarbleGlobe(layerData);
+      bmShaderMaterial = blueMarbleGlobe.material as THREE.ShaderMaterial;
       blueMarbleGlobe.visible = activeLayer === 'blue-marble';
       scene.add(blueMarbleGlobe);
       applyBlueMarbleColors(progressToStep(displayMonthProgress));
