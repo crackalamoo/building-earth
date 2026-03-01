@@ -168,8 +168,7 @@ export function updateSunBloom(
       sunNDC.x * 0.5 + 0.5,
       sunNDC.y * 0.5 + 0.5,
     );
-    const intensity = Math.pow(Math.max(0, facing), 2.0);
-    mat.uniforms.sunIntensity.value = intensity;
+    mat.uniforms.sunIntensity.value = 1.0;
     mat.uniforms.aspectRatio.value = camera.aspect;
 
     // Globe screen-space disc for masking
