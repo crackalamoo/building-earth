@@ -15,6 +15,7 @@
 
   function cToF(c: number): number { return c * 9 / 5 + 32; }
   function mmToIn(mm: number): number { return mm / 25.4; }
+  function toggleUnits() { useImperial.update(v => !v); }
 
   $: tempLegendStops = $useImperial ? [
     { value: cToF(-30).toFixed(0) + '', color: 'rgb(59,30,109)' },
@@ -33,18 +34,18 @@
 
   $: precipLegendStops = $useImperial ? [
     { value: '0', color: 'rgb(210,200,180)' },
-    { value: mmToIn(1).toFixed(2), color: 'rgb(180,210,170)' },
-    { value: mmToIn(3).toFixed(1), color: 'rgb(100,190,120)' },
-    { value: mmToIn(6).toFixed(1), color: 'rgb(40,150,100)' },
-    { value: mmToIn(15).toFixed(1), color: 'rgb(20,50,120)' },
+    { value: mmToIn(30).toFixed(1), color: 'rgb(180,210,170)' },
+    { value: mmToIn(90).toFixed(0), color: 'rgb(100,190,120)' },
+    { value: mmToIn(180).toFixed(0), color: 'rgb(40,150,100)' },
+    { value: mmToIn(450).toFixed(0), color: 'rgb(20,50,120)' },
   ] : [
     { value: '0', color: 'rgb(210,200,180)' },
-    { value: '1', color: 'rgb(180,210,170)' },
-    { value: '3', color: 'rgb(100,190,120)' },
-    { value: '6', color: 'rgb(40,150,100)' },
-    { value: '15', color: 'rgb(20,50,120)' },
+    { value: '30', color: 'rgb(180,210,170)' },
+    { value: '90', color: 'rgb(100,190,120)' },
+    { value: '180', color: 'rgb(40,150,100)' },
+    { value: '450', color: 'rgb(20,50,120)' },
   ];
-  $: precipLegendLabel = $useImperial ? 'in/day' : 'mm/day';
+  $: precipLegendLabel = $useImperial ? 'in/mo' : 'mm/mo';
   let monthProgress = 0; // Continuous 0-12 value
   let loading = true; // true until main data is loaded
   let error: string | null = null;
@@ -303,6 +304,7 @@
         stops={tempLegendStops}
         label={tempLegendLabel}
         visible={controlsVisible}
+        on:toggleUnits={toggleUnits}
       />
     {/if}
     {#if revealed && activeLayer === 'precipitation'}
@@ -310,6 +312,7 @@
         stops={precipLegendStops}
         label={precipLegendLabel}
         visible={controlsVisible}
+        on:toggleUnits={toggleUnits}
       />
     {/if}
     {#if revealed}

@@ -1,12 +1,17 @@
 <script lang="ts">
-  export let stops: { value: number; color: string }[] = [];
+  import { createEventDispatcher } from 'svelte';
+
+  export let stops: { value: string; color: string }[] = [];
   export let label: string = '';
   export let visible: boolean = false;
+
+  const dispatch = createEventDispatcher();
 </script>
 
 {#if visible}
   <div class="legend" class:visible>
-    <div class="legend-label">{label}</div>
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <span class="unit-toggle" on:click={() => dispatch('toggleUnits')}>{label}</span>
     <div class="legend-bar-container">
       <div
         class="legend-bar"
@@ -33,21 +38,27 @@
     padding: 0.5rem 0.6rem;
     background: rgba(0, 0, 0, 0.5);
     border: 1px solid rgba(26, 107, 107, 0.4);
+    min-width: 5rem;
     border-radius: 6px;
     opacity: 0;
     transition: opacity 0.4s ease;
-    pointer-events: none;
-    z-index: 5;
+    z-index: 10;
   }
 
   .legend.visible {
     opacity: 1;
   }
 
-  .legend-label {
-    font-size: 0.7rem;
+  .unit-toggle {
+    font-size: 0.8rem;
     color: rgba(255, 255, 255, 0.7);
     letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .unit-toggle:hover {
+    opacity: 0.65;
   }
 
   .legend-bar-container {
@@ -70,7 +81,7 @@
   }
 
   .tick {
-    font-size: 0.65rem;
+    font-size: 0.75rem;
     color: rgba(255, 255, 255, 0.6);
     line-height: 1;
   }
