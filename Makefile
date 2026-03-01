@@ -1,4 +1,4 @@
-.PHONY: frontend backend sim
+.PHONY: frontend backend sim docker docker-stop
 
 frontend:
 	cd frontend && npm run dev
@@ -8,3 +8,9 @@ backend:
 
 sim:
 	uv run python backend/main.py --resolution 5
+
+docker:
+	docker compose up --build
+
+docker-stop:
+	docker compose down

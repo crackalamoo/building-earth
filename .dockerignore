@@ -1,0 +1,9 @@
+data/*
+!data/main.npz
+node_modules/
+__pycache__/
+.env
+.git/
+.venv/
+frontend/dist/
+*.gif
