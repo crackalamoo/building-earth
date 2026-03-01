@@ -7,8 +7,10 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from .rate_limit import create_chat_limiter
 from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 
@@ -21,10 +23,12 @@ load_dotenv()
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("CORS_ORIGIN", "http://localhost:5173").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+chat_limiter = create_chat_limiter()
 
 
 @app.get("/health")
@@ -48,7 +52,7 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-nano")
 MAX_TOOL_ROUNDS = 15
 
 
-@app.post("/api/chat")
+@app.post("/api/chat", dependencies=[Depends(chat_limiter)])
 async def chat(request: Request) -> StreamingResponse:
     body = await request.json()
     lat: float = body["lat"]
