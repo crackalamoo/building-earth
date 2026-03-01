@@ -309,17 +309,17 @@
             on:input={stopPlaying}
           />
         </label>
-        <button on:click={togglePlay} disabled={recording} data-tooltip={playing ? 'Pause' : 'Play'}>
+        <button class="action-btn" on:click={togglePlay} disabled={recording} data-tooltip={playing ? 'Pause' : 'Play'}>
           {#if playing}
             <Pause size={16} />
           {:else}
             <Play size={16} />
           {/if}
         </button>
-        <button on:click={resetView} disabled={recording} data-tooltip="Reset View">
+        <button class="action-btn" on:click={resetView} disabled={recording} data-tooltip="Reset View">
           <Home size={16} />
         </button>
-        <button on:click={recordGif} disabled={recording}>
+        <button class="action-btn" on:click={recordGif} disabled={recording}>
           {#if recording}
             {recordingProgress}
           {:else}
@@ -414,12 +414,13 @@
 
   .layer-tab {
     padding: 0.4rem 0.8rem;
-    background: #222;
-    color: #999;
-    border: 1px solid #444;
+    background: rgba(14, 74, 74, 0.3);
+    color: #fff;
+    border: 1px solid rgba(26, 107, 107, 0.5);
     cursor: pointer;
     font-size: 0.85rem;
     min-width: auto;
+    transition: background 0.15s, color 0.15s;
   }
 
   .layer-tab:first-child {
@@ -428,24 +429,29 @@
 
   .layer-tab:last-child {
     border-radius: 0 4px 4px 0;
-    border-left: none;
+    margin-left: -1px;
   }
 
   .layer-tab.active {
-    background: #444;
+    background: #1a6b6b;
     color: #fff;
-    border-color: #666;
+    border-color: rgba(255, 255, 255, 0.3);
+    z-index: 1;
+    position: relative;
   }
 
   .layer-tab:hover:not(:disabled):not(.active) {
-    background: #333;
-    color: #ccc;
+    background: rgba(14, 74, 74, 0.5);
+  }
+
+  .layer-tab.active:hover:not(:disabled) {
+    background: #156060 !important;
   }
 
   .separator {
     width: 1px;
     height: 24px;
-    background: #444;
+    background: rgba(26, 107, 107, 0.5);
   }
 
   .controls label {
@@ -457,11 +463,56 @@
   .month-label {
     min-width: 100px;
     text-align: right;
+    color: #fff;
   }
 
   input[type="range"] {
     width: 300px;
     cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: #2a9e9e;
+    border-radius: 2px;
+    outline: none;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #2a9e9e;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  input[type="range"]::-webkit-slider-thumb:hover {
+    background: #3fc0c0;
+  }
+
+  input[type="range"]::-webkit-slider-thumb:active {
+    background: #1a8080;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #2a9e9e;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    cursor: pointer;
+  }
+
+  input[type="range"]::-moz-range-thumb:active {
+    background: #1a8080;
+  }
+
+  input[type="range"]::-moz-range-track {
+    height: 4px;
+    background: #2a9e9e;
+    border-radius: 2px;
   }
 
   [data-tooltip] {
@@ -475,12 +526,12 @@
     left: 50%;
     transform: translateX(-50%);
     padding: 0.35rem 0.6rem;
-    background: #1a1a1a;
-    color: #e0e0e0;
+    background: rgba(14, 74, 74, 0.9);
+    color: #fff;
     font-size: 0.85rem;
     white-space: nowrap;
     border-radius: 4px;
-    border: 1px solid #444;
+    border: 1px solid rgba(26, 107, 107, 0.6);
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.15s ease;
@@ -492,16 +543,26 @@
 
   button {
     padding: 0.5rem 1rem;
-    background: #333;
+    background: rgba(14, 74, 74, 0.3);
     color: #fff;
-    border: 1px solid #555;
+    border: 1px solid rgba(26, 107, 107, 0.5);
     border-radius: 4px;
     cursor: pointer;
     min-width: auto;
+    transition: background 0.15s;
   }
 
-  button:hover:not(:disabled):not(.reveal-btn) {
-    background: #444;
+  .action-btn {
+    background: #1a6b6b;
+    border-color: rgba(255, 255, 255, 0.3);
+  }
+
+  .action-btn:hover:not(:disabled) {
+    background: #156060;
+  }
+
+  button:hover:not(:disabled):not(.reveal-btn):not(.action-btn) {
+    background: rgba(14, 74, 74, 0.5);
   }
 
   button:disabled {
