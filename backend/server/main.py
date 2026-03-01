@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .rate_limit import create_chat_limiter
@@ -50,6 +50,8 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-dummy"))
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-nano")
 
 MAX_TOOL_ROUNDS = 15
+MAX_MESSAGES = 50
+MAX_MESSAGE_LENGTH = 2000
 
 
 @app.post("/api/chat", dependencies=[Depends(chat_limiter)])
@@ -60,6 +62,19 @@ async def chat(request: Request) -> StreamingResponse:
     month: int = body["month"]
     user_messages: list[dict[str, str]] = body["messages"]
     imperial: bool = body.get("imperial", False)
+
+    # Input validation
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        raise HTTPException(400, "Invalid coordinates")
+    if not (0 <= month <= 11):
+        raise HTTPException(400, "Invalid month")
+    if not isinstance(user_messages, list) or not user_messages:
+        raise HTTPException(400, "Invalid messages")
+    if len(user_messages) > MAX_MESSAGES:
+        raise HTTPException(400, "Too many messages")
+    for msg in user_messages:
+        if len(msg.get("content", "")) > MAX_MESSAGE_LENGTH:
+            raise HTTPException(400, "Message too long")
 
     # Build conversation with location context
     messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM}]
