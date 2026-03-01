@@ -65,7 +65,7 @@ ANDERSON_HISTORY_LIMIT = 12
 # Under-relaxation factor for outer (year-to-year) state updates.
 # Blends Anderson output with previous state: x_new = α*x_anderson + (1-α)*x_old.
 # Values < 1.0 stabilize strong pressure-wind-temperature coupling.
-ANDERSON_RELAXATION = 0.5
+ANDERSON_RELAXATION = 0.4
 
 # Refresh the LU preconditioner every N Newton iterations (or earlier on failure).
 INEXACT_NEWTON_REFACTORIZE_EVERY = 6

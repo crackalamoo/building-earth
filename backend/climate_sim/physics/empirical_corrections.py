@@ -32,9 +32,9 @@ class EmpiricalCorrectionsConfig:
     # Antarctica: all land south of this latitude
     ice_sheet_antarctic_lat: float = -60.0
     # Greenland: lat/lon bounding box
-    ice_sheet_greenland_lat_min: float = 65.0
+    ice_sheet_greenland_lat_min: float = 62.0
     ice_sheet_greenland_lat_max: float = 85.0
-    ice_sheet_greenland_lon_min: float = 310.0  # 50°W
+    ice_sheet_greenland_lon_min: float = 300.0  # 60°W
     ice_sheet_greenland_lon_max: float = 340.0  # 20°W
     # Heat capacity multiplier for ice sheet cells near/above freezing
     # Represents massive latent heat of kilometers-thick ice
@@ -56,11 +56,20 @@ def compute_ice_sheet_mask(
 
     antarctica = (lat2d < config.ice_sheet_antarctic_lat) & land_mask
 
+    # Greenland narrows toward the south and east coast curves westward.
+    # Lat-dependent eastern bound avoids capturing Iceland:
+    #   >= 70°N: east edge at lon_max (340°E / 20°W)
+    #   62-70°N: east edge tapers to lon_max - 15° (325°E / 35°W)
+    gl_east_bound = np.where(
+        lat2d >= 70.0,
+        config.ice_sheet_greenland_lon_max,
+        config.ice_sheet_greenland_lon_max - 15.0 * (70.0 - np.clip(lat2d, 60.0, 70.0)) / 10.0,
+    )
     greenland = (
         (lat2d >= config.ice_sheet_greenland_lat_min)
         & (lat2d <= config.ice_sheet_greenland_lat_max)
         & (lon_norm >= config.ice_sheet_greenland_lon_min)
-        & (lon_norm <= config.ice_sheet_greenland_lon_max)
+        & (lon_norm <= gl_east_bound)
         & land_mask
     )
 
