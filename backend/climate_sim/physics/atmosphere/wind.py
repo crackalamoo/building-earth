@@ -256,13 +256,22 @@ class WindModel:
             reference_pressure_pa = 70000.0  # 700 hPa
 
         if temperature_boundary_layer is not None:
-            # Height-weighted column mean for pressure gradient calculation.
-            # Sea-level pressure reflects the weight of the entire column.
-            total_height = BOUNDARY_LAYER_HEIGHT_M + ATMOSPHERE_LAYER_HEIGHT_M
+            # Mass-weighted column mean for pressure gradient calculation.
+            # SLP reflects the weight of the entire column; density decays
+            # exponentially with scale height H ≈ 8500 m, so mass fraction
+            # is proportional to ∫ exp(-z/H) dz over each layer's extent.
+            _H = 8500.0  # scale height (m)
+            bl_mass = _H * (1.0 - np.exp(-BOUNDARY_LAYER_HEIGHT_M / _H))
+            atm_top = BOUNDARY_LAYER_HEIGHT_M + ATMOSPHERE_LAYER_HEIGHT_M
+            atm_mass = _H * (
+                np.exp(-BOUNDARY_LAYER_HEIGHT_M / _H)
+                - np.exp(-atm_top / _H)
+            )
+            total_mass = bl_mass + atm_mass
             column_temperature = (
-                temperature_boundary_layer * BOUNDARY_LAYER_HEIGHT_M +
-                temperature * ATMOSPHERE_LAYER_HEIGHT_M
-            ) / total_height
+                temperature_boundary_layer * bl_mass +
+                temperature * atm_mass
+            ) / total_mass
         else:
             # Single-layer case or missing BL temp
             column_temperature = temperature
