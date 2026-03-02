@@ -108,7 +108,7 @@ function buildBroadleafFoliageGeometry(): THREE.BufferGeometry {
   // White vertex colors — actual color is controlled entirely by instance color
   // so we can set it to green, orange, red, or brown seasonally
   const foliage = prepareForMerge(
-    new THREE.IcosahedronGeometry(h * 0.30, 1),
+    new THREE.OctahedronGeometry(h * 0.30, 1),
     1.0, 1.0, 1.0,
   );
   foliage.translate(0, h * 0.4 + h * 0.25, 0);
@@ -697,10 +697,18 @@ export class TreeInstances {
       }
 
       // Second pass: set up instances
+      const foliageTilt = new THREE.Quaternion();
+      const tiltAxis = new THREE.Vector3();
+      const tiltRand = mulberry32(SEED + 7); // separate PRNG so we don't shift main sequence
       for (let k = 0; k < count; k++) {
         const inst = broadleafList[k];
         dummy.compose(inst.position, inst.quaternion, new THREE.Vector3(inst.scaleXZ, inst.scaleY, inst.scaleXZ));
         trunkMesh.setMatrixAt(k, dummy);
+        // Random tilt on foliage so each octahedron catches light differently
+        tiltAxis.set(tiltRand() - 0.5, tiltRand() - 0.5, tiltRand() - 0.5).normalize();
+        foliageTilt.setFromAxisAngle(tiltAxis, (tiltRand() - 0.5) * 0.6);
+        const foliageQuat = inst.quaternion.clone().multiply(foliageTilt);
+        dummy.compose(inst.position, foliageQuat, new THREE.Vector3(inst.scaleXZ, inst.scaleY, inst.scaleXZ));
         foliageMesh.setMatrixAt(k, dummy);
 
         const variation = 0.85 + rand() * 0.30;
@@ -722,10 +730,12 @@ export class TreeInstances {
         this.broadleafPositions[k * 3] = inst.position.x;
         this.broadleafPositions[k * 3 + 1] = inst.position.y;
         this.broadleafPositions[k * 3 + 2] = inst.position.z;
-        this.broadleafQuaternions[k * 4] = inst.quaternion.x;
-        this.broadleafQuaternions[k * 4 + 1] = inst.quaternion.y;
-        this.broadleafQuaternions[k * 4 + 2] = inst.quaternion.z;
-        this.broadleafQuaternions[k * 4 + 3] = inst.quaternion.w;
+        this.broadleafQuaternions[k * 4] = foliageQuat.x;
+        this.broadleafQuaternions[k * 4 + 1] = foliageQuat.y;
+        this.broadleafQuaternions[k * 4 + 2] = foliageQuat.z;
+        this.broadleafQuaternions[k * 4 + 3] = foliageQuat.w;
+        // Store foliage position same as trunk (tilt doesn't change center)
+        // Position is already stored below from inst.position
 
         const t2mCI = Math.max(0, Math.min(t2mNlat - 1, Math.floor((inst.lat + 90) / 180 * t2mNlat)));
         const t2mCJ = Math.floor(((inst.lon % 360 + 360) % 360) / 360 * t2mNlon) % t2mNlon;
