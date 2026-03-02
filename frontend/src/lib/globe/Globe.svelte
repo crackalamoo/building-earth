@@ -898,7 +898,14 @@
     // stay fixed in world space during auto-rotate — they drift past
     // naturally as the camera orbits, just like the real night sky.
     if (starField) {
-      updateStarRotation(starField, sunOrbitAngle, displayMonthProgress);
+      if (uniformLighting && camera) {
+        // Always-day: position stars as if it's noon wherever the camera looks.
+        // Camera azimuth = the longitude the user is viewing = where the sun would be at noon.
+        const camAzimuth = Math.atan2(camera.position.x, camera.position.z);
+        updateStarRotation(starField, camAzimuth, displayMonthProgress);
+      } else {
+        updateStarRotation(starField, sunOrbitAngle, displayMonthProgress);
+      }
     }
 
     // Update screen-space sun bloom (only after reveal)
