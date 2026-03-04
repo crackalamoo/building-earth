@@ -22,6 +22,7 @@ from climate_sim.physics.vertical_motion import (
     compute_vertical_motion_tendencies,
     compute_bl_atm_mixing_tendencies,
     compute_hadley_subsidence_velocity,
+    compute_hadley_upper_velocity,
     hadley_subsidence_drying_jacobian,
     hadley_convergence_moistening_jacobian,
     _ALPHA,
@@ -340,6 +341,21 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         )
                         radiative[2] += advection_atmosphere
 
+                    # Upper-branch Hadley advection of T_atm
+                    if (inputs.vertical_motion_cfg is not None
+                            and inputs.vertical_motion_cfg.enabled
+                            and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0):
+                        lat_rad_2d = np.deg2rad(inputs.lat2d)
+                        w_hadley_fwd = compute_hadley_subsidence_velocity(
+                            lat_rad_2d, itcz_rad,
+                            peak_velocity_m_s=inputs.vertical_motion_cfg.hadley_descent_velocity_m_s,
+                        )
+                        v_upper = compute_hadley_upper_velocity(w_hadley_fwd, lat_rad_2d, itcz_rad)
+                        u_zero = np.zeros_like(v_upper)
+                        radiative[2] += inputs.advection_operator.tendency(
+                            atmosphere_temperature, u_zero, v_upper
+                        )
+
                 if sensible_heat_model is not None:
                     tendencies = sensible_heat_model.compute_tendencies(
                         surface_temperature_K=surface_temperature,
@@ -532,6 +548,29 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                                 if sparse.isspmatrix_csc(atm_matrix_csr)
                                 else atm_matrix_csr.tocsc()
                             )
+
+                    # Upper-branch Hadley advection Jacobian for T_atm
+                    if (inputs.vertical_motion_cfg is not None
+                            and inputs.vertical_motion_cfg.enabled
+                            and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0):
+                        lat_rad_2d = np.deg2rad(inputs.lat2d)
+                        w_hadley_jac = compute_hadley_subsidence_velocity(
+                            lat_rad_2d, itcz_rad,
+                            peak_velocity_m_s=inputs.vertical_motion_cfg.hadley_descent_velocity_m_s,
+                        )
+                        v_upper_jac = compute_hadley_upper_velocity(w_hadley_jac, lat_rad_2d, itcz_rad)
+                        u_zero = np.zeros_like(v_upper_jac)
+                        _, hadley_atm_mat = inputs.advection_operator.linearised_tendency(u_zero, v_upper_jac)
+                        if hadley_atm_mat is not None:
+                            hadley_csc = (
+                                hadley_atm_mat
+                                if sparse.isspmatrix_csc(hadley_atm_mat)
+                                else hadley_atm_mat.tocsc()
+                            )
+                            if atmosphere_advection_matrix is not None:
+                                atmosphere_advection_matrix = atmosphere_advection_matrix + hadley_csc
+                            else:
+                                atmosphere_advection_matrix = hadley_csc
 
             # Compute sensible heat exchange Jacobian if enabled
             if sensible_heat_model is not None:

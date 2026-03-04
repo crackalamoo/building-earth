@@ -31,6 +31,7 @@ from climate_sim.data.constants import (
     BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
     STANDARD_LAPSE_RATE_K_PER_M,
     HEAT_CAPACITY_AIR_J_KG_K,
+    R_EARTH_METERS,
     STEFAN_BOLTZMANN_W_M2_K4,
 )
 from climate_sim.physics.atmosphere.pressure import (
@@ -361,6 +362,72 @@ _P0 = 1013.25  # hPa
 _P_ATM = 500.0  # hPa
 _KAPPA = 0.286  # R/cp
 _ALPHA = (_P0 / _P_ATM) ** _KAPPA  # ≈ 1.219
+
+
+def compute_hadley_upper_velocity(
+    w_hadley: np.ndarray,
+    lat_rad: np.ndarray,
+    itcz_rad: np.ndarray,
+    h_atm: float = ATMOSPHERE_LAYER_HEIGHT_M,
+    rho: float = 0.5,  # kg/m³, upper-troposphere density (~300 hPa)
+) -> np.ndarray:
+    """Compute upper-branch meridional velocity from Hadley cell mass continuity.
+
+    Integrates w outward from the ITCZ in both directions, confined to
+    the Hadley cell (between ITCZ and subtropical descent latitudes).
+    """
+    # Zonal-mean w and cos(lat) — work on 1D latitude profile
+    lat_1d = lat_rad[:, 0]  # radians
+    cos_lat = np.cos(lat_1d)
+    w_zonal = np.mean(w_hadley, axis=1)  # (nlat,)
+    nlat = lat_rad.shape[0]
+    dlat = np.pi / nlat  # radians
+
+    # ITCZ index from passed itcz_rad
+    itcz_lat_rad = float(np.ravel(itcz_rad)[0])
+    itcz_idx = int(np.argmin(np.abs(lat_1d - itcz_lat_rad)))
+    lat_sub_n = LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_lat_rad
+    lat_sub_s = -LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_lat_rad
+
+    integrand = w_zonal * cos_lat * R_EARTH_METERS * dlat  # m²/s per band
+    v_upper_1d = np.zeros(nlat)
+    denom = rho * h_atm * np.maximum(cos_lat, 0.05)
+
+    # Integrate northward from ITCZ (northern Hadley cell)
+    cum = 0.0
+    for j in range(itcz_idx, nlat):
+        cum += integrand[j]
+        if cum > 0:
+            cum = 0.0
+        v_upper_1d[j] = -cum / denom[j]
+
+    # Integrate southward from ITCZ (southern Hadley cell)
+    cum = 0.0
+    for j in range(itcz_idx - 1, -1, -1):
+        cum += integrand[j]
+        if cum > 0:
+            cum = 0.0
+        v_upper_1d[j] = cum / denom[j]
+
+    # Zero outside Hadley cells (poleward of descent zones + margin)
+    margin = np.deg2rad(10.0)
+    hadley_mask = np.ones(nlat)
+    for j in range(nlat):
+        if lat_1d[j] > lat_sub_n + margin or lat_1d[j] < lat_sub_s - margin:
+            hadley_mask[j] = 0.0
+        elif lat_1d[j] > lat_sub_n:
+            # Taper to zero
+            hadley_mask[j] = 1.0 - (lat_1d[j] - lat_sub_n) / margin
+        elif lat_1d[j] < lat_sub_s:
+            hadley_mask[j] = 1.0 - (lat_sub_s - lat_1d[j]) / margin
+
+    v_upper_1d *= hadley_mask
+
+    # Broadcast to 2D
+    nlon = lat_rad.shape[1]
+    v_upper = v_upper_1d[:, np.newaxis] * np.ones(nlon)
+
+    return v_upper
 
 
 def compute_bl_atm_mixing_tendencies(
