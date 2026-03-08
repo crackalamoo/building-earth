@@ -876,9 +876,13 @@
       }
     }
 
-    // Update seasonal tree foliage
+    // Update seasonal tree foliage + wind sway
     if (treeInstances && layerData && activeLayer === 'blue-marble') {
       treeInstances.setMonth(displayMonthProgress, layerData);
+      if (time !== undefined && lastAnimateTime !== null) {
+        const tdt = (time - lastAnimateTime) / 1000;
+        treeInstances.update(tdt);
+      }
     }
 
     // Update clouds: setMonth for target opacity, update for drift + fade animation

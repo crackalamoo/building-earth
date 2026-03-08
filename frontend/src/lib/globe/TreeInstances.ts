@@ -357,6 +357,11 @@ export class TreeInstances {
   private lastMonthProgress: number = -1;
   private sunDirUniform: { value: THREE.Vector3 } = { value: new THREE.Vector3(1, 0, 0) };
 
+  // Wind sway
+  private uTimeUniform: { value: number } = { value: 0 };
+  // Per-mesh: lat/lon arrays for wind sampling
+  private meshInstanceLatLon: Map<THREE.InstancedMesh, Float32Array> = new Map(); // interleaved [lat0,lon0,lat1,lon1,...]
+
   constructor(layerData: ClimateLayerData) {
     this.group = new THREE.Group();
 
@@ -594,7 +599,8 @@ export class TreeInstances {
     this.sunDirUniform = { value: new THREE.Vector3(1, 0, 0) };
     material.onBeforeCompile = (shader) => {
       shader.uniforms.sunDir = this.sunDirUniform;
-      shader.vertexShader = 'uniform vec3 sunDir;\n' + shader.vertexShader;
+      shader.uniforms.uTime = this.uTimeUniform;
+      shader.vertexShader = 'uniform vec3 sunDir;\nuniform float uTime;\nattribute vec3 instanceWind;\n' + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace(
         '#include <color_vertex>',
         `
@@ -604,6 +610,28 @@ export class TreeInstances {
         float surfaceDot = dot(globeNormal, sunDir);
         float surfaceLight = smoothstep(-0.05, 0.15, surfaceDot);
         vColor.rgb *= mix(0.08, 1.0, surfaceLight);
+        `
+      );
+      // Wind sway: apply displacement in view space after projection setup
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <project_vertex>',
+        `
+        #include <project_vertex>
+        {
+          float windSpeed = length(instanceWind);
+          if (windSpeed > 0.5) {
+            float height = clamp(position.y / ${(TREE_HEIGHT * 1.5).toFixed(4)}, 0.0, 1.0);
+            float swayAmount = height * height * windSpeed * 0.0018;
+            vec3 treeOrigin = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+            float phase = dot(treeOrigin, vec3(37.0, 71.0, 113.0));
+            float oscillation = 0.6 + sin(uTime * 2.0 + phase) * 0.3 + sin(uTime * 3.3 + phase * 1.7) * 0.1;
+            vec3 windDir = instanceWind / windSpeed;
+            // Transform wind direction to view space (direction only, w=0)
+            vec3 viewWindDir = mat3(viewMatrix) * windDir;
+            mvPosition.xyz += viewWindDir * swayAmount * oscillation;
+            gl_Position = projectionMatrix * mvPosition;
+          }
+        }
         `
       );
     };
@@ -630,6 +658,18 @@ export class TreeInstances {
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.frustumCulled = false;
+
+      // Store lat/lon for wind sampling
+      const coniferLatLon = new Float32Array(coniferList.length * 2);
+      for (let k = 0; k < coniferList.length; k++) {
+        coniferLatLon[k * 2] = coniferList[k].lat;
+        coniferLatLon[k * 2 + 1] = coniferList[k].lon;
+      }
+      this.meshInstanceLatLon.set(mesh, coniferLatLon);
+
+      // Initialize wind attribute (zeroed — setMonth fills it)
+      const windAttr = new THREE.InstancedBufferAttribute(new Float32Array(coniferList.length * 3), 3);
+      mesh.geometry.setAttribute('instanceWind', windAttr);
 
       this.meshes.push(mesh);
       this.group.add(mesh);
@@ -753,6 +793,21 @@ export class TreeInstances {
       foliageMesh.frustumCulled = false;
 
 
+      // Store lat/lon for wind sampling (shared between trunk and foliage)
+      const broadleafLatLon = new Float32Array(count * 2);
+      for (let k = 0; k < count; k++) {
+        broadleafLatLon[k * 2] = broadleafList[k].lat;
+        broadleafLatLon[k * 2 + 1] = broadleafList[k].lon;
+      }
+      this.meshInstanceLatLon.set(trunkMesh, broadleafLatLon);
+      this.meshInstanceLatLon.set(foliageMesh, broadleafLatLon);
+
+      // Initialize wind attributes
+      const trunkWind = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
+      trunkMesh.geometry.setAttribute('instanceWind', trunkWind);
+      const foliageWind = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
+      foliageMesh.geometry.setAttribute('instanceWind', foliageWind);
+
       this.broadleafFoliageMesh = foliageMesh;
       this.meshes.push(trunkMesh);
       this.meshes.push(foliageMesh);
@@ -778,6 +833,17 @@ export class TreeInstances {
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.frustumCulled = false;
 
+      // Store lat/lon for wind sampling
+      const palmLatLon = new Float32Array(palmList.length * 2);
+      for (let k = 0; k < palmList.length; k++) {
+        palmLatLon[k * 2] = palmList[k].lat;
+        palmLatLon[k * 2 + 1] = palmList[k].lon;
+      }
+      this.meshInstanceLatLon.set(mesh, palmLatLon);
+
+      const palmWind = new THREE.InstancedBufferAttribute(new Float32Array(palmList.length * 3), 3);
+      mesh.geometry.setAttribute('instanceWind', palmWind);
+
       this.meshes.push(mesh);
       this.group.add(mesh);
     }
@@ -794,8 +860,16 @@ export class TreeInstances {
    * No phase boundaries — just smooth lerp between adjacent month samples.
    */
   setMonth(monthProgress: number, _layerData: ClimateLayerData): void {
+    // Update wind for all tree types
+    if (Math.abs(monthProgress - this.lastMonthProgress) >= 0.01) {
+      this.updateWindAttributes(_layerData, monthProgress);
+    }
+
     const foliage = this.broadleafFoliageMesh;
-    if (!foliage || foliage.count === 0) return;
+    if (!foliage || foliage.count === 0) {
+      this.lastMonthProgress = monthProgress;
+      return;
+    }
 
     if (Math.abs(monthProgress - this.lastMonthProgress) < 0.01) return;
     this.lastMonthProgress = monthProgress;
@@ -886,6 +960,89 @@ export class TreeInstances {
 
     foliage.instanceMatrix.needsUpdate = true;
     if (foliage.instanceColor) foliage.instanceColor.needsUpdate = true;
+  }
+
+  /** Advance wind sway time — call every frame. */
+  update(dt: number): void {
+    this.uTimeUniform.value += dt;
+  }
+
+  /** Update per-instance wind vectors from climate data. */
+  private updateWindAttributes(layerData: ClimateLayerData, monthProgress: number): void {
+    const windU = layerData.wind_u_10m;
+    const windV = layerData.wind_v_10m;
+    if (!windU || !windV) return;
+
+    const uData = windU.data as Float32Array;
+    const vData = windV.data as Float32Array;
+    const nlat = windU.shape[1];
+    const nlon = windU.shape[2];
+
+    const mp = ((monthProgress % 12) + 12) % 12;
+    const m0 = Math.floor(mp) % 12;
+    const m1 = (m0 + 1) % 12;
+    const frac = mp - Math.floor(mp);
+    const off0 = m0 * nlat * nlon;
+    const off1 = m1 * nlat * nlon;
+
+    for (const mesh of this.meshes) {
+      const latLon = this.meshInstanceLatLon.get(mesh);
+      if (!latLon) continue;
+      const windAttr = mesh.geometry.getAttribute('instanceWind') as THREE.InstancedBufferAttribute;
+      if (!windAttr) continue;
+      const arr = windAttr.array as Float32Array;
+      const count = mesh.count;
+
+      for (let k = 0; k < count; k++) {
+        const lat = latLon[k * 2];
+        const lon = latLon[k * 2 + 1];
+
+        // Map lat/lon to grid indices (index 0 = south pole, matching WindParticles)
+        const latStep = 180 / nlat;
+        const lonStep = 360 / nlon;
+        const fi = (lat + 90) / latStep - 0.5;
+        const fj = lon / lonStep - 0.5;
+        const i0 = Math.max(0, Math.min(nlat - 1, Math.floor(fi)));
+        const i1 = Math.min(nlat - 1, i0 + 1);
+        const j0 = ((Math.floor(fj) % nlon) + nlon) % nlon;
+        const j1 = (j0 + 1) % nlon;
+        const ti = Math.max(0, Math.min(1, fi - Math.floor(fi)));
+        const tj = Math.max(0, Math.min(1, fj - Math.floor(fj)));
+
+        // Bilinear interpolation for both months, then temporal lerp
+        const w00 = (1 - ti) * (1 - tj), w10 = ti * (1 - tj), w01 = (1 - ti) * tj, w11 = ti * tj;
+        const u0 = uData[off0 + i0 * nlon + j0] * w00 + uData[off0 + i1 * nlon + j0] * w10 +
+                    uData[off0 + i0 * nlon + j1] * w01 + uData[off0 + i1 * nlon + j1] * w11;
+        const u1 = uData[off1 + i0 * nlon + j0] * w00 + uData[off1 + i1 * nlon + j0] * w10 +
+                    uData[off1 + i0 * nlon + j1] * w01 + uData[off1 + i1 * nlon + j1] * w11;
+        const v0 = vData[off0 + i0 * nlon + j0] * w00 + vData[off0 + i1 * nlon + j0] * w10 +
+                    vData[off0 + i0 * nlon + j1] * w01 + vData[off0 + i1 * nlon + j1] * w11;
+        const v1 = vData[off1 + i0 * nlon + j0] * w00 + vData[off1 + i1 * nlon + j0] * w10 +
+                    vData[off1 + i0 * nlon + j1] * w01 + vData[off1 + i1 * nlon + j1] * w11;
+        const u = u0 + (u1 - u0) * frac;
+        const v = v0 + (v1 - v0) * frac;
+
+        // Convert wind (u=east, v=north) to world-space tangent vector
+        const lonRad = lon * DEG2RAD;
+        const latRad = lat * DEG2RAD;
+        const sinLon = Math.sin(lonRad), cosLon = Math.cos(lonRad);
+        const sinLat = Math.sin(latRad), cosLat = Math.cos(latRad);
+
+        // East unit vector: d(pos)/d(lon) = (sinLon, 0, cosLon)
+        // North unit vector: d(pos)/d(lat) = (cosLon*sinLat, cosLat, -sinLon*sinLat)
+        // (consistent with latLonToNormal: pos = (-sinPhi*cosTheta, cosPhi, sinPhi*sinTheta))
+        // East unit vector: d(pos)/d(lon) = (sinLon, 0, cosLon)
+        // North unit vector: d(pos)/d(lat) = (cosLon*sinLat, cosLat, -sinLon*sinLat)
+        const wx = u * sinLon + v * cosLon * sinLat;
+        const wy = v * cosLat;
+        const wz = u * cosLon - v * sinLon * sinLat;
+
+        arr[k * 3] = wx;
+        arr[k * 3 + 1] = wy;
+        arr[k * 3 + 2] = wz;
+      }
+      windAttr.needsUpdate = true;
+    }
   }
 
   setSunDirection(dir: THREE.Vector3): void {
