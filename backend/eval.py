@@ -1720,11 +1720,13 @@ def plot_eval_metrics(
             np.sqrt(np.nansum(pop_frac * cell_mse_display))
         )
 
-        # For the map: show each cell's RMSE scaled by its population weight
-        # relative to equal weighting, so heavily populated cells with large errors
-        # stand out and empty cells vanish.
-        n_cells = float(np.sum(valid_pop))
-        pop_rmse_map = cell_rmse_display * np.sqrt(pop_frac * n_cells)
+        # For the map: scale RMSE by log(population) so that population
+        # differences don't completely dominate RMSE differences.
+        # log compresses the population range (1000x → ~3x) letting
+        # RMSE variation remain visible.
+        log_pop = np.log1p(pop_weights)  # log(1 + pop) to handle zeros
+        log_pop_norm = log_pop / np.nanmax(log_pop[valid_pop])  # 0-1
+        pop_rmse_map = cell_rmse_display * log_pop_norm
         pop_rmse_map[~valid_pop] = np.nan
 
         ax_pop = fig.add_axes([0.1, 0.15, 0.75, 0.75], projection=projection)
