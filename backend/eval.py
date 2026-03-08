@@ -681,6 +681,7 @@ def plot_humidity_precip_anomaly(
         cmap=colormaps["BrBG"],
         norm=Normalize(vmin=-p_vmax, vmax=p_vmax),
         colorbar_label="Precipitation anomaly (mm/day)",
+        per_layer_styles=[{"unit": "mm/day"}],
     )
 
 
@@ -713,6 +714,7 @@ def plot_slp_anomaly(
         cmap=colormaps["RdBu_r"],
         norm=Normalize(vmin=-slp_vmax, vmax=slp_vmax),
         colorbar_label="SLP anomaly (hPa)",
+        per_layer_styles=[{"unit": "hPa"}],
     )
 
 
@@ -834,6 +836,7 @@ def plot_wind_speed_anomaly(
         cmap=colormaps["RdBu_r"],
         norm=Normalize(vmin=-wspd_vmax, vmax=wspd_vmax),
         colorbar_label="Wind speed anomaly (m/s)",
+        per_layer_styles=[{"unit": "m/s"}],
     )
 
 

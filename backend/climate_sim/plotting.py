@@ -188,12 +188,24 @@ def add_dynamic_status_readout(
         return
 
     def on_move(event):
-        if event.inaxes != ax or event.xdata is None or event.ydata is None:
+        if not ax.get_visible() or event.x is None or event.y is None:
+            return
+
+        # Use coordinate transform to check if cursor is within this axes,
+        # since event.inaxes may point to an invisible overlapping axes.
+        try:
+            coords = ax.transData.inverted().transform((event.x, event.y))
+        except Exception:
+            return
+        x_data, y_data = coords
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        if not (xlim[0] <= x_data <= xlim[1] and ylim[0] <= y_data <= ylim[1]):
             toolbar.set_message("")
             return
 
-        lon = event.xdata % 360.0
-        lat = event.ydata
+        lon = x_data % 360.0
+        lat = y_data
 
         if not np.isfinite(lon) or not np.isfinite(lat):
             return
@@ -223,6 +235,7 @@ def plot_monthly_temperature_cycle(
     colorbar_ticks: Iterable[float] | None = None,
     use_fahrenheit: bool = False,
     value_is_delta: bool = False,
+    per_layer_styles: Sequence[dict] | None = None,
 ) -> None:
     """Interactive monthly cycle viewer driven by a slider."""
     plot_layered_monthly_temperature_cycle(
@@ -236,6 +249,7 @@ def plot_monthly_temperature_cycle(
         colorbar_ticks=colorbar_ticks,
         use_fahrenheit=use_fahrenheit,
         value_is_delta=value_is_delta,
+        per_layer_styles=per_layer_styles,
     )
 
 
