@@ -7,9 +7,10 @@
 
 import * as THREE from 'three';
 import type { FieldData } from './loadBinaryData';
+import { rendering } from './deviceScaling';
 
-const PARTICLE_COUNT = 15000;
-const TRAIL_LENGTH = 30; // positions per particle — longer comet tails
+const PARTICLE_COUNT = rendering.particleCount;
+const TRAIL_LENGTH = rendering.trailLength;
 const GLOBE_RADIUS = 1.002;
 const MIN_LIFETIME = 3.0;
 const MAX_LIFETIME = 7.0;

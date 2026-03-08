@@ -9,6 +9,7 @@
   import { createAtmosphere, updateAtmosphereSunDirection } from './Atmosphere';
   import { createStarField, updateStarRotation, type StarField } from './Stars';
   import { CityLights } from './CityLights';
+  import { rendering } from './deviceScaling';
   import type { ClimateLayerData } from './loadBinaryData';
   import { getSunDeclination, createSunOrb, createSunBloom, updateSunBloom, disposeSun } from './Sun';
   import { createGlobeMesh, createTemperatureGlobe, createBlueMarbleGlobe, createPrimordialGlobe } from './globeFactory';
@@ -744,7 +745,7 @@
     // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: false });
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, rendering.pixelRatioCap));
     container.appendChild(renderer.domElement);
 
     // Controls
