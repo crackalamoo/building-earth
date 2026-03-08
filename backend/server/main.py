@@ -177,8 +177,8 @@ async def chat(request: Request) -> StreamingResponse:
                     result = {"error": "Failed to sample climate data"}
                 # Send tool progress event
                 field_name = args.get("field", "?") if isinstance(args, dict) else "?"
-                field_desc = FIELD_INFO.get(field_name, {}).get("desc", field_name)
-                yield f"data: {json.dumps({'tool': field_desc})}\n\n"
+                field_label = FIELD_INFO.get(field_name, {}).get("label", field_name)
+                yield f"data: {json.dumps({'tool': field_label})}\n\n"
                 assistant_tool_calls.append({
                     "id": tc["id"],
                     "type": "function",
