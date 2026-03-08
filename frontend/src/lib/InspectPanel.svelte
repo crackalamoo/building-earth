@@ -200,7 +200,15 @@
           if (data === '[DONE]') break;
           try {
             const parsed = JSON.parse(data);
-            if (parsed.tool) {
+            if (parsed.error) {
+              const last = currentParts[currentParts.length - 1];
+              if (last && last.type === 'text') {
+                last.content += parsed.error;
+              } else {
+                currentParts.push({ type: 'text', content: parsed.error });
+              }
+              messages[messages.length - 1].content += parsed.error;
+            } else if (parsed.tool) {
               const last = currentParts[currentParts.length - 1];
               if (last && last.type === 'tools') {
                 last.fields = [...last.fields, parsed.tool];

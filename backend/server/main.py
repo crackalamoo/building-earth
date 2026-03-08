@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .rate_limit import create_chat_limiter
 from fastapi.responses import StreamingResponse
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIError
 
 from .climate_data import FIELD_INFO, ClimateDataStore
 from .prompts import build_system_prompt
@@ -120,34 +120,41 @@ async def chat(request: Request) -> StreamingResponse:
             tool_calls_acc: dict[int, dict[str, str]] = {}  # index -> {id, name, arguments}
             text_chunks: list[str] = []
 
-            stream = await client.chat.completions.create(
-                model=MODEL,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                stream=True,
-            )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta
+            try:
+                stream = await client.chat.completions.create(
+                    model=MODEL,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    stream=True,
+                )
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta
 
-                # Stream text tokens immediately
-                if delta.content:
-                    text_chunks.append(delta.content)
-                    yield f"data: {json.dumps({'text': delta.content})}\n\n"
+                    # Stream text tokens immediately
+                    if delta.content:
+                        text_chunks.append(delta.content)
+                        yield f"data: {json.dumps({'text': delta.content})}\n\n"
 
-                # Accumulate tool call deltas
-                if delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
-                        if tc_delta.id:
-                            tool_calls_acc[idx]["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                tool_calls_acc[idx]["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+                    # Accumulate tool call deltas
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_calls_acc:
+                                tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                            if tc_delta.id:
+                                tool_calls_acc[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    tool_calls_acc[idx]["name"] = tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+            except APIError as e:
+                yield f"data: {json.dumps({'error': f'LLM service error: {e.message}'})}\n\n"
+                break
+            except Exception:
+                yield f"data: {json.dumps({'error': 'Something went wrong. Please try again.'})}\n\n"
+                break
 
             # If no tool calls, we're done — text was already streamed
             if not tool_calls_acc:
@@ -157,19 +164,21 @@ async def chat(request: Request) -> StreamingResponse:
             assistant_tool_calls = []
             for idx in sorted(tool_calls_acc):
                 tc = tool_calls_acc[idx]
-                args = json.loads(tc["arguments"])
+                try:
+                    args = json.loads(tc["arguments"])
+                    result = store.sample(
+                        field=args["field"],
+                        lat=args["lat"],
+                        lon=args["lon"],
+                        month=args["month"],
+                        imperial=imperial,
+                    )
+                except Exception:
+                    result = {"error": "Failed to sample climate data"}
                 # Send tool progress event
-                field_name = args.get("field", "?")
+                field_name = args.get("field", "?") if isinstance(args, dict) else "?"
                 field_desc = FIELD_INFO.get(field_name, {}).get("desc", field_name)
                 yield f"data: {json.dumps({'tool': field_desc})}\n\n"
-                # Resolve and build message history
-                result = store.sample(
-                    field=args["field"],
-                    lat=args["lat"],
-                    lon=args["lon"],
-                    month=args["month"],
-                    imperial=imperial,
-                )
                 assistant_tool_calls.append({
                     "id": tc["id"],
                     "type": "function",
