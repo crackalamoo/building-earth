@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+import xarray as xr
+
 # ── Field metadata: description + units ──────────────────────────────────────
 
 FIELD_INFO: dict[str, dict[str, str]] = {
@@ -183,6 +185,133 @@ class ClimateDataStore:
             value = float(arr[month_idx, lat_idx, lon_idx])
         else:
             value = float(arr[lat_idx, lon_idx])
+
+        raw_unit = info["unit"]
+        value, unit = _to_display_units(value, raw_unit, imperial)
+
+        return {
+            "field": field,
+            "value": round(value, 2),
+            "unit": unit,
+            "description": info["desc"],
+        }
+
+
+# ── Observational data (NOAA 1981-2010 climatology) ─────────────────────────
+
+# Maps tool field name → (NetCDF file key, NetCDF variable, label, raw unit, source file)
+_CLIM_FILE = "ref_climatology_1deg_1981-2010.nc"
+_HP_FILE = "ref_humidity_precip_1deg_1981-2010.nc"
+
+OBS_FIELD_INFO: dict[str, dict[str, str]] = {
+    "land_temperature": {
+        "var": "t_land_clim", "file": _CLIM_FILE,
+        "label": "Observed land temp", "desc": "Observed 2-meter air temperature over land (GHCN_CAMS stations, land only)",
+        "unit": "°C",
+    },
+    "sst": {
+        "var": "t_sst_clim", "file": _CLIM_FILE,
+        "label": "Observed SST", "desc": "Observed sea surface temperature (COBE2 satellite, ocean only)",
+        "unit": "°C",
+    },
+    "humidity": {
+        "var": "shum_clim", "file": _HP_FILE,
+        "label": "Observed humidity", "desc": "Observed specific humidity (NCEP reanalysis)",
+        "unit": "kg/kg",
+    },
+    "precipitation": {
+        "var": "precip_clim", "file": _HP_FILE,
+        "label": "Observed precip", "desc": "Observed precipitation (GPCP satellite+gauge)",
+        "unit": "kg/m²/s",  # stored as mm/day, converted on load
+    },
+    "pressure": {
+        "var": "slp_clim", "file": _HP_FILE,
+        "label": "Observed pressure", "desc": "Observed sea-level pressure (NCEP reanalysis)",
+        "unit": "Pa",
+    },
+    "wind_u": {
+        "var": "uwnd_clim", "file": _HP_FILE,
+        "label": "Observed wind E/W", "desc": "Observed eastward wind (NCEP reanalysis)",
+        "unit": "m/s",
+    },
+    "wind_v": {
+        "var": "vwnd_clim", "file": _HP_FILE,
+        "label": "Observed wind N/S", "desc": "Observed northward wind (NCEP reanalysis)",
+        "unit": "m/s",
+    },
+}
+
+
+class ObsDataStore:
+    """Loads NOAA 1981-2010 climatology at 1° resolution."""
+
+    def __init__(self, data_dir: str | Path = "data/processed") -> None:
+        self._data: dict[str, np.ndarray] = {}
+        data_dir = Path(data_dir)
+        self._load(data_dir)
+
+    def _load(self, data_dir: Path) -> None:
+        # Group fields by source file
+        by_file: dict[str, list[str]] = {}
+        for field, info in OBS_FIELD_INFO.items():
+            by_file.setdefault(info["file"], []).append(field)
+
+        for filename, fields in by_file.items():
+            path = data_dir / filename
+            if not path.exists():
+                continue
+            ds = xr.open_dataset(path)
+            for field in fields:
+                var = OBS_FIELD_INFO[field]["var"]
+                if var not in ds:
+                    continue
+                arr = np.asarray(ds[var].values, dtype=np.float32)
+                # Precipitation: stored as mm/day, convert to kg/m²/s
+                if field == "precipitation":
+                    arr = arr / 86400.0
+                self._data[field] = arr
+            ds.close()
+
+    @property
+    def available_fields(self) -> list[str]:
+        return [f for f in OBS_FIELD_INFO if f in self._data]
+
+    def sample(
+        self, field: str, lat: float, lon: float, month: int, *, imperial: bool = False,
+    ) -> dict[str, Any]:
+        """Sample an observation field at (lat, lon, month)."""
+        if field not in self._data:
+            return {"field": field, "error": f"Unknown observation field '{field}'"}
+
+        arr = self._data[field]
+        info = OBS_FIELD_INFO[field]
+
+        # Fixed 1° grid: (12, 180, 360)
+        if arr.ndim == 3:
+            _, nlat, nlon = arr.shape
+        elif arr.ndim == 2:
+            nlat, nlon = arr.shape
+        else:
+            return {"field": field, "error": f"Unexpected shape {arr.shape}"}
+
+        lat_idx = int(np.clip(round((lat + 90) / 180 * nlat - 0.5), 0, nlat - 1))
+        lon_norm = ((lon % 360) + 360) % 360
+        lon_idx = int(np.floor(lon_norm / 360 * nlon)) % nlon
+        month_idx = int(month) % 12
+
+        if arr.ndim == 3:
+            value = float(arr[month_idx, lat_idx, lon_idx])
+        else:
+            value = float(arr[lat_idx, lon_idx])
+
+        if np.isnan(value):
+            return {
+                "field": field,
+                "value": None,
+                "unit": info["unit"],
+                "description": info["desc"],
+                "note": "No observation at this location (land-only or ocean-only dataset)",
+            }
 
         raw_unit = info["unit"]
         value, unit = _to_display_units(value, raw_unit, imperial)
