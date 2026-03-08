@@ -1296,6 +1296,7 @@ def find_periodic_climate_cycle(
                                 ocean_albedo=month_ocean_alb,
                                 ice_sheet_mask=surface_context.ice_sheet_mask,
                             )
+                    print(f"Converged at iter {iter_idx} (RMS={residual_rms:.3f}K  95p={residual_95p:.3f}K)")
                     return final_states
 
                 states = advanced_states
@@ -1412,6 +1413,16 @@ def find_periodic_climate_cycle(
                 delta_T = T_next - state.temperature
                 delta_T = np.clip(delta_T, -MAX_TEMP_STEP_K, MAX_TEMP_STEP_K)
                 T_next = state.temperature + delta_T
+
+                # Clamp humidity changes to prevent oscillation at the
+                # ITCZ edge where small q differences cause large latent
+                # heat swings within the monthly Newton solve.
+                if q_next is not None and state.humidity_field is not None:
+                    MAX_Q_STEP = 0.001  # kg/kg (~1 g/kg per iteration)
+                    delta_q = q_next - state.humidity_field
+                    delta_q = np.clip(delta_q, -MAX_Q_STEP, MAX_Q_STEP)
+                    q_next = state.humidity_field + delta_q
+                    q_next = np.maximum(q_next, 1e-6)
 
                 # Apply Anderson-accelerated state with mixed prognostic variables
                 # Diagnostics (albedo, wind, precipitation, clouds) will be recomputed

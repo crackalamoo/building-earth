@@ -45,10 +45,11 @@ from climate_sim.physics.atmosphere.pressure import (
 GAMMA_DRY = 0.0098  # K/m, dry adiabatic lapse rate (for subsidence)
 GAMMA_MOIST = STANDARD_LAPSE_RATE_K_PER_M  # ~0.0065 K/m, moist lapse rate (for ascent)
 
-# Upper troposphere humidity fraction relative to boundary layer
-# Air rising through the troposphere loses most moisture via precipitation
-# By the time it reaches the upper troposphere (~300 hPa), q is ~20% of surface value
-UPPER_TROPOSPHERE_Q_FRACTION = 0.20
+# Upper troposphere humidity fraction relative to boundary layer.
+# Air rising through the troposphere loses most moisture via precipitation.
+# By the time it reaches the upper troposphere (~300 hPa), q is ~20-30% of
+# surface value.
+UPPER_TROPOSPHERE_Q_FRACTION = 0.30
 
 
 @dataclass(frozen=True)
@@ -64,8 +65,8 @@ class VerticalMotionConfig:
 
     # Humidity of air entrained into BL top from subsidence.
     # Descending air has lost most moisture via precipitation during ascent;
-    # upper-tropospheric q is ~15-20% of BL value.
-    upper_troposphere_q_fraction: float = 0.20
+    # upper-tropospheric q is ~20-30% of BL value.
+    upper_troposphere_q_fraction: float = 0.30
 
     # Background BL-atmosphere mixing timescale (seconds).
     # Represents subsidence, entrainment, and turbulent exchange that
@@ -242,20 +243,26 @@ def compute_hadley_subsidence_velocity(
 
     Returns vertical velocity (m/s), positive = descent, negative = ascent.
 
-    Peak is BL-top subsidence (~1 mm/s), not mid-tropospheric omega (3-5 mm/s).
-    Uses a narrow Gaussian (σ=7°) for descent, with compensating ITCZ ascent.
+    Descent is a fixed-latitude pattern driven by radiative cooling of the
+    subtropical free troposphere (~10-35° in each hemisphere). This does NOT
+    depend on the ITCZ position — the desert doesn't move with the ITCZ.
+    ITCZ ascent then overrides descent where convection dominates.
+
+    Peak velocity is scaled down (0.6×) relative to the ITCZ ascent because
+    the descent is spread over a broader area (~25° vs ~15° for the ascent).
     """
-    lat_subtrop_north = LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
-    lat_subtrop_south = -LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
+    # Fixed subtropical descent: broad plateau from ~10° to ~35° in each
+    # hemisphere, driven by radiative cooling. Smooth tanh transitions.
+    inner_edge = np.deg2rad(10.0)   # equatorward edge of descent zone
+    outer_edge = np.deg2rad(35.0)   # poleward edge (Hadley-Ferrel boundary)
+    ramp = np.deg2rad(4.0)          # transition width
 
-    # Hadley-Ferrel boundary: descent must go to zero here
-    sigma_descent = np.deg2rad(7.0)  # Narrower than pressure σ=12°
-
-    # Subtropical descent (positive = downward)
-    w_descent = peak_velocity_m_s * (
-        np.exp(-((lat_rad - lat_subtrop_south) / sigma_descent) ** 2)
-        + np.exp(-((lat_rad - lat_subtrop_north) / sigma_descent) ** 2)
+    abs_lat = np.abs(lat_rad)
+    descent_envelope = (
+        0.5 * (1.0 + np.tanh((abs_lat - inner_edge) / ramp))
+        * 0.5 * (1.0 + np.tanh((outer_edge - abs_lat) / ramp))
     )
+    w_descent = 0.6 * peak_velocity_m_s * descent_envelope
 
     # ITCZ ascent (negative = upward)
     w_ascent = peak_velocity_m_s * np.exp(-((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2)
