@@ -359,7 +359,7 @@ def hadley_convergence_moistening_jacobian(
 
 # Potential temperature factor: θ_atm = T_atm × (P0/P_ATM)^κ
 _P0 = 1013.25  # hPa
-_P_ATM = 500.0  # hPa
+_P_ATM = 525.0  # hPa
 _KAPPA = 0.286  # R/cp
 _ALPHA = (_P0 / _P_ATM) ** _KAPPA  # ≈ 1.219
 
