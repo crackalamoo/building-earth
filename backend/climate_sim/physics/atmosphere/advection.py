@@ -279,6 +279,52 @@ class AdvectionOperator:
 
         return zonal_tendency + merid_tendency
 
+    def subcycled_flux_tendency(
+        self,
+        field: np.ndarray,
+        wind_u: np.ndarray,
+        wind_v: np.ndarray,
+        dt: float,
+        max_cfl: float = 0.9,
+    ) -> np.ndarray:
+        """Flux-form advection with subcycling to keep CFL ≤ max_cfl.
+
+        Splits the full timestep into substeps short enough that the flux
+        limiter rarely activates, giving physically accurate transport even
+        when the outer timestep is much longer than the CFL limit.
+
+        Returns the time-averaged tendency (same units as flux_tendency).
+        """
+        if not self.enabled:
+            return np.zeros_like(field)
+
+        # Estimate maximum CFL number
+        nlat, nlon = field.shape
+        R = R_EARTH_METERS
+        lat_rad = np.deg2rad(self._lat2d)
+        cos_lat = np.cos(lat_rad)
+        dlat = np.deg2rad(self._lat2d[1, 0] - self._lat2d[0, 0]) if nlat > 1 else 1.0
+        dlon = np.deg2rad(self._lon2d[0, 1] - self._lon2d[0, 0]) if nlon > 1 else 1.0
+
+        dx = R * np.maximum(cos_lat, 0.05) * dlon
+        dy = R * dlat
+
+        max_u = np.max(np.abs(wind_u))
+        max_v = np.max(np.abs(wind_v))
+        cfl = dt * (max_u / np.min(dx) + max_v / dy)
+
+        n_sub = min(8, max(1, int(np.ceil(cfl / max_cfl))))
+        dt_sub = dt / n_sub
+
+        q = field.copy()
+        for _ in range(n_sub):
+            dq = self.flux_tendency(q, wind_u, wind_v, dt=dt_sub)
+            q += dq * dt_sub
+            np.maximum(q, 0.0, out=q)
+
+        # Return average tendency over the full period
+        return (q - field) / dt
+
     def _upwind_gradient(
         self,
         field: np.ndarray,

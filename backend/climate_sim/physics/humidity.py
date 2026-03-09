@@ -481,7 +481,6 @@ def compute_humidity_and_precipitation(
         # Only apply over land - ocean evaporation maintains humidity despite subsidence
         drying_factor = np.where(land_mask, drying_factor, 1.0)
         humidity_field = humidity_field * drying_factor
-
         # Compute vertical velocity from wind divergence if not provided
         if vertical_velocity is None:
             vertical_velocity = compute_vertical_velocity_from_divergence(divergence)

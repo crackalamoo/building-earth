@@ -632,7 +632,8 @@ def monthly_step(
                         else:
                             precip_rate = np.zeros_like(lagged_humidity)
                         # Use flux-form advection for humidity conservation: -∇·(uq)
-                        advection_tendency = (advection_operator.flux_tendency(lagged_humidity, wind_u_q, wind_v_q, dt=dt_seconds)
+                        # Subcycled to keep CFL ≤ 1 (30-day timestep with ~6 m/s winds gives CFL≈28)
+                        advection_tendency = (advection_operator.subcycled_flux_tendency(lagged_humidity, wind_u_q, wind_v_q, dt=dt_seconds)
                                               if advection_operator is not None else np.zeros_like(lagged_humidity))
                         # Humidity diffusion for turbulent mixing (stabilizes implicit solver)
                         diffusion_tendency = (humidity_diffusion_operator.tendency(lagged_humidity)

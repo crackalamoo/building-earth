@@ -26,7 +26,7 @@ DP_SUBPOLAR = -1200.0  # Low pressure at subpolar lows (must overcome thermal hi
 DP_POLES = 0.0  # No explicit polar high (prevents excessive polar easterlies)
 
 # Width of pressure features (radians) - controls smoothness of transitions
-SIGMA_ITCZ = np.deg2rad(8.0)       # ITCZ trough width
+SIGMA_ITCZ = np.deg2rad(6.0)       # ITCZ trough width
 SIGMA_SUBTROPICS = np.deg2rad(12.0)  # Subtropical high width
 SIGMA_SUBPOLAR = np.deg2rad(8.0)    # Subpolar low width
 SIGMA_POLES = np.deg2rad(8.0)       # Polar high width
