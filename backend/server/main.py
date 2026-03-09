@@ -53,6 +53,21 @@ MAX_MESSAGES = 50
 MAX_MESSAGE_LENGTH = 2000
 
 
+@app.get("/api/obs")
+async def obs_data(lat: float, lon: float) -> dict:
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        raise HTTPException(400, "Invalid coordinates")
+    temps, precips = [], []
+    for m in range(12):
+        t_land = obs_store.sample("land_temperature", lat, lon, m)
+        t_sst = obs_store.sample("sst", lat, lon, m)
+        t = t_land if t_land["value"] is not None else t_sst
+        p = obs_store.sample("precipitation", lat, lon, m)
+        temps.append(t["value"])
+        precips.append(p["value"])
+    return {"temps": temps, "precips": precips}
+
+
 @app.post("/api/chat", dependencies=[Depends(chat_limiter)])
 async def chat(request: Request) -> StreamingResponse:
     body = await request.json()

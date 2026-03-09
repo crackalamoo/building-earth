@@ -160,9 +160,29 @@
   $: cycleTemps = Array.from({ length: 12 }, (_, m) => sampleT2mMonth(lat, lon, m));
   $: cyclePrecip = Array.from({ length: 12 }, (_, m) => samplePrecipMonth(lat, lon, m));
 
-  $: tempMin = Math.min(...cycleTemps);
-  $: tempMax = Math.max(...cycleTemps);
-  $: precipMax = Math.max(...cyclePrecip, 1) * 1.25;
+  // Obs data (fetched from backend on location change)
+  let obsTemps: (number | null)[] = Array(12).fill(null);
+  let obsPrecips: (number | null)[] = Array(12).fill(null); // mm/month (already converted by backend)
+
+  $: fetchObs(lat, lon);
+
+  async function fetchObs(lat: number, lon: number) {
+    try {
+      const res = await fetch(`${API_BASE}/api/obs?lat=${lat}&lon=${lon}`);
+      const data = await res.json();
+      obsTemps = data.temps;
+      // Backend returns mm/month already (converted via _to_display_units)
+      obsPrecips = data.precips;
+    } catch { /* leave previous values */ }
+  }
+
+  $: obsTempMin = Math.min(...(obsTemps.filter(v => v !== null) as number[]));
+  $: obsTempMax = Math.max(...(obsTemps.filter(v => v !== null) as number[]));
+  $: obsPrecipPeak = Math.max(...(obsPrecips.filter(v => v !== null) as number[]), 0);
+
+  $: tempMin = Math.min(Math.min(...cycleTemps), isFinite(obsTempMin) ? obsTempMin : Infinity);
+  $: tempMax = Math.max(Math.max(...cycleTemps), isFinite(obsTempMax) ? obsTempMax : -Infinity);
+  $: precipMax = Math.max(Math.max(...cyclePrecip, 1), obsPrecipPeak) * 1.25;
 
   $: currentMonthIdx = Math.floor(monthProgress) % 12;
   $: displayMonthIdx = hoveredMonthIdx !== null ? hoveredMonthIdx : currentMonthIdx;
@@ -212,6 +232,27 @@
   $: hitAreas = Array.from({ length: 12 }, (_, i) => ({
     x: PAD_L + i * (INNER_W / 12),
     i,
+  }));
+
+  // Obs chart geometry (same scale as sim chart)
+  $: obsChartBars = obsPrecips.map((p, i) => ({
+    x: PAD_L + (i + 0.2) * (INNER_W / 12),
+    y: PAD_T + INNER_H - ((p ?? 0) / precipMax) * INNER_H,
+    h: ((p ?? 0) / precipMax) * INNER_H,
+    valid: p !== null,
+  }));
+  $: obsChartLines = obsTemps.slice(0, 11).map((_, i) => ({
+    x1: PAD_L + (i + 0.5) * (INNER_W / 12),
+    y1: PAD_T + INNER_H - ((obsTemps[i]! - tempPlotMin) / tempRange) * INNER_H,
+    x2: PAD_L + (i + 1.5) * (INNER_W / 12),
+    y2: PAD_T + INNER_H - ((obsTemps[i + 1]! - tempPlotMin) / tempRange) * INNER_H,
+    valid: obsTemps[i] !== null && obsTemps[i + 1] !== null,
+  }));
+  $: obsChartDots = obsTemps.map((t, i) => ({
+    cx: PAD_L + (i + 0.5) * (INNER_W / 12),
+    cy: t !== null ? PAD_T + INNER_H - ((t - tempPlotMin) / tempRange) * INNER_H : 0,
+    t,
+    valid: t !== null,
   }));
 
   function toggleUnits() { useImperial.update(v => !v); }
@@ -481,7 +522,7 @@
         class="tab-btn"
         class:active={activeTab === 'cycle'}
         on:click|stopPropagation={() => activeTab = 'cycle'}
-      >Chart</button>
+      >Charts</button>
     </div>
   </div>
 
@@ -549,6 +590,86 @@
         <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="9">
           {$useImperial ? (precipMax / 25.4).toFixed(1) + 'in' : precipMax.toFixed(0) + 'mm'}/mo
         </text>
+
+        <!-- Chart label -->
+        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="9">Simulated</text>
+      </svg>
+
+      <!-- Observed chart -->
+      <svg
+        viewBox="0 0 {CHART_W} {CHART_H}" width="100%" preserveAspectRatio="xMidYMid meet" class="cycle-chart"
+      >
+        <!-- Obs precip bars -->
+        {#each obsChartBars as bar, i}
+          {#if bar.valid}
+            {@const minH = 2}
+            {@const displayH = Math.max(bar.h, minH)}
+            {@const displayY = PAD_T + INNER_H - displayH}
+            {@const active = i === displayMonthIdx}
+            <rect
+              x={bar.x} y={displayY} width={BAR_W} height={displayH}
+              fill={active ? 'rgba(42,158,158,0.5)' : 'rgba(42,158,158,0.2)'}
+              stroke="rgba(42,158,158,0.5)" stroke-width="0.75" stroke-dasharray="3 2"
+            />
+          {/if}
+        {/each}
+
+        <!-- Obs temp line segments -->
+        {#each obsChartLines as seg}
+          {#if seg.valid}
+            <line x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2}
+              stroke="#f4a460" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.7" />
+          {/if}
+        {/each}
+
+        <!-- Obs temp dots + hover labels -->
+        {#each obsChartDots as dot, i}
+          {#if dot.valid}
+            {@const active = i === displayMonthIdx}
+            <circle cx={dot.cx} cy={dot.cy} r={active ? 5 : 2.5}
+              fill={active ? '#f4a460' : '#c47830'}
+              stroke={active ? '#fff' : 'none'} stroke-width="1.5"
+              opacity={active ? 1 : 0.7}
+            />
+            {#if active}
+              {@const obsBar = obsChartBars[i]}
+              {@const precipLabelY = obsBar.valid ? Math.min(obsBar.y - 4, dot.cy - 20) : dot.cy - 20}
+              {#if obsBar.valid}
+                <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="9">
+                  {$useImperial ? (obsPrecips[i]! / 25.4).toFixed(1) + '"' : obsPrecips[i]!.toFixed(0) + 'mm'}
+                </text>
+              {/if}
+              <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="10">
+                {$useImperial ? cToF(dot.t!).toFixed(0) + '°F' : dot.t!.toFixed(0) + '°C'}
+              </text>
+            {/if}
+          {/if}
+        {/each}
+
+        <!-- Month labels -->
+        {#each chartMonths as m}
+          <text
+            x={m.x} y={CHART_H - 6}
+            text-anchor="middle"
+            fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#555'}
+            font-size="10"
+            font-weight={m.active ? '600' : '400'}
+          >{m.label}</text>
+        {/each}
+
+        <!-- Y axis labels (same scale) -->
+        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="9">
+          {imp ? cToF(tempPlotMax).toFixed(0) + '°' : tempPlotMax.toFixed(0) + '°'}
+        </text>
+        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="9">
+          {imp ? cToF(tempPlotMin).toFixed(0) + '°' : tempPlotMin.toFixed(0) + '°'}
+        </text>
+        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="9">
+          {$useImperial ? (precipMax / 25.4).toFixed(1) + 'in' : precipMax.toFixed(0) + 'mm'}/mo
+        </text>
+
+        <!-- Chart label -->
+        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="9">Observed (1981–2010)</text>
 
         <!-- Invisible hit areas per month column -->
         {#each hitAreas as hit}
@@ -749,6 +870,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+    overflow-y: auto;
   }
 
   .cycle-chart {
