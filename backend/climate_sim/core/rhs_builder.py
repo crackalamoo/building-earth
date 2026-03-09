@@ -820,6 +820,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         )
                         humidity_diag += hadley_subsidence_drying_jacobian(
                             w_hadley,
+                            humidity_field,
                             upper_troposphere_q_fraction=inputs.vertical_motion_cfg.upper_troposphere_q_fraction,
                         )
                         humidity_diag += hadley_convergence_moistening_jacobian(w_hadley)

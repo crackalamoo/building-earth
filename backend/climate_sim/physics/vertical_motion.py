@@ -51,6 +51,11 @@ GAMMA_MOIST = STANDARD_LAPSE_RATE_K_PER_M  # ~0.0065 K/m, moist lapse rate (for 
 # surface value.
 UPPER_TROPOSPHERE_Q_FRACTION = 0.30
 
+# Cap on upper-tropospheric humidity entrained during subsidence.
+# Descending air originates from ~300 hPa where precipitation has scavenged
+# most moisture.
+Q_UPPER_FIXED_KG_KG = 1.5e-3  # 1.5 g/kg
+
 
 @dataclass(frozen=True)
 class VerticalMotionConfig:
@@ -283,7 +288,7 @@ def compute_hadley_subsidence_drying(
     Only applies where w > 0 (descent). Ascent regions (w < 0) are handled
     by convergence via advection, not by this term.
     """
-    q_upper = humidity_field * upper_troposphere_q_fraction
+    q_upper = np.minimum(humidity_field * upper_troposphere_q_fraction, Q_UPPER_FIXED_KG_KG)
     delta_q = q_upper - humidity_field  # Always negative
     mixing_rate = np.maximum(w_descent, 0.0) / boundary_layer_height_m
     return mixing_rate * delta_q
@@ -291,15 +296,19 @@ def compute_hadley_subsidence_drying(
 
 def hadley_subsidence_drying_jacobian(
     w_descent: np.ndarray,
+    humidity_field: np.ndarray,
     upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
     boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
 ) -> np.ndarray:
     """Diagonal of the humidity Jacobian from Hadley subsidence drying.
 
-    d(dq/dt)/dq = (w / h_BL) * (f_upper - 1) = -(1 - f_upper) * w / h_BL
-    Only where w > 0 (descent). Always negative (stabilizing).
+    When q_upper = min(f*q, Q_FIXED):
+    - f*q < Q_FIXED: d/dq = (w/h)(f - 1)
+    - f*q >= Q_FIXED: d/dq = -(w/h)  (q_upper is constant w.r.t. q)
     """
-    return np.maximum(w_descent, 0.0) / boundary_layer_height_m * (upper_troposphere_q_fraction - 1.0)
+    mixing_rate = np.maximum(w_descent, 0.0) / boundary_layer_height_m
+    capped = humidity_field * upper_troposphere_q_fraction >= Q_UPPER_FIXED_KG_KG
+    return np.where(capped, -mixing_rate, mixing_rate * (upper_troposphere_q_fraction - 1.0))
 
 
 def compute_hadley_convergence_moistening(
