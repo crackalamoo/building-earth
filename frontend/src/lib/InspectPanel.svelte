@@ -3,6 +3,8 @@
   import { fly } from 'svelte/transition';
   import type { ClimateLayerData } from './loadBinaryData';
   import { useImperial } from './stores';
+  import { computeSuggestions, streamChat } from './chatUtils';
+  import type { ChatMessage, MsgPart } from './chatUtils';
 
   const dispatch = createEventDispatcher();
 
@@ -16,8 +18,7 @@
   const MAX_MESSAGES = 50;
 
   // Chat state
-  type MsgPart = { type: 'text'; content: string } | { type: 'tools'; content: string; fields: string[] };
-  let messages: { role: 'user' | 'assistant'; content: string; parts?: MsgPart[] }[] = [];
+  let messages: ChatMessage[] = [];
   let inputText = '';
   let streaming = false;
   let limitReached = false;
@@ -29,11 +30,7 @@
   let sentLon: number | null = null;
   let sentMonth: number | null = null;
 
-  const SUGGESTIONS = [
-    'Why is it this temperature?',
-    'What affects the climate here?',
-    'Compare to nearby coast',
-  ];
+  $: suggestions = computeSuggestions(lat, ocean, elevation, cycleTemps, cyclePrecip, wind, currentMonthIdx, tempC);
 
   let activeTab: 'cycle' | 'ask' = 'ask';
   let hoveredMonthIdx: number | null = null;
@@ -243,8 +240,7 @@
   async function sendMessage(text: string) {
     if (streaming || limitReached || !text.trim()) return;
 
-    const userMsg = { role: 'user' as const, content: text.trim() };
-    messages = [...messages, userMsg];
+    messages = [...messages, { role: 'user' as const, content: text.trim() }];
     inputText = '';
     streaming = true;
     errorOccurred = false;
@@ -253,83 +249,38 @@
       limitReached = true;
     }
 
-    // Add placeholder for assistant response
     messages = [...messages, { role: 'assistant' as const, content: '' }];
     currentParts = [];
     scrollToBottom();
 
+    const month = Math.floor(monthProgress) % 12;
     try {
       abortController = new AbortController();
-      const month = Math.floor(monthProgress) % 12;
-      const res = await fetch(`${API_BASE}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await streamChat(
+        API_BASE,
+        {
           lat, lon, month,
-          prevLat: sentLat,
-          prevLon: sentLon,
-          prevMonth: sentMonth,
+          prevLat: sentLat, prevLon: sentLon, prevMonth: sentMonth,
           imperial: $useImperial,
-          messages: messages.filter(m => m.content !== '').map(m => ({
-            role: m.role, content: m.content,
-          })),
-        }),
-        signal: abortController.signal,
-      });
-
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-
-      if (!reader) throw new Error('No response body');
-
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6);
-          if (data === '[DONE]') break;
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.error) {
-              const last = currentParts[currentParts.length - 1];
-              if (last && last.type === 'text') {
-                last.content += parsed.error;
-              } else {
-                currentParts.push({ type: 'text', content: parsed.error });
-              }
-              messages[messages.length - 1].content += parsed.error;
-            } else if (parsed.tool) {
-              const last = currentParts[currentParts.length - 1];
-              if (last && last.type === 'tools') {
-                last.fields = [...last.fields, parsed.tool];
-              } else {
-                currentParts.push({ type: 'tools', content: '', fields: [parsed.tool] });
-              }
-            } else if (parsed.text) {
-              const last = currentParts[currentParts.length - 1];
-              if (last && last.type === 'text') {
-                last.content += parsed.text;
-              } else {
-                currentParts.push({ type: 'text', content: parsed.text });
-              }
-              messages[messages.length - 1].content += parsed.text;
-            } else {
-              continue;
-            }
-            currentParts = [...currentParts];
+          messages: messages.filter(m => m.content !== '').map(m => ({ role: m.role, content: m.content })),
+        },
+        abortController.signal,
+        {
+          onPart(parts) {
+            currentParts = parts;
             messages[messages.length - 1].parts = currentParts;
             messages = [...messages];
             scrollToBottom();
-          } catch { /* skip malformed chunks */ }
+          },
+          onContent(chunk) {
+            messages[messages.length - 1].content += chunk;
+          },
+          onError(msg) {
+            messages[messages.length - 1].content += msg;
+          },
+          onDone() {},
         }
-      }
+      );
     } catch (e: any) {
       if (e.name !== 'AbortError') {
         const last = messages[messages.length - 1];
@@ -621,7 +572,7 @@
     <div class="chat-area" bind:this={chatContainer}>
       {#if messages.length === 0}
         <div class="suggestions">
-          {#each SUGGESTIONS as suggestion}
+          {#each suggestions as suggestion}
             <button class="suggestion-btn" on:click={() => sendMessage(suggestion)}>
               {suggestion}
             </button>
