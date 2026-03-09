@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher, onDestroy } from 'svelte';
+  import { createEventDispatcher, onDestroy, onMount } from 'svelte';
   import { fly } from 'svelte/transition';
   import type { ClimateLayerData } from './loadBinaryData';
   import { useImperial } from './stores';
@@ -273,9 +273,83 @@
   $: displayMonth = MONTH_NAMES[Math.floor(monthProgress) % 12];
 
   let isMobile = typeof window !== 'undefined' && window.innerWidth <= 640;
+
+  // ── Drag-to-dismiss (mobile) ──
+  let panelEl: HTMLDivElement;
+  let dragStartY = 0;
+  let dragOffsetY = 0;
+  let dragging = false;
+
+  function onDragStart(e: TouchEvent | MouseEvent) {
+    if (!isMobile) return;
+    dragging = true;
+    dragOffsetY = 0;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    dragStartY = clientY;
+    // Prevent text selection during drag
+    e.preventDefault();
+  }
+
+  function onDragMove(e: TouchEvent | MouseEvent) {
+    if (!dragging) return;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    dragOffsetY = Math.max(0, clientY - dragStartY); // only allow dragging down
+    if (panelEl) panelEl.style.transform = `translateY(${dragOffsetY}px)`;
+  }
+
+  function onDragEnd() {
+    if (!dragging) return;
+    dragging = false;
+    if (dragOffsetY > 100) {
+      // Dismiss threshold reached
+      close();
+    } else {
+      // Snap back
+      if (panelEl) panelEl.style.transform = '';
+      dragOffsetY = 0;
+    }
+  }
+
+  // ── Click edge to close (desktop) ──
+  function onPanelClick(e: MouseEvent) {
+    if (isMobile) return;
+    // Close if clicking within 8px of the left edge
+    const rect = panelEl?.getBoundingClientRect();
+    if (rect && e.clientX - rect.left < 8) {
+      close();
+    }
+  }
+
+  onMount(() => {
+    if (isMobile) {
+      window.addEventListener('touchmove', onDragMove, { passive: false });
+      window.addEventListener('touchend', onDragEnd);
+      window.addEventListener('mousemove', onDragMove);
+      window.addEventListener('mouseup', onDragEnd);
+    }
+    return () => {
+      window.removeEventListener('touchmove', onDragMove);
+      window.removeEventListener('touchend', onDragEnd);
+      window.removeEventListener('mousemove', onDragMove);
+      window.removeEventListener('mouseup', onDragEnd);
+    };
+  });
 </script>
 
-<div class="inspect-panel" transition:fly={{ x: isMobile ? 0 : 700, y: isMobile ? 400 : 0, duration: 200 }}>
+<!-- svelte-ignore a11y-click-events-have-key-events -->
+<div
+  class="inspect-panel"
+  class:dragging
+  bind:this={panelEl}
+  transition:fly={{ x: isMobile ? 0 : 700, y: isMobile ? 400 : 0, duration: 200 }}
+  on:click={onPanelClick}
+>
+  {#if isMobile}
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="drag-handle" on:touchstart={onDragStart} on:mousedown={onDragStart}>
+      <div class="drag-handle-pill"></div>
+    </div>
+  {/if}
   <div class="panel-header">
     <div class="coords">
       {Math.abs(lat).toFixed(1)}°{lat >= 0 ? 'N' : 'S'}, {Math.abs(lon).toFixed(1)}°{lon >= 0 ? 'E' : 'W'}
@@ -576,6 +650,26 @@
     font-size: 0.9rem;
   }
 
+  /* Desktop: left-edge close affordance */
+  .inspect-panel::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 8px;
+    height: 100%;
+    cursor: e-resize;
+    z-index: 1;
+  }
+
+  .inspect-panel.dragging {
+    transition: none;
+  }
+
+  .drag-handle {
+    display: none;
+  }
+
   @media (max-width: 640px) {
     .inspect-panel {
       top: auto;
@@ -587,6 +681,29 @@
       border-left: none;
       border-top: 1px solid #1a6b6b;
       border-radius: 12px 12px 0 0;
+    }
+
+    .inspect-panel::before {
+      display: none;
+    }
+
+    .drag-handle {
+      display: flex;
+      justify-content: center;
+      padding: 0.5rem 0 0.25rem;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .drag-handle:active {
+      cursor: grabbing;
+    }
+
+    .drag-handle-pill {
+      width: 32px;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 2px;
     }
   }
 </style>
