@@ -399,7 +399,6 @@
   <div class="chat-area" bind:this={chatContainer}>
     {#if messages.length === 0}
       <div class="suggestions">
-        <div class="suggestions-label">Ask about this location:</div>
         {#each SUGGESTIONS as suggestion}
           <button class="suggestion-btn" on:click={() => sendMessage(suggestion)}>
             {suggestion}
@@ -626,8 +625,8 @@
 
   .chat-input {
     width: 100%;
-    background: #1a1a1a;
-    border: 1px solid #444;
+    background: rgba(14, 74, 74, 0.15);
+    border: 1px solid rgba(26, 107, 107, 0.35);
     color: #fff;
     padding: 0.5rem 0.75rem;
     border-radius: 6px;
