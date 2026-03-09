@@ -16,6 +16,7 @@ from .rate_limit import create_chat_limiter
 from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI, APIError
 
+from .calculate import ExpressionError, resolve_fields
 from .climate_data import FIELD_INFO, OBS_FIELD_INFO, ClimateDataStore, ObsDataStore
 from .prompts import SYSTEM_PROMPT
 from .tools import TOOLS
@@ -162,28 +163,42 @@ async def chat(request: Request) -> StreamingResponse:
                 tc = tool_calls_acc[idx]
                 try:
                     args = json.loads(tc["arguments"])
-                    fields_list = args.get("fields", [args["field"]] if "field" in args else [])
-                    data_store = obs_store if tc["name"] == "sample_observations" else store
-                    result = data_store.sample_many(
-                        fields=fields_list,
-                        lat=args["lat"],
-                        lon=args["lon"],
-                        month=args["month"],
-                        imperial=imperial,
-                    )
+                    if tc["name"] == "calculate":
+                        calc_result = resolve_fields(
+                            expression=args["expression"],
+                            sample_fn=store.sample_raw,
+                            lat=args["lat"],
+                            lon=args["lon"],
+                            month=args["month"],
+                        )
+                        if "unit" in args:
+                            calc_result["unit"] = args["unit"]
+                        result = calc_result
+                        yield f"data: {json.dumps({'tool': 'Calculate'})}\n\n"
+                    else:
+                        fields_list = args.get("fields", [args["field"]] if "field" in args else [])
+                        data_store = obs_store if tc["name"] == "sample_observations" else store
+                        result = data_store.sample_many(
+                            fields=fields_list,
+                            lat=args["lat"],
+                            lon=args["lon"],
+                            month=args["month"],
+                            imperial=imperial,
+                        )
+                        # Send tool progress event
+                        field_meta = OBS_FIELD_INFO if tc["name"] == "sample_observations" else FIELD_INFO
+                        labels = [
+                            field_meta.get(f, {}).get("label", f)
+                            for f in args.get("fields", [args.get("field", "?")])
+                        ]
+                        for label in labels:
+                            yield f"data: {json.dumps({'tool': label})}\n\n"
+                except ExpressionError as exc:
+                    result = {"error": str(exc)}
+                    yield f"data: {json.dumps({'tool': 'Calculate'})}\n\n"
                 except Exception:
-                    result = {"error": "Failed to sample climate data"}
-                # Send tool progress event
-                field_meta = OBS_FIELD_INFO if tc["name"] == "sample_observations" else FIELD_INFO
-                if isinstance(args, dict):
-                    labels = [
-                        field_meta.get(f, {}).get("label", f)
-                        for f in args.get("fields", [args.get("field", "?")])
-                    ]
-                else:
-                    labels = ["?"]
-                for label in labels:
-                    yield f"data: {json.dumps({'tool': label})}\n\n"
+                    result = {"error": "Failed to process tool call"}
+                    yield f"data: {json.dumps({'tool': '?'})}\n\n"
                 assistant_tool_calls.append({
                     "id": tc["id"],
                     "type": "function",

@@ -34,6 +34,12 @@ FIELD_INFO: dict[str, dict[str, str]] = {
     "wind_u_geostrophic": {"label": "Pressure-driven wind E/W", "desc": "Geostrophic eastward wind", "unit": "m/s"},
     "wind_v_geostrophic": {"label": "Pressure-driven wind N/S", "desc": "Geostrophic northward wind", "unit": "m/s"},
     "wind_speed_geostrophic": {"label": "Pressure-driven wind speed", "desc": "Geostrophic wind speed", "unit": "m/s"},
+    # ── Derived fields ──
+    "relative_humidity": {"label": "Relative humidity", "desc": "Relative humidity", "unit": "%"},
+    "saturation_humidity": {"label": "Saturation humidity", "desc": "Saturation specific humidity", "unit": "kg/kg"},
+    "wind_direction_10m": {"label": "Wind direction", "desc": "10-m wind direction (compass bearing, 0°=N)", "unit": "°"},
+    "dew_point": {"label": "Dew point", "desc": "Dew point temperature", "unit": "°C"},
+    "lapse_rate": {"label": "Lapse rate", "desc": "Temperature lapse rate (BL to free atmosphere)", "unit": "°C/km"},
     # ── Cloud breakdown ──
     "cloud_high": {"label": "High clouds", "desc": "High cloud cover", "unit": "fraction (0-1)"},
     "cloud_low": {"label": "Low clouds", "desc": "Low cloud cover", "unit": "fraction (0-1)"},
@@ -91,6 +97,12 @@ def _to_display_units(value: float, raw_unit: str, imperial: bool) -> tuple[floa
     if raw_unit == "fraction (0-1)":
         return value * 100, "%"
 
+    if raw_unit == "%":
+        return value, "%"
+
+    if raw_unit == "°":
+        return value, "°"
+
     return value, raw_unit
 
 
@@ -121,6 +133,7 @@ class ClimateDataStore:
         self._data: dict[str, np.ndarray] = {}
         self._load_binary(Path(bin_path), Path(manifest_path))
         self._load_npz_fallback(Path(npz_path))
+        self._compute_derived()
 
     def _load_binary(self, bin_path: Path, manifest_path: Path) -> None:
         """Load interpolated fields from the frontend binary export."""
@@ -155,10 +168,89 @@ class ClimateDataStore:
             canonical = _FIELD_ALIASES.get(key, key)
             if canonical not in self._data and canonical not in _SKIP_FIELDS:
                 self._data[canonical] = raw[key]
+        # Keep native-resolution humidity for derived field computation even if
+        # the binary already loaded an interpolated version
+        if "humidity" in raw and "humidity" in self._data:
+            native = raw["humidity"]
+            if native.shape != self._data["humidity"].shape:
+                self._native_humidity = native
+
+    def _compute_derived(self) -> None:
+        """Compute derived fields on the native 36x72 grid."""
+        # Use native-resolution humidity (36x72) if the store has an
+        # interpolated version from the binary export
+        q = getattr(self, "_native_humidity", None)
+        if q is None:
+            q = self._data.get("humidity")
+
+        # Saturation humidity & RH & dew point — all need BL temp + pressure + q
+        t_bl = self._data.get("boundary_layer")  # °C, 36x72
+        p = self._data.get("surface_pressure")    # Pa, 36x72
+        if t_bl is not None:
+            t_c = np.clip(t_bl, -100.0, 80.0)
+            e_sat_hPa = 6.112 * np.exp(17.67 * t_c / (t_c + 243.5))
+            p_hPa = p / 100.0 if p is not None else 1013.25
+            denom = np.maximum(p_hPa - (1 - 0.622) * e_sat_hPa, 1.0)
+            q_sat = (0.622 * e_sat_hPa) / denom
+            self._data["saturation_humidity"] = q_sat
+
+            if q is not None:
+                rh = np.clip(q / np.maximum(q_sat, 1e-10) * 100, 0, 100)
+                self._data["relative_humidity"] = rh
+
+                # Dew point: inverse Magnus from actual vapor pressure
+                e_hPa = q * p_hPa / (0.622 + 0.378 * q)
+                e_hPa = np.maximum(e_hPa, 1e-6)
+                ln_ratio = np.log(e_hPa / 6.112)
+                td = 243.5 * ln_ratio / (17.67 - ln_ratio)
+                self._data["dew_point"] = td
+
+        # Wind direction (compass bearing) — 36x72
+        u = self._data.get("wind_u_10m")
+        v = self._data.get("wind_v_10m")
+        if u is not None and v is not None:
+            direction = (270 - np.degrees(np.arctan2(v, u))) % 360
+            self._data["wind_direction_10m"] = direction
+
+        # Lapse rate (BL to free atmosphere, ~7.5 km separation) — 36x72
+        t_atm = self._data.get("atmosphere")
+        if t_bl is not None and t_atm is not None:
+            self._data["lapse_rate"] = (t_bl - t_atm) / 7.5
 
     @property
     def available_fields(self) -> list[str]:
         return [f for f in FIELD_INFO if f in self._data]
+
+    def sample_raw(
+        self, field: str, lat: float, lon: float, month: int,
+    ) -> float | None:
+        """Sample a single field and return the raw float value (no unit conversion).
+
+        Returns None if field is unknown. Raw units: °C, kg/kg, Pa, m/s,
+        fraction (0-1), %, °.
+        """
+        if field not in self._data:
+            return None
+
+        arr = self._data[field]
+
+        if arr.ndim == 2:
+            nlat, nlon = arr.shape
+            has_month = False
+        elif arr.ndim == 3:
+            _, nlat, nlon = arr.shape
+            has_month = True
+        else:
+            return None
+
+        lat_idx = int(np.clip(round((lat + 90) / 180 * nlat - 0.5), 0, nlat - 1))
+        lon_norm = ((lon % 360) + 360) % 360
+        lon_idx = int(np.floor(lon_norm / 360 * nlon)) % nlon
+        month_idx = int(month) % 12
+
+        if has_month:
+            return float(arr[month_idx, lat_idx, lon_idx])
+        return float(arr[lat_idx, lon_idx])
 
     def sample(
         self, field: str, lat: float, lon: float, month: int, *, imperial: bool = False,

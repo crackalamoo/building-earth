@@ -29,6 +29,8 @@ SAMPLE_CLIMATE_TOOL = {
                             "ocean_u", "ocean_v", "w_ekman_pumping",
                             "vertical_velocity",
                             "albedo", "soil_moisture", "vegetation_fraction",
+                            "relative_humidity", "saturation_humidity",
+                            "wind_direction_10m", "dew_point", "lapse_rate",
                         ],
                     },
                     "description": "Climate variables to sample.",
@@ -101,4 +103,52 @@ SAMPLE_OBSERVATIONS_TOOL = {
     },
 }
 
-TOOLS = [SAMPLE_CLIMATE_TOOL, SAMPLE_OBSERVATIONS_TOOL]
+CALCULATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "calculate",
+        "description": (
+            "Evaluate a math expression over climate data. "
+            "Use these aliases as variable names — they resolve automatically at the given location. "
+            "Aliases: T (2m air temp °C), T_s (surface °C), T_bl (boundary layer °C), "
+            "T_atm (free atmosphere °C), q (specific humidity kg/kg), q_sat (saturation humidity kg/kg), "
+            "RH (relative humidity %), Td (dew point °C), P (surface pressure Pa), "
+            "u (10m E/W wind m/s), v (10m N/S wind m/s), ws (10m wind speed m/s), "
+            "wind_dir (wind direction °), u_bl, v_bl, ws_bl (BL winds), "
+            "u_g, v_g, ws_g (geostrophic winds), u_ocean, v_ocean (ocean currents), "
+            "z (elevation m), precip (precipitation kg/m²/s), clouds (cloud fraction 0-1), "
+            "lapse (lapse rate °C/km). "
+            "IMPORTANT: Values are in raw SI units which differ from sample_climate display units: "
+            "q in kg/kg (not g/kg), P in Pa (not mb), wind in m/s (not km/h). "
+            "Supports: +, -, *, /, **, sqrt, exp, log, sin, cos, atan2, abs, min, max, pi."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "Math expression using field names/aliases and math functions.",
+                },
+                "lat": {
+                    "type": "number",
+                    "description": "Latitude in degrees (-90 to 90).",
+                },
+                "lon": {
+                    "type": "number",
+                    "description": "Longitude in degrees (-180 to 180).",
+                },
+                "month": {
+                    "type": "integer",
+                    "description": "Month index (0 = January, 11 = December).",
+                },
+                "unit": {
+                    "type": "string",
+                    "description": "Optional unit label for the result (e.g. '°C', '%', 'm/s').",
+                },
+            },
+            "required": ["expression", "lat", "lon", "month"],
+        },
+    },
+}
+
+TOOLS = [SAMPLE_CLIMATE_TOOL, SAMPLE_OBSERVATIONS_TOOL, CALCULATE_TOOL]

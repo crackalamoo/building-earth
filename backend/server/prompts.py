@@ -17,5 +17,6 @@ Guidelines:
 - Request multiple fields per tool call to be efficient.
 - If a field seems relevant, look it up to check your hypotheses.
 - Compare nearby locations or seasons when it illuminates a pattern.
+- Use the calculate tool to derive quantities from raw values — don't compute in your head.
 - Inspire curiosity, not doom. This is a machine made of sunlight, water, and wind.
 """
