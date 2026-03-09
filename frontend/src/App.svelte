@@ -19,13 +19,15 @@
 
   $: tempLegendStops = $useImperial ? [
     { value: cToF(-30).toFixed(0) + '', color: 'rgb(59,30,109)' },
-    { value: cToF(0).toFixed(0) + '', color: 'rgb(30,136,229)' },
+    { value: cToF(0).toFixed(0) + '', color: 'rgb(30,136,229)', discontinuity: true },
+    { value: '', color: 'rgb(100,181,246)' },
     { value: cToF(10).toFixed(0) + '', color: 'rgb(102,187,106)' },
     { value: cToF(25).toFixed(0) + '', color: 'rgb(251,140,0)' },
     { value: cToF(40).toFixed(0) + '', color: 'rgb(138,0,0)' },
   ] : [
     { value: '-30', color: 'rgb(59,30,109)' },
-    { value: '0', color: 'rgb(30,136,229)' },
+    { value: '0', color: 'rgb(30,136,229)', discontinuity: true },
+    { value: '', color: 'rgb(100,181,246)' },
     { value: '10', color: 'rgb(102,187,106)' },
     { value: '25', color: 'rgb(251,140,0)' },
     { value: '40', color: 'rgb(138,0,0)' },

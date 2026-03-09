@@ -1,11 +1,30 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
 
-  export let stops: { value: string; color: string }[] = [];
+  export let stops: { value: string; color: string; discontinuity?: boolean }[] = [];
   export let label: string = '';
   export let visible: boolean = false;
 
   const dispatch = createEventDispatcher();
+
+  // Build gradient with explicit % positions; discontinuity stops share position with the next stop
+  $: gradientStr = (() => {
+    const n = stops.length;
+    if (n === 0) return 'transparent';
+    // Compute evenly-spaced positions, but collapse discontinuity pairs
+    const positions: number[] = [];
+    let visualIndex = 0;
+    const visualCount = stops.reduce((c, s) => c + (s.discontinuity ? 0 : 1), 0);
+    for (let i = 0; i < n; i++) {
+      if (i > 0 && stops[i - 1].discontinuity) {
+        positions.push(positions[i - 1]); // same position as previous
+      } else {
+        positions.push(visualCount > 1 ? (visualIndex / (visualCount - 1)) * 100 : 0);
+        visualIndex++;
+      }
+    }
+    return stops.map((s, i) => `${s.color} ${positions[i].toFixed(1)}%`).join(', ');
+  })();
 </script>
 
 {#if visible}
@@ -15,10 +34,10 @@
     <div class="legend-bar-container">
       <div
         class="legend-bar"
-        style="background: linear-gradient(to top, {stops.map(s => s.color).join(', ')});"
+        style="background: linear-gradient(to top, {gradientStr});"
       ></div>
       <div class="legend-ticks">
-        {#each stops as stop}
+        {#each stops.filter(s => s.value !== '') as stop}
           <span class="tick">{stop.value}</span>
         {/each}
       </div>
