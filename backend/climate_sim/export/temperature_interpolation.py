@@ -69,78 +69,6 @@ def sample_elevation_at_points(
     return np.asarray(elevation, dtype=float)
 
 
-def sample_peak_elevation_at_points(
-    lat2d: np.ndarray,
-    lon2d: np.ndarray,
-) -> np.ndarray:
-    """Sample the maximum elevation within each grid cell from ETOPO.
-
-    For each point on the output grid, finds the max ETOPO value within the
-    cell centered on that point. This captures mountain peaks that would be
-    smoothed away by point sampling.
-
-    Uses vectorized block-max: reshapes the ETOPO region into blocks matching
-    the output grid and takes max per block.
-
-    Parameters
-    ----------
-    lat2d, lon2d : np.ndarray
-        Grid cell center coordinates (any uniform resolution)
-
-    Returns
-    -------
-    np.ndarray
-        Peak elevation in meters within each cell, same shape as input
-    """
-    dataset = load_elevation_data()
-    if dataset is None:
-        return np.zeros_like(lat2d, dtype=float)
-
-    elev_data = np.asarray(dataset.values)
-    ny_etopo, nx_etopo = elev_data.shape
-    nlat, nlon = lat2d.shape
-
-    # Grid resolution
-    lat_res = abs(float(lat2d[1, 0] - lat2d[0, 0])) if nlat > 1 else 1.0
-    lon_res = abs(float(lon2d[0, 1] - lon2d[0, 0])) if nlon > 1 else 1.0
-    etopo_res = 1.0 / 60.0  # ETOPO is 1 arcmin
-
-    block_lat = round(lat_res / etopo_res)
-    block_lon = round(lon_res / etopo_res)
-
-    # ETOPO y-axis is descending (90 to -90), x-axis is (-180 to 180)
-    # Our grid is ascending latitude, 0-360 longitude
-    # Flip to ascending latitude
-    elev_asc = elev_data[::-1, :]  # now index 0 = -90
-
-    # Shift longitude from [-180,180) to [0,360)
-    half = nx_etopo // 2
-    elev_shifted = np.concatenate([elev_asc[:, half:], elev_asc[:, :half]], axis=1)
-
-    # Compute starting ETOPO index for each output cell's lower-left corner
-    lat_start = float(lat2d[0, 0])  # e.g., -89.875 for 0.25° grid
-    lon_start = float(lon2d[0, 0])  # e.g., 0.125
-
-    # ETOPO ascending-lat pixel edges start at -90, shifted-lon at 0
-    y0 = round((lat_start - lat_res / 2 - (-90.0)) / etopo_res)
-    x0 = round((lon_start - lon_res / 2 - 0.0) / etopo_res)
-
-    y_end = y0 + nlat * block_lat
-    x_end = x0 + nlon * block_lon
-
-    # Handle longitude wrapping
-    if x0 >= 0 and x_end <= nx_etopo:
-        region = elev_shifted[y0:y_end, x0:x_end]
-    else:
-        x_indices = np.arange(x0, x_end) % nx_etopo
-        region = elev_shifted[y0:y_end][:, x_indices]
-
-    # Reshape to (nlat, block_lat, nlon, block_lon) and take max over blocks
-    result = region.reshape(nlat, block_lat, nlon, block_lon).max(axis=(1, 3))
-
-    return np.asarray(result, dtype=float)
-
-
 def _apply_nearest_neighbor_fallback(
     lat_indices: np.ndarray,
     lon_indices: np.ndarray,
@@ -582,12 +510,11 @@ def interpolate_layer_map(
                 apply_lapse_rate=should_apply_lapse,
             )
 
-    # Compute snow_temperature: bilinearly interpolated surface with constant lapse
-    # at peak elevation (max within each 0.25° cell) to capture mountain peaks
+    # Compute snow_temperature: lapse-corrected surface temp at point elevation.
+    # Uses point-sampled elevation (what the vertex is displaced to) so snow
+    # only appears where the rendered terrain is actually high enough to be cold.
     if compute_snow_temperature and "surface" in interpolated:
         interp_surface = interpolated["surface"]  # (12, fine_nlat, fine_nlon)
-        with time_block("peak_elevation"):
-            peak_elevation = sample_peak_elevation_at_points(fine_lat2d, fine_lon2d)
         # Interpolate coarse elevation to fine grid to get smooth baseline
         coarse_lats = coarse_lat2d[:, 0]
         coarse_lons = coarse_lon2d[0, :]
@@ -598,7 +525,7 @@ def interpolate_layer_map(
             coarse_land_mask, fine_land_mask,
         )
         interp_elev = interpolate_field_bilinear(coarse_elevation, lat_idx, lon_idx, wts)
-        elev_delta = np.maximum(0, peak_elevation - interp_elev)
+        elev_delta = np.maximum(0, fine_elevation - interp_elev)
         SNOW_LAPSE_K_PER_M = 5.0e-3
         snow_temp = interp_surface - SNOW_LAPSE_K_PER_M * elev_delta[np.newaxis, :, :]
         interpolated["snow_temperature"] = snow_temp
