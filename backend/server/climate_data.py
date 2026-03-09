@@ -13,39 +13,47 @@ import xarray as xr
 # ── Field metadata: description + units ──────────────────────────────────────
 
 FIELD_INFO: dict[str, dict[str, str]] = {
+    # ── Common ──
     "temperature_2m": {"label": "Air temperature", "desc": "2-meter air temperature", "unit": "°C"},
+    "precipitation": {"label": "Precipitation", "desc": "Precipitation rate", "unit": "kg/m²/s"},
+    "humidity": {"label": "Humidity", "desc": "Specific humidity", "unit": "kg/kg"},
+    "wind_speed_10m": {"label": "Surface wind speed", "desc": "10-m wind speed", "unit": "m/s"},
+    "cloud_fraction": {"label": "Cloud cover", "desc": "Total cloud cover", "unit": "fraction (0-1)"},
+    "surface_pressure": {"label": "Air pressure", "desc": "Surface pressure", "unit": "Pa"},
+    "elevation": {"label": "Elevation", "desc": "Elevation (negative = ocean depth)", "unit": "m"},
+    # ── Temperature layers ──
     "surface": {"label": "Surface temperature", "desc": "Surface / SST temperature", "unit": "°C"},
     "boundary_layer": {"label": "Lower atmosphere temp", "desc": "Boundary-layer temperature", "unit": "°C"},
     "atmosphere": {"label": "Upper atmosphere temp", "desc": "Free-atmosphere temperature", "unit": "°C"},
-    "albedo": {"label": "Albedo", "desc": "Surface albedo", "unit": "fraction (0-1)"},
-    "humidity": {"label": "Humidity", "desc": "Specific humidity", "unit": "kg/kg"},
-    "precipitation": {"label": "Precipitation", "desc": "Precipitation rate", "unit": "kg/m²/s"},
-    "soil_moisture": {"label": "Soil moisture", "desc": "Soil moisture", "unit": "fraction (0-1)"},
+    # ── Wind detail ──
     "wind_u_10m": {"label": "Surface wind E/W", "desc": "10-m eastward wind", "unit": "m/s"},
     "wind_v_10m": {"label": "Surface wind N/S", "desc": "10-m northward wind", "unit": "m/s"},
-    "wind_speed_10m": {"label": "Surface wind speed", "desc": "10-m wind speed", "unit": "m/s"},
     "wind_u": {"label": "Low-level wind E/W", "desc": "Boundary-layer eastward wind", "unit": "m/s"},
     "wind_v": {"label": "Low-level wind N/S", "desc": "Boundary-layer northward wind", "unit": "m/s"},
     "wind_speed": {"label": "Low-level wind speed", "desc": "Boundary-layer wind speed", "unit": "m/s"},
     "wind_u_geostrophic": {"label": "Pressure-driven wind E/W", "desc": "Geostrophic eastward wind", "unit": "m/s"},
     "wind_v_geostrophic": {"label": "Pressure-driven wind N/S", "desc": "Geostrophic northward wind", "unit": "m/s"},
     "wind_speed_geostrophic": {"label": "Pressure-driven wind speed", "desc": "Geostrophic wind speed", "unit": "m/s"},
-    "ocean_u": {"label": "Ocean current E/W", "desc": "Ocean surface eastward current", "unit": "m/s"},
-    "ocean_v": {"label": "Ocean current N/S", "desc": "Ocean surface northward current", "unit": "m/s"},
-    "w_ekman_pumping": {"label": "Upwelling", "desc": "Ekman pumping velocity (positive = upwelling)", "unit": "m/s"},
-    "cloud_fraction": {"label": "Cloud cover", "desc": "Total cloud cover", "unit": "fraction (0-1)"},
+    # ── Cloud breakdown ──
     "cloud_high": {"label": "High clouds", "desc": "High cloud cover", "unit": "fraction (0-1)"},
     "cloud_low": {"label": "Low clouds", "desc": "Low cloud cover", "unit": "fraction (0-1)"},
     "cloud_convective": {"label": "Storm clouds", "desc": "Convective cloud cover", "unit": "fraction (0-1)"},
-    "convective_cloud_frac": {"label": "Storm clouds", "desc": "Convective cloud fraction", "unit": "fraction (0-1)"},
     "stratiform_cloud_frac": {"label": "Layer clouds", "desc": "Stratiform cloud fraction", "unit": "fraction (0-1)"},
     "marine_sc_cloud_frac": {"label": "Ocean low clouds", "desc": "Marine stratocumulus cloud fraction", "unit": "fraction (0-1)"},
-    "high_cloud_frac": {"label": "High clouds", "desc": "High cloud fraction", "unit": "fraction (0-1)"},
+    # ── Ocean & vertical ──
+    "ocean_u": {"label": "Ocean current E/W", "desc": "Ocean surface eastward current", "unit": "m/s"},
+    "ocean_v": {"label": "Ocean current N/S", "desc": "Ocean surface northward current", "unit": "m/s"},
+    "w_ekman_pumping": {"label": "Upwelling", "desc": "Ekman pumping velocity (positive = upwelling)", "unit": "m/s"},
     "vertical_velocity": {"label": "Rising/sinking air", "desc": "Vertical velocity (positive = rising)", "unit": "m/s"},
-    "surface_pressure": {"label": "Air pressure", "desc": "Surface pressure", "unit": "Pa"},
+    # ── Surface properties ──
+    "albedo": {"label": "Albedo", "desc": "Surface albedo", "unit": "fraction (0-1)"},
+    "soil_moisture": {"label": "Soil moisture", "desc": "Soil moisture", "unit": "fraction (0-1)"},
     "vegetation_fraction": {"label": "Vegetation", "desc": "Vegetation fraction", "unit": "fraction (0-1)"},
-    "elevation": {"label": "Elevation", "desc": "Elevation (negative = ocean depth)", "unit": "m"},
 }
+
+# Aliases: npz stores these under different names than the frontend binary
+_FIELD_ALIASES = {"high_cloud_frac": "cloud_high", "convective_cloud_frac": "cloud_convective"}
+
 
 
 def _to_display_units(value: float, raw_unit: str, imperial: bool) -> tuple[float, str]:
@@ -143,8 +151,10 @@ class ClimateDataStore:
             return
         raw = np.load(path)
         for key in raw.files:
-            if key not in self._data and key not in _SKIP_FIELDS:
-                self._data[key] = raw[key]
+            # Apply aliases (e.g. high_cloud_frac → cloud_high)
+            canonical = _FIELD_ALIASES.get(key, key)
+            if canonical not in self._data and canonical not in _SKIP_FIELDS:
+                self._data[canonical] = raw[key]
 
     @property
     def available_fields(self) -> list[str]:
@@ -195,6 +205,12 @@ class ClimateDataStore:
             "unit": unit,
             "description": info["desc"],
         }
+
+    def sample_many(
+        self, fields: list[str], lat: float, lon: float, month: int, *, imperial: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Sample multiple fields at the same location and month."""
+        return [self.sample(f, lat, lon, month, imperial=imperial) for f in fields]
 
 
 # ── Observational data (NOAA 1981-2010 climatology) ─────────────────────────
@@ -304,6 +320,10 @@ class ObsDataStore:
         else:
             value = float(arr[lat_idx, lon_idx])
 
+        # If NaN, search nearby cells (up to 2° away) for the closest valid value
+        if np.isnan(value):
+            value = self._nearest_valid(arr, lat_idx, lon_idx, month_idx)
+
         if np.isnan(value):
             return {
                 "field": field,
@@ -322,3 +342,32 @@ class ObsDataStore:
             "unit": unit,
             "description": info["desc"],
         }
+
+    @staticmethod
+    def _nearest_valid(
+        arr: np.ndarray, lat_idx: int, lon_idx: int, month_idx: int, max_radius: int = 1,
+    ) -> float:
+        """Search surrounding cells for the closest non-NaN value."""
+        if arr.ndim == 3:
+            nlat, nlon = arr.shape[1], arr.shape[2]
+        else:
+            nlat, nlon = arr.shape
+        for r in range(1, max_radius + 1):
+            for dlat in range(-r, r + 1):
+                for dlon in range(-r, r + 1):
+                    if abs(dlat) != r and abs(dlon) != r:
+                        continue  # only check the ring at distance r
+                    li = lat_idx + dlat
+                    if li < 0 or li >= nlat:
+                        continue
+                    lo = (lon_idx + dlon) % nlon
+                    v = float(arr[month_idx, li, lo] if arr.ndim == 3 else arr[li, lo])
+                    if not np.isnan(v):
+                        return v
+        return float("nan")
+
+    def sample_many(
+        self, fields: list[str], lat: float, lon: float, month: int, *, imperial: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Sample multiple observation fields at the same location and month."""
+        return [self.sample(f, lat, lon, month, imperial=imperial) for f in fields]

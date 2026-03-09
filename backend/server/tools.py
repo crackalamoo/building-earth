@@ -5,15 +5,33 @@ SAMPLE_CLIMATE_TOOL = {
     "function": {
         "name": "sample_climate",
         "description": (
-            "Look up a single climate variable at a specific latitude, longitude, "
-            "and month. Use this to investigate climate conditions before explaining them."
+            "Look up one or more simulated climate variables at a specific latitude, "
+            "longitude, and month. Request multiple fields at once to reduce round-trips."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "field": {
-                    "type": "string",
-                    "description": "The climate variable to sample (e.g. 'temperature_2m', 'precipitation', 'wind_speed_10m').",
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "temperature_2m", "precipitation", "humidity",
+                            "wind_speed_10m", "cloud_fraction", "surface_pressure",
+                            "elevation",
+                            "surface", "boundary_layer", "atmosphere",
+                            "wind_u_10m", "wind_v_10m",
+                            "wind_u", "wind_v", "wind_speed",
+                            "wind_u_geostrophic", "wind_v_geostrophic",
+                            "wind_speed_geostrophic",
+                            "cloud_high", "cloud_low", "cloud_convective",
+                            "stratiform_cloud_frac", "marine_sc_cloud_frac",
+                            "ocean_u", "ocean_v", "w_ekman_pumping",
+                            "vertical_velocity",
+                            "albedo", "soil_moisture", "vegetation_fraction",
+                        ],
+                    },
+                    "description": "Climate variables to sample.",
                 },
                 "lat": {
                     "type": "number",
@@ -28,7 +46,7 @@ SAMPLE_CLIMATE_TOOL = {
                     "description": "Month index (0 = January, 11 = December).",
                 },
             },
-            "required": ["field", "lat", "lon", "month"],
+            "required": ["fields", "lat", "lon", "month"],
         },
     },
 }
@@ -38,26 +56,29 @@ SAMPLE_OBSERVATIONS_TOOL = {
     "function": {
         "name": "sample_observations",
         "description": (
-            "Look up a real-world observation from NOAA 1981-2010 climatology at a "
-            "specific latitude, longitude, and month. Use this to ground explanations "
-            "in observed data and compare with simulation output."
+            "Look up one or more real-world observations from NOAA 1981-2010 climatology "
+            "at a specific latitude, longitude, and month. Use this to ground explanations "
+            "in observed data."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "field": {
-                    "type": "string",
-                    "enum": [
-                        "land_temperature",
-                        "sst",
-                        "humidity",
-                        "precipitation",
-                        "pressure",
-                        "wind_u",
-                        "wind_v",
-                    ],
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "land_temperature",
+                            "sst",
+                            "humidity",
+                            "precipitation",
+                            "pressure",
+                            "wind_u",
+                            "wind_v",
+                        ],
+                    },
                     "description": (
-                        "The observation to look up. "
+                        "Observations to look up. "
                         "'land_temperature' = station data (land only, null over ocean). "
                         "'sst' = satellite SST (ocean only, null over land/ice)."
                     ),
@@ -75,7 +96,7 @@ SAMPLE_OBSERVATIONS_TOOL = {
                     "description": "Month index (0 = January, 11 = December).",
                 },
             },
-            "required": ["field", "lat", "lon", "month"],
+            "required": ["fields", "lat", "lon", "month"],
         },
     },
 }

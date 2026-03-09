@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI, APIError
 
 from .climate_data import FIELD_INFO, OBS_FIELD_INFO, ClimateDataStore, ObsDataStore
-from .prompts import build_system_prompt
+from .prompts import SYSTEM_PROMPT
 from .tools import TOOLS
 
 load_dotenv()
@@ -42,16 +42,7 @@ async def health() -> dict[str, str]:
 store = ClimateDataStore()
 obs_store = ObsDataStore()
 
-# Build system prompt with available fields
-_sim_field_descs = [
-    {"name": f, "desc": FIELD_INFO[f]["desc"], "unit": FIELD_INFO[f]["unit"]}
-    for f in store.available_fields
-]
-_obs_field_descs = [
-    {"name": f, "desc": OBS_FIELD_INFO[f]["desc"], "unit": OBS_FIELD_INFO[f]["unit"]}
-    for f in obs_store.available_fields
-]
-SYSTEM = build_system_prompt(_sim_field_descs, _obs_field_descs)
+SYSTEM = SYSTEM_PROMPT
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-dummy"))
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-nano")
@@ -171,29 +162,28 @@ async def chat(request: Request) -> StreamingResponse:
                 tc = tool_calls_acc[idx]
                 try:
                     args = json.loads(tc["arguments"])
-                    if tc["name"] == "sample_observations":
-                        result = obs_store.sample(
-                            field=args["field"],
-                            lat=args["lat"],
-                            lon=args["lon"],
-                            month=args["month"],
-                            imperial=imperial,
-                        )
-                    else:
-                        result = store.sample(
-                            field=args["field"],
-                            lat=args["lat"],
-                            lon=args["lon"],
-                            month=args["month"],
-                            imperial=imperial,
-                        )
+                    fields_list = args.get("fields", [args["field"]] if "field" in args else [])
+                    data_store = obs_store if tc["name"] == "sample_observations" else store
+                    result = data_store.sample_many(
+                        fields=fields_list,
+                        lat=args["lat"],
+                        lon=args["lon"],
+                        month=args["month"],
+                        imperial=imperial,
+                    )
                 except Exception:
                     result = {"error": "Failed to sample climate data"}
                 # Send tool progress event
-                field_name = args.get("field", "?") if isinstance(args, dict) else "?"
-                all_fields = {**FIELD_INFO, **OBS_FIELD_INFO}
-                field_label = all_fields.get(field_name, {}).get("label", field_name)
-                yield f"data: {json.dumps({'tool': field_label})}\n\n"
+                field_meta = OBS_FIELD_INFO if tc["name"] == "sample_observations" else FIELD_INFO
+                if isinstance(args, dict):
+                    labels = [
+                        field_meta.get(f, {}).get("label", f)
+                        for f in args.get("fields", [args.get("field", "?")])
+                    ]
+                else:
+                    labels = ["?"]
+                for label in labels:
+                    yield f"data: {json.dumps({'tool': label})}\n\n"
                 assistant_tool_calls.append({
                     "id": tc["id"],
                     "type": "function",
