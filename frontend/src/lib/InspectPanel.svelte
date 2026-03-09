@@ -271,9 +271,11 @@
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
   ];
   $: displayMonth = MONTH_NAMES[Math.floor(monthProgress) % 12];
+
+  let isMobile = typeof window !== 'undefined' && window.innerWidth <= 640;
 </script>
 
-<div class="inspect-panel" transition:fly={{ x: 700, duration: 200 }}>
+<div class="inspect-panel" transition:fly={{ x: isMobile ? 0 : 700, y: isMobile ? 400 : 0, duration: 200 }}>
   <div class="panel-header">
     <div class="coords">
       {Math.abs(lat).toFixed(1)}°{lat >= 0 ? 'N' : 'S'}, {Math.abs(lon).toFixed(1)}°{lon >= 0 ? 'E' : 'W'}
@@ -572,5 +574,19 @@
     color: #888;
     border-top: 1px solid #333;
     font-size: 0.9rem;
+  }
+
+  @media (max-width: 640px) {
+    .inspect-panel {
+      top: auto;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      width: 100%;
+      max-height: 65vh;
+      border-left: none;
+      border-top: 1px solid #1a6b6b;
+      border-radius: 12px 12px 0 0;
+    }
   }
 </style>

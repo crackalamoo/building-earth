@@ -104,4 +104,12 @@
     color: rgba(255, 255, 255, 0.6);
     line-height: 1;
   }
+
+  @media (max-width: 640px) {
+    .legend {
+      bottom: auto;
+      top: 1rem;
+      right: 0.75rem;
+    }
+  }
 </style>

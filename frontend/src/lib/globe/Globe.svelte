@@ -737,7 +737,7 @@
       1000
     );
     // Position camera at ~25° above equator
-    const cameraDistance = 3;
+    const cameraDistance = container.clientWidth <= 480 ? 5.2 : container.clientWidth <= 600 ? 4.5 : container.clientWidth <= 640 ? 3.8 : 3;
     const tiltAngle = 20 * (Math.PI / 180); // 20 degrees
     camera.position.set(0, cameraDistance * Math.sin(tiltAngle), cameraDistance * Math.cos(tiltAngle));
     camera.lookAt(0, 0, 0);

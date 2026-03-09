@@ -83,7 +83,7 @@
   <button class="action-btn" on:click={() => dispatch('resetView')} disabled={recording} data-tooltip="Reset View">
     <Home size={16} />
   </button>
-  <button class="action-btn" on:click={() => dispatch('recordGif')} disabled={recording}>
+  <button class="action-btn record-btn" on:click={() => dispatch('recordGif')} disabled={recording}>
     {#if recording}
       {recordingProgress}
     {:else}
@@ -270,5 +270,22 @@
   button:disabled {
     cursor: wait;
     opacity: 0.7;
+  }
+
+  @media (max-width: 640px) {
+    .controls {
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      padding: 0.5rem 0.75rem 1rem;
+    }
+    .separator { display: none; }
+    .controls label {
+      order: 10;
+      width: 100%;
+      gap: 0.5rem;
+    }
+    .month-label { min-width: 70px; font-size: 0.9rem; }
+    input[type="range"] { width: auto; flex: 1; }
+    .record-btn { display: none; }
   }
 </style>
