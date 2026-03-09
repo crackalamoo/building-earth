@@ -35,6 +35,9 @@
     'Compare to nearby coast',
   ];
 
+  let activeTab: 'cycle' | 'ask' = 'ask';
+  let hoveredMonthIdx: number | null = null;
+
   // ── Grid index helpers ──
 
   function latIndex(lat: number, nlat: number): number {
@@ -122,6 +125,97 @@
     const nlon = layerData.elevation.shape[1];
     return data[latIndex(lat, nlat) * nlon + lonIndex(lon, nlon)];
   }
+
+  // ── Annual cycle data ──
+
+  function sampleT2mMonth(lat: number, lon: number, month: number): number {
+    if (!temperatureData) return 0;
+    const nlat = temperatureData[0].length;
+    const nlon = temperatureData[0][0].length;
+    const latIdx = (lat + 90) / 180 * nlat - 0.5;
+    const lonNorm = ((lon % 360) + 360) % 360;
+    const lonIdx = lonNorm / 360 * nlon;
+    const li = Math.max(0, Math.min(nlat - 1, Math.floor(latIdx)));
+    const li2 = Math.min(nlat - 1, li + 1);
+    const lj = Math.floor(((lonIdx % nlon) + nlon) % nlon);
+    const lj2 = (lj + 1) % nlon;
+    const ft = latIdx - li;
+    const fl = lonIdx - lj;
+    const v00 = temperatureData[month][li][lj];
+    const v01 = temperatureData[month][li][lj2];
+    const v10 = temperatureData[month][li2][lj];
+    const v11 = temperatureData[month][li2][lj2];
+    return (1 - ft) * ((1 - fl) * v00 + fl * v01) + ft * ((1 - fl) * v10 + fl * v11);
+  }
+
+  function samplePrecipMonth(lat: number, lon: number, month: number): number {
+    if (!layerData?.precipitation) return 0;
+    const data = layerData.precipitation.data as Float32Array;
+    const nlat = layerData.precipitation.shape[1];
+    const nlon = layerData.precipitation.shape[2];
+    const n = nlat * nlon;
+    const li = latIndex(lat, nlat);
+    const lj = lonIndex(lon, nlon);
+    // Convert kg/m²/s to mm/month (approx 30.44 days/month)
+    return data[month * n + li * nlon + lj] * 86400 * 30.44;
+  }
+
+  $: cycleTemps = Array.from({ length: 12 }, (_, m) => sampleT2mMonth(lat, lon, m));
+  $: cyclePrecip = Array.from({ length: 12 }, (_, m) => samplePrecipMonth(lat, lon, m));
+
+  $: tempMin = Math.min(...cycleTemps);
+  $: tempMax = Math.max(...cycleTemps);
+  $: precipMax = Math.max(...cyclePrecip, 1) * 1.25;
+
+  $: currentMonthIdx = Math.floor(monthProgress) % 12;
+  $: displayMonthIdx = hoveredMonthIdx !== null ? hoveredMonthIdx : currentMonthIdx;
+
+  const CHART_W = 580;
+  const CHART_H = 180;
+  const PAD_L = 36;
+  const PAD_R = 12;
+  const PAD_T = 38;
+  const PAD_B = 28;
+  const INNER_W = CHART_W - PAD_L - PAD_R;
+  const INNER_H = CHART_H - PAD_T - PAD_B;
+  const TEMP_PAD = 0.15; // fraction of range to pad top/bottom
+  const BAR_W = INNER_W / 12 * 0.6;
+  const MONTH_SHORT = ['J','F','M','A','M','J','J','A','S','O','N','D'];
+
+  $: tempPadded = (tempMax - tempMin || 10) * TEMP_PAD;
+  $: tempPlotMin = tempMin - tempPadded;
+  $: tempPlotMax = tempMax + tempPadded;
+  $: tempRange = tempPlotMax - tempPlotMin;
+  $: chartBars = cyclePrecip.map((p, i) => ({
+    x: PAD_L + (i + 0.2) * (INNER_W / 12),
+    y: PAD_T + INNER_H - (p / precipMax) * INNER_H,
+    h: (p / precipMax) * INNER_H,
+    p,
+    active: i === displayMonthIdx,
+  }));
+  $: chartLines = cycleTemps.slice(0, 11).map((_, i) => ({
+    x1: PAD_L + (i + 0.5) * (INNER_W / 12),
+    y1: PAD_T + INNER_H - ((cycleTemps[i] - tempPlotMin) / tempRange) * INNER_H,
+    x2: PAD_L + (i + 1.5) * (INNER_W / 12),
+    y2: PAD_T + INNER_H - ((cycleTemps[i + 1] - tempPlotMin) / tempRange) * INNER_H,
+  }));
+  $: chartDots = cycleTemps.map((t, i) => ({
+    cx: PAD_L + (i + 0.5) * (INNER_W / 12),
+    cy: PAD_T + INNER_H - ((t - tempPlotMin) / tempRange) * INNER_H,
+    t,
+    active: i === displayMonthIdx,
+    isCurrent: i === currentMonthIdx,
+  }));
+  $: chartMonths = MONTH_SHORT.map((label, i) => ({
+    x: PAD_L + (i + 0.5) * (INNER_W / 12),
+    label,
+    active: i === displayMonthIdx,
+    isCurrent: i === currentMonthIdx,
+  }));
+  $: hitAreas = Array.from({ length: 12 }, (_, i) => ({
+    x: PAD_L + i * (INNER_W / 12),
+    i,
+  }));
 
   function toggleUnits() { useImperial.update(v => !v); }
   function cToF(c: number): number { return c * 9 / 5 + 32; }
@@ -426,60 +520,157 @@
     </div>
   </div>
 
-  <div class="divider"></div>
-
-  <div class="chat-area" bind:this={chatContainer}>
-    {#if messages.length === 0}
-      <div class="suggestions">
-        {#each SUGGESTIONS as suggestion}
-          <button class="suggestion-btn" on:click={() => sendMessage(suggestion)}>
-            {suggestion}
-          </button>
-        {/each}
-      </div>
-    {:else}
-      {#each messages as msg, mi}
-        <div class="chat-msg {msg.role}">
-          {#if msg.role === 'assistant' && mi === messages.length - 1 && streaming && (!msg.parts || msg.parts.length === 0)}
-            <div class="typing-indicator">
-              <span></span><span></span><span></span>
-            </div>
-          {:else if msg.parts && msg.parts.length > 0}
-            {#each msg.parts as part}
-              {#if part.type === 'tools'}
-                <div class="tool-progress">
-                  {#each part.fields as field}
-                    <span class="tool-chip">{field}</span>
-                  {/each}
-                </div>
-              {:else}
-                {part.content}
-              {/if}
-            {/each}
-          {:else}
-            {msg.content}
-          {/if}
-          {#if errorOccurred && msg.role === 'assistant' && mi === messages.length - 1}
-            <button class="retry-btn" on:click={retryLastMessage}>Retry</button>
-          {/if}
-        </div>
-      {/each}
-    {/if}
+  <div class="tab-bar">
+    <div class="tab-group">
+      <button
+        class="tab-btn"
+        class:active={activeTab === 'ask'}
+        on:click|stopPropagation={() => activeTab = 'ask'}
+      >Ask</button><button
+        class="tab-btn"
+        class:active={activeTab === 'cycle'}
+        on:click|stopPropagation={() => activeTab = 'cycle'}
+      >Chart</button>
+    </div>
   </div>
 
-  {#if !limitReached}
-    <div class="chat-input-area">
-      <input
-        type="text"
-        class="chat-input"
-        placeholder="Ask about this location..."
-        bind:value={inputText}
-        on:keydown={handleKeydown}
-        disabled={streaming}
-      />
+  {#if activeTab === 'cycle'}
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="cycle-area" on:mouseleave={() => hoveredMonthIdx = null}>
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <svg
+        viewBox="0 0 {CHART_W} {CHART_H}" width="100%" preserveAspectRatio="xMidYMid meet" class="cycle-chart"
+      >
+        <!-- Precip bars -->
+        {#each chartBars as bar}
+          {@const minH = 2}
+          {@const displayH = Math.max(bar.h, minH)}
+          {@const displayY = PAD_T + INNER_H - displayH}
+          <rect
+            x={bar.x} y={displayY} width={BAR_W} height={displayH}
+            fill={bar.active ? 'rgba(42,158,158,0.7)' : 'rgba(42,158,158,0.25)'}
+          />
+        {/each}
+
+        <!-- Temp line segments -->
+        {#each chartLines as seg}
+          <line x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2} stroke="#f4a460" stroke-width="2" />
+        {/each}
+
+        <!-- Temp dots + label for active month -->
+        {#each chartDots as dot}
+          <circle
+            cx={dot.cx} cy={dot.cy} r={dot.active ? 5 : 3}
+            fill={dot.active ? '#f4a460' : '#c47830'}
+            stroke={dot.isCurrent && !dot.active ? 'rgba(255,255,255,0.4)' : dot.active ? '#fff' : 'none'}
+            stroke-width="1.5"
+          />
+          {#if dot.active}
+            {@const barY = chartBars[displayMonthIdx].y}
+            {@const precipLabelY = Math.min(barY - 4, dot.cy - 20)}
+            <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="9">
+              {$useImperial ? (cyclePrecip[displayMonthIdx] / 25.4).toFixed(1) + '"' : cyclePrecip[displayMonthIdx].toFixed(0) + 'mm'}
+            </text>
+            <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="10">
+              {$useImperial ? cToF(dot.t).toFixed(0) + '°F' : dot.t.toFixed(0) + '°C'}
+            </text>
+          {/if}
+        {/each}
+
+        <!-- Month labels -->
+        {#each chartMonths as m}
+          <text
+            x={m.x} y={CHART_H - 6}
+            text-anchor="middle"
+            fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#555'}
+            font-size="10"
+            font-weight={m.active ? '600' : '400'}
+          >{m.label}</text>
+        {/each}
+
+        <!-- Y axis labels -->
+        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="9">
+          {imp ? cToF(tempPlotMax).toFixed(0) + '°' : tempPlotMax.toFixed(0) + '°'}
+        </text>
+        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="9">
+          {imp ? cToF(tempPlotMin).toFixed(0) + '°' : tempPlotMin.toFixed(0) + '°'}
+        </text>
+        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="9">
+          {$useImperial ? (precipMax / 25.4).toFixed(1) + 'in' : precipMax.toFixed(0) + 'mm'}/mo
+        </text>
+
+        <!-- Invisible hit areas per month column -->
+        {#each hitAreas as hit}
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <rect
+            x={hit.x} y={PAD_T} width={INNER_W / 12} height={INNER_H + PAD_B}
+            fill="rgba(0,0,0,0.001)"
+            style="cursor: pointer; pointer-events: all;"
+            on:mousemove={() => hoveredMonthIdx = hit.i}
+            on:click|stopPropagation={() => { dispatch('setMonth', hit.i); hoveredMonthIdx = null; }}
+          />
+        {/each}
+      </svg>
+
+      <div class="cycle-footer">
+        <span class="legend-temp">— Temperature</span>
+        <span class="legend-precip">▪ Precipitation</span>
+      </div>
     </div>
   {:else}
-    <div class="limit-msg">Session limit reached</div>
+    <div class="chat-area" bind:this={chatContainer}>
+      {#if messages.length === 0}
+        <div class="suggestions">
+          {#each SUGGESTIONS as suggestion}
+            <button class="suggestion-btn" on:click={() => sendMessage(suggestion)}>
+              {suggestion}
+            </button>
+          {/each}
+        </div>
+      {:else}
+        {#each messages as msg, mi}
+          <div class="chat-msg {msg.role}">
+            {#if msg.role === 'assistant' && mi === messages.length - 1 && streaming && (!msg.parts || msg.parts.length === 0)}
+              <div class="typing-indicator">
+                <span></span><span></span><span></span>
+              </div>
+            {:else if msg.parts && msg.parts.length > 0}
+              {#each msg.parts as part}
+                {#if part.type === 'tools'}
+                  <div class="tool-progress">
+                    {#each part.fields as field}
+                      <span class="tool-chip">{field}</span>
+                    {/each}
+                  </div>
+                {:else}
+                  {part.content}
+                {/if}
+              {/each}
+            {:else}
+              {msg.content}
+            {/if}
+            {#if errorOccurred && msg.role === 'assistant' && mi === messages.length - 1}
+              <button class="retry-btn" on:click={retryLastMessage}>Retry</button>
+            {/if}
+          </div>
+        {/each}
+      {/if}
+    </div>
+
+    {#if !limitReached}
+      <div class="chat-input-area">
+        <input
+          type="text"
+          class="chat-input"
+          placeholder="Ask about this location..."
+          bind:value={inputText}
+          on:keydown={handleKeydown}
+          disabled={streaming}
+        />
+      </div>
+    {:else}
+      <div class="limit-msg">Session limit reached</div>
+    {/if}
   {/if}
 </div>
 
@@ -560,11 +751,88 @@
   }
   .unit-toggle:hover { opacity: 0.65; }
 
-  .divider {
-    height: 1px;
-    background: #333;
-    margin: 0 1rem;
+  .tab-bar {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid #333;
   }
+
+  .tab-group {
+    display: flex;
+  }
+
+  .tab-btn {
+    padding: 0.4rem 0.8rem;
+    background: rgba(14, 74, 74, 0.3);
+    color: #fff;
+    border: 1px solid rgba(26, 107, 107, 0.5);
+    cursor: pointer;
+    font-size: 0.85rem;
+    min-width: auto;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .tab-btn:first-child {
+    border-radius: 4px 0 0 4px;
+  }
+
+  .tab-btn:last-child {
+    border-radius: 0 4px 4px 0;
+    margin-left: -1px;
+  }
+
+  .tab-btn.active {
+    background: #1a6b6b;
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.3);
+    z-index: 1;
+    position: relative;
+  }
+
+  .tab-btn:hover:not(.active) {
+    background: rgba(14, 74, 74, 0.5);
+  }
+
+  .cycle-area {
+    flex: 1;
+    padding: 1rem 1rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .cycle-chart {
+    display: block;
+    width: 100%;
+    flex-shrink: 0;
+  }
+
+  .cycle-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.8rem;
+    padding-left: 2px;
+  }
+
+  .cycle-month-stat {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+  }
+
+  .stat-month {
+    color: #fff;
+    font-weight: 500;
+    min-width: 3.5rem;
+  }
+
+  .cycle-legend-keys {
+    display: flex;
+    gap: 0.75rem;
+  }
+
+  .legend-temp { color: #f4a460; }
+  .legend-precip { color: rgba(42, 158, 158, 0.9); }
 
   .chat-area {
     flex: 1;
