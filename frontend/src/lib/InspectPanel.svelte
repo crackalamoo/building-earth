@@ -21,6 +21,8 @@
   let inputText = '';
   let streaming = false;
   let limitReached = false;
+  let errorOccurred = false;
+  let lastFailedMessage = '';
   let chatContainer: HTMLDivElement;
   let currentParts: MsgPart[] = [];
   let sentLat: number | null = null;
@@ -151,6 +153,7 @@
     messages = [...messages, userMsg];
     inputText = '';
     streaming = true;
+    errorOccurred = false;
 
     if (messages.filter(m => m.role === 'user').length >= MAX_MESSAGES) {
       limitReached = true;
@@ -237,9 +240,11 @@
       if (e.name !== 'AbortError') {
         const last = messages[messages.length - 1];
         if (last.role === 'assistant' && !last.content) {
-          last.content = 'Failed to connect to the explanation server. Make sure the backend is running on port 8000.';
+          last.content = 'Failed to connect to the explanation server.';
           messages = [...messages];
         }
+        errorOccurred = true;
+        lastFailedMessage = messages.length >= 2 ? messages[messages.length - 2].content : '';
       }
     } finally {
       streaming = false;
@@ -257,6 +262,12 @@
     }
   }
 
+  function retryLastMessage() {
+    messages = messages.slice(0, -2);
+    errorOccurred = false;
+    sendMessage(lastFailedMessage);
+  }
+
   function close() {
     abortController?.abort();
     dispatch('close');
@@ -272,7 +283,7 @@
   ];
   $: displayMonth = MONTH_NAMES[Math.floor(monthProgress) % 12];
 
-  let isMobile = typeof window !== 'undefined' && window.innerWidth <= 640;
+  let isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches;
 
   // ── Drag-to-dismiss (mobile) ──
   let panelEl: HTMLDivElement;
@@ -320,18 +331,39 @@
     }
   }
 
-  onMount(() => {
-    if (isMobile) {
-      window.addEventListener('touchmove', onDragMove, { passive: false });
-      window.addEventListener('touchend', onDragEnd);
-      window.addEventListener('mousemove', onDragMove);
-      window.addEventListener('mouseup', onDragEnd);
+  function addDragListeners() {
+    window.addEventListener('touchmove', onDragMove, { passive: false });
+    window.addEventListener('touchend', onDragEnd);
+    window.addEventListener('mousemove', onDragMove);
+    window.addEventListener('mouseup', onDragEnd);
+  }
+
+  function removeDragListeners() {
+    window.removeEventListener('touchmove', onDragMove);
+    window.removeEventListener('touchend', onDragEnd);
+    window.removeEventListener('mousemove', onDragMove);
+    window.removeEventListener('mouseup', onDragEnd);
+  }
+
+  let prevMobile = isMobile;
+  $: {
+    if (typeof window !== 'undefined' && prevMobile !== isMobile) {
+      if (isMobile) addDragListeners();
+      else removeDragListeners();
+      prevMobile = isMobile;
     }
+  }
+
+  onMount(() => {
+    if (isMobile) addDragListeners();
+
+    const mql = window.matchMedia('(max-width: 640px)');
+    const onMediaChange = (e: MediaQueryListEvent) => { isMobile = e.matches; };
+    mql.addEventListener('change', onMediaChange);
+
     return () => {
-      window.removeEventListener('touchmove', onDragMove);
-      window.removeEventListener('touchend', onDragEnd);
-      window.removeEventListener('mousemove', onDragMove);
-      window.removeEventListener('mouseup', onDragEnd);
+      removeDragListeners();
+      mql.removeEventListener('change', onMediaChange);
     };
   });
 </script>
@@ -426,6 +458,9 @@
             {/each}
           {:else}
             {msg.content}
+          {/if}
+          {#if errorOccurred && msg.role === 'assistant' && mi === messages.length - 1}
+            <button class="retry-btn" on:click={retryLastMessage}>Retry</button>
           {/if}
         </div>
       {/each}
@@ -546,12 +581,6 @@
     gap: 0.5rem;
   }
 
-  .suggestions-label {
-    color: #888;
-    font-size: 0.9rem;
-    margin-bottom: 0.25rem;
-  }
-
   .suggestion-btn {
     text-align: left;
     background: rgba(26, 107, 107, 0.2);
@@ -580,6 +609,21 @@
 
   .chat-msg.assistant {
     color: #ddd;
+  }
+
+  .retry-btn {
+    margin-top: 0.5rem;
+    background: rgba(26, 107, 107, 0.2);
+    border: 1px solid #1a6b6b;
+    color: #aadede;
+    padding: 0.3rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    min-width: auto;
+  }
+  .retry-btn:hover {
+    background: rgba(26, 107, 107, 0.35);
   }
 
   .tool-progress {
