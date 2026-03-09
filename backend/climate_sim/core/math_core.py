@@ -208,6 +208,32 @@ def get_factorized_solver(
     return solver
 
 
+def compute_scalar_gradient_magnitude(
+    field: np.ndarray,
+    lat2d: np.ndarray,
+    lon2d: np.ndarray,
+) -> np.ndarray:
+    """Compute |∇field| on a lat-lon grid.
+
+    |∇f| = sqrt((∂f/∂y)² + (∂f/∂x)²)
+    where ∂f/∂x = (1/(R cos φ)) ∂f/∂λ and ∂f/∂y = (1/R) ∂f/∂φ.
+    """
+    R = R_EARTH_METERS
+    lat_rad = np.deg2rad(lat2d)
+    cos_lat = np.maximum(np.cos(lat_rad), 0.01)
+
+    dlat = np.deg2rad(lat2d[1, 0] - lat2d[0, 0])
+    dlon = np.deg2rad(lon2d[0, 1] - lon2d[0, 0])
+
+    df_dlat = np.gradient(field, axis=0) / dlat
+    df_dlon = np.gradient(field, axis=1) / dlon
+
+    df_dy = df_dlat / R
+    df_dx = df_dlon / (R * cos_lat)
+
+    return np.sqrt(df_dy**2 + df_dx**2)
+
+
 def compute_divergence(
     u: np.ndarray,
     v: np.ndarray,

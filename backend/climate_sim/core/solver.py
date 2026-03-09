@@ -21,7 +21,7 @@ from climate_sim.physics.clouds import (
     compute_vertical_velocity_from_pressure,
     compute_vertical_velocity_from_warm_advection,
 )
-from climate_sim.core.math_core import compute_divergence
+from climate_sim.core.math_core import compute_divergence, compute_scalar_gradient_magnitude
 from climate_sim.data.constants import BOUNDARY_LAYER_HEIGHT_M, STANDARD_LAPSE_RATE_K_PER_M
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.diffusion import DiffusionOperator
@@ -38,7 +38,7 @@ from climate_sim.core.state import (
 )
 from climate_sim.core.postprocess import postprocess_periodic_cycle_results
 from climate_sim.core.rhs_builder import create_rhs_functions, RhsFn, RhsDerivativeFn, RhsBuildInputs
-from climate_sim.physics.precipitation import compute_precipitation_recycling
+from climate_sim.physics.precipitation import compute_precipitation_recycling, compute_eddy_precipitation
 from climate_sim.physics.vertical_motion import (
     VerticalMotionConfig,
     compute_hadley_subsidence_velocity,
@@ -120,6 +120,12 @@ def monthly_step(
         start_temp = state.temperature
         temp_next = np.maximum(start_temp, temperature_floor)
         cache = solver_cache or DEFAULT_LINEAR_SOLVE_CACHE
+
+        # Precompute eddy diffusivity field for eddy precipitation (Eady-scaled κ)
+        lat_rad_kappa = np.deg2rad(surface_context.lat2d)
+        eady_raw = np.abs(np.sin(lat_rad_kappa)) * np.abs(np.sin(2 * lat_rad_kappa))
+        eady_at_45 = np.sin(np.deg2rad(45.0)) * np.sin(np.deg2rad(90.0))
+        eddy_kappa = 1.0e6 * np.clip(eady_raw / eady_at_45 * 2.5, 0.3, 2.0)
 
         base_capacity = surface_context.baseline_capacity
         base_albedo_field = surface_context.base_albedo
@@ -651,13 +657,13 @@ def monthly_step(
                             hadley_drying = hadley_drying + hadley_moistening
                         else:
                             hadley_drying = np.zeros_like(lagged_humidity)
+                        # Compute RH for precipitation gates
+                        q_sat_bl = compute_saturation_specific_humidity(temp_capped[1])
+                        rh_bl = np.clip(lagged_humidity / np.maximum(q_sat_bl, 1e-10), 0.0, 1.0)
                         # Direct orographic precipitation: P_oro = rh_gate · η · max(w, 0) · q · ρ
                         if lagged_orographic_w is not None and surface_context.orographic_model is not None:
-                            t_bl_K = temp_capped[1]
-                            q_sat_oro = compute_saturation_specific_humidity(t_bl_K)
-                            rh_oro = np.clip(lagged_humidity / np.maximum(q_sat_oro, 1e-10), 0.0, 1.0)
                             oro_precip = surface_context.orographic_model.compute_orographic_precipitation(
-                                lagged_orographic_w, lagged_humidity, t_bl_K, rh_oro,
+                                lagged_orographic_w, lagged_humidity, temp_capped[1], rh_bl,
                             )
                             precip_rate = precip_rate + oro_precip
                         # Precipitation recycling (Eltahir & Bras 1996)
@@ -668,6 +674,13 @@ def monthly_step(
                         precip_rate = precip_rate + compute_precipitation_recycling(
                             evap_rate, lagged_humidity, wind_speed_recycle,
                             surface_context.land_mask, resolution_deg=grid_deg,
+                        )
+                        # Eddy precipitation: moisture wrung out during baroclinic transport
+                        grad_q = compute_scalar_gradient_magnitude(
+                            lagged_humidity, surface_context.lat2d, surface_context.lon2d,
+                        )
+                        precip_rate = precip_rate + compute_eddy_precipitation(
+                            lagged_humidity, grad_q, eddy_kappa, rh_bl,
                         )
                         humidity_tendency = (evap_rate - precip_rate) / COLUMN_MASS_KG_M2 + advection_tendency + diffusion_tendency + hadley_drying
 
@@ -846,12 +859,20 @@ def monthly_step(
             tau_evap = 7 * 86400.0
             evaporation_rate = np.maximum(q_sat - lagged_humidity, 0) * COLUMN_MASS_KG_M2 / tau_evap
 
-        # Add precipitation recycling to final precipitation (for latent heating + soil moisture)
+        # Add precipitation recycling and eddy precip to final precipitation (for soil moisture)
         if lagged_humidity is not None:
             grid_deg = abs(surface_context.lat2d[1, 0] - surface_context.lat2d[0, 0])
             final_precipitation = final_precipitation + compute_precipitation_recycling(
                 evaporation_rate, lagged_humidity, wind_speed_ref if wind_speed_ref is not None else np.full_like(lagged_humidity, 3.0),
                 surface_context.land_mask, resolution_deg=grid_deg,
+            )
+            grad_q_soil = compute_scalar_gradient_magnitude(
+                lagged_humidity, surface_context.lat2d, surface_context.lon2d,
+            )
+            q_sat_soil = compute_saturation_specific_humidity(t_for_humidity)
+            rh_soil = np.clip(lagged_humidity / np.maximum(q_sat_soil, 1e-10), 0.0, 1.0)
+            final_precipitation = final_precipitation + compute_eddy_precipitation(
+                lagged_humidity, grad_q_soil, eddy_kappa, rh_soil,
             )
 
         # Soil moisture evolution (semi-implicit two-component drainage)
@@ -929,6 +950,20 @@ def monthly_step(
                 final_precipitation = final_precipitation + surface_context.orographic_model.compute_orographic_precipitation(
                     lagged_orographic_w, lagged_humidity, final_temp[1], rh,
                 )
+            # Add eddy precipitation (baroclinic moisture transport)
+            grad_q_final = compute_scalar_gradient_magnitude(
+                lagged_humidity, surface_context.lat2d, surface_context.lon2d,
+            )
+            final_precipitation = final_precipitation + compute_eddy_precipitation(
+                lagged_humidity, grad_q_final, eddy_kappa, rh,
+            )
+            # Add precipitation recycling
+            grid_deg_final = abs(surface_context.lat2d[1, 0] - surface_context.lat2d[0, 0])
+            final_precipitation = final_precipitation + compute_precipitation_recycling(
+                evaporation_rate, lagged_humidity,
+                wind_speed_ref if wind_speed_ref is not None else np.full_like(lagged_humidity, 3.0),
+                surface_context.land_mask, resolution_deg=grid_deg_final,
+            )
 
         # Use the lagged ITCZ (passed in, dampened) for consistency with the solve.
         # This ensures the output winds/pressure match what was used during Newton.

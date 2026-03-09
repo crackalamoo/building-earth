@@ -46,6 +46,12 @@ VIRGA_FLOOR = 0.25    # minimum fraction reaching surface in strongest descent
 VIRGA_SCALE = 0.005   # m/s, sigmoid transition width
 W_BOOST_MAX = 1.5     # maximum amplification in strongest ascent
 
+# Eddy precipitation: moisture wrung out during baroclinic eddy transport.
+# C_EDDY has units 1/m — fraction of eddy moisture flux that precipitates
+# per meter of transport distance.  Moisture e-folding distance ~2000 km
+# gives C ≈ 5e-7 /m.
+EDDY_PRECIP_COEFFICIENT = 5e-7  # 1/m
+
 
 def compute_moist_adiabatic_lapse_rate(T_K: np.ndarray, q: np.ndarray) -> np.ndarray:
     """Compute moist adiabatic lapse rate (K/m).
@@ -143,6 +149,25 @@ def compute_convective_precipitation(
         P_convective = P_convective * w_factor
 
     return P_convective
+
+
+def compute_eddy_precipitation(
+    q: np.ndarray,
+    grad_q: np.ndarray,
+    kappa: np.ndarray,
+    rh: np.ndarray,
+    coefficient: float = EDDY_PRECIP_COEFFICIENT,
+) -> np.ndarray:
+    """Precipitation from baroclinic eddy moisture transport.
+
+    As eddies transport moisture along gradients, rising air in frontal
+    zones saturates and precipitates.  The rate scales with the eddy
+    moisture flux magnitude:
+
+        P_eddy = C × κ × |∇q| × rh_gate
+    """
+    rh_gate = compute_precipitation_rh_gate(rh)
+    return coefficient * kappa * grad_q * rh_gate
 
 
 def compute_static_stability(
