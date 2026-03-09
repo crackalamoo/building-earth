@@ -28,7 +28,7 @@ from climate_sim.physics.vertical_motion import (
     _ALPHA,
 )
 from climate_sim.physics.orographic_effects import OrographicModel
-from climate_sim.physics.precipitation import compute_precipitation_jacobian, compute_precipitation_recycling_jacobian
+from climate_sim.physics.precipitation import compute_precipitation_jacobian, compute_precipitation_recycling_jacobian, compute_precipitation_rh_gate
 from climate_sim.physics.humidity import (
     COLUMN_MASS_KG_M2,
     compute_saturation_specific_humidity,
@@ -760,17 +760,21 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     else:
                         w_largescale = np.zeros_like(state.humidity_field)
 
+                    # Compute RH for precipitation Jacobian (rh_gate treated as frozen)
+                    q_sat_jac = compute_saturation_specific_humidity(t_bl)
+                    rh_jac = np.clip(state.humidity_field / np.maximum(q_sat_jac, 1e-10), 0.0, 1.0)
+
                     dP_dT_bl, dP_dT_atm, dP_dq = compute_precipitation_jacobian(
-                        conv_frac, strat_frac, marine_frac,
-                        state.humidity_field, w_largescale, t_bl,
+                        rh_jac, state.humidity_field, t_bl,
                         vertical_velocity=w_largescale,
                     )
 
-                    # Orographic precipitation Jacobian: dP_oro/dq = η * max(w, 0) * ρ
+                    # Orographic precipitation Jacobian: dP_oro/dq = rh_gate * η * max(w, 0) * ρ
                     if state.orographic_w is not None and inputs.orographic_model is not None:
                         eff = inputs.orographic_model.config.orographic_precip_efficiency
                         rho = 101325.0 / (287.05 * state.temperature[1])
-                        dP_oro_dq = eff * np.maximum(state.orographic_w, 0.0) * rho
+                        rh_gate_oro = compute_precipitation_rh_gate(rh_jac)
+                        dP_oro_dq = rh_gate_oro * eff * np.maximum(state.orographic_w, 0.0) * rho
                         dP_dq = dP_dq + dP_oro_dq
 
                     # Precipitation recycling Jacobian: dR/dq (always negative, stabilising)

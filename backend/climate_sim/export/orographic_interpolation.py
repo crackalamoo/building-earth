@@ -130,19 +130,19 @@ def recompute_fields_at_1deg(
     original_precip = layers["precipitation"]  # (12, nlat_c, nlon_c) in kg/m²/s
 
     for m in range(12):
-        # Orographic vertical velocity and precipitation (land only)
-        w_oro = oro_model.compute_orographic_vertical_velocity(wind_u[m], wind_v[m])
-        p_oro = oro_model.compute_orographic_precipitation(
-            w_oro, q[m], T_bl_K[m],
-        )
-        p_oro = np.where(fine_land_mask, p_oro, 0.0)
-
         # Large-scale cloud precipitation
         # Compute RH = q / q_sat using Magnus formula at 1013.25 hPa
         T_C = T_bl_K[m] - 273.15
         e_sat = 6.112 * np.exp(17.67 * T_C / (T_C + 243.5))
         q_sat = 0.622 * e_sat / (1013.25 - 0.378 * e_sat)
         rh = np.clip(q[m] / np.maximum(q_sat, 1e-10), 0.0, 1.0)
+
+        # Orographic vertical velocity and precipitation (land only)
+        w_oro = oro_model.compute_orographic_vertical_velocity(wind_u[m], wind_v[m])
+        p_oro = oro_model.compute_orographic_precipitation(
+            w_oro, q[m], T_bl_K[m], rh,
+        )
+        p_oro = np.where(fine_land_mask, p_oro, 0.0)
         cloud_out = compute_clouds_and_precipitation(
             T_bl_K[m], T_atm_K[m], q[m], rh, w_ls[m],
             T_surface_K=T_sfc_K[m], ocean_mask=ocean_mask,

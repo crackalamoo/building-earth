@@ -651,11 +651,13 @@ def monthly_step(
                             hadley_drying = hadley_drying + hadley_moistening
                         else:
                             hadley_drying = np.zeros_like(lagged_humidity)
-                        # Direct orographic precipitation: P_oro = η · max(w, 0) · q · ρ
+                        # Direct orographic precipitation: P_oro = rh_gate · η · max(w, 0) · q · ρ
                         if lagged_orographic_w is not None and surface_context.orographic_model is not None:
                             t_bl_K = temp_capped[1]
+                            q_sat_oro = compute_saturation_specific_humidity(t_bl_K)
+                            rh_oro = np.clip(lagged_humidity / np.maximum(q_sat_oro, 1e-10), 0.0, 1.0)
                             oro_precip = surface_context.orographic_model.compute_orographic_precipitation(
-                                lagged_orographic_w, lagged_humidity, t_bl_K,
+                                lagged_orographic_w, lagged_humidity, t_bl_K, rh_oro,
                             )
                             precip_rate = precip_rate + oro_precip
                         # Precipitation recycling (Eltahir & Bras 1996)
@@ -752,7 +754,7 @@ def monthly_step(
 
                 # Apply humidity correction from implicit solve
                 if nlayers == 3 and include_implicit_humidity and correction_humidity is not None:
-                    lagged_humidity = np.maximum(lagged_humidity - damping * correction_humidity, 1e-6)
+                    lagged_humidity = np.maximum(lagged_humidity - damping * correction_humidity, 1e-3)
 
                 step = prev_temp - temp_next
                 if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
@@ -925,7 +927,7 @@ def monthly_step(
             # Add orographic precipitation to total
             if lagged_orographic_w is not None and surface_context.orographic_model is not None:
                 final_precipitation = final_precipitation + surface_context.orographic_model.compute_orographic_precipitation(
-                    lagged_orographic_w, lagged_humidity, final_temp[1],
+                    lagged_orographic_w, lagged_humidity, final_temp[1], rh,
                 )
 
         # Use the lagged ITCZ (passed in, dampened) for consistency with the solve.
@@ -1372,7 +1374,7 @@ def find_periodic_climate_cycle(
                                 advanced.humidity_field.shape
                             ) * Q_SCALE
                             # Ensure humidity stays positive
-                            q_next = np.maximum(q_next, 1e-6)
+                            q_next = np.maximum(q_next, 1e-3)
                         else:
                             q_next = None
 
@@ -1401,7 +1403,7 @@ def find_periodic_climate_cycle(
                     T_next = alpha * T_next + (1.0 - alpha) * state.temperature
                     if q_next is not None and state.humidity_field is not None:
                         q_next = alpha * q_next + (1.0 - alpha) * state.humidity_field
-                        q_next = np.maximum(q_next, 1e-6)
+                        q_next = np.maximum(q_next, 1e-3)
                     if soil_next is not None and state.soil_moisture is not None:
                         soil_next = alpha * soil_next + (1.0 - alpha) * state.soil_moisture
                         soil_next = np.clip(soil_next, 0.0, 1.0)
@@ -1422,7 +1424,7 @@ def find_periodic_climate_cycle(
                     delta_q = q_next - state.humidity_field
                     delta_q = np.clip(delta_q, -MAX_Q_STEP, MAX_Q_STEP)
                     q_next = state.humidity_field + delta_q
-                    q_next = np.maximum(q_next, 1e-6)
+                    q_next = np.maximum(q_next, 1e-3)
 
                 # Apply Anderson-accelerated state with mixed prognostic variables
                 # Diagnostics (albedo, wind, precipitation, clouds) will be recomputed

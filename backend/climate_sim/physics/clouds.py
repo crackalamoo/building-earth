@@ -41,8 +41,6 @@ from climate_sim.data.constants import (
 from climate_sim.physics.humidity import compute_saturation_specific_humidity
 from climate_sim.physics.precipitation import (
     compute_convective_precipitation,
-    compute_marine_sc_precipitation,
-    compute_stratiform_precipitation,
 )
 
 
@@ -65,13 +63,6 @@ RH_EXPONENT_STRATIFORM = 1.0   # Stratiform: linear RH sensitivity
 
 # Convective precipitation onset threshold (Bretherton et al. 2004, Rushley et al. 2018)
 # Precipitation picks up sharply at column RH ~ 0.7-0.8 over tropical oceans.
-# Below this threshold, the atmosphere is too dry for deep moist convection to
-# produce surface precipitation (sub-cloud evaporation, insufficient moisture depth).
-RH_CRIT_CONVECTIVE = 0.60      # Critical RH for convective onset
-# Gompertz rate parameter: controls asymmetry of RH onset.
-# Left tail (dry air) decays double-exponentially, right tail (moist) saturates fast.
-GOMPERTZ_K_CONVECTIVE = 8.0
-
 # High cloud parameters
 # Increase factors to get ~20-30% high cloud coverage
 HIGH_CLOUD_CONVECTIVE_FACTOR = 0.8   # Fraction of convective clouds that produce anvils
@@ -425,12 +416,16 @@ def compute_convective_clouds(
     tuple[np.ndarray, np.ndarray]
         (convective_frac, convective_albedo)
     """
-    # RH factor: Gompertz function — asymmetric onset.
-    # Left tail (dry) decays double-exponentially (near zero below RH~0.5),
-    # right tail (moist) saturates gradually. Suppresses desert convection
-    # more effectively than symmetric sigmoid.
-    rh_clipped = np.clip(rh, 0.0, 1.0)
-    rh_factor = np.exp(-np.exp(-GOMPERTZ_K_CONVECTIVE * (rh_clipped - RH_CRIT_CONVECTIVE)))
+    # RH factor: Sundqvist (1989) diagnostic cloud fraction formula.
+    # C = 1 - sqrt((1 - RH) / (1 - RH_crit)) for RH > RH_crit, else 0.
+    # Smooth concave-up onset, same formula used for precipitation RH gate.
+    RH_CRIT = 0.55  # sub-grid saturation threshold
+    rh_clipped = np.clip(rh, 0.0, 0.999)
+    rh_factor = np.where(
+        rh_clipped > RH_CRIT,
+        1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - RH_CRIT)),
+        0.0,
+    )
 
     # Rising motion factor: sigma(w - w_crit)
     # w > w_crit → factor approaches 1
@@ -473,11 +468,11 @@ def compute_stratiform_clouds(
     # More conservative than Gompertz at moderate RH — zero below threshold,
     # then concave-up onset. Physically: sub-grid humidity variability means
     # grid-mean RH must exceed ~0.70 before any fraction is truly saturated.
-    RH_CRIT_STRATIFORM = 0.65
+    RH_CRIT = 0.55  # sub-grid saturation threshold (same as convective)
     rh_clipped = np.clip(rh, 0.0, 0.999)
     rh_factor = np.where(
-        rh_clipped > RH_CRIT_STRATIFORM,
-        1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - RH_CRIT_STRATIFORM)),
+        rh_clipped > RH_CRIT,
+        1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - RH_CRIT)),
         0.0,
     )
 
@@ -972,27 +967,17 @@ def compute_clouds_and_precipitation(
         T_bl_K, MARINE_SC_CLOUD_TAU_SW / (MARINE_SC_CLOUD_TAU_SW + TWO_STREAM_G_WATER)
     )
 
-    # 7. Compute precipitation using moisture flux formulation
-    # Convective: uses sub-grid updraft velocity (cloud fraction already encodes instability)
+    # 7. Compute precipitation: unified convective with RH gate
     convective_precip = compute_convective_precipitation(
-        convective_frac,
+        rh,
         q,
         vertical_velocity=vertical_velocity,
     )
 
-    # Stratiform: autoconversion of excess moisture above saturation
-    stratiform_precip = compute_stratiform_precipitation(
-        stratiform_frac,
-        q,
-        T_bl_K,
-    )
-
-    # Marine Sc: drizzle via slow autoconversion (these form in subsiding air)
-    marine_sc_precip = compute_marine_sc_precipitation(
-        marine_sc_frac,
-        q,
-        T_bl_K,
-    )
+    # Stratiform and marine Sc precipitation removed — the RH gate on
+    # convective precip subsumes their moisture dependence.
+    stratiform_precip = np.zeros_like(q)
+    marine_sc_precip = np.zeros_like(q)
 
     # 8. Compute high clouds (anvils from convection + frontal cirrus)
     high_cloud_frac = compute_high_cloud_fraction(convective_frac, stratiform_precip, q=q)

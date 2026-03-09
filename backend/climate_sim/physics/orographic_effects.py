@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from climate_sim.data.constants import R_EARTH_METERS
+from climate_sim.physics.precipitation import compute_precipitation_rh_gate
 
 
 @dataclass(frozen=True)
@@ -138,19 +139,21 @@ class OrographicModel:
 
     def compute_orographic_precipitation(
         self, w_orographic: np.ndarray, humidity_q: np.ndarray,
-        temperature_K: np.ndarray,
+        temperature_K: np.ndarray, rh: np.ndarray,
     ) -> np.ndarray:
         """Direct orographic precipitation rate (kg/m²/s).
 
         When air is forced upward over terrain, it cools adiabatically and
-        moisture condenses.  The rate scales as  P = η · max(w, 0) · q · ρ,
-        where η is the precipitation efficiency.
+        moisture condenses.  The rate scales as  P = rh_gate · η · max(w, 0) · q · ρ,
+        where η is the precipitation efficiency and rh_gate is the combined
+        Gompertz + Sundqvist RH factor.
 
         Returns precipitation rate in kg/m²/s (same units as cloud precip).
         """
         eff = self.config.orographic_precip_efficiency
         rho = 101325.0 / (287.05 * temperature_K)
-        return eff * np.maximum(w_orographic, 0.0) * humidity_q * rho
+        rh_gate = compute_precipitation_rh_gate(rh)
+        return rh_gate * eff * np.maximum(w_orographic, 0.0) * humidity_q * rho
 
     def compute_effects(
         self, wind_u: np.ndarray, wind_v: np.ndarray
