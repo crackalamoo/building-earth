@@ -66,7 +66,7 @@ class VerticalMotionConfig:
     # Hadley subsidence at BL top (~850 hPa).
     # Mid-tropospheric (500 hPa) omega is 3-5 mm/s, but at BL top it's
     # ~1/3 of that due to mass continuity (w scales with height above ground).
-    hadley_descent_velocity_m_s: float = 0.001
+    hadley_descent_velocity_m_s: float = 0.0005
 
     # Humidity of air entrained into BL top from subsidence.
     # Descending air has lost most moisture via precipitation during ascent;

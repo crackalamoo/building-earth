@@ -141,12 +141,9 @@ class DiffusionConfig:
     boundary_layer_diffusivity_scale: float = 1.0
 
     # Effective Lewis number for moisture diffusion (κ_moisture / κ_heat).
-    # Turbulent eddies transport both heat and moisture, but moisture
-    # precipitates out during transport: rising air in an eddy saturates and
-    # loses water, so the net moisture flux is less efficient than the heat
-    # flux.  A ratio < 1 captures this precipitation scavenging effect
-    # without needing explicit condensation in eddies.
-    moisture_lewis_number: float = 0.7
+    # Moisture diffuses slower than heat because precipitation scavenges
+    # moisture during eddy transport.
+    moisture_lewis_number: float = 0.5
 
     def surface_diffusivity(self, grid_resolution_deg: float) -> float:
         return self.surface_kappa_ref_m2_s

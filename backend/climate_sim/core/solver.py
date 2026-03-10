@@ -22,7 +22,13 @@ from climate_sim.physics.clouds import (
     compute_vertical_velocity_from_warm_advection,
 )
 from climate_sim.core.math_core import compute_divergence, compute_scalar_gradient_magnitude
-from climate_sim.data.constants import BOUNDARY_LAYER_HEIGHT_M, STANDARD_LAPSE_RATE_K_PER_M
+from climate_sim.data.constants import (
+    BOUNDARY_LAYER_HEIGHT_M,
+    STANDARD_LAPSE_RATE_K_PER_M,
+    BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
+    ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
+    LATENT_HEAT_VAPORIZATION_J_KG,
+)
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
 from climate_sim.physics.diffusion import DiffusionOperator
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeModel
@@ -807,6 +813,7 @@ def monthly_step(
         # Humidity is evolved in the implicit Newton solver with diffusion for stability.
         # Apply saturation cap only AFTER Newton converges (not inside loop) to avoid
         # breaking Newton convergence. Allow supersaturation for numerical stability.
+        condensation_precip = np.zeros_like(final_temp[0])
         if lagged_humidity is not None:
             t_for_cap = final_temp[1] if nlayers_final == 3 else final_temp[0]
             # Over ocean, our BL midpoint (~500m) is colder than the real
@@ -815,8 +822,19 @@ def monthly_step(
             ocean_bl_correction_K = (BOUNDARY_LAYER_HEIGHT_M - 500.0) / 2.0 * STANDARD_LAPSE_RATE_K_PER_M
             t_for_cap_corrected = t_for_cap + np.where(surface_context.land_mask, 0.0, ocean_bl_correction_K)
             q_sat = compute_saturation_specific_humidity(t_for_cap_corrected)
-            q_max = q_sat  # Cap at saturation — excess should precipitate out
+            q_max = q_sat  # Cap at saturation — excess condenses as convective precip
+            q_excess = np.maximum(lagged_humidity - q_max, 0.0)
             lagged_humidity = np.clip(lagged_humidity, 1e-6, q_max)
+
+            # Excess moisture condenses → precipitation + latent heat release
+            if nlayers_final == 3 and np.any(q_excess > 0):
+                # Convert excess specific humidity to precipitation (kg/m²/s)
+                condensation_precip = q_excess * COLUMN_MASS_KG_M2 / dt_seconds
+                # Latent heat release split between BL and atmosphere
+                bl_frac = np.where(surface_context.land_mask, 0.05, 0.20)
+                L_v = LATENT_HEAT_VAPORIZATION_J_KG
+                final_temp[1] += condensation_precip * L_v * bl_frac * dt_seconds / BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K
+                final_temp[2] += condensation_precip * L_v * (1 - bl_frac) * dt_seconds / ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K
 
         # Compute final precipitation from converged humidity using unified cloud physics
         # This ensures precipitation is consistent with cloud coverage
@@ -833,6 +851,9 @@ def monthly_step(
         )
         if final_precipitation is None:
             final_precipitation = np.zeros_like(lagged_humidity)
+        # Add condensation precipitation from saturation clamp
+        if lagged_humidity is not None:
+            final_precipitation = final_precipitation + condensation_precip
 
         # Update soil moisture based on P-E balance
         lagged_soil = state.soil_moisture
