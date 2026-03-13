@@ -650,6 +650,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 cross[2, 1] += coeff / C_atm
 
             # Background BL-atmosphere mixing Jacobian
+            # Stability-dependent tau (lagged): tau_eff = tau_base * (1 + (inv/T_SCALE)^2)
             tau_mix = (
                 inputs.vertical_motion_cfg.tau_bl_atm_mixing_s
                 if inputs.vertical_motion_cfg is not None
@@ -658,11 +659,14 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             if tau_mix > 0 and nlayers == 3:
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
-                tau = tau_mix
-                # dT_bl/dt = (α*T_atm - T_bl) / τ
+                theta_atm_jac = state.temperature[2] * _ALPHA
+                T_SCALE_MIXING = 15.0  # Must match vertical_motion.py
+                inversion_jac = np.maximum(theta_atm_jac - state.temperature[1], 0.0)
+                tau = tau_mix * (1.0 + (inversion_jac / T_SCALE_MIXING) ** 2)
+                # dT_bl/dt = (α*T_atm - T_bl) / τ_eff  (τ_eff treated as frozen)
                 diag[1] += -1.0 / tau
                 cross[1, 2] += _ALPHA / tau
-                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ
+                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ_eff
                 diag[2] += -(C_bl / C_atm) * _ALPHA / tau
                 cross[2, 1] += (C_bl / C_atm) / tau
 

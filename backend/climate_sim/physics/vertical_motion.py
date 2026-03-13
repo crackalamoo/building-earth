@@ -459,15 +459,28 @@ def compute_bl_atm_mixing_tendencies(
     closing the latent heat return loop: surface evaporation -> condensation
     aloft -> radiative cooling -> subsidence warming back to BL.
 
+    Stability-dependent: when theta_atm > T_bl (stable stratification, e.g.
+    Siberian winter), the inversion suppresses turbulent mixing and the
+    effective timescale lengthens.  Uses a smooth quadratic form:
+        tau_eff = tau_base × (1 + (inversion / T_SCALE)²)
+    This keeps tau near tau_base for unstable/neutral conditions and
+    increases it for strong inversions, allowing radiative cooling to
+    dominate in polar/continental winter anticyclones.
+
     Energy-conserving: C_bl * dT_bl + C_atm * dT_atm = 0.
     """
     theta_atm = T_atm * _ALPHA  # Potential temperature of free atm at surface
 
-    tau = tau_s if tau_s is not None else 7.0 * 86400.0
+    tau_base = tau_s if tau_s is not None else 7.0 * 86400.0
+
+    # Stability-dependent mixing timescale
+    T_SCALE_MIXING = 15.0  # K — controls how quickly mixing weakens with inversion
+    inversion = np.maximum(theta_atm - T_bl, 0.0)
+    tau = tau_base * (1.0 + (inversion / T_SCALE_MIXING) ** 2)
 
     heat_flux = C_bl * (theta_atm - T_bl) / tau  # W/m²
 
-    dT_bl = heat_flux / C_bl      # = (theta_atm - T_bl) / tau_rad
+    dT_bl = heat_flux / C_bl      # = (theta_atm - T_bl) / tau
     dT_atm = -heat_flux / C_atm   # Energy conservation
 
     return dT_bl, dT_atm

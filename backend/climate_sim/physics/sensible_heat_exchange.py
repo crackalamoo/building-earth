@@ -156,6 +156,18 @@ class SensibleHeatExchangeModel:
             # Boundary layer is thin (750m) and well-mixed, use direct coupling
             g_surf = rho * cp * ch * wind_abs
 
+            # Stability correction: when T_sfc < T_air (stable/inversion),
+            # turbulence is suppressed and the surface decouples from the BL.
+            # Uses a smooth quadratic form based on inversion strength alone
+            # (no wind dependence) to avoid numerical stiffness.
+            #   factor = 1 / (1 + (max(T_air - T_sfc, 0) / T_scale)²)
+            # T_scale = 15 K: gentle ramp, factor ≈ 0.7 at 10K inversion,
+            # ≈ 0.36 at 20K, ≈ 0.20 at 30K.
+            T_SCALE_INVERSION = 15.0  # K
+            inversion_strength = np.maximum(near_surface_air_K - surface_temperature, 0.0)
+            stability_factor = 1.0 / (1.0 + (inversion_strength / T_SCALE_INVERSION) ** 2)
+            g_surf = g_surf * stability_factor
+
             delta_surf_bl = surface_temperature - near_surface_air_K
             heat_flux_surf_bl = g_surf * delta_surf_bl
 
@@ -270,6 +282,17 @@ class SensibleHeatExchangeModel:
             # ∂(heat_flux)/∂T_boundary = -g_surf
 
             g_surf = rho * cp * ch * wind_abs
+
+            # Stability correction (must match forward pass, lagged)
+            near_surface_air_K_jac = compute_two_meter_temperature(
+                np.asarray(boundary_layer_temperature_K, dtype=float),
+                surface_temperature,
+                topographic_elevation=self._topographic_elevation,
+            )
+            T_SCALE_INVERSION = 15.0
+            inversion_strength = np.maximum(near_surface_air_K_jac - surface_temperature, 0.0)
+            stability_factor = 1.0 / (1.0 + (inversion_strength / T_SCALE_INVERSION) ** 2)
+            g_surf = g_surf * stability_factor
 
             # Surface tendency: -heat_flux / C_surf
             # ∂/∂T_surf = -g_surf / C_surf
