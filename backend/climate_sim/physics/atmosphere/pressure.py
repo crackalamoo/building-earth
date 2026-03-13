@@ -22,14 +22,23 @@ SUBTROPICS_ITCZ_COUPLING = 0.15
 # Thermal effects (dp = -β*dT) are computed separately from temperature anomalies.
 DP_ITCZ = -700.0  # Low pressure at ITCZ (rising air in Hadley cell)
 DP_SUBTROPICS = 800.0  # High pressure at subtropical highs (descending air)
-DP_SUBPOLAR = -1200.0  # Low pressure at subpolar lows (must overcome thermal high from cold)
 DP_POLES = 0.0  # No explicit polar high (prevents excessive polar easterlies)
 
+# Subpolar lows: hemisphere-dependent because eddy momentum transport
+# (which maintains these lows) differs fundamentally between hemispheres.
+# SH: uninterrupted circumpolar ocean → continuous storm track → deep broad low.
+# NH: continents fragment the westerlies → weaker zonal-mean low, concentrated
+#     in localized features (Icelandic Low, Aleutian Low) that the thermal
+#     term partially captures via T anomalies.
+DP_SUBPOLAR_NH = -600.0   # Pa — weaker (continental disruption of storm track)
+DP_SUBPOLAR_SH = -1500.0  # Pa — stronger (uninterrupted circumpolar storm track)
+
 # Width of pressure features (radians) - controls smoothness of transitions
-SIGMA_ITCZ = np.deg2rad(6.0)       # ITCZ trough width
-SIGMA_SUBTROPICS = np.deg2rad(12.0)  # Subtropical high width
-SIGMA_SUBPOLAR = np.deg2rad(8.0)    # Subpolar low width
-SIGMA_POLES = np.deg2rad(8.0)       # Polar high width
+SIGMA_ITCZ = np.deg2rad(6.0)         # ITCZ trough width
+SIGMA_SUBTROPICS = np.deg2rad(12.0)   # Subtropical high width
+SIGMA_SUBPOLAR_NH = np.deg2rad(8.0)   # NH subpolar width
+SIGMA_SUBPOLAR_SH = np.deg2rad(10.0)  # SH subpolar: slightly broader
+SIGMA_POLES = np.deg2rad(8.0)         # Polar high width
 
 # Thermal pressure coefficient: δp = -β δT
 # When a column warms by δT, it expands, upper-level mass diverges, and surface
@@ -96,10 +105,10 @@ def hadley_pressure_anomaly(lat_rad: np.ndarray, itcz_rad: np.ndarray) -> np.nda
         + subtrop_strength_north * np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_SUBTROPICS) ** 2)
     )
 
-    # Subpolar lows (fixed latitudes)
-    dp_subpolar = DP_SUBPOLAR * (
-        np.exp(-((lat_rad + LAT_SUBPOLAR) / SIGMA_SUBPOLAR) ** 2)
-        + np.exp(-((lat_rad - LAT_SUBPOLAR) / SIGMA_SUBPOLAR) ** 2)
+    # Subpolar lows (fixed latitudes, hemisphere-dependent amplitude and width)
+    dp_subpolar = (
+        DP_SUBPOLAR_SH * np.exp(-((lat_rad + LAT_SUBPOLAR) / SIGMA_SUBPOLAR_SH) ** 2)
+        + DP_SUBPOLAR_NH * np.exp(-((lat_rad - LAT_SUBPOLAR) / SIGMA_SUBPOLAR_NH) ** 2)
     )
 
     # Polar highs (fixed latitudes)

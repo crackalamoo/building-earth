@@ -13,6 +13,8 @@ A real-time, visually beautiful, educational climate simulator that explains the
 | Export for frontend | `uv run python backend/export_frontend_data.py --cache --resolution 5 --interpolate` |
 | Compare with previous cached run | `uv run python backend/scenario_compare.py --base-cache --headless --resolution 5` |
 
+`--cache` means eval reads `data/main.npz` from the LAST simulation run. If you changed physics and want to compare before/after, you MUST re-run `main.py` for each version — `--cache` does NOT re-simulate.
+
 To get a compact summary of eval metrics, use:
 ```bash
 uv run python backend/eval.py --cache --headless --resolution 5 2>&1 | grep -E "^(Area-weighted (RMSE|Bias|Pattern)|Annual|Pattern corr|U comp|Mean )"
