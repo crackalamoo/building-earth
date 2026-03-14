@@ -50,7 +50,9 @@ W_BOOST_MAX = 1.5     # maximum amplification in strongest ascent
 # C_EDDY has units 1/m — fraction of eddy moisture flux that precipitates
 # per meter of transport distance.  Moisture e-folding distance ~2000 km
 # gives C ≈ 5e-7 /m.
-EDDY_PRECIP_COEFFICIENT = 5e-7  # 1/m
+EDDY_PRECIP_COEFFICIENT = 1e-7  # 1/m
+# Column mass to convert mixing-ratio tendency (kg/kg/s) → flux (kg/m²/s).
+EDDY_COLUMN_MASS_KG_M2 = 3500.0
 
 
 def compute_moist_adiabatic_lapse_rate(T_K: np.ndarray, q: np.ndarray) -> np.ndarray:
@@ -164,10 +166,10 @@ def compute_eddy_precipitation(
     zones saturates and precipitates.  The rate scales with the eddy
     moisture flux magnitude:
 
-        P_eddy = C × κ × |∇q| × rh_gate
+        P_eddy = C × κ × |∇q| × rh_gate × column_mass
     """
     rh_gate = compute_precipitation_rh_gate(rh)
-    return coefficient * kappa * grad_q * rh_gate
+    return coefficient * kappa * grad_q * rh_gate * EDDY_COLUMN_MASS_KG_M2
 
 
 def compute_static_stability(
