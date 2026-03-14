@@ -286,12 +286,17 @@ class AdvectionOperator:
         wind_v: np.ndarray,
         dt: float,
         max_cfl: float = 0.9,
+        field_max: np.ndarray | None = None,
     ) -> np.ndarray:
         """Flux-form advection with subcycling to keep CFL ≤ max_cfl.
 
         Splits the full timestep into substeps short enough that the flux
         limiter rarely activates, giving physically accurate transport even
         when the outer timestep is much longer than the CFL limit.
+
+        If *field_max* is provided, each substep clamps the field to this
+        ceiling.  For humidity advection, this should be q_sat(T_bl) to
+        prevent unphysical supersaturation at wind convergence zones.
 
         Returns the time-averaged tendency (same units as flux_tendency).
         """
@@ -321,6 +326,8 @@ class AdvectionOperator:
             dq = self.flux_tendency(q, wind_u, wind_v, dt=dt_sub)
             q += dq * dt_sub
             np.maximum(q, 0.0, out=q)
+            if field_max is not None:
+                np.minimum(q, field_max, out=q)
 
         # Return average tendency over the full period
         return (q - field) / dt
