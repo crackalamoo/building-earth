@@ -1697,6 +1697,7 @@ def solve_periodic_climate(
                         high_cloud_frac=month_state.high_cloud_frac,
                         vertical_velocity=month_state.vertical_velocity,
                         surface_pressure=month_state.surface_pressure,
+                        itcz_rad=itcz_rad,
                     )
                 else:
                     # One-layer: single wind field with drag
@@ -1743,6 +1744,7 @@ def solve_periodic_climate(
                         high_cloud_frac=month_state.high_cloud_frac,
                         vertical_velocity=month_state.vertical_velocity,
                         surface_pressure=month_state.surface_pressure,
+                        itcz_rad=itcz_rad,
                     )
 
     # Post-process results (convert to Celsius, reshape layers)

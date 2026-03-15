@@ -216,6 +216,10 @@ def postprocess_periodic_cycle_results(
         vegetation_frac = np.stack([vf for vf in vegetation_frac_fields if vf is not None], axis=0)
         layers_map["vegetation_fraction"] = vegetation_frac
 
+    itcz_fields = [state.itcz_rad for state in monthly_states]
+    if all(ir is not None for ir in itcz_fields):
+        layers_map["itcz_rad"] = np.stack([ir for ir in itcz_fields if ir is not None], axis=0)
+
     if return_layer_map:
         return lon2d, lat2d, layers_map
 
