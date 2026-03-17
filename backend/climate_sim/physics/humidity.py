@@ -419,6 +419,7 @@ def compute_humidity_and_precipitation(
     elevation: np.ndarray | None = None,
     vertical_velocity: np.ndarray | None = None,
     ocean_mask: np.ndarray | None = None,
+    humidity_q: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Compute humidity field and precipitation using unified cloud-precipitation physics.
 
@@ -454,8 +455,8 @@ def compute_humidity_and_precipitation(
     )
 
     if wind_u is not None and wind_v is not None:
-        # Advect specific humidity (conserved) from ocean to land
-        humidity_field = advect_moisture_from_ocean(
+        # Diagnostic humidity from wind-advected ocean moisture
+        humidity_diagnostic = advect_moisture_from_ocean(
             wind_u, wind_v,
             land_mask,
             lat2d,
@@ -464,25 +465,22 @@ def compute_humidity_and_precipitation(
             itcz_rad=itcz_rad,
         )
 
-        # Apply subsidence drying over LAND only: descending air brings dry air down
-        # Over ocean, evaporation replenishes moisture so subsidence doesn't dry it out
+        # Apply subsidence drying over LAND only
         divergence = compute_divergence(wind_u, wind_v, lat2d, lon2d)
-        # Subsidence drying is a tendency (kg/kg/s), apply for ~1 month
-        # Use a scaling factor to convert instantaneous tendency to monthly effect
         seconds_per_month = 30.0 * 24.0 * 3600.0
-        drying_tendency = compute_subsidence_drying(divergence, humidity_field)
-        # Apply as multiplicative factor to avoid negative humidity
-        # dq/q = (dq/dt * dt) / q = drying_tendency * dt / humidity_field
-        drying_factor = 1.0 + (drying_tendency * seconds_per_month) / np.maximum(humidity_field, 1e-10)
-        # Cap the drying: minimum factor of 0.8 means at most 20% reduction per month.
-        # This allows subtropical deserts to maintain realistic humidity levels (~5-10 g/kg)
-        # through a balance of advected moisture vs subsidence drying.
+        drying_tendency = compute_subsidence_drying(divergence, humidity_diagnostic)
+        drying_factor = 1.0 + (drying_tendency * seconds_per_month) / np.maximum(humidity_diagnostic, 1e-10)
         drying_factor = np.clip(drying_factor, 0.8, 1.0)
-        # Only apply over land - ocean evaporation maintains humidity despite subsidence
         drying_factor = np.where(land_mask, drying_factor, 1.0)
-        humidity_field = humidity_field * drying_factor
+        humidity_diagnostic = humidity_diagnostic * drying_factor
+
+        if humidity_q is not None:
+            humidity_field = humidity_q
+        else:
+            humidity_field = humidity_diagnostic
         # Compute vertical velocity from wind divergence if not provided
         if vertical_velocity is None:
+            # divergence always computed above (in the diagnostic branch)
             vertical_velocity = compute_vertical_velocity_from_divergence(divergence)
 
         # Compute relative humidity for cloud physics

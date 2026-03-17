@@ -845,7 +845,21 @@ def monthly_step(
         # This ensures precipitation is consistent with cloud coverage
         t_for_humidity = final_temp[1] if nlayers_final == 3 else final_temp[0]
         t_atm = final_temp[2] if nlayers_final == 3 else None
-        _, final_precipitation = compute_humidity_and_precipitation(
+        # Blend prognostic and diagnostic P for soil moisture.
+        # Pure prognostic P causes outer solver divergence at ITCZ-edge cells;
+        # pure diagnostic P uses phantom humidity.  Blending halves the phantom P
+        # while retaining enough smoothness for solver convergence.
+        _, precip_prognostic = compute_humidity_and_precipitation(
+            wind_u, wind_v,
+            surface_context.land_mask,
+            surface_context.lat2d,
+            surface_context.lon2d,
+            t_for_humidity,
+            itcz_rad=itcz_rad,
+            atmosphere_temperature=t_atm,
+            humidity_q=lagged_humidity,
+        )
+        _, precip_diagnostic = compute_humidity_and_precipitation(
             wind_u, wind_v,
             surface_context.land_mask,
             surface_context.lat2d,
@@ -854,8 +868,11 @@ def monthly_step(
             itcz_rad=itcz_rad,
             atmosphere_temperature=t_atm,
         )
-        if final_precipitation is None:
-            final_precipitation = np.zeros_like(lagged_humidity)
+        if precip_prognostic is None:
+            precip_prognostic = np.zeros_like(final_temp[0])
+        if precip_diagnostic is None:
+            precip_diagnostic = np.zeros_like(final_temp[0])
+        final_precipitation = 0.5 * precip_prognostic + 0.5 * precip_diagnostic
         # Add condensation precipitation from saturation clamp
         if lagged_humidity is not None:
             final_precipitation = final_precipitation + condensation_precip
