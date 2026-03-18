@@ -317,10 +317,12 @@ class WindModel:
             layer_pressure=reference_pressure_pa,
         )
 
-        u_geo, v_geo, speed_geo = geostrophic
+        u_geo, v_geo, speed_geo, weight_geo = geostrophic
 
         if ekman_drag:
-            u_final, v_final, speed_final = self._apply_surface_drag(u_geo, v_geo, speed_geo)
+            u_final, v_final, speed_final = self._apply_surface_drag(
+                u_geo, v_geo, speed_geo, weight_geo=weight_geo,
+            )
             return u_final, v_final, speed_final
         else:
             return u_geo, v_geo, speed_geo
@@ -332,7 +334,7 @@ class WindModel:
         config: WindConfig,
         geopotential: np.ndarray,
         layer_pressure: float,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Return wind from blended geostrophic and friction-balanced dynamics.
 
         At mid-latitudes (|f| >> friction), uses geostrophic balance.
@@ -396,7 +398,7 @@ class WindModel:
         velocity_y = weight_geo * v_geo + (1 - weight_geo) * v_fric
         speed = np.hypot(velocity_x, velocity_y)
 
-        return velocity_x, velocity_y, speed
+        return velocity_x, velocity_y, speed, weight_geo
 
     def _horizontal_gradient(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if field.shape != self._lon2d.shape:
@@ -423,8 +425,16 @@ class WindModel:
         u_geo: np.ndarray,
         v_geo: np.ndarray,
         speed_geo: np.ndarray,
+        weight_geo: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Adjust the geostrophic wind for Rayleigh drag and turning."""
+        """Apply Ekman drag (speed reduction + turning) scaled by weight_geo.
+
+        At mid-latitudes (weight_geo ≈ 1) the input is geostrophic, so full
+        Rayleigh drag and Coriolis turning are applied.  Near the equator
+        (weight_geo ≈ 0) the input is already friction-balanced (speed and
+        direction already account for drag), so drag and turning are
+        suppressed to avoid double-counting.
+        """
 
         drag_coeff = self._drag_coefficient
         coriolis = self._coriolis
@@ -449,13 +459,17 @@ class WindModel:
             y[~general] = Ug[~general] ** 2
 
         y = np.clip(y, 0.0, None)
-        u_mag = np.sqrt(y)
+        u_mag_full = np.sqrt(y)
 
         zero_geo = Ug <= 1.0e-12
         if np.any(zero_geo):
-            u_mag[zero_geo] = 0.0
+            u_mag_full[zero_geo] = 0.0
 
-        r = k * u_mag
+        # Blend speed reduction: geostrophic part gets full drag,
+        # friction-balanced part keeps its original speed.
+        u_mag = weight_geo * u_mag_full + (1.0 - weight_geo) * Ug
+
+        r = k * u_mag_full
         if np.any(zero_geo):
             r[zero_geo] = 0.0
 
@@ -463,6 +477,10 @@ class WindModel:
         alpha = np.arctan(r_over_f)
         if np.any(zero_geo):
             alpha[zero_geo] = 0.0
+
+        # Scale turning angle by weight_geo: friction-balanced wind
+        # already points in the correct (down-gradient) direction.
+        alpha = alpha * weight_geo
 
         # Ekman turning: wind rotates toward low pressure in the friction layer.
         # NH (f > 0): counterclockwise turn; SH (f < 0): clockwise turn.
