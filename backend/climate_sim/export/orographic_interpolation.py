@@ -151,10 +151,12 @@ def recompute_fields_at_1deg(
                 + cloud_out.stratiform_precip
                 + cloud_out.marine_sc_precip)
 
-        p_total = p_ls + p_oro
-        p_total = np.maximum(p_total, 0.0)
+        p_oro = np.maximum(p_oro, 0.0)
 
-        # --- Conservation rescale: match original 5° cell means ---
+        # --- Conservation rescale: orographic-weighted redistribution ---
+        # Orographic P has real sub-grid information (terrain slopes).
+        # Use it as a weight to distribute the 5° total
+        n_sub = lat_ratio * lon_ratio  # 25 for 5°→1°
         for i in range(nlat_coarse):
             fi0 = i * lat_ratio
             fi1 = fi0 + lat_ratio
@@ -162,16 +164,80 @@ def recompute_fields_at_1deg(
                 fj0 = j * lon_ratio
                 fj1 = fj0 + lon_ratio
 
-                block = p_total[fi0:fi1, fj0:fj1]
-                block_mean = block.mean()
                 target = original_precip[m, i, j]
+                if target <= 0:
+                    precip_1deg[m, fi0:fi1, fj0:fj1] = 0.0
+                    continue
 
-                if block_mean > 1e-15 and target > 0:
-                    ratio = target / block_mean
-                    precip_1deg[m, fi0:fi1, fj0:fj1] = block * ratio
-                else:
-                    # Uniform fallback (desert or zero precip)
+                land_block = fine_land_mask[fi0:fi1, fj0:fj1]
+                n_land = int(land_block.sum())
+                n_ocean = n_sub - n_land
+
+                if n_land == 0:
+                    # All ocean — uniform
                     precip_1deg[m, fi0:fi1, fj0:fj1] = target
+                    continue
+
+                # Ocean cells get the large-scale (non-orographic) P,
+                # rescaled to match across the block's ocean portion.
+                ls_block = np.maximum(p_ls[fi0:fi1, fj0:fj1], 0.0)
+                oro_block = p_oro[fi0:fi1, fj0:fj1]  # zero over ocean
+
+                if n_ocean > 0:
+                    ocean_ls_mean = ls_block[~land_block].mean()
+                    # Rescale ocean p_ls so its contribution to the block
+                    # sum uses p_ls shape but conserves budget.
+                    if ocean_ls_mean > 1e-15:
+                        ocean_vals = ls_block * (~land_block)
+                    else:
+                        ocean_vals = np.where(~land_block, 1.0 / n_ocean, 0.0)
+                    # Ocean sum before rescale
+                    ocean_raw_sum = ocean_vals[~land_block].sum()
+                else:
+                    ocean_raw_sum = 0.0
+
+                # Total budget = target * n_sub.
+                # We'll set ocean cells proportional to their p_ls,
+                # then land gets the remainder.
+                # First estimate ocean share from the ratio of ocean p_ls
+                # to total (ocean_ls + land_ls + land_oro).
+                total_raw = ls_block.sum() + oro_block.sum()
+                if total_raw > 1e-15 and n_ocean > 0:
+                    ocean_fraction = ls_block[~land_block].sum() / total_raw
+                    ocean_budget = target * n_sub * ocean_fraction
+                elif n_ocean > 0:
+                    ocean_budget = target * n_ocean  # fallback: uniform
+                else:
+                    ocean_budget = 0.0
+
+                land_budget = target * n_sub - ocean_budget
+
+                result = np.zeros_like(oro_block, dtype=np.float64)
+
+                # Distribute ocean budget proportional to p_ls shape
+                if n_ocean > 0:
+                    if ocean_raw_sum > 1e-15:
+                        result[~land_block] = (
+                            ls_block[~land_block] / ocean_raw_sum * ocean_budget
+                        )
+                    else:
+                        result[~land_block] = ocean_budget / n_ocean
+
+                # Distribute land budget with orographic weighting
+                oro_land_total = oro_block[land_block].sum()
+                if oro_land_total > 1e-15 and land_budget > 0:
+                    FLOOR = 0.2
+                    oro_norm = np.where(land_block, oro_block / oro_land_total, 0.0)
+                    land_weight = np.where(
+                        land_block,
+                        FLOOR / n_land + (1.0 - FLOOR) * oro_norm,
+                        0.0,
+                    )
+                    result[land_block] = land_weight[land_block] * land_budget
+                elif land_budget > 0:
+                    result[land_block] = land_budget / n_land
+
+                precip_1deg[m, fi0:fi1, fj0:fj1] = result
 
     # --- 6. Interpolate humidity (simple bilinear) ---
     humidity_1deg = np.maximum(q, 0.0)
