@@ -64,10 +64,10 @@ PERIODIC_FIXED_POINT_TOLERANCE_K_95P = 1.0
 NEWTON_MAX_ITERS = 16
 NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
-FIXED_POINT_MAX_ITERS = 80
+FIXED_POINT_MAX_ITERS = 60
 
 # Anderson acceleration parameters for periodic cycle solver
-ANDERSON_HISTORY_LIMIT = 12
+ANDERSON_HISTORY_LIMIT = 6
 # Under-relaxation factor for outer (year-to-year) state updates.
 # Blends Anderson output with previous state: x_new = α*x_anderson + (1-α)*x_old.
 # Values < 1.0 stabilize strong pressure-wind-temperature coupling.
