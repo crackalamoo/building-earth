@@ -8,6 +8,72 @@
  */
 
 /**
+ * Manual overrides for regions where type-aware interpolation produces
+ * geographic teleconnections (e.g., Sicily matching Tunisia).
+ *
+ * Each entry: fine cell lat/lon box + surface type → coarse source cell(s).
+ * Coordinates in degrees: lat [-90,90], lon [-180,180).
+ * Sources are (lat, lon) of coarse cell centers.
+ */
+interface InterpolationOverride {
+  latMin: number; latMax: number;
+  lonMin: number; lonMax: number;
+  isLand: boolean;
+  sources: [number, number][];  // (lat, lon) of coarse cells
+}
+
+const INTERPOLATION_OVERRIDES: InterpolationOverride[] = [
+  { latMin: 36, latMax: 39, lonMin: 12, lonMax: 16, isLand: true,
+    sources: [[42.5, 12.5]] },  // Sicily → Italy
+  { latMin: 30, latMax: 35, lonMin: 15, lonMax: 25, isLand: true,
+    sources: [[27.5, 17.5], [27.5, 22.5]] },  // Libya coast
+  { latMin: 12, latMax: 30, lonMin: 32, lonMax: 44, isLand: false,
+    sources: [[32.5, 27.5], [7.5, 52.5]] },  // Red Sea
+  { latMin: 35, latMax: 41, lonMin: 23, lonMax: 28, isLand: false,
+    sources: [[32.5, 22.5], [32.5, 27.5]] },  // Aegean Sea
+];
+
+/**
+ * Check if a geographic point matches an override entry and return
+ * the weighted value from override sources, or null if no override applies.
+ */
+function applyOverride(
+  data: Float32Array, nlat: number, nlon: number, monthOffset: number,
+  latDeg: number, lonDeg: number, isLand: boolean,
+): number | null {
+  for (const ov of INTERPOLATION_OVERRIDES) {
+    if (isLand !== ov.isLand) continue;
+    if (latDeg < ov.latMin || latDeg > ov.latMax) continue;
+    if (lonDeg < ov.lonMin || lonDeg > ov.lonMax) continue;
+
+    // Compute inverse-distance weights from fine point to each source
+    let totalW = 0;
+    let result = 0;
+    const dLon = 360 / nlon;  // grid spacing in degrees
+    const dLat = 180 / nlat;
+    const lonOrigin = dLon / 2;  // first grid center (2.5° for 5° grid)
+    const latOrigin = -90 + dLat / 2;  // first grid center (-87.5° for 5° grid)
+    for (const [sLat, sLon] of ov.sources) {
+      // Convert source (lat,lon) to grid index
+      const si = Math.round((sLat - latOrigin) / dLat);
+      const sj = Math.round((((sLon - lonOrigin) % 360 + 360) % 360) / dLon);
+      const clampI = Math.max(0, Math.min(nlat - 1, si));
+      const clampJ = ((sj % nlon) + nlon) % nlon;
+      const val = data[monthOffset + clampI * nlon + clampJ];
+
+      const dlat2 = latDeg - sLat;
+      const dlon2 = lonDeg - sLon;
+      const dist = Math.max(0.01, Math.sqrt(dlat2 * dlat2 + dlon2 * dlon2));
+      const w = 1 / dist;
+      totalW += w;
+      result += w * val;
+    }
+    return result / totalW;
+  }
+  return null;
+}
+
+/**
  * Bilinear sample a low-res monthly field at a high-res (lat, lon) index.
  * When coarseLandMask is provided, only blends from coarse cells matching
  * the fine cell's surface type (land/ocean). Falls back to nearest same-type
@@ -36,6 +102,15 @@ export function sampleBilinear(
   const idx10 = lat1 * lowNlon + lon0;
   const idx01 = lat0 * lowNlon + lon1;
   const idx11 = lat1 * lowNlon + lon1;
+
+  // Check manual overrides for known problem regions
+  if (isLand !== undefined && coarseLandMask !== undefined) {
+    const latDeg = -90 + (hiLatIdx + 0.5) * (180 / hiNlat);
+    let lonDeg = (hiLonIdx + 0.5) * (360 / hiNlon);
+    if (lonDeg > 180) lonDeg -= 360;
+    const ov = applyOverride(data, lowNlat, lowNlon, monthOffset, latDeg, lonDeg, isLand);
+    if (ov !== null) return ov;
+  }
 
   const v00 = data[monthOffset + idx00];
   const v10 = data[monthOffset + idx10];

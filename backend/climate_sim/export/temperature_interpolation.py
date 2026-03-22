@@ -193,6 +193,95 @@ def _apply_nearest_neighbor_fallback(
     return uses_wrong_type
 
 
+def _apply_interpolation_overrides(
+    lat_indices: np.ndarray,
+    lon_indices: np.ndarray,
+    weights: np.ndarray,
+    fine_lat2d: np.ndarray,
+    fine_lon2d: np.ndarray,
+    fine_land_mask: np.ndarray,
+    coarse_lats: np.ndarray,
+    coarse_lons: np.ndarray,
+) -> None:
+    """Override interpolation sources for regions with bad automatic matches.
+
+    Modifies lat_indices, lon_indices, weights in-place.
+    """
+    # Each entry: dict with keys:
+    #   fine_lat: (min, max) — fine cell latitude range
+    #   fine_lon: (min, max) — fine cell longitude range
+    #   fine_type: "land" or "ocean"
+    #   sources: list of (coarse_lat, coarse_lon) — cells to blend between
+    #   blend_axis: "lat" or "lon" — which axis to weight by proximity
+    OVERRIDES = [
+        {   # Sicily → Italy (not Tunisia)
+            "fine_lat": (36.0, 39.0), "fine_lon": (12.0, 16.0),
+            "fine_type": "land", "sources": [(42.5, 12.5)], "blend_axis": "lat",
+        },
+        {   # Libya coast → Libya interior (not Greece)
+            "fine_lat": (30.0, 35.0), "fine_lon": (15.0, 25.0),
+            "fine_type": "land", "sources": [(27.5, 17.5), (27.5, 22.5)], "blend_axis": "lon",
+        },
+        {   # Red Sea → E Mediterranean + Gulf of Aden
+            "fine_lat": (12.0, 30.0), "fine_lon": (32.0, 44.0),
+            "fine_type": "ocean", "sources": [(32.5, 27.5), (7.5, 52.5)], "blend_axis": "lat",
+        },
+        {   # Aegean Sea → E Mediterranean
+            "fine_lat": (35.0, 41.0), "fine_lon": (23.0, 28.0),
+            "fine_type": "ocean", "sources": [(32.5, 22.5), (32.5, 27.5)], "blend_axis": "lon",
+        },
+    ]
+
+    for override in OVERRIDES:
+        lat_min, lat_max = override["fine_lat"]
+        lon_min, lon_max = override["fine_lon"]
+        is_land = override["fine_type"] == "land"
+        sources = override["sources"]
+        blend_axis = override["blend_axis"]
+
+        type_mask = fine_land_mask if is_land else ~fine_land_mask
+        region = (
+            (fine_lat2d >= lat_min) & (fine_lat2d <= lat_max)
+            & (fine_lon2d >= lon_min) & (fine_lon2d <= lon_max)
+            & type_mask
+        )
+        if not np.any(region):
+            continue
+
+        # Look up coarse grid indices for each source cell
+        source_indices = []
+        for s_lat, s_lon in sources:
+            i_lat = int(np.argmin(np.abs(coarse_lats - s_lat)))
+            i_lon = int(np.argmin(np.abs(coarse_lons - s_lon)))
+            source_indices.append((i_lat, i_lon))
+
+        # Compute weights by proximity along the blend axis
+        src_coords = np.array([
+            coarse_lats[si[0]] if blend_axis == "lat" else coarse_lons[si[1]]
+            for si in source_indices
+        ])
+
+        fine_coord = fine_lat2d if blend_axis == "lat" else fine_lon2d
+
+        # Inverse-distance weights between the two sources
+        n_sources = len(source_indices)
+        for idx_fine in zip(*np.where(region)):
+            fc = fine_coord[idx_fine]
+            dists = np.array([abs(fc - sc) for sc in src_coords])
+            dists = np.maximum(dists, 0.01)  # avoid div-by-zero
+            inv_dists = 1.0 / dists
+            w = inv_dists / inv_dists.sum()
+
+            # Set the first n_sources slots to our override sources
+            for k in range(min(n_sources, 4)):
+                lat_indices[idx_fine][k] = source_indices[k][0]
+                lon_indices[idx_fine][k] = source_indices[k][1]
+                weights[idx_fine][k] = w[k]
+            # Zero out remaining slots
+            for k in range(n_sources, 4):
+                weights[idx_fine][k] = 0.0
+
+
 def _build_bilinear_weights(
     coarse_lats: np.ndarray,
     coarse_lons: np.ndarray,
@@ -325,6 +414,14 @@ def _build_bilinear_weights(
             coarse_land_mask,
             fine_land_mask,
         )
+
+    # Apply manual overrides for regions where type-aware interpolation
+    # produces geographic teleconnections (e.g., Sicily matching Tunisia).
+    _apply_interpolation_overrides(
+        lat_indices, lon_indices, normalized_weights,
+        fine_lat2d, fine_lon2d, fine_land_mask,
+        coarse_lats, coarse_lons,
+    )
 
     return lat_indices, lon_indices, normalized_weights, uses_wrong_type
 
