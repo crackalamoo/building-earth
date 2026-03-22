@@ -30,7 +30,7 @@
 {#if visible}
   <div class="legend" class:visible>
     <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <span class="unit-toggle" on:click={() => dispatch('toggleUnits')}>{label}</span>
+    <span class="unit-toggle" role="button" tabindex="0" on:click={() => dispatch('toggleUnits')}>{label}</span>
     <div class="legend-bar-container">
       <div
         class="legend-bar"

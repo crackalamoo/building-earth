@@ -491,14 +491,4 @@
     z-index: 10;
   }
 
-  .loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100vh;
-  }
-
-  .error {
-    color: #ff4444;
-  }
 </style>

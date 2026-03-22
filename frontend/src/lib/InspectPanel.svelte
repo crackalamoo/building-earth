@@ -466,7 +466,7 @@
   });
 </script>
 
-<!-- svelte-ignore a11y-click-events-have-key-events -->
+<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div
   class="inspect-panel"
   class:dragging
@@ -490,20 +490,20 @@
 
   <div class="stats">
     <div class="stat">
-      <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+      <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
         {imp ? cToF(tempC).toFixed(1) + '°F' : tempC.toFixed(1) + '°C'}
       </span>
     </div>
     {#if ocean.isOcean && ocean.sstC !== null}
       <div class="stat sst">
-        Sea: <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+        Sea: <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(ocean.sstC).toFixed(1) + '°F' : ocean.sstC.toFixed(1) + '°C'}
         </span>
       </div>
     {/if}
     {#if elevation !== null}
       <div class="stat elev">
-        {isLand ? 'Elev' : 'Depth'}: <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+        {isLand ? 'Elev' : 'Depth'}: <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
           {#if imp}
             {isLand ? Math.round(mToFt(elevation)).toLocaleString() : Math.abs(Math.round(mToFt(elevation))).toLocaleString()} ft
           {:else}
@@ -514,7 +514,7 @@
     {/if}
     <div class="stat wind-stat">
       <span class="wind-arrow" style="transform: rotate({wind.dir}deg)">↓</span>
-      <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+      <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
         {#if imp}
           {kphToMph(wind.speed * 3.6).toFixed(0)} mph
         {:else}
