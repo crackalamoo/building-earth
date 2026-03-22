@@ -7,6 +7,7 @@ get more and valleys get less.
 
 from __future__ import annotations
 
+from climate_sim.physics.humidity import compute_itcz_latitude, specific_humidity_to_relative_humidity
 import numpy as np
 
 from climate_sim.core.grid import create_lat_lon_grid
@@ -20,8 +21,8 @@ from climate_sim.export.temperature_interpolation import (
     _build_bilinear_weights,
     interpolate_field_bilinear,
 )
-from climate_sim.physics.clouds import compute_clouds_and_precipitation
 from climate_sim.physics.orographic_effects import OrographicConfig, OrographicModel
+from climate_sim.core.math_core import R_EARTH_METERS, spherical_cell_area
 
 
 def recompute_fields_at_1deg(
@@ -52,12 +53,6 @@ def recompute_fields_at_1deg(
 
     coarse_lats = coarse_lat2d[:, 0]
     coarse_lons = coarse_lon2d[0, :]
-    nlat_coarse = len(coarse_lats)
-    nlon_coarse = len(coarse_lons)
-
-    # Resolution ratio (should be 5 for 5°→1°)
-    lat_ratio = nlat_fine // nlat_coarse
-    lon_ratio = nlon_fine // nlon_coarse
 
     # --- 2. Build bilinear weights (no land/ocean separation for physics fields) ---
     coarse_land_mask = compute_land_mask(coarse_lon2d, coarse_lat2d)
@@ -80,27 +75,16 @@ def recompute_fields_at_1deg(
         return result
 
     T_bl = _interp_monthly("boundary_layer")  # °C
-    T_atm = _interp_monthly("atmosphere")     # °C
     q = _interp_monthly("humidity")           # kg/kg
     wind_u = _interp_monthly("wind_u_10m")    # m/s
     wind_v = _interp_monthly("wind_v_10m")    # m/s
 
-    # Vertical velocity (large-scale)
-    if "vertical_velocity" in layers:
-        w_ls = _interp_monthly("vertical_velocity")
-    else:
-        w_ls = np.zeros((12, nlat_fine, nlon_fine))
-
-    # Surface temperature for cloud computation
-    T_sfc = _interp_monthly("surface")  # °C
-
     # Convert to Kelvin for physics
     T_bl_K = T_bl + 273.15
-    T_atm_K = T_atm + 273.15
-    T_sfc_K = T_sfc + 273.15
 
     # --- 4. Build 1° OrographicModel ---
-    print("  Building 1° orographic model...")
+    print("  Building 1° and 5° orographic models...")
+
     elevation_1deg = compute_cell_elevation(fine_lon2d, fine_lat2d, cache=False)
     elevation_std_1deg, _ = compute_cell_elevation_statistics(
         fine_lon2d, fine_lat2d,
@@ -113,7 +97,7 @@ def recompute_fields_at_1deg(
         cache_name="face_elevation_1deg_cache.npz",
     )
 
-    oro_model = OrographicModel(
+    oro_model_1deg = OrographicModel(
         lon2d=fine_lon2d,
         lat2d=fine_lat2d,
         elevation=elevation_1deg,
@@ -123,121 +107,84 @@ def recompute_fields_at_1deg(
         land_mask=fine_land_mask,
     )
 
+    elevation_5deg = compute_cell_elevation(coarse_lon2d, coarse_lat2d, cache=True)
+    elevation_std_5deg, _ = compute_cell_elevation_statistics(
+        coarse_lon2d, coarse_lat2d,
+        cache=True,
+        cache_name="elevation_statistics_5deg_cache.npz",
+    )
+    face_stats_5deg = compute_face_elevation_statistics(
+        coarse_lon2d, coarse_lat2d,
+        cache=True,
+        cache_name="face_elevation_5deg_cache.npz",
+    )    
+
+    oro_model_5deg = OrographicModel(
+        lon2d=coarse_lon2d,
+        lat2d=coarse_lat2d,
+        elevation=elevation_5deg,
+        elevation_std=elevation_std_5deg,
+        face_stats=face_stats_5deg,
+        config=OrographicConfig(),
+        land_mask=coarse_land_mask,
+    )
+    
     # --- 5. Compute precipitation at 1° for each month ---
+    #
+    # Strategy:
+    # 1. Compute coarse orographic precipitation
+    # 2. Compute coarse large scale precipitation as the remaining coarse precipitation excluding orographic effects
+    # 3. Bilinearly interpolate coarse large scale precipitation
+    # 4. Compute and rescale fine grained orographic precipitation
+    # 5. Compute final precipitation as rescaled sum of bilinearly interpolated large scale precipitation and fine grained orographic precipitation
+
     print("  Computing 1° precipitation...")
-    ocean_mask = ~fine_land_mask
     precip_1deg = np.zeros((12, nlat_fine, nlon_fine))
     original_precip = layers["precipitation"]  # (12, nlat_c, nlon_c) in kg/m²/s
 
-    for m in range(12):
-        # Large-scale cloud precipitation
-        # Compute RH = q / q_sat using Magnus formula at 1013.25 hPa
-        T_C = T_bl_K[m] - 273.15
-        e_sat = 6.112 * np.exp(17.67 * T_C / (T_C + 243.5))
-        q_sat = 0.622 * e_sat / (1013.25 - 0.378 * e_sat)
-        rh = np.clip(q[m] / np.maximum(q_sat, 1e-10), 0.0, 1.0)
+    p_oro_list = []
+    p_ls_bilinear_list = []
 
-        # Orographic vertical velocity and precipitation (land only)
-        w_oro = oro_model.compute_orographic_vertical_velocity(wind_u[m], wind_v[m])
-        p_oro = oro_model.compute_orographic_precipitation(
+    for m in range(12):
+
+        # --- Step 2: orographic modulation at 1° ---
+        itcz_rad = compute_itcz_latitude(layers["boundary_layer"][m], coarse_lat2d, spherical_cell_area(coarse_lon2d, coarse_lat2d, earth_radius_m=R_EARTH_METERS))
+        assert np.all(itcz_rad == layers["itcz_rad"][m])
+        itcz_rad_fine = compute_itcz_latitude(T_bl_K[m], fine_lat2d, spherical_cell_area(fine_lon2d, fine_lat2d, earth_radius_m=R_EARTH_METERS))
+        rh = specific_humidity_to_relative_humidity(q[m], T_bl_K[m], itcz_rad=itcz_rad_fine, lat2d=fine_lat2d, lon2d=fine_lon2d)
+
+        T_bl_K_coarse = layers["boundary_layer"][m] + 273.15  # convert to Kelvin
+        rh_coarse = specific_humidity_to_relative_humidity(layers["humidity"][m], T_bl_K_coarse, itcz_rad=itcz_rad, lat2d=coarse_lat2d, lon2d=coarse_lon2d)
+
+        w_oro_coarse = oro_model_5deg.compute_orographic_vertical_velocity(wind_u=layers["wind_u"][m], wind_v=layers["wind_v"][m])
+        p_oro_coarse = oro_model_5deg.compute_orographic_precipitation(
+            w_oro_coarse, layers["humidity"][m], T_bl_K_coarse, rh_coarse
+        )
+        p_oro_coarse = np.where(coarse_land_mask, np.maximum(p_oro_coarse, 0.0), 0.0)
+
+        w_oro = oro_model_1deg.compute_orographic_vertical_velocity(wind_u[m], wind_v[m])
+        p_oro = oro_model_1deg.compute_orographic_precipitation(
             w_oro, q[m], T_bl_K[m], rh,
         )
-        p_oro = np.where(fine_land_mask, p_oro, 0.0)
-        cloud_out = compute_clouds_and_precipitation(
-            T_bl_K[m], T_atm_K[m], q[m], rh, w_ls[m],
-            T_surface_K=T_sfc_K[m], ocean_mask=ocean_mask,
+        p_oro = np.where(fine_land_mask, np.maximum(p_oro, 0.0), 0.0)
+
+        p_ls = original_precip[m] - p_oro_coarse
+        p_ls = np.maximum(p_ls, 0.0)
+        p_ls_bilinear = interpolate_field_bilinear(
+            p_ls, lat_indices, lon_indices, weights,
         )
-        p_ls = (cloud_out.convective_precip
-                + cloud_out.stratiform_precip
-                + cloud_out.marine_sc_precip)
 
-        p_oro = np.maximum(p_oro, 0.0)
+        p_ls_bilinear_list.append(p_ls_bilinear)
+        p_oro_list.append(p_oro)
 
-        # --- Conservation rescale: orographic-weighted redistribution ---
-        # Orographic P has real sub-grid information (terrain slopes).
-        # Use it as a weight to distribute the 5° total
-        n_sub = lat_ratio * lon_ratio  # 25 for 5°→1°
-        for i in range(nlat_coarse):
-            fi0 = i * lat_ratio
-            fi1 = fi0 + lat_ratio
-            for j in range(nlon_coarse):
-                fj0 = j * lon_ratio
-                fj1 = fj0 + lon_ratio
+    p_oro_list = np.array(p_oro_list)
+    p_ls_bilinear_list = np.array(p_ls_bilinear_list)
 
-                target = original_precip[m, i, j]
-                if target <= 0:
-                    precip_1deg[m, fi0:fi1, fj0:fj1] = 0.0
-                    continue
+    for m in range(12):
+        precip_1deg[m] = np.maximum(p_oro_list[m] + p_ls_bilinear_list[m], 0.0)
 
-                land_block = fine_land_mask[fi0:fi1, fj0:fj1]
-                n_land = int(land_block.sum())
-                n_ocean = n_sub - n_land
-
-                if n_land == 0:
-                    # All ocean — uniform
-                    precip_1deg[m, fi0:fi1, fj0:fj1] = target
-                    continue
-
-                # Ocean cells get the large-scale (non-orographic) P,
-                # rescaled to match across the block's ocean portion.
-                ls_block = np.maximum(p_ls[fi0:fi1, fj0:fj1], 0.0)
-                oro_block = p_oro[fi0:fi1, fj0:fj1]  # zero over ocean
-
-                if n_ocean > 0:
-                    ocean_ls_mean = ls_block[~land_block].mean()
-                    # Rescale ocean p_ls so its contribution to the block
-                    # sum uses p_ls shape but conserves budget.
-                    if ocean_ls_mean > 1e-15:
-                        ocean_vals = ls_block * (~land_block)
-                    else:
-                        ocean_vals = np.where(~land_block, 1.0 / n_ocean, 0.0)
-                    # Ocean sum before rescale
-                    ocean_raw_sum = ocean_vals[~land_block].sum()
-                else:
-                    ocean_raw_sum = 0.0
-
-                # Total budget = target * n_sub.
-                # We'll set ocean cells proportional to their p_ls,
-                # then land gets the remainder.
-                # First estimate ocean share from the ratio of ocean p_ls
-                # to total (ocean_ls + land_ls + land_oro).
-                total_raw = ls_block.sum() + oro_block.sum()
-                if total_raw > 1e-15 and n_ocean > 0:
-                    ocean_fraction = ls_block[~land_block].sum() / total_raw
-                    ocean_budget = target * n_sub * ocean_fraction
-                elif n_ocean > 0:
-                    ocean_budget = target * n_ocean  # fallback: uniform
-                else:
-                    ocean_budget = 0.0
-
-                land_budget = target * n_sub - ocean_budget
-
-                result = np.zeros_like(oro_block, dtype=np.float64)
-
-                # Distribute ocean budget proportional to p_ls shape
-                if n_ocean > 0:
-                    if ocean_raw_sum > 1e-15:
-                        result[~land_block] = (
-                            ls_block[~land_block] / ocean_raw_sum * ocean_budget
-                        )
-                    else:
-                        result[~land_block] = ocean_budget / n_ocean
-
-                # Distribute land budget with orographic weighting
-                oro_land_total = oro_block[land_block].sum()
-                if oro_land_total > 1e-15 and land_budget > 0:
-                    FLOOR = 0.2
-                    oro_norm = np.where(land_block, oro_block / oro_land_total, 0.0)
-                    land_weight = np.where(
-                        land_block,
-                        FLOOR / n_land + (1.0 - FLOOR) * oro_norm,
-                        0.0,
-                    )
-                    result[land_block] = land_weight[land_block] * land_budget
-                elif land_budget > 0:
-                    result[land_block] = land_budget / n_land
-
-                precip_1deg[m, fi0:fi1, fj0:fj1] = result
+    precip_1deg = np.array(precip_1deg)
+    precip_1deg = precip_1deg * np.mean(original_precip) / np.mean(precip_1deg)
 
     # --- 6. Interpolate humidity (simple bilinear) ---
     humidity_1deg = np.maximum(q, 0.0)
