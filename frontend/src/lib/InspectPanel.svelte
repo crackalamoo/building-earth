@@ -124,6 +124,15 @@
     return data[latIndex(lat, nlat) * nlon + lonIndex(lon, nlon)];
   }
 
+  /** High-res land check (720×1440) — matches the elevation grid. */
+  function isLandHighRes(lat: number, lon: number): boolean {
+    if (!layerData?.land_mask) return true;
+    const data = layerData.land_mask.data as Uint8Array;
+    const nlat = layerData.land_mask.shape[0];
+    const nlon = layerData.land_mask.shape[1];
+    return data[latIndex(lat, nlat) * nlon + lonIndex(lon, nlon)] !== 0;
+  }
+
   // ── Annual cycle data ──
 
   function sampleT2mMonth(lat: number, lon: number, month: number): number {
@@ -263,6 +272,7 @@
 
   $: imp = $useImperial;
   $: elevation = sampleElevation(lat, lon);
+  $: isLand = isLandHighRes(lat, lon);
   $: tempC = (monthProgress, sampleT2m(lat, lon));
   $: ocean = (monthProgress, sampleOceanInfo(lat, lon));
   $: wind = (monthProgress, sampleWind(lat, lon));
@@ -493,11 +503,11 @@
     {/if}
     {#if elevation !== null}
       <div class="stat elev">
-        {ocean.isOcean ? 'Depth' : 'Elev'}: <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+        {isLand ? 'Elev' : 'Depth'}: <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
           {#if imp}
-            {ocean.isOcean ? Math.abs(Math.round(mToFt(elevation))).toLocaleString() : Math.round(mToFt(elevation)).toLocaleString()} ft
+            {isLand ? Math.round(mToFt(elevation)).toLocaleString() : Math.abs(Math.round(mToFt(elevation))).toLocaleString()} ft
           {:else}
-            {ocean.isOcean ? Math.abs(Math.round(elevation)).toLocaleString() : Math.round(elevation).toLocaleString()} m
+            {isLand ? Math.round(elevation).toLocaleString() : Math.abs(Math.round(elevation)).toLocaleString()} m
           {/if}
         </span>
       </div>
