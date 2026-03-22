@@ -12,8 +12,8 @@ import { computeHillshadeGrid } from './elevation';
 
 interface LayerInfo {
   // All typed arrays transferred in
-  surfaceData: Float32Array;
-  surfaceShape: number[];       // [12, lowNlat, lowNlon]
+  surfaceData?: Float32Array;
+  surfaceShape?: number[];      // [12, lowNlat, lowNlon]
   landMaskData: Uint8Array;
   landMaskShape: number[];      // [hiNlat, hiNlon]
   coarseLandMask?: Uint8Array;  // native 5deg land mask
@@ -288,12 +288,13 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   const { layers, temp } = e.data;
   const transferables: ArrayBuffer[] = [];
 
-  // Pre-compute shared data
-  const annuals = computeAnnualMeans(layers);
+  // Pre-compute shared data (only if surface data exists for blue marble)
+  const hasSurface = !!layers.surfaceData && !!layers.surfaceShape;
+  const annuals = hasSurface ? computeAnnualMeans(layers) : null;
 
   // Hillshade grid (computed once, shared across months)
   let hillshadeGrid: Float32Array | null = null;
-  if (layers.elevData && layers.elevShape) {
+  if (hasSurface && layers.elevData && layers.elevShape) {
     const hiNlat = layers.landMaskShape[0];
     const hiNlon = layers.landMaskShape[1];
     hillshadeGrid = computeHillshadeGrid(
@@ -303,8 +304,8 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
 
   // Build all 12 base months
   const tempBuffers: Float32Array[] = [];
-  const bmRgbBuffers: Float32Array[] = [];
-  const bmSpecBuffers: Float32Array[] = [];
+  const bmRgbBuffers: (Float32Array | null)[] = [];
+  const bmSpecBuffers: (Float32Array | null)[] = [];
 
   for (let m = 0; m < 12; m++) {
     // Temperature color buffer
@@ -312,14 +313,19 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
     tempBuffers.push(tb);
     transferables.push(tb.buffer);
 
-    // Blue marble buffers
-    const bm = buildBlueMarbleBuffers(
-      layers, m, annuals.temp, annuals.soil, annuals.soilLandMask, hillshadeGrid,
-    );
-    bmRgbBuffers.push(bm.rgb);
-    bmSpecBuffers.push(bm.spec);
-    transferables.push(bm.rgb.buffer);
-    transferables.push(bm.spec.buffer);
+    // Blue marble buffers (only when surface data is available)
+    if (hasSurface && annuals) {
+      const bm = buildBlueMarbleBuffers(
+        layers, m, annuals.temp, annuals.soil, annuals.soilLandMask, hillshadeGrid,
+      );
+      bmRgbBuffers.push(bm.rgb);
+      bmSpecBuffers.push(bm.spec);
+      transferables.push(bm.rgb.buffer);
+      transferables.push(bm.spec.buffer);
+    } else {
+      bmRgbBuffers.push(null);
+      bmSpecBuffers.push(null);
+    }
 
     // Post progress after each month
     self.postMessage({ type: 'progress', month: m }, []);

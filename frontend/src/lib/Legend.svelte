@@ -69,7 +69,7 @@
   }
 
   .unit-toggle {
-    font-size: 0.8rem;
+    font-size: 0.875rem;
     color: rgba(255, 255, 255, 0.7);
     letter-spacing: 0.03em;
     cursor: pointer;
@@ -100,7 +100,7 @@
   }
 
   .tick {
-    font-size: 0.75rem;
+    font-size: 0.875rem;
     color: rgba(255, 255, 255, 0.6);
     line-height: 1;
   }

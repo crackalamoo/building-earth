@@ -12,6 +12,8 @@ interface ManifestField {
 
 interface Manifest {
   fields: ManifestField[];
+  quantization_min?: number;
+  quantization_max?: number;
 }
 
 export interface FieldData {
@@ -23,7 +25,7 @@ export interface ClimateLayerData {
   /** Interpolated 0.25deg temperature [12, 720, 1440] */
   temperature_2m: FieldData;
   /** Native 5deg surface temp [12, 36, 72] */
-  surface: FieldData;
+  surface?: FieldData;
   /** 0.25deg land mask [720, 1440] — matches temperature_2m resolution */
   land_mask: FieldData;
   /** Native 5deg land mask [36, 72] — for type-aware interpolation */
@@ -115,100 +117,20 @@ export async function loadBinaryData(basePath: string = ''): Promise<ClimateLaye
 
   for (const field of manifest.fields) {
     let data = decodeField(buffer, field);
-    // Decode uint8-quantized temperature_2m back to °C: val * (120/255) - 60
+    // Decode uint8-quantized temperature_2m back to °C using manifest quantization range
     if (field.name === 'temperature_2m' && field.dtype === 'uint8') {
       const u8 = data as Uint8Array;
       const f32 = new Float32Array(u8.length);
-      for (let i = 0; i < u8.length; i++) f32[i] = u8[i] * (120 / 255) - 60;
+      const qMin = manifest.quantization_min ?? -60;
+      const qMax = manifest.quantization_max ?? 60;
+      const qRange = qMax - qMin;
+      for (let i = 0; i < u8.length; i++) f32[i] = u8[i] * (qRange / 255) + qMin;
       data = f32;
     }
     result[field.name] = { data, shape: field.shape };
   }
 
   return result as unknown as ClimateLayerData;
-}
-
-/**
- * Fetch and decode binary climate data using a Web Worker (off main thread).
- * The onLayerData callback fires first (typed arrays ready), then onTemperatureData
- * fires after the nested array is built incrementally via idle callbacks.
- */
-export async function loadBinaryDataInWorker(
-  basePath: string,
-  onLayerData: (ld: ClimateLayerData) => void,
-  onTemperatureData: (td: number[][][]) => void,
-  onError: (err: Error) => void,
-): Promise<void> {
-  let manifestData: Manifest;
-  let buffer: ArrayBuffer;
-
-  try {
-    const [manifestRes, binRes] = await Promise.all([
-      fetch(`${basePath}/main.manifest.json`),
-      fetch(`${basePath}/main.bin`),
-    ]);
-
-    if (!manifestRes.ok) throw new Error(`Failed to load manifest: ${manifestRes.status}`);
-    if (!binRes.ok) throw new Error(`Failed to load binary data: ${binRes.status}`);
-
-    manifestData = await manifestRes.json();
-    buffer = await binRes.arrayBuffer();
-  } catch (e) {
-    onError(e instanceof Error ? e : new Error(String(e)));
-    return;
-  }
-
-  const worker = new Worker(new URL('./decodeWorker.ts', import.meta.url), { type: 'module' });
-
-  worker.onmessage = (e: MessageEvent) => {
-    const result = e.data.fields as Record<string, FieldData>;
-    worker.terminate();
-
-    const layerData = result as unknown as ClimateLayerData;
-    onLayerData(layerData);
-
-    // Build nested temperature array incrementally (one month per idle callback)
-    const t2m = layerData.temperature_2m;
-    if (t2m) {
-      const [nmonths, nlat, nlon] = t2m.shape;
-      const data = t2m.data as Float32Array;
-      const nested: number[][][] = [];
-      let month = 0;
-
-      const ric = typeof requestIdleCallback === 'function'
-        ? (cb: IdleRequestCallback) => requestIdleCallback(cb, { timeout: 200 })
-        : (cb: () => void) => setTimeout(cb, 16);
-
-      function buildNextMonth() {
-        if (month >= nmonths) {
-          onTemperatureData(nested);
-          return;
-        }
-        const m: number[][] = [];
-        for (let i = 0; i < nlat; i++) {
-          const row: number[] = [];
-          const base = month * nlat * nlon + i * nlon;
-          for (let j = 0; j < nlon; j++) {
-            row.push(data[base + j]);
-          }
-          m.push(row);
-        }
-        nested.push(m);
-        month++;
-        ric(buildNextMonth);
-      }
-
-      ric(buildNextMonth);
-    }
-  };
-
-  worker.onerror = (err) => {
-    worker.terminate();
-    onError(new Error(`Decode worker error: ${err.message}`));
-  };
-
-  // Transfer the buffer to the worker (zero-copy)
-  worker.postMessage({ buffer, manifest: manifestData }, [buffer]);
 }
 
 /**
@@ -263,4 +185,107 @@ export function fieldToNestedArray(field: FieldData): number[][][] {
   }
 
   return result;
+}
+
+/**
+ * Cache for preloaded + decoded stage data.
+ * preloadStageFile fetches AND decodes in background, so loadStageData
+ * can return instantly when the user clicks advance.
+ */
+interface PreloadedStage {
+  layerData: ClimateLayerData;
+  temperatureData: number[][][];
+}
+const decodedCache = new Map<number, PreloadedStage>();
+const preloadPromises = new Map<number, Promise<void>>();
+
+/**
+ * Fetch, decode, and cache a stage's data in the background.
+ * Call this after loading stage N to pre-decode stage N+1.
+ */
+export function preloadStageFile(stage: number, basePath: string = ''): Promise<void> {
+  if (decodedCache.has(stage)) return Promise.resolve();
+  if (preloadPromises.has(stage)) return preloadPromises.get(stage)!;
+
+  const promise = (async () => {
+    const prefix = stage === 4 ? 'main' : `stage${stage}`;
+    try {
+      const [manifestRes, binRes] = await Promise.all([
+        fetch(`${basePath}/${prefix}.manifest.json`),
+        fetch(`${basePath}/${prefix}.bin`),
+      ]);
+      if (!manifestRes.ok || !binRes.ok) return;
+
+      const manifestData: Manifest = await manifestRes.json();
+      const buffer = await binRes.arrayBuffer();
+
+      // Decode in worker
+      const decoded = await new Promise<ClimateLayerData>((resolve, reject) => {
+        const worker = new Worker(new URL('./decodeWorker.ts', import.meta.url), { type: 'module' });
+        worker.onmessage = (e: MessageEvent) => {
+          worker.terminate();
+          resolve(e.data.fields as unknown as ClimateLayerData);
+        };
+        worker.onerror = (err) => {
+          worker.terminate();
+          reject(new Error(`Decode worker error: ${err.message}`));
+        };
+        worker.postMessage({ buffer, manifest: manifestData }, [buffer]);
+      });
+
+      // Build nested temperature array (runs in worker thread is done, this is fast)
+      const t2m = decoded.temperature_2m;
+      const temperatureData = t2m ? fieldToNestedArray(t2m) : [];
+
+      decodedCache.set(stage, { layerData: decoded, temperatureData });
+    } catch {
+      // Preload failure is non-fatal
+    } finally {
+      preloadPromises.delete(stage);
+    }
+  })();
+
+  preloadPromises.set(stage, promise);
+  return promise;
+}
+
+/**
+ * Load and decode a specific stage's data.
+ * Returns instantly if preloaded, otherwise fetches + decodes.
+ */
+export async function loadStageData(
+  stage: number,
+  basePath: string,
+  onLayerData: (ld: ClimateLayerData) => void,
+  onTemperatureData: (td: number[][][]) => void,
+  onError: (err: Error) => void,
+): Promise<void> {
+  // Wait for any in-flight preload to finish
+  if (preloadPromises.has(stage)) {
+    await preloadPromises.get(stage);
+  }
+
+  // Use decoded cache if available
+  if (decodedCache.has(stage)) {
+    const cached = decodedCache.get(stage)!;
+    decodedCache.delete(stage);
+    onLayerData(cached.layerData);
+    onTemperatureData(cached.temperatureData);
+    return;
+  }
+
+  // Fallback: fetch + decode now (shouldn't normally happen)
+  try {
+    await preloadStageFile(stage, basePath);
+    if (decodedCache.has(stage)) {
+      const cached = decodedCache.get(stage)!;
+      decodedCache.delete(stage);
+      onLayerData(cached.layerData);
+      onTemperatureData(cached.temperatureData);
+      return;
+    }
+    throw new Error('Failed to load stage data');
+  } catch (e) {
+    onError(e instanceof Error ? e : new Error(String(e)));
+  }
 }

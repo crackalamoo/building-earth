@@ -218,3 +218,5 @@ frontend/dist/
 frontend/public/main.bin
 frontend/public/landmask1deg.bin
 frontend/public/main.manifest.json
+frontend/public/stage*.bin
+frontend/public/stage*.manifest.json

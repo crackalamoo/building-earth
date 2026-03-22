@@ -10,7 +10,8 @@ A real-time, visually beautiful, educational climate simulator that explains the
 |------|---------|
 | Run simulation | `uv run python backend/main.py --resolution 5 --headless` |
 | Evaluate vs NOAA | `uv run python backend/eval.py --cache --headless --resolution 5` |
-| Export for frontend | `uv run python backend/export_frontend_data.py --cache --resolution 5 --interpolate` |
+| Export for frontend | `PYTHONPATH=backend uv run python -m export_frontend_data --cache --resolution 5 --interpolate` |
+| Export onboarding stages | `PYTHONPATH=backend uv run python -m export_frontend_data --onboarding --cache --resolution 5 --interpolate` |
 | Compare with previous cached run | `uv run python backend/scenario_compare.py --base-cache --headless --resolution 5` |
 
 `--cache` means eval reads `data/main.npz` from the LAST simulation run. If you changed physics and want to compare before/after, you MUST re-run `main.py` for each version — `--cache` does NOT re-simulate.

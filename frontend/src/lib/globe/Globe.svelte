@@ -23,6 +23,7 @@
   export let uniformLighting: boolean = false;
   export let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
   export let revealed: boolean = false;
+  export let stage: number = 4;
 
   const dispatch = createEventDispatcher();
 
@@ -173,8 +174,8 @@
     const ld = layerData;
     const t2m = ld.temperature_2m;
     const layers = {
-      surfaceData: ld.surface.data as Float32Array,
-      surfaceShape: ld.surface.shape,
+      surfaceData: ld.surface?.data as Float32Array | undefined,
+      surfaceShape: ld.surface?.shape,
       landMaskData: ld.land_mask.data as Uint8Array,
       landMaskShape: ld.land_mask.shape,
       coarseLandMask: ld.land_mask_native?.data as Uint8Array | undefined,
@@ -210,10 +211,11 @@
           bmBaseSpecCache[m] = bmSpecBuffers[m];
         }
         // Build sub-steps (cheap, synchronous)
+        const hasBm = bmBaseRgbCache.some(b => b !== null);
         for (let step = 0; step < TOTAL_STEPS; step++) {
           if (step % SUB_STEPS !== 0) {
             ensureTempStep(step);
-            ensureBmStep(step);
+            if (hasBm) ensureBmStep(step);
           }
         }
         cacheWorkerReady = true;
@@ -485,7 +487,7 @@
     raycaster.setFromCamera(mouse, camera);
 
     // Intersect whichever globe is visible
-    const target = activeLayer === 'blue-marble' ? blueMarbleGlobe : globe;
+    const target = activeLayer === 'blue-marble' ? blueMarbleGlobe : activeLayer === 'precipitation' ? precipGlobe : globe;
     if (!target) return;
     const hits = raycaster.intersectObject(target);
     if (hits.length === 0) {
@@ -535,6 +537,78 @@
     }
     markerWorldPos = null;
     dispatch('pick', null);
+  }
+
+  /** Dispose all globe meshes and visual layers while keeping scene/camera/controls/stars alive. */
+  export function disposeStageMeshes() {
+    if (globe) {
+      scene.remove(globe);
+      globe.geometry.dispose();
+      (globe.material as THREE.Material).dispose();
+      globe = null;
+    }
+    if (blueMarbleGlobe) {
+      scene.remove(blueMarbleGlobe);
+      blueMarbleGlobe.geometry.dispose();
+      (blueMarbleGlobe.material as THREE.Material).dispose();
+      blueMarbleGlobe = null;
+      bmShaderMaterial = null;
+    }
+    if (precipGlobe) {
+      scene.remove(precipGlobe);
+      precipGlobe.geometry.dispose();
+      (precipGlobe.material as THREE.Material).dispose();
+      precipGlobe = null;
+    }
+    if (windParticles) {
+      scene.remove(windParticles.getObject());
+      windParticles.dispose();
+      windParticles = null;
+    }
+    if (treeInstances) {
+      scene.remove(treeInstances.getObject());
+      treeInstances.dispose();
+      treeInstances = null;
+    }
+    if (cloudInstances) {
+      scene.remove(cloudInstances.getObject());
+      cloudInstances.dispose();
+      cloudInstances = null;
+    }
+    if (cityLights) {
+      scene.remove(cityLights.getObject());
+      cityLights.dispose();
+      cityLights = null;
+    }
+    if (atmosphereMesh) {
+      scene.remove(atmosphereMesh);
+      atmosphereMesh.geometry.dispose();
+      (atmosphereMesh.material as THREE.Material).dispose();
+      atmosphereMesh = null;
+    }
+    if (bordersGroup) {
+      scene.remove(bordersGroup);
+      bordersGroup.traverse((obj) => {
+        if (obj instanceof THREE.Line) {
+          obj.geometry.dispose();
+          (obj.material as THREE.Material).dispose();
+        }
+      });
+      bordersGroup = null;
+    }
+    // Reset caches
+    tempBaseCache = new Array(12).fill(null);
+    tempStepCache = new Array(TOTAL_STEPS).fill(null);
+    bmBaseRgbCache = new Array(12).fill(null);
+    bmBaseSpecCache = new Array(12).fill(null);
+    bmStepRgbCache = new Array(TOTAL_STEPS).fill(null);
+    bmStepSpecCache = new Array(TOTAL_STEPS).fill(null);
+    precipBaseCache = new Array(12).fill(null);
+    precipStepCache = new Array(TOTAL_STEPS).fill(null);
+    invalidateColorBuilderCaches();
+    lastAppliedStep = -1;
+    revealScheduled = false;
+    if (cacheWorker) { cacheWorker.terminate(); cacheWorker = null; }
   }
 
   function createFlashQuad(aspect: number, sunScreenPos: THREE.Vector2): THREE.Mesh {
@@ -637,7 +711,7 @@
   // When revealed and data ready, swap primordial → full scene
   // App.svelte handles sequencing: triggerFlash → rAF → revealed=true → rAF → startFlashFade
   let revealScheduled = false;
-  $: if (revealed && scene && data && layerData && !revealScheduled) {
+  $: if (revealed && scene && data && !revealScheduled) {
     revealScheduled = true;
 
     // Remove primordial globe
@@ -648,23 +722,36 @@
       primordialGlobe = null;
     }
 
-    // Create full globes
+    // Create temperature globe (always needed at stages 1-4)
     if (!globe && data) {
       globe = createTemperatureGlobe(data);
       globe.visible = activeLayer === 'temperature';
       scene.add(globe);
       applyTemperatureColors(progressToStep(displayMonthProgress));
     }
-    if (!blueMarbleGlobe && layerData) {
+
+    // Create blue marble globe when surface data is available
+    if (!blueMarbleGlobe && layerData?.surface) {
       blueMarbleGlobe = createBlueMarbleGlobe(layerData);
       bmShaderMaterial = blueMarbleGlobe.material as THREE.ShaderMaterial;
       blueMarbleGlobe.visible = activeLayer === 'blue-marble';
       scene.add(blueMarbleGlobe);
       applyBlueMarbleColors(progressToStep(displayMonthProgress));
+    }
+
+    // Wind particles when wind data exists
+    if (layerData?.wind_u_10m) {
       initWindParticles();
+    }
+
+    // Trees and clouds when vegetation/cloud data exists
+    if (layerData?.vegetation_fraction) {
       initTreeInstances();
+    }
+    if (layerData?.cloud_fraction) {
       initCloudInstances();
     }
+
     if (!precipGlobe && layerData?.precipitation) {
       const p = layerData.precipitation;
       precipGlobe = createGlobeMesh(p.shape[1], p.shape[2], 1);
@@ -679,21 +766,23 @@
     sunLight.intensity = 2.0;
     ambientLight.intensity = 0.15;
 
-    // Create atmosphere and city lights
-    if (!atmosphereMesh) {
-      atmosphereMesh = createAtmosphere();
-      atmosphereMesh.visible = activeLayer === 'blue-marble';
-      scene.add(atmosphereMesh);
-    } else {
-      atmosphereMesh.visible = activeLayer === 'blue-marble';
-    }
-    if (!cityLights) {
-      cityLights = new CityLights();
-      const cityObj = cityLights.getObject();
-      cityObj.visible = activeLayer === 'blue-marble';
-      scene.add(cityObj);
-    } else {
-      cityLights.getObject().visible = activeLayer === 'blue-marble';
+    // Atmosphere and city lights only at stage 4
+    if (stage >= 4) {
+      if (!atmosphereMesh) {
+        atmosphereMesh = createAtmosphere();
+        atmosphereMesh.visible = activeLayer === 'blue-marble';
+        scene.add(atmosphereMesh);
+      } else {
+        atmosphereMesh.visible = activeLayer === 'blue-marble';
+      }
+      if (!cityLights) {
+        cityLights = new CityLights();
+        const cityObj = cityLights.getObject();
+        cityObj.visible = activeLayer === 'blue-marble';
+        scene.add(cityObj);
+      } else {
+        cityLights.getObject().visible = activeLayer === 'blue-marble';
+      }
     }
   }
 
@@ -777,15 +866,15 @@
       applyTemperatureColors(progressToStep(displayMonthProgress));
     }
 
-    if (revealed && layerData) {
+    if (revealed && layerData?.surface) {
       blueMarbleGlobe = createBlueMarbleGlobe(layerData);
       bmShaderMaterial = blueMarbleGlobe.material as THREE.ShaderMaterial;
       blueMarbleGlobe.visible = activeLayer === 'blue-marble';
       scene.add(blueMarbleGlobe);
       applyBlueMarbleColors(progressToStep(displayMonthProgress));
-      initWindParticles();
-      initTreeInstances();
-      initCloudInstances();
+      if (layerData.wind_u_10m) initWindParticles();
+      if (layerData.vegetation_fraction) initTreeInstances();
+      if (layerData.cloud_fraction) initCloudInstances();
 
       if (layerData.precipitation) {
         const p = layerData.precipitation;
@@ -796,8 +885,8 @@
       }
     }
 
-    // City lights and atmosphere — only create after reveal
-    if (revealed) {
+    // City lights and atmosphere — only create at stage 4 (cosmetic)
+    if (revealed && stage >= 4) {
       cityLights = new CityLights();
       const cityObj = cityLights.getObject();
       cityObj.visible = activeLayer === 'blue-marble';
@@ -1019,17 +1108,19 @@
     applyTemperatureColors(progressToStep(displayMonthProgress));
   }
 
-  // Create blue marble globe when layerData arrives (only after reveal)
-  $: if (scene && layerData && !blueMarbleGlobe && revealed) {
+  // Create blue marble globe when surface data arrives (only after reveal)
+  $: if (scene && layerData?.surface && !blueMarbleGlobe && revealed) {
     blueMarbleGlobe = createBlueMarbleGlobe(layerData);
+    bmShaderMaterial = blueMarbleGlobe.material as THREE.ShaderMaterial;
     blueMarbleGlobe.visible = activeLayer === 'blue-marble';
     scene.add(blueMarbleGlobe);
     applyBlueMarbleColors(progressToStep(displayMonthProgress));
-    initWindParticles();
-    initTreeInstances();
+    if (layerData.wind_u_10m) initWindParticles();
+    if (layerData.vegetation_fraction) initTreeInstances();
+    if (layerData.cloud_fraction) initCloudInstances();
   }
 
-  // Create precipitation globe when layerData arrives (only after reveal)
+  // Create precipitation globe when precipitation data arrives (only after reveal)
   $: if (scene && layerData?.precipitation && !precipGlobe && revealed) {
     const p = layerData.precipitation!;
     precipGlobe = createGlobeMesh(p.shape[1], p.shape[2], 1);

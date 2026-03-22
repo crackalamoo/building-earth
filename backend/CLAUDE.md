@@ -13,7 +13,7 @@
 - **Entry points** (run from project root):
   - `backend/main.py`: run simulation, save to `data/main.npz`
   - `backend/eval.py`: compare against NOAA climatology
-  - `backend/export_frontend_data.py`: export JSON for frontend
+  - `backend/export_frontend_data/`: export binary data for frontend (package)
 
 ## Solver architecture
 

@@ -13,6 +13,7 @@
   export let monthProgress: number;
   export let temperatureData: number[][][] | null;
   export let layerData: ClimateLayerData | null;
+  export let stage: number = 4;
 
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
   const MAX_MESSAGES = 50;
@@ -30,7 +31,7 @@
   let sentLon: number | null = null;
   let sentMonth: number | null = null;
 
-  $: suggestions = computeSuggestions(lat, ocean, elevation, cycleTemps, cyclePrecip, wind, currentMonthIdx, tempC);
+  $: suggestions = computeSuggestions(lat, ocean, elevation, cycleTemps, cyclePrecip, wind, currentMonthIdx, tempC, stage);
 
   let activeTab: 'cycle' | 'ask' = 'ask';
   let hoveredMonthIdx: number | null = null;
@@ -303,6 +304,7 @@
           lat, lon, month,
           prevLat: sentLat, prevLon: sentLon, prevMonth: sentMonth,
           imperial: $useImperial,
+          stage,
           messages: messages.filter(m => m.content !== '').map(m => ({ role: m.role, content: m.content })),
         },
         abortController.signal,
@@ -560,10 +562,10 @@
           {#if dot.active}
             {@const barY = chartBars[displayMonthIdx].y}
             {@const precipLabelY = Math.min(barY - 4, dot.cy - 20)}
-            <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="9">
+            <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="11">
               {$useImperial ? (cyclePrecip[displayMonthIdx] / 25.4).toFixed(1) + '"' : cyclePrecip[displayMonthIdx].toFixed(0) + 'mm'}
             </text>
-            <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="10">
+            <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="12">
               {$useImperial ? cToF(dot.t).toFixed(0) + '°F' : dot.t.toFixed(0) + '°C'}
             </text>
           {/if}
@@ -575,24 +577,24 @@
             x={m.x} y={CHART_H - 6}
             text-anchor="middle"
             fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#555'}
-            font-size="10"
+            font-size="12"
             font-weight={m.active ? '600' : '400'}
           >{m.label}</text>
         {/each}
 
         <!-- Y axis labels -->
-        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="9">
+        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="11">
           {imp ? cToF(tempPlotMax).toFixed(0) + '°' : tempPlotMax.toFixed(0) + '°'}
         </text>
-        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="9">
+        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="11">
           {imp ? cToF(tempPlotMin).toFixed(0) + '°' : tempPlotMin.toFixed(0) + '°'}
         </text>
-        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="9">
+        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="11">
           {$useImperial ? (precipMax / 25.4).toFixed(1) + 'in' : precipMax.toFixed(0) + 'mm'}/mo
         </text>
 
         <!-- Chart label -->
-        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="9">Simulated</text>
+        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="11">Simulated</text>
       </svg>
 
       <!-- Observed chart -->
@@ -635,11 +637,11 @@
               {@const obsBar = obsChartBars[i]}
               {@const precipLabelY = obsBar.valid ? Math.min(obsBar.y - 4, dot.cy - 20) : dot.cy - 20}
               {#if obsBar.valid}
-                <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="9">
+                <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="11">
                   {$useImperial ? (obsPrecips[i]! / 25.4).toFixed(1) + '"' : obsPrecips[i]!.toFixed(0) + 'mm'}
                 </text>
               {/if}
-              <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="10">
+              <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="12">
                 {$useImperial ? cToF(dot.t!).toFixed(0) + '°F' : dot.t!.toFixed(0) + '°C'}
               </text>
             {/if}
@@ -652,24 +654,24 @@
             x={m.x} y={CHART_H - 6}
             text-anchor="middle"
             fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#555'}
-            font-size="10"
+            font-size="12"
             font-weight={m.active ? '600' : '400'}
           >{m.label}</text>
         {/each}
 
         <!-- Y axis labels (same scale) -->
-        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="9">
+        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="11">
           {imp ? cToF(tempPlotMax).toFixed(0) + '°' : tempPlotMax.toFixed(0) + '°'}
         </text>
-        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="9">
+        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="11">
           {imp ? cToF(tempPlotMin).toFixed(0) + '°' : tempPlotMin.toFixed(0) + '°'}
         </text>
-        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="9">
+        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="11">
           {$useImperial ? (precipMax / 25.4).toFixed(1) + 'in' : precipMax.toFixed(0) + 'mm'}/mo
         </text>
 
         <!-- Chart label -->
-        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="9">Observed (1981–2010)</text>
+        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="11">Observed (1981–2010)</text>
 
         <!-- Invisible hit areas per month column -->
         {#each hitAreas as hit}
@@ -781,7 +783,7 @@
     color: #fff;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    font-size: 0.85rem;
+    font-size: 0.875rem;
   }
 
   .close-btn {
@@ -838,7 +840,7 @@
     color: #fff;
     border: 1px solid rgba(26, 107, 107, 0.5);
     cursor: pointer;
-    font-size: 0.85rem;
+    font-size: 0.875rem;
     min-width: auto;
     transition: background 0.15s, color 0.15s;
   }
@@ -883,7 +885,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 0.8rem;
+    font-size: 0.875rem;
     padding-left: 2px;
   }
 
@@ -960,7 +962,7 @@
     padding: 0.3rem 0.75rem;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 0.85rem;
+    font-size: 0.875rem;
     min-width: auto;
   }
   .retry-btn:hover {
@@ -980,7 +982,7 @@
     color: #aadede;
     padding: 0.15rem 0.5rem;
     border-radius: 12px;
-    font-size: 0.75rem;
+    font-size: 0.875rem;
   }
 
   .typing-indicator {

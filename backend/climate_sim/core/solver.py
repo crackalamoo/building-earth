@@ -1304,6 +1304,7 @@ def monthly_step(
         convective_frac = None
         stratiform_frac = None
         marine_sc_frac = None
+        high_cloud_frac = None
         final_vertical_velocity = None
         if lagged_humidity is not None and nlayers_final >= 2:
             # Compute relative humidity

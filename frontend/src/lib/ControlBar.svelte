@@ -18,6 +18,9 @@
   export let layerDataLoaded = false;
   export let displayMonth = 0;
   export let visible = false;
+  export let stage = 4;
+  export let hasPrecipitation = false;
+  export let hasSurface = false;
 </script>
 
 <div class="controls" class:visible>
@@ -33,7 +36,7 @@
       class="layer-tab"
       class:active={activeLayer === 'precipitation'}
       on:click={() => activeLayer = 'precipitation'}
-      disabled={recording || !layerDataLoaded}
+      disabled={recording || !layerDataLoaded || !hasPrecipitation}
       data-tooltip="Precipitation"
       style="border-radius: 0; margin-left: -1px;"
     ><CloudRain size={16} /></button>
@@ -41,7 +44,7 @@
       class="layer-tab"
       class:active={activeLayer === 'blue-marble'}
       on:click={() => activeLayer = 'blue-marble'}
-      disabled={recording || !layerDataLoaded}
+      disabled={recording || !layerDataLoaded || !hasSurface}
       data-tooltip="Blue Marble"
     ><GlobeIcon size={16} /></button>
   </div>
@@ -83,7 +86,7 @@
   <button class="action-btn" on:click={() => dispatch('resetView')} disabled={recording} data-tooltip="Reset View">
     <Home size={16} />
   </button>
-  <button class="action-btn record-btn" on:click={() => dispatch('recordGif')} disabled={recording}>
+  <button class="action-btn record-btn" on:click={() => dispatch('recordGif')} disabled={recording} class:hidden={stage < 4}>
     {#if recording}
       {recordingProgress}
     {:else}
@@ -120,7 +123,7 @@
     color: #fff;
     border: 1px solid rgba(26, 107, 107, 0.5);
     cursor: pointer;
-    font-size: 0.85rem;
+    font-size: 0.875rem;
     min-width: auto;
     transition: background 0.15s, color 0.15s;
   }
@@ -230,7 +233,7 @@
     padding: 0.35rem 0.6rem;
     background: rgba(14, 74, 74, 0.9);
     color: #fff;
-    font-size: 0.85rem;
+    font-size: 0.875rem;
     white-space: nowrap;
     border-radius: 4px;
     border: 1px solid rgba(26, 107, 107, 0.6);
@@ -268,7 +271,7 @@
   }
 
   button:disabled {
-    cursor: wait;
+    cursor: not-allowed;
     opacity: 0.7;
   }
 
@@ -287,5 +290,9 @@
     .month-label { min-width: 70px; font-size: 0.9rem; }
     input[type="range"] { width: auto; flex: 1; }
     .record-btn { display: none; }
+  }
+
+  .hidden {
+    display: none;
   }
 </style>

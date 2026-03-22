@@ -14,6 +14,8 @@ interface ManifestField {
 
 interface Manifest {
   fields: ManifestField[];
+  quantization_min?: number;
+  quantization_max?: number;
 }
 
 function decodeFloat16(buffer: ArrayBuffer, byteOffset: number, count: number): Float32Array {
@@ -70,10 +72,14 @@ self.onmessage = (e: MessageEvent<{ buffer: ArrayBuffer; manifest: Manifest }>) 
     let data = decodeField(buffer, field);
 
     // Decode uint8-quantized temperature_2m back to °C
+    // Note: snow_temperature stays as uint8 — the cache worker decodes it with its own fixed range
     if (field.name === 'temperature_2m' && field.dtype === 'uint8') {
       const u8 = data as Uint8Array;
       const f32 = new Float32Array(u8.length);
-      for (let i = 0; i < u8.length; i++) f32[i] = u8[i] * (120 / 255) - 60;
+      const qMin = manifest.quantization_min ?? -60;
+      const qMax = manifest.quantization_max ?? 60;
+      const qRange = qMax - qMin;
+      for (let i = 0; i < u8.length; i++) f32[i] = u8[i] * (qRange / 255) + qMin;
       data = f32;
     }
 
