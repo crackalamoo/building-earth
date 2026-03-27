@@ -429,7 +429,11 @@ def compute_humidity_precip_statistics(
     weights_ocean = cell_areas * (~land_mask)
 
     # Convert units for display: kg/kg → g/kg, kg/m²/s → mm/day
-    sim_q_gkg = sim_humidity * 1000.0
+    # sim_humidity is 0-1km BL column mean. Obs is 2m surface humidity.
+    # In the real atmosphere, q decreases exponentially with scale height ~2km.
+    # The 0-1km mean is ~79% of the surface value, so scale up by 1/0.79 ≈ 1.27.
+    BL_TO_SURFACE_Q_FACTOR = 1.27
+    sim_q_gkg = sim_humidity * 1000.0 * BL_TO_SURFACE_Q_FACTOR
     obs_q_gkg = obs_shum * 1000.0
     sim_p_mmday = sim_precip * 86400.0
     obs_p_mmday = obs_precip  # GPCP already in mm/day
@@ -615,8 +619,9 @@ def plot_humidity_precip_anomaly(
     if headless:
         return
 
-    # Humidity anomaly (g/kg)
-    q_anomaly = sim_humidity * 1000.0 - obs_shum * 1000.0
+    # Humidity anomaly (g/kg) — scale BL mean to surface equivalent
+    BL_TO_SURFACE_Q_FACTOR = 1.27
+    q_anomaly = sim_humidity * 1000.0 * BL_TO_SURFACE_Q_FACTOR - obs_shum * 1000.0
     q_with_annual = np.concatenate(
         [q_anomaly, np.nanmean(q_anomaly, axis=0, keepdims=True)], axis=0
     )
