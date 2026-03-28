@@ -26,10 +26,12 @@ def solar_declination(day_of_year: np.ndarray) -> np.ndarray:
     obliquity_rad = np.deg2rad(OBLIQUITY_DEGREES)
     return np.arcsin(np.sin(obliquity_rad) * np.sin(mean_longitude))
 
+
 def compute_monthly_declinations() -> np.ndarray:
     """Return solar declination angle (radians) for the midpoint of each month."""
     midpoints = monthly_midpoint_days()
     return solar_declination(midpoints)
+
 
 def daily_mean_insolation(
     lat_rad: np.ndarray,
@@ -118,9 +120,8 @@ def _compute_effective_cosine_zenith(
     cos_dec = np.cos(declination_rad)[None, :]
 
     # This is Q/S0, i.e., the flux-weighted mean cos(zenith)
-    mu_eff = (
-        (1.0 / np.pi)
-        * (hour_angle * sin_lat * sin_dec + cos_lat * cos_dec * np.sin(hour_angle))
+    mu_eff = (1.0 / np.pi) * (
+        hour_angle * sin_lat * sin_dec + cos_lat * cos_dec * np.sin(hour_angle)
     )
 
     # Clip to avoid division issues in albedo formulas
@@ -134,18 +135,19 @@ def compute_monthly_effective_cosine_zenith(lat2d: np.ndarray) -> np.ndarray:
     return mu_eff.T  # (nmonth, nlat)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
     from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
+
     lon2d, lat2d = create_lat_lon_grid(1.0)
     insolation = compute_monthly_insolation_field(lat2d)
     print(insolation.shape)
     insolation = expand_latitude_field(insolation, lon2d.shape[1])
     print(insolation.shape)
     for i in range(insolation.shape[0]):
-        plt.imshow(insolation[i], origin='lower', extent=(-180, 180, -90, 90), aspect='auto')
-        plt.colorbar(label='W m$^{-2}$')
-        plt.xlabel('Longitude')
-        plt.ylabel('Latitude')
+        plt.imshow(insolation[i], origin="lower", extent=(-180, 180, -90, 90), aspect="auto")
+        plt.colorbar(label="W m$^{-2}$")
+        plt.xlabel("Longitude")
+        plt.ylabel("Latitude")
         plt.show()

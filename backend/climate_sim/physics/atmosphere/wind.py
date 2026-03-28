@@ -34,6 +34,7 @@ from climate_sim.core.math_core import (
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.data.elevation import VON_KARMAN_CONSTANT
 
+
 def compute_surface_roughness(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
@@ -76,9 +77,7 @@ def compute_surface_roughness(
 
     lon_hr2d, lat_hr2d = np.meshgrid(lon_centers_hr, lat_centers_hr)
 
-    roughness_hr = compute_cell_roughness_length(
-        lon_hr2d, lat_hr2d, data=elevation_data
-    )
+    roughness_hr = compute_cell_roughness_length(lon_hr2d, lat_hr2d, data=elevation_data)
     area_hr = spherical_cell_area(lon_hr2d, lat_hr2d, earth_radius_m=R_EARTH_METERS)
 
     lat_idx_hr = np.searchsorted(lat_edges, lat_centers_hr, side="right") - 1
@@ -119,21 +118,21 @@ def compute_surface_roughness(
     with np.errstate(divide="ignore", invalid="ignore"):
         aggregated_roughness = weighted_sum / weight_sum
 
-    roughness_map = np.where(
-        land_mask_bool, aggregated_roughness, WATER_ROUGHNESS_LENGTH_M
-    )
+    roughness_map = np.where(land_mask_bool, aggregated_roughness, WATER_ROUGHNESS_LENGTH_M)
     return neutral_drag_from_roughness_length(roughness_map)
 
 
 @dataclass(frozen=True)
 class WindConfig:
     """Configuration for wind model."""
+
     enabled: bool = True
     earth_rotation_rate_rad_s: float = 7.2921e-5
     gravity_m_s2: float = 9.81
     troposphere_scale_height_m: float = 8000.0
     coriolis_floor_s: float = 1e-5
     minimum_temperature_K: float = 150.0
+
 
 class WindModel:
     """Evaluate advection on a fixed longitude/latitude grid."""
@@ -179,14 +178,11 @@ class WindModel:
             valid = np.abs(delta_x) > 0.0
             self._inv_two_delta_x[valid] = 1.0 / (2.0 * delta_x[valid])
 
-        coriolis = 2.0 * config.earth_rotation_rate_rad_s * np.sin(
-            np.deg2rad(self._lat2d)
-        )
+        coriolis = 2.0 * config.earth_rotation_rate_rad_s * np.sin(np.deg2rad(self._lat2d))
         self._coriolis = coriolis
 
         self._land_mask = (
-            land_mask if land_mask is not None
-            else compute_land_mask(self._lon2d, self._lat2d)
+            land_mask if land_mask is not None else compute_land_mask(self._lon2d, self._lat2d)
         )
 
         elevation_data = load_elevation_data()
@@ -203,9 +199,7 @@ class WindModel:
                 self._lon2d, self._lat2d, data=elevation_data, land_mask=self._land_mask
             )
 
-        self.elevation_m = compute_cell_elevation(
-            self._lon2d, self._lat2d, data=elevation_data
-        )
+        self.elevation_m = compute_cell_elevation(self._lon2d, self._lat2d, data=elevation_data)
         self.elevation_m = np.maximum(self.elevation_m, 0.0)
 
         # Pre-compute bulk transfer coefficient (constant for the grid)
@@ -213,12 +207,8 @@ class WindModel:
         roughness_momentum = self._roughness_length
         roughness_heat = np.maximum(roughness_momentum / 10.0, 1.0e-9)
 
-        lm = np.log(
-            np.maximum(log_height_surface / roughness_momentum, 1.0 + 1.0e-9)
-        )
-        lh = np.log(
-            np.maximum(log_height_surface / roughness_heat, 1.0 + 1.0e-9)
-        )
+        lm = np.log(np.maximum(log_height_surface / roughness_momentum, 1.0 + 1.0e-9))
+        lh = np.log(np.maximum(log_height_surface / roughness_heat, 1.0 + 1.0e-9))
         ch_raw = (VON_KARMAN_CONSTANT**2) / (lm * lh)
 
         ch_land = np.clip(ch_raw, 1e-4, 2.0e-3)
@@ -239,9 +229,7 @@ class WindModel:
         """Compute the geostrophic wind field (u, v, speed) for the given temperatures."""
 
         if temperature.shape != self._lon2d.shape:
-            raise ValueError(
-                "Temperature field must match the longitude/latitude grid shape"
-            )
+            raise ValueError("Temperature field must match the longitude/latitude grid shape")
 
         if not self.enabled:
             zeros = np.zeros_like(temperature)
@@ -263,14 +251,10 @@ class WindModel:
             _H = 8500.0  # scale height (m)
             bl_mass = _H * (1.0 - np.exp(-BOUNDARY_LAYER_HEIGHT_M / _H))
             atm_top = BOUNDARY_LAYER_HEIGHT_M + ATMOSPHERE_LAYER_HEIGHT_M
-            atm_mass = _H * (
-                np.exp(-BOUNDARY_LAYER_HEIGHT_M / _H)
-                - np.exp(-atm_top / _H)
-            )
+            atm_mass = _H * (np.exp(-BOUNDARY_LAYER_HEIGHT_M / _H) - np.exp(-atm_top / _H))
             total_mass = bl_mass + atm_mass
             column_temperature = (
-                temperature_boundary_layer * bl_mass +
-                temperature * atm_mass
+                temperature_boundary_layer * bl_mass + temperature * atm_mass
             ) / total_mass
         else:
             # Single-layer case or missing BL temp
@@ -286,7 +270,8 @@ class WindModel:
         weights = np.broadcast_to(cos_lat[:, None], column_temperature.shape)
 
         column_temperature_smooth = _smooth_temperature_field(
-            column_temperature, lat_deg,
+            column_temperature,
+            lat_deg,
         )
 
         # Preserve global mean (same as compute_pressure does)
@@ -298,8 +283,11 @@ class WindModel:
         # This is what provides the large-scale circulation patterns
         # Skip smoothing since we already smoothed the temperature
         p_SLP = compute_pressure(
-            column_temperature_smooth, itcz_rad=itcz_rad, skip_smoothing=True,
-            lat2d=self._lat2d, lon2d=self._lon2d
+            column_temperature_smooth,
+            itcz_rad=itcz_rad,
+            skip_smoothing=True,
+            lat2d=self._lat2d,
+            lon2d=self._lon2d,
         )
 
         # Compute geopotential height of the reference pressure surface
@@ -321,7 +309,10 @@ class WindModel:
 
         if ekman_drag:
             u_final, v_final, speed_final = self._apply_surface_drag(
-                u_geo, v_geo, speed_geo, weight_geo=weight_geo,
+                u_geo,
+                v_geo,
+                speed_geo,
+                weight_geo=weight_geo,
             )
             return u_final, v_final, speed_final
         else:

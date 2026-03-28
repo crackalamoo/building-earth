@@ -9,9 +9,9 @@ from scipy.ndimage import gaussian_filter1d
 
 # Key latitude bands (radians)
 # These define the structure of the Hadley circulation
-LAT_POLES = np.deg2rad(80.0)           # Polar highs
-LAT_SUBPOLAR = np.deg2rad(60.0)        # Subpolar lows (Ferrel cell boundary)
-DELTA_SUBTROPICS = np.deg2rad(30.0)    # Offset from ITCZ to subtropical highs/dry zones
+LAT_POLES = np.deg2rad(80.0)  # Polar highs
+LAT_SUBPOLAR = np.deg2rad(60.0)  # Subpolar lows (Ferrel cell boundary)
+DELTA_SUBTROPICS = np.deg2rad(30.0)  # Offset from ITCZ to subtropical highs/dry zones
 
 
 def compute_itcz_latitude(
@@ -54,7 +54,7 @@ def compute_itcz_latitude(
     sigma_lon = 10.0 / lon_spacing_deg
 
     max_temp_lat = np.clip(max_temp_lat, -30.0, 30.0)
-    max_temp_lat = gaussian_filter1d(max_temp_lat, sigma=sigma_lon, mode='wrap')
+    max_temp_lat = gaussian_filter1d(max_temp_lat, sigma=sigma_lon, mode="wrap")
 
     itcz_lat_rad = np.deg2rad(max_temp_lat)
 

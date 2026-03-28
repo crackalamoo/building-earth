@@ -64,25 +64,28 @@ def _sample_elevation_points_rasterio(
 
     return data[rows, cols].astype(float)
 
+
 def download_etopo(dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     # url = "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/60s/60s_bed_elev_gtif/ETOPO_2022_v1_60s_N90W180_bed.tif"
     url = "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/60s/60s_surface_elev_gtif/ETOPO_2022_v1_60s_N90W180_surface.tif"
-    dest = dest_dir / "etopo_60s.tif" # 60 arc-second resolution
+    dest = dest_dir / "etopo_60s.tif"  # 60 arc-second resolution
 
     if dest.exists():
         print(f"File already exists at {dest}, skipping download.")
         return dest
-    
+
     print(f"Downloading ETOPO data from {url} to {dest}...")
     urllib.request.urlretrieve(url, dest)
     print("Download complete.")
     return dest
 
+
 def _wrap_longitudes(lon_deg: np.ndarray) -> np.ndarray:
     """Wrap longitudes to the [-180, 180) range."""
 
     return ((lon_deg + 180.0) % 360.0) - 180.0
+
 
 @lru_cache(maxsize=1)
 def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
@@ -102,7 +105,9 @@ def load_elevation_data(path: str | Path | None = None) -> xr.DataArray | None:
         data_dir = dataset_path.parent
         download_etopo(data_dir)
         if not dataset_path.exists():
-            raise FileNotFoundError(f"Elevation data file not found at {dataset_path} even after download attempt")
+            raise FileNotFoundError(
+                f"Elevation data file not found at {dataset_path} even after download attempt"
+            )
 
     data = rioxarray.open_rasterio(dataset_path)
     assert isinstance(data, xr.DataArray)
@@ -140,6 +145,7 @@ def _get_elevation_arrays(dataset: xr.DataArray) -> tuple[np.ndarray, np.ndarray
     _elevation_arrays_cache[dataset_id] = result
     return result
 
+
 def compute_cell_elevation(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
@@ -148,10 +154,10 @@ def compute_cell_elevation(
     n_samples_per_cell: int = 5,
 ) -> np.ndarray:
     """Return the average elevation (m) for the provided grid cells.
-    
+
     Elevation is computed by sampling at multiple points within each cell
     and averaging the results.
-    
+
     Parameters
     ----------
     lon2d : np.ndarray
@@ -165,7 +171,7 @@ def compute_cell_elevation(
     n_samples_per_cell : int, default 5
         Number of sample points per cell dimension.
         Total samples per cell = n_samples_per_cell^2.
-    
+
     Returns
     -------
     np.ndarray
@@ -183,8 +189,8 @@ def compute_cell_elevation(
             if cache_path.exists():
                 try:
                     with np.load(cache_path) as cached:
-                        if cached['elevation'].shape == lon2d.shape:
-                            return cached['elevation']
+                        if cached["elevation"].shape == lon2d.shape:
+                            return cached["elevation"]
                 except Exception as e:
                     print(f"Failed to load cached elevation data: {e}, recomputing...")
 
@@ -201,10 +207,10 @@ def compute_cell_elevation(
     # Compute cell edges
     lat_centers = lat_array[:, 0]
     lon_centers = lon_array[0, :]
-    
+
     lat_edges = regular_latitude_edges(lat_centers)
     lon_edges = regular_longitude_edges(lon_centers)
-    
+
     nlat, nlon = lon_array.shape
 
     # Create sub-grid sampling points within each cell (vectorized)
@@ -216,9 +222,9 @@ def compute_cell_elevation(
     # Build all sample coordinates using broadcasting (no Python loops)
     # Create full 2D arrays for cell edges
     lat_min_2d = np.broadcast_to(lat_edges[:-1, np.newaxis], (nlat, nlon))  # (nlat, nlon)
-    lat_max_2d = np.broadcast_to(lat_edges[1:, np.newaxis], (nlat, nlon))   # (nlat, nlon)
+    lat_max_2d = np.broadcast_to(lat_edges[1:, np.newaxis], (nlat, nlon))  # (nlat, nlon)
     lon_min_2d = np.broadcast_to(lon_edges[np.newaxis, :-1], (nlat, nlon))  # (nlat, nlon)
-    lon_max_2d = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))   # (nlat, nlon)
+    lon_max_2d = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))  # (nlat, nlon)
 
     # Handle longitude wrapping: where lon_max < lon_min, add 360
     lon_max_2d = np.where(lon_max_2d < lon_min_2d, lon_max_2d + 360.0, lon_max_2d)
@@ -294,13 +300,15 @@ def compute_cell_elevation(
     # Reshape back to (nlat, nlon, n_samples, n_samples) and average over samples
     sampled_reshaped = sampled_values.reshape(nlat, nlon, n_samples_per_cell, n_samples_per_cell)
     res = np.mean(sampled_reshaped, axis=(2, 3))
-    
+
     res = np.nan_to_num(res, nan=0.0)
 
     if cache:
         # save to disk
         data_dir = os.getenv("DATA_DIR")
-        assert data_dir is not None, "Please set the DATA_DIR environment variable to enable elevation caching."
+        assert data_dir is not None, (
+            "Please set the DATA_DIR environment variable to enable elevation caching."
+        )
         data_dir = Path(data_dir)
         cache_path = data_dir / "elevation_cache.npz"
         np.savez_compressed(cache_path, elevation=res)
@@ -348,8 +356,8 @@ def compute_cell_elevation_statistics(
             if cache_path.exists():
                 try:
                     with np.load(cache_path) as cached:
-                        if cached['elevation_std'].shape == lon2d.shape:
-                            return cached['elevation_std'], cached['elevation_max']
+                        if cached["elevation_std"].shape == lon2d.shape:
+                            return cached["elevation_std"], cached["elevation_max"]
                 except Exception as e:
                     print(f"Failed to load cached elevation statistics: {e}, recomputing...")
 
@@ -388,12 +396,8 @@ def compute_cell_elevation_statistics(
     lon_min_4d = lon_min_2d[:, :, np.newaxis, np.newaxis]
     lon_max_4d = lon_max_2d[:, :, np.newaxis, np.newaxis]
 
-    lat_samples_partial = np.clip(
-        lat_min_4d + (lat_max_4d - lat_min_4d) * lat_weights, -90.0, 90.0
-    )
-    lon_samples_partial = _wrap_longitudes(
-        lon_min_4d + (lon_max_4d - lon_min_4d) * lon_weights
-    )
+    lat_samples_partial = np.clip(lat_min_4d + (lat_max_4d - lat_min_4d) * lat_weights, -90.0, 90.0)
+    lon_samples_partial = _wrap_longitudes(lon_min_4d + (lon_max_4d - lon_min_4d) * lon_weights)
 
     target_shape = (nlat, nlon, n_samples_per_cell, n_samples_per_cell)
     lat_samples_4d = np.broadcast_to(lat_samples_partial, target_shape)
@@ -410,10 +414,14 @@ def compute_cell_elevation_statistics(
         sampled = _sample_elevation_points_rasterio(tif_path, lon_flat, lat_flat)
     else:
         from scipy.interpolate import RegularGridInterpolator
+
         x_coords, y_coords, data_values = _get_elevation_arrays(dataset)
         interp = RegularGridInterpolator(
-            (y_coords, x_coords), data_values,
-            method="nearest", bounds_error=False, fill_value=0.0,
+            (y_coords, x_coords),
+            data_values,
+            method="nearest",
+            bounds_error=False,
+            fill_value=0.0,
         )
         sampled = interp(np.stack([lat_flat, lon_flat], axis=-1))
 
@@ -473,9 +481,18 @@ def compute_face_elevation_statistics(
     nlat, nlon = lon2d.shape
     _cache_file = cache_name or "face_elevation_cache.npz"
     expected_keys = [
-        "r_east_pos", "r_east_neg", "r_north_pos", "r_north_neg",
-        "r_east_pos_eddy", "r_east_neg_eddy", "r_north_pos_eddy", "r_north_neg_eddy",
-        "grad_x_pos", "grad_x_neg", "grad_y_pos", "grad_y_neg",
+        "r_east_pos",
+        "r_east_neg",
+        "r_north_pos",
+        "r_north_neg",
+        "r_east_pos_eddy",
+        "r_east_neg_eddy",
+        "r_north_pos_eddy",
+        "r_north_neg_eddy",
+        "grad_x_pos",
+        "grad_x_neg",
+        "grad_y_pos",
+        "grad_y_neg",
     ]
 
     if cache:
@@ -485,7 +502,9 @@ def compute_face_elevation_statistics(
             if cache_path.exists():
                 try:
                     with np.load(cache_path) as cached:
-                        if all(k in cached and cached[k].shape == (nlat, nlon) for k in expected_keys):
+                        if all(
+                            k in cached and cached[k].shape == (nlat, nlon) for k in expected_keys
+                        ):
                             return {k: cached[k] for k in expected_keys}
                 except Exception as e:
                     print(f"Failed to load face elevation cache: {e}, recomputing...")
@@ -512,13 +531,21 @@ def compute_face_elevation_statistics(
             dataset = dataset.rio.write_crs("EPSG:4326", inplace=False)
         x_coords, y_coords, data_values = _get_elevation_arrays(dataset)
         interp = RegularGridInterpolator(
-            (y_coords, x_coords), data_values,
-            method="nearest", bounds_error=False, fill_value=0.0,
+            (y_coords, x_coords),
+            data_values,
+            method="nearest",
+            bounds_error=False,
+            fill_value=0.0,
         )
 
-    def _sample_rect(lat_lo: np.ndarray, lat_hi: np.ndarray,
-                     lon_lo: np.ndarray, lon_hi: np.ndarray,
-                     n_lat: int, n_lon: int) -> np.ndarray:
+    def _sample_rect(
+        lat_lo: np.ndarray,
+        lat_hi: np.ndarray,
+        lon_lo: np.ndarray,
+        lon_hi: np.ndarray,
+        n_lat: int,
+        n_lon: int,
+    ) -> np.ndarray:
         """Sample fine-res elevation in rectangles.
 
         lat_lo/hi, lon_lo/hi: (nlat, nlon) arrays of rectangle bounds.
@@ -536,7 +563,8 @@ def compute_face_elevation_statistics(
             lat_lo[:, :, np.newaxis, np.newaxis]
             + (lat_hi - lat_lo)[:, :, np.newaxis, np.newaxis]
             * sw_lat[np.newaxis, np.newaxis, :, np.newaxis],
-            -90.0, 90.0,
+            -90.0,
+            90.0,
         )
         lon_s = _wrap_longitudes(
             lon_lo[:, :, np.newaxis, np.newaxis]
@@ -567,8 +595,9 @@ def compute_face_elevation_statistics(
     lon_lo_e = np.broadcast_to(lon_centers[np.newaxis, :], (nlat, nlon))
     lon_hi_e = np.broadcast_to(np.roll(lon_centers, -1)[np.newaxis, :], (nlat, nlon))
 
-    east_elev = _sample_rect(lat_lo_e, lat_hi_e, lon_lo_e, lon_hi_e,
-                             n_samples_per_cell, n_samples_per_cell)
+    east_elev = _sample_rect(
+        lat_lo_e, lat_hi_e, lon_lo_e, lon_hi_e, n_samples_per_cell, n_samples_per_cell
+    )
     # shape: (nlat, nlon, n_lat_samples, n_lon_samples)
 
     # Silhouette: at each latitude row, find the max elevation across longitudes.
@@ -578,8 +607,8 @@ def compute_face_elevation_statistics(
     # Entry elevation: cell-mean elevation on each side (our model's "surface").
     # Clamp to >= 0 so ocean cells have z_entry = 0 (sea level).
     cell_elev = np.maximum(0.0, compute_cell_elevation(lon2d, lat2d))
-    z_entry_left = cell_elev[:, :, np.newaxis]                          # cell j
-    z_entry_right = np.roll(cell_elev, -1, axis=1)[:, :, np.newaxis]   # cell j+1
+    z_entry_left = cell_elev[:, :, np.newaxis]  # cell j
+    z_entry_right = np.roll(cell_elev, -1, axis=1)[:, :, np.newaxis]  # cell j+1
 
     # Blockage ratios for two different physics:
     # 1. Wind (advection): H_wind = BL depth (~1000m). Mountains taller than the BL
@@ -588,8 +617,8 @@ def compute_face_elevation_statistics(
     #    Baroclinic eddies extend through the full troposphere, but most moisture
     #    lives below 3-4 km (scale height ~2 km), so a 3 km range blocks most of
     #    the moisture-carrying capacity even though storms pass over it.
-    H_WIND = 1500.0   # BL depth (m) — for advection/wind blocking
-    H_EDDY = 5000.0   # moisture-weighted tropospheric depth (m) — for diffusion blocking
+    H_WIND = 1500.0  # BL depth (m) — for advection/wind blocking
+    H_EDDY = 5000.0  # moisture-weighted tropospheric depth (m) — for diffusion blocking
 
     def _compute_r(silhouette: np.ndarray, z_entry: np.ndarray, H: float) -> np.ndarray:
         blocked = np.clip((silhouette - z_entry) / H, 0.0, 1.0)
@@ -606,15 +635,16 @@ def compute_face_elevation_statistics(
     lon_lo_n = np.broadcast_to(lon_edges[np.newaxis, :-1], (nlat, nlon))
     lon_hi_n = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))
 
-    north_elev = _sample_rect(lat_lo_n, lat_hi_n, lon_lo_n, lon_hi_n,
-                              n_samples_per_cell, n_samples_per_cell)
+    north_elev = _sample_rect(
+        lat_lo_n, lat_hi_n, lon_lo_n, lon_hi_n, n_samples_per_cell, n_samples_per_cell
+    )
     # shape: (nlat, nlon, n_lat_samples, n_lon_samples)
 
     # Silhouette: at each longitude column, find max elevation across latitudes.
     north_silhouette = np.max(north_elev, axis=2)  # (nlat, nlon, n_lon_samples)
 
-    z_entry_south = cell_elev[:, :, np.newaxis]                         # cell i
-    z_entry_north = np.roll(cell_elev, -1, axis=0)[:, :, np.newaxis]   # cell i+1
+    z_entry_south = cell_elev[:, :, np.newaxis]  # cell i
+    z_entry_north = np.roll(cell_elev, -1, axis=0)[:, :, np.newaxis]  # cell i+1
 
     r_north_pos_wind = _compute_r(north_silhouette, z_entry_south, H_WIND)
     r_north_neg_wind = _compute_r(north_silhouette, z_entry_north, H_WIND)
@@ -632,42 +662,51 @@ def compute_face_elevation_statistics(
     lon_lo_c = np.broadcast_to(lon_edges[np.newaxis, :-1], (nlat, nlon))
     lon_hi_c = np.broadcast_to(lon_edges[np.newaxis, 1:], (nlat, nlon))
 
-    cell_elev_fine = _sample_rect(lat_lo_c, lat_hi_c, lon_lo_c, lon_hi_c,
-                                  n_samples_per_cell, n_samples_per_cell)
+    cell_elev_fine = _sample_rect(
+        lat_lo_c, lat_hi_c, lon_lo_c, lon_hi_c, n_samples_per_cell, n_samples_per_cell
+    )
     # shape: (nlat, nlon, n_lat, n_lon)
 
     # Compute ∂h/∂x from finite differences of fine-res samples within each cell.
     # dx between adjacent samples = cell_width / n_samples
     earth_radius = 6.371e6
     dlat = np.deg2rad(lat_edges[1:] - lat_edges[:-1])  # (nlat,)
-    dlon = np.deg2rad(lon_edges[1:] - lon_edges[:-1])   # (nlon,)
+    dlon = np.deg2rad(lon_edges[1:] - lon_edges[:-1])  # (nlon,)
     cos_lat = np.cos(np.deg2rad(lat_centers))
 
     # Distance between adjacent fine-res samples (m)
-    dx_sample = (earth_radius * cos_lat[:, np.newaxis] * dlon[np.newaxis, :]
-                 / n_samples_per_cell)  # (nlat, nlon)
-    dy_sample = (earth_radius * dlat[:, np.newaxis]
-                 / n_samples_per_cell)  # (nlat, 1) broadcast to (nlat, nlon)
+    dx_sample = (
+        earth_radius * cos_lat[:, np.newaxis] * dlon[np.newaxis, :] / n_samples_per_cell
+    )  # (nlat, nlon)
+    dy_sample = (
+        earth_radius * dlat[:, np.newaxis] / n_samples_per_cell
+    )  # (nlat, 1) broadcast to (nlat, nlon)
     dy_sample = np.broadcast_to(dy_sample, (nlat, nlon))
 
     # Central differences for interior points, forward/backward at edges
     # ∂h/∂x: gradient in the longitude (east-west) direction
     dhdx = np.zeros_like(cell_elev_fine)
-    dhdx[:, :, :, 1:-1] = ((cell_elev_fine[:, :, :, 2:] - cell_elev_fine[:, :, :, :-2])
-                            / (2.0 * dx_sample[:, :, np.newaxis, np.newaxis]))
-    dhdx[:, :, :, 0] = ((cell_elev_fine[:, :, :, 1] - cell_elev_fine[:, :, :, 0])
-                         / dx_sample[:, :, np.newaxis])
-    dhdx[:, :, :, -1] = ((cell_elev_fine[:, :, :, -1] - cell_elev_fine[:, :, :, -2])
-                          / dx_sample[:, :, np.newaxis])
+    dhdx[:, :, :, 1:-1] = (cell_elev_fine[:, :, :, 2:] - cell_elev_fine[:, :, :, :-2]) / (
+        2.0 * dx_sample[:, :, np.newaxis, np.newaxis]
+    )
+    dhdx[:, :, :, 0] = (cell_elev_fine[:, :, :, 1] - cell_elev_fine[:, :, :, 0]) / dx_sample[
+        :, :, np.newaxis
+    ]
+    dhdx[:, :, :, -1] = (cell_elev_fine[:, :, :, -1] - cell_elev_fine[:, :, :, -2]) / dx_sample[
+        :, :, np.newaxis
+    ]
 
     # ∂h/∂y: gradient in the latitude (north-south) direction
     dhdy = np.zeros_like(cell_elev_fine)
-    dhdy[:, :, 1:-1, :] = ((cell_elev_fine[:, :, 2:, :] - cell_elev_fine[:, :, :-2, :])
-                            / (2.0 * dy_sample[:, :, np.newaxis, np.newaxis]))
-    dhdy[:, :, 0, :] = ((cell_elev_fine[:, :, 1, :] - cell_elev_fine[:, :, 0, :])
-                         / dy_sample[:, :, np.newaxis])
-    dhdy[:, :, -1, :] = ((cell_elev_fine[:, :, -1, :] - cell_elev_fine[:, :, -2, :])
-                          / dy_sample[:, :, np.newaxis])
+    dhdy[:, :, 1:-1, :] = (cell_elev_fine[:, :, 2:, :] - cell_elev_fine[:, :, :-2, :]) / (
+        2.0 * dy_sample[:, :, np.newaxis, np.newaxis]
+    )
+    dhdy[:, :, 0, :] = (cell_elev_fine[:, :, 1, :] - cell_elev_fine[:, :, 0, :]) / dy_sample[
+        :, :, np.newaxis
+    ]
+    dhdy[:, :, -1, :] = (cell_elev_fine[:, :, -1, :] - cell_elev_fine[:, :, -2, :]) / dy_sample[
+        :, :, np.newaxis
+    ]
 
     # Separate into positive (upslope) and negative (downslope) gradients,
     # then average over all sample points in each cell.
@@ -745,15 +784,11 @@ def compute_cell_roughness_length(
                                     exponent = VON_KARMAN_CONSTANT / sqrt_drag
                                 roughness = REFERENCE_HEIGHT_M / np.exp(exponent)
                                 if candidate is legacy_cache_path:
-                                    np.savez_compressed(
-                                        cache_path, roughness_length=roughness
-                                    )
+                                    np.savez_compressed(cache_path, roughness_length=roughness)
                         if roughness is not None and roughness.shape == lon2d.shape:
                             return np.asarray(roughness, dtype=float)
                 except Exception as exc:  # pragma: no cover - logging path
-                    print(
-                        f"Failed to load cached roughness length data: {exc}, recomputing..."
-                    )
+                    print(f"Failed to load cached roughness length data: {exc}, recomputing...")
 
     lon_array = np.asarray(lon2d, dtype=float)
     lat_array = np.asarray(lat2d, dtype=float)
@@ -807,7 +842,7 @@ def compute_cell_roughness_length(
     length_scale_m = 1000.0
     z0_base_land = 5e-3
 
-    z0_orographic = gamma * (slope ** 2) * length_scale_m
+    z0_orographic = gamma * (slope**2) * length_scale_m
     z0_orographic = np.minimum(z0_orographic, 0.8)
 
     z0_total = np.full_like(elevation_m, z0_base_land, dtype=float)
@@ -830,9 +865,9 @@ def compute_cell_roughness_length(
 
     if use_cache:
         data_dir = os.getenv("DATA_DIR")
-        assert (
-            data_dir is not None
-        ), "Please set the DATA_DIR environment variable to enable roughness caching."
+        assert data_dir is not None, (
+            "Please set the DATA_DIR environment variable to enable roughness caching."
+        )
         data_dir = Path(data_dir)
         cache_path = data_dir / "roughness_length_cache.npz"
         np.savez_compressed(cache_path, roughness_length=roughness_result)
@@ -870,6 +905,7 @@ def compute_cell_neutral_drag_coefficient(
         cache=cache,
     )
     return neutral_drag_from_roughness_length(roughness)
+
 
 def _resample_elevation_grid(
     dataset: xr.DataArray,
@@ -923,7 +959,12 @@ def _roughness_to_image(roughness: np.ndarray) -> np.ndarray:
     return np.flipud(img)
 
 
-def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolution: float = 0.1, contrast_water: bool = True) -> Path:
+def write_elevation_png_1deg(
+    tif_path: Path,
+    out_dir: Path | None = None,
+    resolution: float = 0.1,
+    contrast_water: bool = True,
+) -> Path:
     out_dir = _resolve_output_dir(tif_path, out_dir)
 
     da = rioxarray.open_rasterio(tif_path)
@@ -934,7 +975,7 @@ def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolu
     finite = np.isfinite(data)
     if not finite.any():
         raise ValueError("Elevation array contains no finite values after resampling.")
-    
+
     vmin = float(data[finite].min())
     vmax = float(data[finite].max())
     if vmax <= vmin:
@@ -951,11 +992,11 @@ def write_elevation_png_1deg(tif_path: Path, out_dir: Path | None = None, resolu
         land = data >= 0.0
         water = data < 0.0
         img_arr_color[..., 0][land] = np.floor(img_arr[land] * 0.7)  # R
-        img_arr_color[..., 1][land] = img_arr[land]       # G
+        img_arr_color[..., 1][land] = img_arr[land]  # G
         img_arr_color[..., 2][land] = np.floor(img_arr[land] * 0.7)  # B
         # Water: bluish
-        img_arr_color[..., 0][water] = np.floor(img_arr[water] * 0.7)    # R
-        img_arr_color[..., 1][water] = np.floor(img_arr[water] * 0.7)    # G
+        img_arr_color[..., 0][water] = np.floor(img_arr[water] * 0.7)  # R
+        img_arr_color[..., 1][water] = np.floor(img_arr[water] * 0.7)  # G
         img_arr_color[..., 2][water] = img_arr[water]  # B
         img_arr_color = np.flipud(img_arr_color)
         img = Image.fromarray(img_arr_color)
@@ -987,6 +1028,7 @@ def write_roughness_png(
     Image.fromarray(_roughness_to_image(roughness)).save(out_path)
     return out_path
 
+
 if __name__ == "__main__":
     load_dotenv()
     data_dir = os.getenv("DATA_DIR")
@@ -1004,8 +1046,12 @@ if __name__ == "__main__":
     # Example: Access elevation data
     elevation_data = etopo_ds[0]  # Assuming single band
     print(elevation_data)
-    print(f"Elevation at (29 N, 86 E): {elevation_data.sel(y=29, x=86, method='nearest').values} meters")
-    print(f"Elevation at (5 N, 86 E): {elevation_data.sel(y=5, x=86, method='nearest').values} meters")
+    print(
+        f"Elevation at (29 N, 86 E): {elevation_data.sel(y=29, x=86, method='nearest').values} meters"
+    )
+    print(
+        f"Elevation at (5 N, 86 E): {elevation_data.sel(y=5, x=86, method='nearest').values} meters"
+    )
 
     resolution = 0.1
     out = write_elevation_png_1deg(etopo_path, resolution=resolution)

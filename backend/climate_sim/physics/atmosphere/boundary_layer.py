@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from climate_sim.data.constants import (
-    BOUNDARY_LAYER_EMISSIVITY,
     BOUNDARY_LAYER_HEIGHT_M,
     BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K,
 )

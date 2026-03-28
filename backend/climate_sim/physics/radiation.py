@@ -40,29 +40,28 @@ WATER_VAPOR_SCALE_HEIGHT_M = 2000.0
 # Splits LW spectrum into absorption bands (logarithmic in q) and
 # atmospheric window (linear + quadratic continuum in q).
 # ---------------------------------------------------------------------------
-_R_WINDOW = 0.3732   # Window fraction of LW spectrum
+_R_WINDOW = 0.3732  # Window fraction of LW spectrum
 
 # Non-window band: line absorption saturates logarithmically
-_A_NW = 0.10         # Well-mixed gases (CO2, O3)
-_B_NW = 23.8         # H2O line absorption
-_C_NW = 254.0        # Offset to prevent log(0)
+_A_NW = 0.10  # Well-mixed gases (CO2, O3)
+_B_NW = 23.8  # H2O line absorption
+_C_NW = 254.0  # Offset to prevent log(0)
 
 # Window band: continuum absorption (linear foreign + quadratic self)
-_A_WIN = 0.215       # Well-mixed gases in window
-_B_WIN = 147.11      # H2O-N2 foreign continuum
-_C_WIN = 1.0814e4    # H2O-H2O self-continuum
+_A_WIN = 0.215  # Well-mixed gases in window
+_B_WIN = 147.11  # H2O-N2 foreign continuum
+_C_WIN = 1.0814e4  # H2O-H2O self-continuum
 
 # Layer pressure thicknesses (fraction of surface pressure)
-_DP_P0_BL = 0.15     # BL: 1000-850 hPa
-_DP_P0_ATM = 0.65    # Free atm: 850-200 hPa
+_DP_P0_BL = 0.15  # BL: 1000-850 hPa
+_DP_P0_ATM = 0.65  # Free atm: 850-200 hPa
 
 # Free atmosphere humidity as fraction of BL humidity
 # H2O scale height ~2 km, integrated over 1-8.5 km
 _Q_ATM_FRACTION = 0.26
 
-_EPS_DRY_ATM = (
-    (1 - _R_WINDOW) * (1 - np.exp(-_DP_P0_ATM * _A_NW))
-    + _R_WINDOW * (1 - np.exp(-_DP_P0_ATM * _A_WIN))
+_EPS_DRY_ATM = (1 - _R_WINDOW) * (1 - np.exp(-_DP_P0_ATM * _A_NW)) + _R_WINDOW * (
+    1 - np.exp(-_DP_P0_ATM * _A_WIN)
 )
 
 # Import cloud height constants from clouds module
@@ -133,7 +132,6 @@ def _band_optical_depths(
     tau_nw = dp_p0 * (_A_NW + _B_NW * np.log(_C_NW * q + 1.0))
     tau_win = dp_p0 * (_A_WIN + _B_WIN * q + _C_WIN * q**2)
     return tau_nw, tau_win
-
 
 
 def compute_emission_asymmetry_factor(emissivity: np.ndarray | float) -> np.ndarray | float:
@@ -240,8 +238,7 @@ def compute_effective_emission_temperatures(
     eps_total_safe = np.maximum(eps_total, 1e-6)
 
     T_eff_up = np.power(
-        (eps_dry_val * np.power(T_up_dry, 4) + eps_H2O * np.power(T_up_H2O, 4))
-        / eps_total_safe,
+        (eps_dry_val * np.power(T_up_dry, 4) + eps_H2O * np.power(T_up_H2O, 4)) / eps_total_safe,
         0.25,
     )
     T_eff_down = np.power(
@@ -408,8 +405,13 @@ def radiative_balance_rhs(
         low_cloud_frac_safe = np.maximum(low_cloud_frac, 1e-10)
         low_cloud_albedo = np.where(
             low_cloud_frac > 0.01,
-            (conv_frac * conv_albedo + strat_frac * strat_albedo + marine_sc_frac * marine_sc_albedo) / low_cloud_frac_safe,
-            0.30  # default if no low clouds
+            (
+                conv_frac * conv_albedo
+                + strat_frac * strat_albedo
+                + marine_sc_frac * marine_sc_albedo
+            )
+            / low_cloud_frac_safe,
+            0.30,  # default if no low clouds
         )
 
         # High clouds at different level - random overlap with low clouds
@@ -425,20 +427,28 @@ def radiative_balance_rhs(
         total_frac_safe = np.maximum(total_cloud_frac, 1e-10)
         cloud_albedo = np.where(
             total_cloud_frac > 0.01,
-            (low_cloud_frac * low_cloud_albedo + high_effective_frac * high_albedo) / total_frac_safe,
-            0.30
+            (low_cloud_frac * low_cloud_albedo + high_effective_frac * high_albedo)
+            / total_frac_safe,
+            0.30,
         )
 
         # Atmospheric albedo with proper overlap:
         # - Clear sky baseline (Rayleigh + aerosols): 0.05
         # - Low clouds reflect: low_cloud_frac × low_cloud_albedo
         # - High clouds reflect remaining SW: high_effective_frac × high_albedo
-        atm_albedo_field = 0.05 + low_cloud_frac * low_cloud_albedo + high_effective_frac * high_albedo
+        atm_albedo_field = (
+            0.05 + low_cloud_frac * low_cloud_albedo + high_effective_frac * high_albedo
+        )
 
     else:
         # Fallback: compute simple cloud cover from humidity/pressure patterns
         # This path is used during initialization or when full cloud physics isn't available
-        if humidity_q is not None and itcz_rad is not None and lat2d is not None and lon2d is not None:
+        if (
+            humidity_q is not None
+            and itcz_rad is not None
+            and lat2d is not None
+            and lon2d is not None
+        ):
             rh = specific_humidity_to_relative_humidity(
                 humidity_q, surface, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d
             )
@@ -449,9 +459,7 @@ def radiative_balance_rhs(
             cloud_albedo = compute_cloud_albedo(rh, dp_norm, lat2d)
         elif humidity_q is not None:
             # Minimal fallback: use humidity-based cloud cover
-            rh = humidity_q / np.maximum(
-                compute_saturation_specific_humidity(surface), 1e-10
-            )
+            rh = humidity_q / np.maximum(compute_saturation_specific_humidity(surface), 1e-10)
             cloud_coverage = np.clip(rh - 0.5, 0, 0.5) * 2.0  # Linear ramp from RH=0.5 to 1.0
             cloud_albedo = np.full_like(cloud_coverage, 0.35)
         else:
@@ -490,14 +498,12 @@ def radiative_balance_rhs(
     # Band-by-band: track each spectral band separately through both layers
     if humidity_q is not None:
         tau_nw_bl, tau_win_bl = _band_optical_depths(humidity_q, _DP_P0_BL)
-        tau_nw_atm, tau_win_atm = _band_optical_depths(
-            humidity_q * _Q_ATM_FRACTION, _DP_P0_ATM
-        )
+        tau_nw_atm, tau_win_atm = _band_optical_depths(humidity_q * _Q_ATM_FRACTION, _DP_P0_ATM)
         _WN = 1.0 - _R_WINDOW
         _WW = _R_WINDOW
-        _enb = 1.0 - np.exp(-tau_nw_bl)    # eps non-window BL
-        _ewb = 1.0 - np.exp(-tau_win_bl)   # eps window BL
-        _ena = 1.0 - np.exp(-tau_nw_atm)   # eps non-window atm
+        _enb = 1.0 - np.exp(-tau_nw_bl)  # eps non-window BL
+        _ewb = 1.0 - np.exp(-tau_win_bl)  # eps window BL
+        _ena = 1.0 - np.exp(-tau_nw_atm)  # eps non-window atm
         _ewa = 1.0 - np.exp(-tau_win_atm)  # eps window atm
 
         eps_clear = _WN * _ena + _WW * _ewa
@@ -516,8 +522,8 @@ def radiative_balance_rhs(
         eps_clear = config.emissivity_atmosphere
         eps_bl = BOUNDARY_LAYER_EMISSIVITY
         trans_bl = 1.0 - eps_bl
-        _ee_cross = eps_clear * eps_bl      # gray fallback
-        _te_cross = trans_bl * eps_clear    # gray fallback
+        _ee_cross = eps_clear * eps_bl  # gray fallback
+        _te_cross = trans_bl * eps_clear  # gray fallback
 
     # Cloud contribution: sqrt saturation since clouds saturate LW quickly
     eps_cloud = (1.0 - eps_clear) * np.sqrt(cloud_coverage)
@@ -556,10 +562,10 @@ def radiative_balance_rhs(
         eps_high_cloud = cloud_output.eps_high
     else:
         # Fallback to τ-derived values (ε = 1 - exp(-τ_LW))
-        eps_conv_cloud = 1.0 - np.exp(-40.0)   # τ_LW = 40 → ε ≈ 1.0
-        eps_strat_cloud = 1.0 - np.exp(-7.0)   # τ_LW = 7 → ε ≈ 0.999
+        eps_conv_cloud = 1.0 - np.exp(-40.0)  # τ_LW = 40 → ε ≈ 1.0
+        eps_strat_cloud = 1.0 - np.exp(-7.0)  # τ_LW = 7 → ε ≈ 0.999
         eps_marine_sc_cloud = 1.0 - np.exp(-10.0)  # τ_LW = 10 → ε ≈ 1.0
-        eps_high_cloud = 1.0 - np.exp(-1.5)    # τ_LW = 1.5 → ε ≈ 0.78
+        eps_high_cloud = 1.0 - np.exp(-1.5)  # τ_LW = 1.5 → ε ≈ 0.78
 
     # Cloud temperatures: TOPs lapsed from atmosphere midpoint, BASEs from boundary layer.
     # T_atm represents temperature at ATMOSPHERE_LAYER_MIDPOINT_M (~5 km).
@@ -649,10 +655,10 @@ def radiative_balance_rhs(
 
     emitted_toa = (
         clear_frac * emitted_clear_up
-        + conv_frac * emitted_conv_up           # High tops - direct to space
-        + strat_frac * strat_olr                # Low tops - atm above absorbs/re-emits
-        + marine_sc_frac * marine_sc_olr        # Low tops - atm above absorbs/re-emits
-        + high_effective_frac * emitted_high_up # High tops - direct to space (with overlap)
+        + conv_frac * emitted_conv_up  # High tops - direct to space
+        + strat_frac * strat_olr  # Low tops - atm above absorbs/re-emits
+        + marine_sc_frac * marine_sc_olr  # Low tops - atm above absorbs/re-emits
+        + high_effective_frac * emitted_high_up  # High tops - direct to space (with overlap)
     )
 
     # Downward emission to BL and surface
@@ -701,9 +707,9 @@ def radiative_balance_rhs(
         else:
             # Fallback: compute from τ inline
             # absorptance = (1 - ω₀) × τ / (1 + τ)
-            abs_high = 0.03 * 0.8 / 1.8       # τ=0.8, ω₀=0.97 → ~0.013
-            abs_conv = 0.01 * 40.0 / 41.0     # τ=40, ω₀=0.99 → ~0.0098
-            abs_strat = 0.01 * 7.0 / 8.0      # τ=7, ω₀=0.99 → ~0.0087
+            abs_high = 0.03 * 0.8 / 1.8  # τ=0.8, ω₀=0.97 → ~0.013
+            abs_conv = 0.01 * 40.0 / 41.0  # τ=40, ω₀=0.99 → ~0.0098
+            abs_strat = 0.01 * 7.0 / 8.0  # τ=7, ω₀=0.99 → ~0.0087
             abs_marine_sc = 0.01 * 10.0 / 11.0  # τ=10, ω₀=0.99 → ~0.0091
 
         # High clouds absorb from full incoming
@@ -714,9 +720,7 @@ def radiative_balance_rhs(
 
         # Low clouds absorb from what reaches them
         low_absorbed_frac = sw_reaching_low * (
-            conv_frac * abs_conv
-            + strat_frac * abs_strat
-            + marine_sc_frac * abs_marine_sc
+            conv_frac * abs_conv + strat_frac * abs_strat + marine_sc_frac * abs_marine_sc
         )
 
         cloud_sw_absorptance = high_absorbed_frac + low_absorbed_frac
@@ -807,11 +811,11 @@ def radiative_balance_rhs(
     # Low cloud absorption goes to boundary layer
     if cloud_output is not None:
         sw_reaching_low = 1.0 - high_frac * (high_albedo + abs_high)
-        low_cloud_sw_abs = sw_reaching_low * (
-            conv_frac * abs_conv
-            + strat_frac * abs_strat
-            + marine_sc_frac * abs_marine_sc
-        ) * insolation_W_m2
+        low_cloud_sw_abs = (
+            sw_reaching_low
+            * (conv_frac * abs_conv + strat_frac * abs_strat + marine_sc_frac * abs_marine_sc)
+            * insolation_W_m2
+        )
     else:
         low_cloud_sw_abs = cloud_sw_absorptance * insolation_W_m2
 
@@ -822,8 +826,8 @@ def radiative_balance_rhs(
     # Clear-sky gas emission is spectrally shaped, so use band-specific coefficients.
     # Cloud emission is approximately blackbody (eps≈1), so gray transfer is fine.
     downward_longwave_to_surface = emitted_bl_down + (
-        clear_frac * _te_cross * bb_atm_down    # band-correct for gas
-        + trans_bl * downward_lw_cloud           # gray for clouds (~BB)
+        clear_frac * _te_cross * bb_atm_down  # band-correct for gas
+        + trans_bl * downward_lw_cloud  # gray for clouds (~BB)
     )
     surface_tendency = (
         absorbed_shortwave_sfc + downward_longwave_to_surface - emitted_surface
@@ -831,12 +835,15 @@ def radiative_balance_rhs(
 
     absorbed_from_surface_bl = eps_bl * emitted_surface  # blackbody source: no band mixing
     absorbed_from_atm_bl = (
-        clear_frac * _ee_cross * bb_atm_down    # band-correct for gas
-        + eps_bl * downward_lw_cloud             # gray for clouds (~BB)
+        clear_frac * _ee_cross * bb_atm_down  # band-correct for gas
+        + eps_bl * downward_lw_cloud  # gray for clouds (~BB)
     )
     boundary_tendency = (
-        absorbed_shortwave_bl + absorbed_from_surface_bl + absorbed_from_atm_bl
-        - emitted_bl_up - emitted_bl_down
+        absorbed_shortwave_bl
+        + absorbed_from_surface_bl
+        + absorbed_from_atm_bl
+        - emitted_bl_up
+        - emitted_bl_down
     ) / config.boundary_layer_heat_capacity
 
     transmitted_surface_to_atm = trans_bl * emitted_surface
@@ -869,8 +876,8 @@ def radiative_balance_rhs(
     # through BL before being absorbed by atmosphere gas.
     bb_bl_up = sigma * np.power(T_bl_up, 4)
     clear_absorbed = clear_frac * (
-        _te_cross * emitted_surface    # surface through BL, absorbed by atm
-        + _ee_cross * bb_bl_up         # BL emission, absorbed by atm
+        _te_cross * emitted_surface  # surface through BL, absorbed by atm
+        + _ee_cross * bb_bl_up  # BL emission, absorbed by atm
     )
 
     # Low cloud absorption (cloud first, then gas above)
@@ -892,10 +899,7 @@ def radiative_balance_rhs(
     lw_absorbed_from_below = clear_absorbed + low_cloud_absorbed + high_cloud_absorbed
 
     atmosphere_tendency = (
-        absorbed_shortwave_atm_upper
-        + lw_absorbed_from_below
-        - emitted_toa
-        - downward_lw_weighted
+        absorbed_shortwave_atm_upper + lw_absorbed_from_below - emitted_toa - downward_lw_weighted
     ) / config.atmosphere_heat_capacity
 
     if log_diagnostics:
@@ -912,7 +916,9 @@ def radiative_balance_rhs(
         # lw_absorbed_from_below absorbs from upwelling_lw = transmitted_surface_to_atm + emitted_bl_up
         # The same absorption coefficients apply to both components, so decompose proportionally.
         _upwelling_safe = np.where(upwelling_lw > 0, upwelling_lw, 1.0)
-        _surface_fraction = np.where(upwelling_lw > 0, transmitted_surface_to_atm / _upwelling_safe, 0.5)
+        _surface_fraction = np.where(
+            upwelling_lw > 0, transmitted_surface_to_atm / _upwelling_safe, 0.5
+        )
         absorbed_from_surface_atm = lw_absorbed_from_below * _surface_fraction
         absorbed_from_boundary_atm = lw_absorbed_from_below * (1.0 - _surface_fraction)
 
@@ -920,40 +926,96 @@ def radiative_balance_rhs(
 
         print("\n=== Radiation Diagnostics (W/m²) ===")
         print("\nLayer Temperatures (K):")
-        print(f"  Surface:                         {area_weighted_mean(surface, cell_area_m2):7.2f}")
-        print(f"  Boundary layer:                  {area_weighted_mean(boundary, cell_area_m2):7.2f}")
-        print(f"  Atmosphere:                      {area_weighted_mean(atmosphere, cell_area_m2):7.2f}")
+        print(
+            f"  Surface:                         {area_weighted_mean(surface, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  Boundary layer:                  {area_weighted_mean(boundary, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  Atmosphere:                      {area_weighted_mean(atmosphere, cell_area_m2):7.2f}"
+        )
         print("\nShortwave Fluxes:")
-        print(f"Incoming solar (TOA):              {area_weighted_mean(insolation_W_m2, cell_area_m2):7.2f}")
-        print(f"Reflected by atmosphere:           {area_weighted_mean(reflected_by_atm, cell_area_m2):7.2f}")
-        print(f"Absorbed by atmosphere (SW total): {area_weighted_mean(absorbed_shortwave_atm_total, cell_area_m2):7.2f}")
-        print(f"  - absorbed by boundary layer:    {area_weighted_mean(absorbed_shortwave_bl, cell_area_m2):7.2f}")
-        print(f"  - absorbed by free atmosphere:   {area_weighted_mean(absorbed_shortwave_atm_upper, cell_area_m2):7.2f}")
-        print(f"SW reaching surface:               {area_weighted_mean(sw_down_surface, cell_area_m2):7.2f}")
-        print(f"Reflected by surface:              {area_weighted_mean(reflected_by_surface, cell_area_m2):7.2f}")
-        print(f"Absorbed by surface (SW):          {area_weighted_mean(absorbed_shortwave_sfc, cell_area_m2):7.2f}")
+        print(
+            f"Incoming solar (TOA):              {area_weighted_mean(insolation_W_m2, cell_area_m2):7.2f}"
+        )
+        print(
+            f"Reflected by atmosphere:           {area_weighted_mean(reflected_by_atm, cell_area_m2):7.2f}"
+        )
+        print(
+            f"Absorbed by atmosphere (SW total): {area_weighted_mean(absorbed_shortwave_atm_total, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  - absorbed by boundary layer:    {area_weighted_mean(absorbed_shortwave_bl, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  - absorbed by free atmosphere:   {area_weighted_mean(absorbed_shortwave_atm_upper, cell_area_m2):7.2f}"
+        )
+        print(
+            f"SW reaching surface:               {area_weighted_mean(sw_down_surface, cell_area_m2):7.2f}"
+        )
+        print(
+            f"Reflected by surface:              {area_weighted_mean(reflected_by_surface, cell_area_m2):7.2f}"
+        )
+        print(
+            f"Absorbed by surface (SW):          {area_weighted_mean(absorbed_shortwave_sfc, cell_area_m2):7.2f}"
+        )
         print("\nLongwave Emissions:")
-        print(f"Surface emission:                  {area_weighted_mean(emitted_surface, cell_area_m2):7.2f}")
-        print(f"Boundary layer emission (total):   {area_weighted_mean(emitted_bl_up + emitted_bl_down, cell_area_m2):7.2f}")
-        print(f"  - downward (to surface):         {area_weighted_mean(emitted_bl_down, cell_area_m2):7.2f}")
-        print(f"  - upward (to atmosphere):        {area_weighted_mean(emitted_bl_up, cell_area_m2):7.2f}")
-        print(f"Atmosphere emission (total):       {area_weighted_mean(atm_own_emission_up + atm_own_emission_down, cell_area_m2):7.2f}")
-        print(f"  - downward (to BL):              {area_weighted_mean(atm_own_emission_down, cell_area_m2):7.2f}")
-        print(f"  - upward (to space):             {area_weighted_mean(atm_own_emission_up, cell_area_m2):7.2f}")
-        print(f"OLR (to space):                    {area_weighted_mean(olr_total, cell_area_m2):7.2f}")
+        print(
+            f"Surface emission:                  {area_weighted_mean(emitted_surface, cell_area_m2):7.2f}"
+        )
+        print(
+            f"Boundary layer emission (total):   {area_weighted_mean(emitted_bl_up + emitted_bl_down, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  - downward (to surface):         {area_weighted_mean(emitted_bl_down, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  - upward (to atmosphere):        {area_weighted_mean(emitted_bl_up, cell_area_m2):7.2f}"
+        )
+        print(
+            f"Atmosphere emission (total):       {area_weighted_mean(atm_own_emission_up + atm_own_emission_down, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  - downward (to BL):              {area_weighted_mean(atm_own_emission_down, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  - upward (to space):             {area_weighted_mean(atm_own_emission_up, cell_area_m2):7.2f}"
+        )
+        print(
+            f"OLR (to space):                    {area_weighted_mean(olr_total, cell_area_m2):7.2f}"
+        )
         print("\nBoundary layer absorbs from:")
-        print(f"  - solar (SW):                    {area_weighted_mean(absorbed_shortwave_bl, cell_area_m2):7.2f}")
-        print(f"  - surface (LW):                  {area_weighted_mean(absorbed_from_surface_bl, cell_area_m2):7.2f}")
-        print(f"  - atmosphere (LW):               {area_weighted_mean(absorbed_from_atm_bl, cell_area_m2):7.2f}")
+        print(
+            f"  - solar (SW):                    {area_weighted_mean(absorbed_shortwave_bl, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  - surface (LW):                  {area_weighted_mean(absorbed_from_surface_bl, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  - atmosphere (LW):               {area_weighted_mean(absorbed_from_atm_bl, cell_area_m2):7.2f}"
+        )
         print("Atmosphere absorbs from:")
-        print(f"  - surface emission (absorbed):   {area_weighted_mean(absorbed_from_surface_atm, cell_area_m2):7.2f}")
-        print(f"  - boundary layer emission:       {area_weighted_mean(absorbed_from_boundary_atm, cell_area_m2):7.2f}")
+        print(
+            f"  - surface emission (absorbed):   {area_weighted_mean(absorbed_from_surface_atm, cell_area_m2):7.2f}"
+        )
+        print(
+            f"  - boundary layer emission:       {area_weighted_mean(absorbed_from_boundary_atm, cell_area_m2):7.2f}"
+        )
         print("\nNet Radiation Balances:")
-        print(f"Net surface radiation balance:     {area_weighted_mean(absorbed_shortwave_sfc + downward_longwave_to_surface - emitted_surface, cell_area_m2):7.2f}")
-        print(f"Net boundary layer balance:        {area_weighted_mean(absorbed_shortwave_bl + absorbed_from_surface_bl + absorbed_from_atm_bl - emitted_bl_up - emitted_bl_down, cell_area_m2):7.2f}")
-        print(f"Net atmosphere balance:            {area_weighted_mean(absorbed_shortwave_atm_upper + absorbed_from_surface_atm + absorbed_from_boundary_atm - atm_own_emission_up - atm_own_emission_down, cell_area_m2):7.2f}")
+        print(
+            f"Net surface radiation balance:     {area_weighted_mean(absorbed_shortwave_sfc + downward_longwave_to_surface - emitted_surface, cell_area_m2):7.2f}"
+        )
+        print(
+            f"Net boundary layer balance:        {area_weighted_mean(absorbed_shortwave_bl + absorbed_from_surface_bl + absorbed_from_atm_bl - emitted_bl_up - emitted_bl_down, cell_area_m2):7.2f}"
+        )
+        print(
+            f"Net atmosphere balance:            {area_weighted_mean(absorbed_shortwave_atm_upper + absorbed_from_surface_atm + absorbed_from_boundary_atm - atm_own_emission_up - atm_own_emission_down, cell_area_m2):7.2f}"
+        )
         print("\nGlobal Energy Balance:")
-        print(f"Net TOA balance (SW_in - OLR):     {area_weighted_mean(insolation_W_m2 - reflected_by_atm - reflected_by_surface - olr_total, cell_area_m2):7.2f}")
+        print(
+            f"Net TOA balance (SW_in - OLR):     {area_weighted_mean(insolation_W_m2 - reflected_by_atm - reflected_by_surface - olr_total, cell_area_m2):7.2f}"
+        )
         print("=" * 40)
 
     return np.stack([surface_tendency, boundary_tendency, atmosphere_tendency])
@@ -1006,7 +1068,12 @@ def radiative_balance_rhs_temperature_derivative(
         cloud_coverage = cloud_output.total_frac
     else:
         # Fallback: compute simple cloud cover (frozen for linearization)
-        if humidity_q is not None and itcz_rad is not None and lat2d is not None and lon2d is not None:
+        if (
+            humidity_q is not None
+            and itcz_rad is not None
+            and lat2d is not None
+            and lon2d is not None
+        ):
             rh = specific_humidity_to_relative_humidity(
                 humidity_q, surface, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d
             )
@@ -1015,9 +1082,7 @@ def radiative_balance_rhs_temperature_derivative(
             )
             cloud_coverage = compute_cloud_coverage(rh, dp_norm, lat2d)
         elif humidity_q is not None:
-            rh = humidity_q / np.maximum(
-                compute_saturation_specific_humidity(surface), 1e-10
-            )
+            rh = humidity_q / np.maximum(compute_saturation_specific_humidity(surface), 1e-10)
             cloud_coverage = np.clip(rh - 0.5, 0, 0.5) * 2.0
         else:
             cloud_coverage = np.full_like(surface, 0.50)
@@ -1031,9 +1096,7 @@ def radiative_balance_rhs_temperature_derivative(
     # Clear-sky emissivity and band-correct coefficients (must match RHS)
     if humidity_q is not None:
         tau_nw_bl, tau_win_bl = _band_optical_depths(humidity_q, _DP_P0_BL)
-        tau_nw_atm, tau_win_atm = _band_optical_depths(
-            humidity_q * _Q_ATM_FRACTION, _DP_P0_ATM
-        )
+        tau_nw_atm, tau_win_atm = _band_optical_depths(humidity_q * _Q_ATM_FRACTION, _DP_P0_ATM)
         _WN = 1.0 - _R_WINDOW
         _WW = _R_WINDOW
         _enb = 1.0 - np.exp(-tau_nw_bl)
@@ -1079,10 +1142,10 @@ def radiative_balance_rhs_temperature_derivative(
         eps_high_cloud = cloud_output.eps_high
     else:
         # Fallback to τ-derived values (ε = 1 - exp(-τ_LW))
-        eps_conv_cloud = 1.0 - np.exp(-40.0)   # τ_LW = 40 → ε ≈ 1.0
-        eps_strat_cloud = 1.0 - np.exp(-7.0)   # τ_LW = 7 → ε ≈ 0.999
+        eps_conv_cloud = 1.0 - np.exp(-40.0)  # τ_LW = 40 → ε ≈ 1.0
+        eps_strat_cloud = 1.0 - np.exp(-7.0)  # τ_LW = 7 → ε ≈ 0.999
         eps_marine_sc_cloud = 1.0 - np.exp(-10.0)  # τ_LW = 10 → ε ≈ 1.0
-        eps_high_cloud = 1.0 - np.exp(-1.5)    # τ_LW = 1.5 → ε ≈ 0.78
+        eps_high_cloud = 1.0 - np.exp(-1.5)  # τ_LW = 1.5 → ε ≈ 0.78
 
     # Cloud TOP temperatures lapsed from atmosphere layer midpoint (must match RHS)
     z_atm_mid = ATMOSPHERE_LAYER_MIDPOINT_M
@@ -1151,9 +1214,17 @@ def radiative_balance_rhs_temperature_derivative(
     )
 
     # High clouds: direct to space
-    d_high_olr_dTatm = eps_high_cloud * high_effective_frac * 4.0 * sigma * np.power(current_high_top_K, 3)
+    d_high_olr_dTatm = (
+        eps_high_cloud * high_effective_frac * 4.0 * sigma * np.power(current_high_top_K, 3)
+    )
 
-    _d_olr_dTatm = d_clear_olr_dTatm + d_conv_olr_dTatm + d_strat_olr_dTatm + d_marine_sc_olr_dTatm + d_high_olr_dTatm
+    _d_olr_dTatm = (
+        d_clear_olr_dTatm
+        + d_conv_olr_dTatm
+        + d_strat_olr_dTatm
+        + d_marine_sc_olr_dTatm
+        + d_high_olr_dTatm
+    )
 
     # Downward emission derivatives
     # Clear sky and high cloud downward depend on T_atm
@@ -1166,8 +1237,12 @@ def radiative_balance_rhs_temperature_derivative(
 
     # Low cloud base temps depend on T_bl
     d_conv_down_dTbase = eps_conv_cloud * conv_frac * 4.0 * sigma * np.power(current_conv_base_K, 3)
-    d_strat_down_dTbase = eps_strat_cloud * strat_frac * 4.0 * sigma * np.power(current_strat_base_K, 3)
-    d_marine_sc_down_dTbase = eps_marine_sc_cloud * marine_sc_frac * 4.0 * sigma * np.power(current_marine_sc_base_K, 3)
+    d_strat_down_dTbase = (
+        eps_strat_cloud * strat_frac * 4.0 * sigma * np.power(current_strat_base_K, 3)
+    )
+    d_marine_sc_down_dTbase = (
+        eps_marine_sc_cloud * marine_sc_frac * 4.0 * sigma * np.power(current_marine_sc_base_K, 3)
+    )
     _d_low_cloud_down_dTbase = d_conv_down_dTbase + d_strat_down_dTbase + d_marine_sc_down_dTbase
 
     _d_down_dTatm = d_clear_down_dTatm + d_high_down_dTatm
@@ -1178,9 +1253,7 @@ def radiative_balance_rhs_temperature_derivative(
     # tendency = SW + lw_absorbed - emitted_toa - downward_lw_weighted
     # d(tendency)/dT_atm = -d(emitted_toa)/dT_atm - d(downward_lw_weighted)/dT_atm
     # (absorption doesn't depend on T_atm)
-    atmosphere_diag = (
-        -_d_olr_dTatm - _d_down_dTatm
-    ) / config.atmosphere_heat_capacity
+    atmosphere_diag = (-_d_olr_dTatm - _d_down_dTatm) / config.atmosphere_heat_capacity
 
     boundary = _with_floor(temperature_K[1], floor)
 
@@ -1201,7 +1274,14 @@ def radiative_balance_rhs_temperature_derivative(
     # Surface <- BL (downward emission)
     cross[0, 1] = d_emitted_bl_down_dT / heat_capacity_field
     # BL <- surface
-    cross[1, 0] = 4.0 * eps_bl * config.emissivity_surface * sigma * np.power(surface, 3) / config.boundary_layer_heat_capacity
+    cross[1, 0] = (
+        4.0
+        * eps_bl
+        * config.emissivity_surface
+        * sigma
+        * np.power(surface, 3)
+        / config.boundary_layer_heat_capacity
+    )
 
     # BL absorbs downwelling LW from atmosphere — band-correct for clear-sky gas,
     # gray for clouds (cloud base emission depends on T_bl, not spectrally filtered)
@@ -1212,16 +1292,16 @@ def radiative_balance_rhs_temperature_derivative(
     cross[1, 0] += eps_bl * _d_down_dTs / config.boundary_layer_heat_capacity
     boundary_diag += eps_bl * _d_down_dTbl / config.boundary_layer_heat_capacity
     cross[1, 2] = (
-        _ee_cross * d_clear_down_bb_dTatm          # band-correct for gas
-        + eps_bl * d_high_down_dTatm                # gray for clouds
+        _ee_cross * d_clear_down_bb_dTatm  # band-correct for gas
+        + eps_bl * d_high_down_dTatm  # gray for clouds
     ) / config.boundary_layer_heat_capacity
 
     # Surface receives transmitted fraction of downwelling atmosphere LW
     surface_diag += trans_bl * _d_down_dTs / heat_capacity_field
     cross[0, 1] += trans_bl * _d_down_dTbl / heat_capacity_field
     cross[0, 2] = (
-        _te_cross * d_clear_down_bb_dTatm          # band-correct for gas
-        + trans_bl * d_high_down_dTatm              # gray for clouds
+        _te_cross * d_clear_down_bb_dTatm  # band-correct for gas
+        + trans_bl * d_high_down_dTatm  # gray for clouds
     ) / heat_capacity_field
 
     # === Atmosphere tendency derivatives ===
@@ -1250,8 +1330,7 @@ def radiative_balance_rhs_temperature_derivative(
 
     # Atmosphere <- BL: band-correct for clear, gray for clouds
     cross[2, 1] = (
-        (clear_frac * _ee_cross * d_bb_bl_up_dT
-         + cloud_abs_frac * d_emitted_bl_up_dT)
+        (clear_frac * _ee_cross * d_bb_bl_up_dT + cloud_abs_frac * d_emitted_bl_up_dT)
         - _d_down_dTbl
     ) / config.atmosphere_heat_capacity
 
@@ -1282,7 +1361,9 @@ def radiative_equilibrium_initial_guess(
         surface = np.power(absorbed / (config.emissivity_surface * sigma), 0.25)
         return _with_floor(surface[np.newaxis, :, :], config.temperature_floor)
 
-    def compute_cloud_properties(temp_surface: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def compute_cloud_properties(
+        temp_surface: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute cloud properties from surface temperature."""
         if lat2d is None or lon2d is None:
             raise ValueError("lat2d and lon2d are required for radiative_equilibrium_initial_guess")
@@ -1329,8 +1410,12 @@ def radiative_equilibrium_initial_guess(
         eps_atm = eps_clear_field + eps_cloud
         denom = np.maximum(2.0 - eps_atm, 1e-6)
 
-        surface = np.power((absorbed_sw_surface + 0.5 * absorbed_sw_atm) / (0.5 * denom * sigma), 0.25)
-        atmosphere = np.power((absorbed_sw_atm / (eps_atm * sigma)) + 0.5 * np.power(surface, 4), 0.25)
+        surface = np.power(
+            (absorbed_sw_surface + 0.5 * absorbed_sw_atm) / (0.5 * denom * sigma), 0.25
+        )
+        atmosphere = np.power(
+            (absorbed_sw_atm / (eps_atm * sigma)) + 0.5 * np.power(surface, 4), 0.25
+        )
         return surface, atmosphere
 
     # First pass: estimate cloud properties from simple surface temperature

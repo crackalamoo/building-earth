@@ -73,11 +73,12 @@ class LatentHeatExchangeModel:
         if boundary_layer_heat_capacity_J_m2_K is not None:
             heat_capacity_boundary = np.asarray(boundary_layer_heat_capacity_J_m2_K, dtype=float)
             if heat_capacity_boundary.shape == ():
-                heat_capacity_boundary = np.full(land_mask_bool.shape, float(heat_capacity_boundary))
+                heat_capacity_boundary = np.full(
+                    land_mask_bool.shape, float(heat_capacity_boundary)
+                )
             self._boundary_layer_heat_capacity = np.maximum(heat_capacity_boundary, 1.0e-9)
         else:
             self._boundary_layer_heat_capacity = None
-
 
     @property
     def enabled(self) -> bool:
@@ -94,7 +95,10 @@ class LatentHeatExchangeModel:
         boundary_layer_temperature_K: np.ndarray | None = None,
         precipitation_rate: np.ndarray | None = None,
         soil_moisture: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> (
+        tuple[np.ndarray, np.ndarray, np.ndarray]
+        | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ):
         """Return surface and atmospheric tendencies from latent heat exchange.
 
         Latent heat routing:
@@ -119,9 +123,7 @@ class LatentHeatExchangeModel:
         atmosphere_temperature = np.asarray(atmosphere_temperature_K, dtype=float)
 
         if surface_temperature.shape != self._surface_heat_capacity.shape:
-            raise ValueError(
-                "Surface temperature must match the surface heat capacity field shape"
-            )
+            raise ValueError("Surface temperature must match the surface heat capacity field shape")
         if atmosphere_temperature.shape != self._surface_heat_capacity.shape:
             raise ValueError(
                 "Atmosphere temperature must match the surface heat capacity field shape"
@@ -198,7 +200,9 @@ class LatentHeatExchangeModel:
             if precipitation_rate is not None:
                 precip_heating = precipitation_rate * LATENT_HEAT_VAPORIZATION_J_KG
                 boundary_tendency = bl_frac * precip_heating / self._boundary_layer_heat_capacity
-                atmosphere_tendency = (1 - bl_frac) * precip_heating / self._atmosphere_heat_capacity
+                atmosphere_tendency = (
+                    (1 - bl_frac) * precip_heating / self._atmosphere_heat_capacity
+                )
             else:
                 boundary_tendency = np.zeros_like(surface_tendency)
             return surface_tendency, boundary_tendency, atmosphere_tendency, evaporation_rate
@@ -291,7 +295,13 @@ class LatentHeatExchangeModel:
         # Derivative of q_sat with respect to T_atm (via pressure)
         # Approximate dp/dT_atm ≈ -30 Pa/K = -0.30 hPa/K (from thermal wind scaling)
         dp_dT_atm_approx = -0.30  # hPa/K
-        dq_sat_dT_atm = -0.622 * e_sat * (1.0 - (1.0 - 0.622) * e_sat / np.maximum(pressure_hPa, 1.0)) * dp_dT_atm_approx / np.power(denom, 2)
+        dq_sat_dT_atm = (
+            -0.622
+            * e_sat
+            * (1.0 - (1.0 - 0.622) * e_sat / np.maximum(pressure_hPa, 1.0))
+            * dp_dT_atm_approx
+            / np.power(denom, 2)
+        )
 
         # Compute near-surface air temperature and its derivatives
         # T_2m = T_boundary + lapse_correction (constant correction)
@@ -313,14 +323,27 @@ class LatentHeatExchangeModel:
         # ∂rho/∂T_surf = -pressure / (R * T_2m^2) * dT_2m/dT_surf
         # ∂rho/∂T_atm = (1/R) * (dp/dT_atm / T_2m - p * dT_2m/dT_atm / T_2m^2)
         drho_dT_surf = -pressure / (R * np.power(near_surface_air_K, 2)) * dT_2m_dT_surf
-        drho_dT_atm = (1.0 / R) * (dp_dT_atm_approx / near_surface_air_K - pressure * dT_2m_dT_atm / np.power(near_surface_air_K, 2))
+        drho_dT_atm = (1.0 / R) * (
+            dp_dT_atm_approx / near_surface_air_K
+            - pressure * dT_2m_dT_atm / np.power(near_surface_air_K, 2)
+        )
 
         # Latent heat flux: F = rho * L_v * ch * wind_abs * (q_sat - humidity_q)
         # Full derivatives:
         # ∂F/∂T_surf = L_v * ch * wind_abs * [rho * dq_sat/dT_surf + q_deficit * drho/dT_surf]
         # ∂F/∂T_atm = L_v * ch * wind_abs * [rho * dq_sat/dT_atm + q_deficit * drho/dT_atm]
-        dheat_flux_dT_surf = LATENT_HEAT_VAPORIZATION_J_KG * ch * wind_abs * (rho * dq_sat_dT_surf + q_deficit * drho_dT_surf)
-        dheat_flux_dT_atm = LATENT_HEAT_VAPORIZATION_J_KG * ch * wind_abs * (rho * dq_sat_dT_atm + q_deficit * drho_dT_atm)
+        dheat_flux_dT_surf = (
+            LATENT_HEAT_VAPORIZATION_J_KG
+            * ch
+            * wind_abs
+            * (rho * dq_sat_dT_surf + q_deficit * drho_dT_surf)
+        )
+        dheat_flux_dT_atm = (
+            LATENT_HEAT_VAPORIZATION_J_KG
+            * ch
+            * wind_abs
+            * (rho * dq_sat_dT_atm + q_deficit * drho_dT_atm)
+        )
 
         # Apply Manabe beta land factor (frozen during Newton iterations)
         theta_crit = self._config.manabe_theta_crit
@@ -330,8 +353,12 @@ class LatentHeatExchangeModel:
             q_sat_safe = np.maximum(q_sat, 1e-10)
             rh = humidity_q_clamped / q_sat_safe
             land_factor = np.minimum(rh / theta_crit, 1.0)
-        dheat_flux_dT_surf = np.where(self._land_mask, dheat_flux_dT_surf * land_factor, dheat_flux_dT_surf)
-        dheat_flux_dT_atm = np.where(self._land_mask, dheat_flux_dT_atm * land_factor, dheat_flux_dT_atm)
+        dheat_flux_dT_surf = np.where(
+            self._land_mask, dheat_flux_dT_surf * land_factor, dheat_flux_dT_surf
+        )
+        dheat_flux_dT_atm = np.where(
+            self._land_mask, dheat_flux_dT_atm * land_factor, dheat_flux_dT_atm
+        )
 
         # No evaporation below freezing (zero derivatives)
         frozen = surface_temperature_C < self._config.freeze_threshold_c
@@ -355,9 +382,16 @@ class LatentHeatExchangeModel:
             dq_sat_dT_boundary = np.zeros_like(surface_temperature)
 
             # ∂F/∂T_boundary = L_v * ch * wind_abs * [rho * dq_sat/dT_boundary + q_deficit * drho/dT_boundary]
-            dheat_flux_dT_boundary = LATENT_HEAT_VAPORIZATION_J_KG * ch * wind_abs * (rho * dq_sat_dT_boundary + q_deficit * drho_dT_boundary)
+            dheat_flux_dT_boundary = (
+                LATENT_HEAT_VAPORIZATION_J_KG
+                * ch
+                * wind_abs
+                * (rho * dq_sat_dT_boundary + q_deficit * drho_dT_boundary)
+            )
             # Apply land factor (same as for other derivatives)
-            dheat_flux_dT_boundary = np.where(self._land_mask, dheat_flux_dT_boundary * land_factor, dheat_flux_dT_boundary)
+            dheat_flux_dT_boundary = np.where(
+                self._land_mask, dheat_flux_dT_boundary * land_factor, dheat_flux_dT_boundary
+            )
             # No evaporation below freezing (zero derivatives)
             dheat_flux_dT_boundary = np.where(frozen, 0.0, dheat_flux_dT_boundary)
 

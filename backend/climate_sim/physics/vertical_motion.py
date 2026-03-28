@@ -32,12 +32,10 @@ from climate_sim.data.constants import (
     STANDARD_LAPSE_RATE_K_PER_M,
     HEAT_CAPACITY_AIR_J_KG_K,
     R_EARTH_METERS,
-    STEFAN_BOLTZMANN_W_M2_K4,
 )
 from climate_sim.physics.atmosphere.pressure import (
     LAT_SUBTROPICS_BASE,
     SUBTROPICS_ITCZ_COUPLING,
-    SIGMA_SUBTROPICS,
     SIGMA_ITCZ,
 )
 
@@ -103,8 +101,8 @@ def compute_vertical_motion_heating(
     # dT/dt = w * Γ (positive w and positive Γ = warming)
     heating = np.where(
         w > 0,
-        w * GAMMA_DRY,   # Descent: warm at dry rate
-        w * GAMMA_MOIST  # Ascent: cool at moist rate (less cooling due to latent heat)
+        w * GAMMA_DRY,  # Descent: warm at dry rate
+        w * GAMMA_MOIST,  # Ascent: cool at moist rate (less cooling due to latent heat)
     )
 
     return heating
@@ -258,19 +256,21 @@ def compute_hadley_subsidence_velocity(
     """
     # Fixed subtropical descent: broad plateau from ~10° to ~35° in each
     # hemisphere, driven by radiative cooling. Smooth tanh transitions.
-    inner_edge = np.deg2rad(10.0)   # equatorward edge of descent zone
-    outer_edge = np.deg2rad(35.0)   # poleward edge (Hadley-Ferrel boundary)
-    ramp = np.deg2rad(4.0)          # transition width
+    inner_edge = np.deg2rad(10.0)  # equatorward edge of descent zone
+    outer_edge = np.deg2rad(35.0)  # poleward edge (Hadley-Ferrel boundary)
+    ramp = np.deg2rad(4.0)  # transition width
 
     abs_lat = np.abs(lat_rad)
     descent_envelope = (
-        0.5 * (1.0 + np.tanh((abs_lat - inner_edge) / ramp))
-        * 0.5 * (1.0 + np.tanh((outer_edge - abs_lat) / ramp))
+        0.5
+        * (1.0 + np.tanh((abs_lat - inner_edge) / ramp))
+        * 0.5
+        * (1.0 + np.tanh((outer_edge - abs_lat) / ramp))
     )
     w_descent = 0.6 * peak_velocity_m_s * descent_envelope
 
     # ITCZ ascent (negative = upward)
-    w_ascent = peak_velocity_m_s * np.exp(-((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2)
+    w_ascent = peak_velocity_m_s * np.exp(-(((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2))
 
     return w_descent - w_ascent
 
@@ -342,12 +342,11 @@ def compute_hadley_convergence_moistening(
     lat_deg = np.rad2deg(np.abs(lat_rad))
     # Use a smooth weight to select subtropical belt
     # Peaks at 22.5°, tapers at 15° and 30°
-    subtrop_weight = np.exp(-((lat_deg - 22.5) / 7.0) ** 2)
+    subtrop_weight = np.exp(-(((lat_deg - 22.5) / 7.0) ** 2))
     # Zonal mean weighted by subtropical belt
     weighted_q = humidity_field * subtrop_weight
     # Average over longitude (axis=1) and latitude (weighted)
-    q_source_zonal = (np.sum(weighted_q, axis=1) /
-                      np.maximum(np.sum(subtrop_weight, axis=1), 1e-10))
+    q_source_zonal = np.sum(weighted_q, axis=1) / np.maximum(np.sum(subtrop_weight, axis=1), 1e-10)
     # Broadcast back to 2D (same q_source at all longitudes)
     q_source = q_source_zonal[:, np.newaxis] * np.ones(humidity_field.shape[1])
 
@@ -372,6 +371,7 @@ def hadley_convergence_moistening_jacobian(
     """
     ascent_rate = np.maximum(-w_hadley, 0.0) / boundary_layer_height_m
     return -ascent_rate
+
 
 # Potential temperature factor: θ_atm = T_atm × (P0/P_ATM)^κ
 _P0 = 1013.25  # hPa
@@ -480,7 +480,7 @@ def compute_bl_atm_mixing_tendencies(
 
     heat_flux = C_bl * (theta_atm - T_bl) / tau  # W/m²
 
-    dT_bl = heat_flux / C_bl      # = (theta_atm - T_bl) / tau
-    dT_atm = -heat_flux / C_atm   # Energy conservation
+    dT_bl = heat_flux / C_bl  # = (theta_atm - T_bl) / tau
+    dT_atm = -heat_flux / C_atm  # Energy conservation
 
     return dT_bl, dT_atm

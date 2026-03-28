@@ -10,8 +10,14 @@ from scipy import sparse
 from dataclasses import dataclass
 
 import climate_sim.physics.radiation as radiation
-from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeModel, SensibleHeatExchangeConfig
-from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeModel, LatentHeatExchangeConfig
+from climate_sim.physics.sensible_heat_exchange import (
+    SensibleHeatExchangeModel,
+    SensibleHeatExchangeConfig,
+)
+from climate_sim.physics.latent_heat_exchange import (
+    LatentHeatExchangeModel,
+    LatentHeatExchangeConfig,
+)
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.atmosphere.wind import WindModel
 from climate_sim.physics.atmosphere.advection import AdvectionOperator
@@ -28,7 +34,11 @@ from climate_sim.physics.vertical_motion import (
     _ALPHA,
 )
 from climate_sim.physics.orographic_effects import OrographicModel
-from climate_sim.physics.precipitation import compute_precipitation_jacobian, compute_precipitation_recycling_jacobian, compute_precipitation_rh_gate
+from climate_sim.physics.precipitation import (
+    compute_precipitation_jacobian,
+    compute_precipitation_recycling_jacobian,
+    compute_precipitation_rh_gate,
+)
 from climate_sim.physics.humidity import (
     COLUMN_MASS_KG_M2,
     compute_saturation_specific_humidity,
@@ -37,16 +47,19 @@ from climate_sim.physics.humidity import (
 from climate_sim.physics.clouds import (
     compute_clouds_and_precipitation,
     compute_vertical_velocity_from_divergence,
-    compute_vertical_velocity_from_warm_advection,
     CloudPrecipOutput,
 )
 from climate_sim.core.state import ModelState
 from climate_sim.core.math_core import spherical_cell_area, compute_divergence
 from climate_sim.data.constants import (
-    R_EARTH_METERS, LATENT_HEAT_VAPORIZATION_J_KG, GAS_CONSTANT_WATER_VAPOR_J_KG_K,
-    STEFAN_BOLTZMANN_W_M2_K4, HEAT_CAPACITY_AIR_J_KG_K, BOUNDARY_LAYER_HEIGHT_M,
+    R_EARTH_METERS,
+    LATENT_HEAT_VAPORIZATION_J_KG,
+    GAS_CONSTANT_WATER_VAPOR_J_KG_K,
+    HEAT_CAPACITY_AIR_J_KG_K,
+    BOUNDARY_LAYER_HEIGHT_M,
 )
 from typing import Callable
+
 
 @dataclass
 class Linearization:
@@ -63,17 +76,24 @@ class Linearization:
     humidity_advection_matrix: sparse.csc_matrix | None = None  # -V·∇q operator
     humidity_diffusion_matrix: sparse.csc_matrix | None = None  # Humidity diffusion operator
     humidity_diag: np.ndarray | None = None  # dE/dq - dP/dq diagonal
-    humidity_temp_coupling: tuple[np.ndarray, ...] | None = None  # dR_q/dT terms (dR_q/dTsfc, dR_q/dTbl, dR_q/dTatm)
-    temp_humidity_coupling: tuple[np.ndarray, ...] | None = None  # dR_T/dq terms (dR_Tsfc/dq, dR_Tbl/dq, dR_Tatm/dq)
+    humidity_temp_coupling: tuple[np.ndarray, ...] | None = (
+        None  # dR_q/dT terms (dR_q/dTsfc, dR_q/dTbl, dR_q/dTatm)
+    )
+    temp_humidity_coupling: tuple[np.ndarray, ...] | None = (
+        None  # dR_T/dq terms (dR_Tsfc/dq, dR_Tbl/dq, dR_Tatm/dq)
+    )
+
 
 type FloatArray = NDArray[np.floating]
 
 type RhsFn = Callable[[ModelState, FloatArray, FloatArray], FloatArray]
 type RhsDerivativeFn = Callable[[ModelState, FloatArray, FloatArray], Linearization]
 
+
 @dataclass(frozen=True, slots=True)
 class RhsBuildInputs:
     """Structured inputs for RHS factory functions."""
+
     heat_capacity_field: FloatArray
     diffusion_operator: LayeredDiffusionOperator
     radiation_config: RadiationConfig
@@ -91,6 +111,7 @@ class RhsBuildInputs:
     humidity_diffusion_operator: DiffusionOperator | None = None
     orographic_model: OrographicModel | None = None
     amoc_velocity: tuple[FloatArray, FloatArray] | None = None
+
 
 def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
     """Build RHS and Jacobian functions from physics configuration.
@@ -192,7 +213,11 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
         humidity_field = state.humidity_field
 
         # Compute unified clouds if not already provided in state
-        if cloud_output is None and humidity_field is not None and inputs.radiation_config.include_atmosphere:
+        if (
+            cloud_output is None
+            and humidity_field is not None
+            and inputs.radiation_config.include_atmosphere
+        ):
             # Get wind for vertical velocity computation
             if nlayers == 3 and state.boundary_layer_wind_field is not None:
                 wind_u, wind_v, _ = state.boundary_layer_wind_field
@@ -208,7 +233,12 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 if state.orographic_w is not None:
                     vertical_velocity = vertical_velocity + state.orographic_w
                 elif inputs.orographic_model is not None:
-                    vertical_velocity = vertical_velocity + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u, wind_v)
+                    vertical_velocity = (
+                        vertical_velocity
+                        + inputs.orographic_model.compute_orographic_vertical_velocity(
+                            wind_u, wind_v
+                        )
+                    )
             else:
                 vertical_velocity = np.zeros_like(humidity_field)
 
@@ -219,8 +249,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
             # Compute relative humidity
             rh = specific_humidity_to_relative_humidity(
-                humidity_field, T_bl,
-                itcz_rad=itcz_rad, lat2d=inputs.lat2d, lon2d=inputs.lon2d
+                humidity_field, T_bl, itcz_rad=itcz_rad, lat2d=inputs.lat2d, lon2d=inputs.lon2d
             )
 
             # Compute unified cloud-precipitation
@@ -319,9 +348,13 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 atmosphere_temperature = state.temperature[2]
 
                 if inputs.diffusion_operator.boundary_layer is not None:
-                    radiative[1] += inputs.diffusion_operator.boundary_layer.tendency(boundary_temperature)
+                    radiative[1] += inputs.diffusion_operator.boundary_layer.tendency(
+                        boundary_temperature
+                    )
                 if inputs.diffusion_operator.atmosphere.enabled:
-                    radiative[2] += inputs.diffusion_operator.atmosphere.tendency(atmosphere_temperature)
+                    radiative[2] += inputs.diffusion_operator.atmosphere.tendency(
+                        atmosphere_temperature
+                    )
 
                 # Apply advection to both layers with appropriate wind fields
                 if inputs.advection_operator is not None:
@@ -342,12 +375,15 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         radiative[2] += advection_atmosphere
 
                     # Upper-branch Hadley advection of T_atm
-                    if (inputs.vertical_motion_cfg is not None
-                            and inputs.vertical_motion_cfg.enabled
-                            and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0):
+                    if (
+                        inputs.vertical_motion_cfg is not None
+                        and inputs.vertical_motion_cfg.enabled
+                        and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0
+                    ):
                         lat_rad_2d = np.deg2rad(inputs.lat2d)
                         w_hadley_fwd = compute_hadley_subsidence_velocity(
-                            lat_rad_2d, itcz_rad,
+                            lat_rad_2d,
+                            itcz_rad,
                             peak_velocity_m_s=inputs.vertical_motion_cfg.hadley_descent_velocity_m_s,
                         )
                         v_upper = compute_hadley_upper_velocity(w_hadley_fwd, lat_rad_2d, itcz_rad)
@@ -390,19 +426,22 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     )
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 4  # surface, BL, atm, evap_rate
-                    surface_tendency, boundary_tendency, atmosphere_tendency, _evap_rate = tendencies
+                    surface_tendency, boundary_tendency, atmosphere_tendency, _evap_rate = (
+                        tendencies
+                    )
                     radiative[0] += surface_tendency
                     radiative[1] += boundary_tendency
                     radiative[2] += atmosphere_tendency
 
                 # Vertical motion: energy-conserving heat exchange between BL and atmosphere
                 vertical_motion_enabled = (
-                    inputs.vertical_motion_cfg is not None
-                    and inputs.vertical_motion_cfg.enabled
+                    inputs.vertical_motion_cfg is not None and inputs.vertical_motion_cfg.enabled
                 )
                 if vertical_motion_enabled and state.boundary_layer_wind_field is not None:
                     wind_u_vm, wind_v_vm, _ = state.boundary_layer_wind_field
-                    divergence = compute_divergence(wind_u_vm, wind_v_vm, inputs.lat2d, inputs.lon2d)
+                    divergence = compute_divergence(
+                        wind_u_vm, wind_v_vm, inputs.lat2d, inputs.lon2d
+                    )
                     bl_tendency, atm_tendency = compute_vertical_motion_tendencies(
                         divergence, boundary_temperature, atmosphere_temperature
                     )
@@ -417,7 +456,8 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 )
                 if tau_mix > 0:
                     bl_mix, atm_mix = compute_bl_atm_mixing_tendencies(
-                        boundary_temperature, atmosphere_temperature,
+                        boundary_temperature,
+                        atmosphere_temperature,
                         C_bl=inputs.radiation_config.boundary_layer_heat_capacity,
                         C_atm=inputs.radiation_config.atmosphere_heat_capacity,
                         tau_s=tau_mix,
@@ -430,7 +470,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             radiative = radiative + inputs.diffusion_operator.surface.tendency(state.temperature)
         return radiative
 
-    def rhs_derivative(state: ModelState, insolation: np.ndarray, itcz_rad: np.ndarray) -> Linearization:
+    def rhs_derivative(
+        state: ModelState, insolation: np.ndarray, itcz_rad: np.ndarray
+    ) -> Linearization:
         """Compute Jacobian of RHS with respect to temperature."""
         del insolation
 
@@ -441,7 +483,11 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
         humidity_field = state.humidity_field
 
         # Compute unified clouds if not already provided in state
-        if cloud_output is None and humidity_field is not None and inputs.radiation_config.include_atmosphere:
+        if (
+            cloud_output is None
+            and humidity_field is not None
+            and inputs.radiation_config.include_atmosphere
+        ):
             # Get wind for vertical velocity computation
             if nlayers == 3 and state.boundary_layer_wind_field is not None:
                 wind_u, wind_v, _ = state.boundary_layer_wind_field
@@ -457,7 +503,12 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 if state.orographic_w is not None:
                     vertical_velocity = vertical_velocity + state.orographic_w
                 elif inputs.orographic_model is not None:
-                    vertical_velocity = vertical_velocity + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u, wind_v)
+                    vertical_velocity = (
+                        vertical_velocity
+                        + inputs.orographic_model.compute_orographic_vertical_velocity(
+                            wind_u, wind_v
+                        )
+                    )
             else:
                 vertical_velocity = np.zeros_like(humidity_field)
 
@@ -466,8 +517,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             T_atm = state.temperature[2]
 
             rh = specific_humidity_to_relative_humidity(
-                humidity_field, T_bl,
-                itcz_rad=itcz_rad, lat2d=inputs.lat2d, lon2d=inputs.lon2d
+                humidity_field, T_bl, itcz_rad=itcz_rad, lat2d=inputs.lat2d, lon2d=inputs.lon2d
             )
 
             cloud_output = compute_clouds_and_precipitation(
@@ -511,12 +561,18 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             ocean_advection_enabled = (
                 inputs.ocean_advection_cfg is not None and inputs.ocean_advection_cfg.enabled
             )
-            if ocean_advection_enabled and state.ocean_current_field is not None and inputs.advection_operator is not None:
+            if (
+                ocean_advection_enabled
+                and state.ocean_current_field is not None
+                and inputs.advection_operator is not None
+            ):
                 ocean_u, ocean_v = state.ocean_current_field
                 # Replace NaN (land cells) with 0 for the advection operator
                 ocean_u_safe = np.where(np.isnan(ocean_u), 0.0, ocean_u)
                 ocean_v_safe = np.where(np.isnan(ocean_v), 0.0, ocean_v)
-                _, ocean_advection_mat = inputs.advection_operator.linearised_tendency(ocean_u_safe, ocean_v_safe)
+                _, ocean_advection_mat = inputs.advection_operator.linearised_tendency(
+                    ocean_u_safe, ocean_v_safe
+                )
                 if ocean_advection_mat is not None:
                     surface_advection_matrix = (
                         ocean_advection_mat
@@ -532,7 +588,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     # Three-layer: use separate wind fields for boundary layer and atmosphere
                     if state.boundary_layer_wind_field is not None:
                         wind_u_bl, wind_v_bl, _ = state.boundary_layer_wind_field
-                        _, bl_matrix_csr = inputs.advection_operator.linearised_tendency(wind_u_bl, wind_v_bl)
+                        _, bl_matrix_csr = inputs.advection_operator.linearised_tendency(
+                            wind_u_bl, wind_v_bl
+                        )
                         if bl_matrix_csr is not None:
                             boundary_layer_advection_matrix = (
                                 bl_matrix_csr
@@ -541,7 +599,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             )
                     if state.wind_field is not None:
                         wind_u_atm, wind_v_atm, _ = state.wind_field
-                        _, atm_matrix_csr = inputs.advection_operator.linearised_tendency(wind_u_atm, wind_v_atm)
+                        _, atm_matrix_csr = inputs.advection_operator.linearised_tendency(
+                            wind_u_atm, wind_v_atm
+                        )
                         if atm_matrix_csr is not None:
                             atmosphere_advection_matrix = (
                                 atm_matrix_csr
@@ -550,17 +610,24 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             )
 
                     # Upper-branch Hadley advection Jacobian for T_atm
-                    if (inputs.vertical_motion_cfg is not None
-                            and inputs.vertical_motion_cfg.enabled
-                            and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0):
+                    if (
+                        inputs.vertical_motion_cfg is not None
+                        and inputs.vertical_motion_cfg.enabled
+                        and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0
+                    ):
                         lat_rad_2d = np.deg2rad(inputs.lat2d)
                         w_hadley_jac = compute_hadley_subsidence_velocity(
-                            lat_rad_2d, itcz_rad,
+                            lat_rad_2d,
+                            itcz_rad,
                             peak_velocity_m_s=inputs.vertical_motion_cfg.hadley_descent_velocity_m_s,
                         )
-                        v_upper_jac = compute_hadley_upper_velocity(w_hadley_jac, lat_rad_2d, itcz_rad)
+                        v_upper_jac = compute_hadley_upper_velocity(
+                            w_hadley_jac, lat_rad_2d, itcz_rad
+                        )
                         u_zero = np.zeros_like(v_upper_jac)
-                        _, hadley_atm_mat = inputs.advection_operator.linearised_tendency(u_zero, v_upper_jac)
+                        _, hadley_atm_mat = inputs.advection_operator.linearised_tendency(
+                            u_zero, v_upper_jac
+                        )
                         if hadley_atm_mat is not None:
                             hadley_csc = (
                                 hadley_atm_mat
@@ -568,7 +635,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                                 else hadley_atm_mat.tocsc()
                             )
                             if atmosphere_advection_matrix is not None:
-                                atmosphere_advection_matrix = atmosphere_advection_matrix + hadley_csc
+                                atmosphere_advection_matrix = (
+                                    atmosphere_advection_matrix + hadley_csc
+                                )
                             else:
                                 atmosphere_advection_matrix = hadley_csc
 
@@ -577,7 +646,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 sh_diag, sh_cross = sensible_heat_model.compute_jacobian(
                     state.temperature[0],
                     state.temperature[2],
-                    wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
+                    wind_speed_reference_m_s=state.wind_field[2]
+                    if state.wind_field is not None
+                    else None,
                     itcz_rad=None,
                     boundary_layer_temperature_K=state.temperature[1],
                 )
@@ -595,7 +666,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     state.temperature[0],
                     state.temperature[2],
                     state.humidity_field,
-                    wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
+                    wind_speed_reference_m_s=state.wind_field[2]
+                    if state.wind_field is not None
+                    else None,
                     itcz_rad=None,
                     boundary_layer_temperature_K=state.temperature[1],
                     precipitation_rate=precip_rate,
@@ -620,7 +693,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             )
             if vertical_motion_enabled and state.boundary_layer_wind_field is not None:
                 wind_u_bl_vm, wind_v_bl_vm, _ = state.boundary_layer_wind_field
-                divergence = compute_divergence(wind_u_bl_vm, wind_v_bl_vm, inputs.lat2d, inputs.lon2d)
+                divergence = compute_divergence(
+                    wind_u_bl_vm, wind_v_bl_vm, inputs.lat2d, inputs.lon2d
+                )
 
                 h_bl = BOUNDARY_LAYER_HEIGHT_M
                 w = divergence * h_bl  # m/s, positive = subsidence
@@ -692,13 +767,14 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
             # Build humidity diffusion matrix if operator is provided
             # Use the full matrix (not just off-diagonal) for proper Jacobian
-            if inputs.humidity_diffusion_operator is not None and inputs.humidity_diffusion_operator.enabled:
+            if (
+                inputs.humidity_diffusion_operator is not None
+                and inputs.humidity_diffusion_operator.enabled
+            ):
                 full_matrix = inputs.humidity_diffusion_operator.matrix
                 if full_matrix is not None:
                     humidity_diffusion_matrix = (
-                        full_matrix
-                        if sparse.isspmatrix_csc(full_matrix)
-                        else full_matrix.tocsc()
+                        full_matrix if sparse.isspmatrix_csc(full_matrix) else full_matrix.tocsc()
                     )
 
             # Physical constants for humidity Jacobian
@@ -716,7 +792,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
                 if wind_u_q is not None and wind_v_q is not None:
                     # Flux-form humidity advection matrix: -∇·(uq) for conservation
-                    _, humidity_adv_mat = inputs.advection_operator.linearised_flux_tendency(wind_u_q, wind_v_q)
+                    _, humidity_adv_mat = inputs.advection_operator.linearised_flux_tendency(
+                        wind_u_q, wind_v_q
+                    )
                     if humidity_adv_mat is not None:
                         humidity_advection_matrix = (
                             humidity_adv_mat
@@ -731,7 +809,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             state.temperature[0],
                             state.temperature[-1],  # Top layer (atmosphere)
                             state.humidity_field,
-                            wind_speed_reference_m_s=state.wind_field[2] if state.wind_field is not None else None,
+                            wind_speed_reference_m_s=state.wind_field[2]
+                            if state.wind_field is not None
+                            else None,
                             itcz_rad=None,
                             boundary_layer_temperature_K=state.temperature[1],
                             soil_moisture=state.soil_moisture,
@@ -755,12 +835,19 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
                     # Compute vertical velocity from divergence + orographic (must match forward RHS)
                     if wind_u_q is not None and wind_v_q is not None:
-                        divergence = compute_divergence(wind_u_q, wind_v_q, inputs.lat2d, inputs.lon2d)
+                        divergence = compute_divergence(
+                            wind_u_q, wind_v_q, inputs.lat2d, inputs.lon2d
+                        )
                         w_largescale = compute_vertical_velocity_from_divergence(divergence)
                         if state.orographic_w is not None:
                             w_largescale = w_largescale + state.orographic_w
                         elif inputs.orographic_model is not None:
-                            w_largescale = w_largescale + inputs.orographic_model.compute_orographic_vertical_velocity(wind_u_q, wind_v_q)
+                            w_largescale = (
+                                w_largescale
+                                + inputs.orographic_model.compute_orographic_vertical_velocity(
+                                    wind_u_q, wind_v_q
+                                )
+                            )
                     else:
                         w_largescale = np.zeros_like(state.humidity_field)
 
@@ -769,7 +856,9 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     rh_jac = np.clip(state.humidity_field / np.maximum(q_sat_jac, 1e-10), 0.0, 1.0)
 
                     dP_dT_bl, dP_dT_atm, dP_dq = compute_precipitation_jacobian(
-                        rh_jac, state.humidity_field, t_bl,
+                        rh_jac,
+                        state.humidity_field,
+                        t_bl,
                         vertical_velocity=w_largescale,
                     )
 
@@ -794,13 +883,23 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         q_sat_sfc = compute_saturation_specific_humidity(state.temperature[0])
                         rho_sfc = 101325.0 / (287.05 * state.temperature[0])
                         ch_approx = np.where(inputs.land_mask, 1.0e-3, 1.2e-3)
-                        evap_approx = rho_sfc * ch_approx * np.maximum(ws_recycle, 1.0) * np.maximum(q_sat_sfc - state.humidity_field, 0.0)
+                        evap_approx = (
+                            rho_sfc
+                            * ch_approx
+                            * np.maximum(ws_recycle, 1.0)
+                            * np.maximum(q_sat_sfc - state.humidity_field, 0.0)
+                        )
                         if state.soil_moisture is not None:
                             manabe_beta = np.minimum(state.soil_moisture / 0.75, 1.0)
-                            evap_approx = np.where(inputs.land_mask, evap_approx * manabe_beta, evap_approx)
+                            evap_approx = np.where(
+                                inputs.land_mask, evap_approx * manabe_beta, evap_approx
+                            )
                         dP_recycling_dq = compute_precipitation_recycling_jacobian(
-                            evap_approx, state.humidity_field, ws_recycle,
-                            inputs.land_mask, resolution_deg=grid_deg,
+                            evap_approx,
+                            state.humidity_field,
+                            ws_recycle,
+                            inputs.land_mask,
+                            resolution_deg=grid_deg,
                         )
                         dP_dq = dP_dq + dP_recycling_dq
 
@@ -813,13 +912,16 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     humidity_diag = dE_dq / COLUMN_MASS_KG_M2 - dP_dq / COLUMN_MASS_KG_M2
 
                     # Hadley subsidence drying Jacobian (stabilizing: always negative)
-                    if (inputs.vertical_motion_cfg is not None
-                            and inputs.vertical_motion_cfg.enabled
-                            and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0):
+                    if (
+                        inputs.vertical_motion_cfg is not None
+                        and inputs.vertical_motion_cfg.enabled
+                        and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0
+                    ):
                         lat_rad = np.deg2rad(inputs.lat2d)
                         # Use itcz_rad from the current state evaluation
                         w_hadley = compute_hadley_subsidence_velocity(
-                            lat_rad, itcz_rad,
+                            lat_rad,
+                            itcz_rad,
                             peak_velocity_m_s=inputs.vertical_motion_cfg.hadley_descent_velocity_m_s,
                         )
                         humidity_diag += hadley_subsidence_drying_jacobian(

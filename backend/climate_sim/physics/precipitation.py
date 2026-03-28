@@ -16,10 +16,8 @@ from climate_sim.data.constants import (
     HEAT_CAPACITY_AIR_J_KG_K,
     GAS_CONSTANT_WATER_VAPOR_J_KG_K,
     LATENT_HEAT_VAPORIZATION_J_KG,
-    STANDARD_LAPSE_RATE_K_PER_M,
     R_EARTH_METERS,
 )
-from climate_sim.physics.humidity import compute_saturation_specific_humidity
 
 # Aliases for readability
 GRAVITY = GRAVITY_M_S2
@@ -42,9 +40,9 @@ CONVECTIVE_UPDRAFT_VELOCITY = 0.10  # m/s (grid-mean effective)
 # Sub-cloud evaporation (virga) parameters.
 # In subsidence zones, rain falling from isolated convective cells evaporates
 # in the dry, descending environmental air before reaching the surface.
-VIRGA_FLOOR = 0.25    # minimum fraction reaching surface in strongest descent
-VIRGA_SCALE = 0.005   # m/s, sigmoid transition width
-W_BOOST_MAX = 1.5     # maximum amplification in strongest ascent
+VIRGA_FLOOR = 0.25  # minimum fraction reaching surface in strongest descent
+VIRGA_SCALE = 0.005  # m/s, sigmoid transition width
+W_BOOST_MAX = 1.5  # maximum amplification in strongest ascent
 
 # Eddy precipitation: moisture wrung out during baroclinic eddy transport.
 # C_EDDY has units 1/m — fraction of eddy moisture flux that precipitates
@@ -242,12 +240,7 @@ def compute_precipitation_jacobian(
     # ∂P/∂q = rh_gate × eff × w_updraft × ρ
     # =========================================================================
     rh_gate = compute_precipitation_rh_gate(rh)
-    dP_conv_dq = (
-        rh_gate
-        * CONVECTIVE_PRECIP_EFFICIENCY
-        * CONVECTIVE_UPDRAFT_VELOCITY
-        * RHO_AIR
-    )
+    dP_conv_dq = rh_gate * CONVECTIVE_PRECIP_EFFICIENCY * CONVECTIVE_UPDRAFT_VELOCITY * RHO_AIR
     # Apply w_factor (descent suppression + ascent amplification)
     if vertical_velocity is not None:
         w_factor = VIRGA_FLOOR + (W_BOOST_MAX - VIRGA_FLOOR) / (

@@ -109,9 +109,9 @@ class DiffusionConfig:
     # Ocean latitude-dependent scaling to represent thermohaline circulation
     # MOC transports ~2 PW poleward, requiring strong effective diffusivity
     use_latitude_dependent_surface: bool = False
-    surface_meridional_tropical_scale: float = 0.5    # 0-30°: Weak cross-equatorial
-    surface_meridional_midlat_scale: float = 1.5      # 30-60°: Western boundary currents
-    surface_meridional_polar_scale: float = 1.5       # 60-90°: Strong MOC/deep convection
+    surface_meridional_tropical_scale: float = 0.5  # 0-30°: Weak cross-equatorial
+    surface_meridional_midlat_scale: float = 1.5  # 30-60°: Western boundary currents
+    surface_meridional_polar_scale: float = 1.5  # 60-90°: Strong MOC/deep convection
 
     # Atmospheric eddy diffusivity: represents baroclinic eddy transport.
     # Transient eddies carry 60-80% of midlat heat transport (~2-3e6 m²/s).
@@ -132,8 +132,8 @@ class DiffusionConfig:
     eady_kappa_max_m2_s: float = 2.0e6  # Cap to prevent excessive polar transport
 
     # Scaling reference values used by Eady formula
-    atmosphere_meridional_tropical_scale: float = 0.3   # Floor: minimum eddy mixing
-    atmosphere_meridional_midlat_scale: float = 2.5     # Normalization: Eady scaling at 45°
+    atmosphere_meridional_tropical_scale: float = 0.3  # Floor: minimum eddy mixing
+    atmosphere_meridional_midlat_scale: float = 2.5  # Normalization: Eady scaling at 45°
 
     # Boundary layer diffusivity scaling relative to free atmosphere.
     # Same κ as atmosphere; the smaller heat capacity (C_bl/C_atm ≈ 1/7.5)
@@ -321,17 +321,13 @@ def _build_single_layer_operator(
     earth_radius = R_EARTH_METERS
 
     total_capacity = np.zeros_like(heat_capacity_field)
-    total_capacity[active_mask] = (
-        heat_capacity_field[active_mask] * cell_area_field[active_mask]
-    )
+    total_capacity[active_mask] = heat_capacity_field[active_mask] * cell_area_field[active_mask]
     inv_capacity = np.zeros_like(total_capacity)
     inv_capacity[active_mask] = 1.0 / total_capacity[active_mask]
 
     # Base diffusivity field (will be scaled by latitude if requested)
     diffusivity_field = np.zeros_like(heat_capacity_field)
-    diffusivity_field[active_mask] = (
-        diffusivity_m2_s * heat_capacity_field[active_mask]
-    )
+    diffusivity_field[active_mask] = diffusivity_m2_s * heat_capacity_field[active_mask]
 
     lat_centers = lat2d[:, 0]
     lon_centers = lon2d[0, :]
@@ -361,15 +357,11 @@ def _build_single_layer_operator(
         interface_lat_rad = np.deg2rad(0.5 * (lat_centers[:-1] + lat_centers[1:]))
         interface_lat_deg = 0.5 * (lat_centers[:-1] + lat_centers[1:])
         boundary_length_north = (
-            earth_radius
-            * np.cos(interface_lat_rad)[:, np.newaxis]
-            * delta_lon_rad[np.newaxis, :]
+            earth_radius * np.cos(interface_lat_rad)[:, np.newaxis] * delta_lon_rad[np.newaxis, :]
         )
 
         north_mask = active_mask[:-1] & active_mask[1:]
-        north_diffusivity = harmonic_mean(
-            diffusivity_field[:-1], diffusivity_field[1:]
-        )
+        north_diffusivity = harmonic_mean(diffusivity_field[:-1], diffusivity_field[1:])
 
         # Apply latitude-dependent scaling for meridional diffusion
         if use_latitude_scaling:
@@ -379,9 +371,7 @@ def _build_single_layer_operator(
             north_diffusivity = north_diffusivity * meridional_scaling[:, np.newaxis]
 
         with np.errstate(divide="ignore", invalid="ignore"):
-            north_conductance = (
-                north_diffusivity * boundary_length_north / delta_y[:, np.newaxis]
-            )
+            north_conductance = north_diffusivity * boundary_length_north / delta_y[:, np.newaxis]
         north_conductance = np.where(north_mask, north_conductance, 0.0)
 
         if barrier_factors is not None:
@@ -400,14 +390,11 @@ def _build_single_layer_operator(
         )
         # Length of north-south faces: R * d(phi)
         boundary_length_east = (
-            earth_radius
-            * (lat_edges_rad[1:] - lat_edges_rad[:-1])[:, np.newaxis]
+            earth_radius * (lat_edges_rad[1:] - lat_edges_rad[:-1])[:, np.newaxis]
         )
 
         east_mask = active_mask & np.roll(active_mask, -1, axis=1)
-        east_diffusivity = harmonic_mean(
-            diffusivity_field, np.roll(diffusivity_field, -1, axis=1)
-        )
+        east_diffusivity = harmonic_mean(diffusivity_field, np.roll(diffusivity_field, -1, axis=1))
 
         # Apply latitude-dependent scaling for zonal diffusion
         if use_latitude_scaling:
@@ -520,7 +507,9 @@ def create_diffusion_operator(
         )
         # BL diffusivity is scaled down - BL transport is mostly vertical,
         # not the large-scale eddies that transport across latitudes
-        boundary_layer_diffusivity = atmosphere_diffusivity_m2_s * config.boundary_layer_diffusivity_scale
+        boundary_layer_diffusivity = (
+            atmosphere_diffusivity_m2_s * config.boundary_layer_diffusivity_scale
+        )
         boundary_layer_operator = _build_single_layer_operator(
             lon2d,
             lat2d,

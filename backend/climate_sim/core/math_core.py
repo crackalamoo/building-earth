@@ -168,8 +168,10 @@ def area_weighted_mean(
 @dataclass
 class LinearSolveCache:
     """Cache for factorized linear solvers and identity matrices."""
+
     identity_matrices: Dict[int, sparse.csc_matrix] = field(default_factory=dict)
     factorized_solvers: Dict[str, Callable[[np.ndarray], np.ndarray]] = field(default_factory=dict)
+
 
 DEFAULT_LINEAR_SOLVE_CACHE = LinearSolveCache()
 
@@ -276,8 +278,8 @@ def compute_divergence(
 
     if sigma_cells > 0.5:  # Only smooth if smoothing scale > half a grid cell
         # Smooth in latitude (axis 0)
-        div = gaussian_filter(div, sigma=(sigma_cells, 0), mode='nearest')
+        div = gaussian_filter(div, sigma=(sigma_cells, 0), mode="nearest")
         # Smooth in longitude with wrapping
-        div = gaussian_filter(div, sigma=(0, sigma_cells), mode='wrap')
+        div = gaussian_filter(div, sigma=(0, sigma_cells), mode="wrap")
 
     return div

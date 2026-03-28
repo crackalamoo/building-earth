@@ -9,6 +9,7 @@ Also diagnoses turning angles, speed ratios, and drag coefficient sensitivity.
 Usage:
     DATA_DIR=data PYTHONPATH=backend uv run python backend/debug/wind_decomposition.py
 """
+
 import numpy as np
 import xarray as xr
 import pooch
@@ -16,7 +17,8 @@ from pathlib import Path
 import os
 
 from climate_sim.physics.atmosphere.pressure import (
-    _smooth_temperature_field, _get_latitude_centers,
+    _smooth_temperature_field,
+    _get_latitude_centers,
     THERMAL_PRESSURE_COEFFICIENT,
     hadley_pressure_anomaly,
 )
@@ -26,8 +28,10 @@ from climate_sim.data.elevation import compute_cell_elevation
 from climate_sim.data.landmask import compute_land_mask
 from climate_sim.core.math_core import spherical_cell_area
 from climate_sim.data.constants import (
-    BOUNDARY_LAYER_HEIGHT_M, ATMOSPHERE_LAYER_HEIGHT_M,
-    R_EARTH_METERS, GAS_CONSTANT_J_KG_K,
+    BOUNDARY_LAYER_HEIGHT_M,
+    ATMOSPHERE_LAYER_HEIGHT_M,
+    R_EARTH_METERS,
+    GAS_CONSTANT_J_KG_K,
 )
 
 # ── Config ─────────────────────────────────────────────────────────────
@@ -61,8 +65,8 @@ def to_0360(ds: xr.Dataset) -> xr.Dataset:
 
 # ── Grid setup ─────────────────────────────────────────────────────────
 nlat, nlon = 36, 72
-lat = np.linspace(-90 + 90/nlat, 90 - 90/nlat, nlat)
-lon = np.linspace(180/nlon, 360 - 180/nlon, nlon)
+lat = np.linspace(-90 + 90 / nlat, 90 - 90 / nlat, nlat)
+lon = np.linspace(180 / nlon, 360 - 180 / nlon, nlon)
 lon2d, lat2d = np.meshgrid(lon, lat)
 land_mask = compute_land_mask(lon2d, lat2d)
 ocean_frac_by_lat = 1.0 - land_mask.astype(float).mean(axis=1)
@@ -91,8 +95,7 @@ inv_two_delta_y = 0.5 / delta_y
 
 def regrid_to_5deg(field, lat_src, lon_src):
     if field.ndim == 3:
-        return np.stack([regrid_to_5deg(field[m], lat_src, lon_src)
-                         for m in range(field.shape[0])])
+        return np.stack([regrid_to_5deg(field[m], lat_src, lon_src) for m in range(field.shape[0])])
     out = np.full((nlat, nlon), np.nan)
     for j in range(nlat):
         for i in range(nlon):
@@ -153,7 +156,9 @@ def apply_ekman_drag(u_geo, v_geo, cd, h_m):
 
     general = a > 1e-16
     y = np.empty_like(speed_geo)
-    y[general] = (-1.0 + np.sqrt(1.0 + 4.0 * a[general] * speed_geo[general]**2)) / (2.0 * a[general])
+    y[general] = (-1.0 + np.sqrt(1.0 + 4.0 * a[general] * speed_geo[general] ** 2)) / (
+        2.0 * a[general]
+    )
     y[~general] = speed_geo[~general] ** 2
     y = np.clip(y, 0, None)
     u_mag = np.sqrt(y)
@@ -192,7 +197,7 @@ def wind_metrics(u_sim, v_sim, u_obs, v_obs, mask=None):
     r_u = np.corrcoef(u_s[valid], u_o[valid])[0, 1]
     r_v = np.corrcoef(v_s[valid], v_o[valid])[0, 1]
     r_spd = np.corrcoef(spd_s[valid], spd_o[valid])[0, 1]
-    rmse_spd = np.sqrt(np.mean((spd_s[valid] - spd_o[valid])**2))
+    rmse_spd = np.sqrt(np.mean((spd_s[valid] - spd_o[valid]) ** 2))
     bias_spd = np.mean(spd_s[valid]) - np.mean(spd_o[valid])
     return {"r_u": r_u, "r_v": r_v, "r_spd": r_spd, "rmse_spd": rmse_spd, "bias_spd": bias_spd}
 
@@ -205,6 +210,7 @@ def compute_slp_from_T(col_T_smooth_m, itcz_m, dp_thermal_m, dp_base, alpha_fer=
     are now part of hadley_pressure_anomaly.
     """
     from climate_sim.physics.atmosphere.pressure import DP_SUBTROPICS
+
     itcz_2d = np.broadcast_to(itcz_m[np.newaxis, :], (nlat, nlon))
 
     # Scale the Hadley pattern by dp_base / default DP_SUBTROPICS
@@ -287,7 +293,7 @@ def geopotential_from_slp(slp, col_T):
 # Physical values: Cd_ocean ~ 1.2e-3 (Large & Pond 1981), Cd_land ~ 5e-3
 drag_configs = {
     "current": {
-        "cd": np.where(land_mask, 5e-3, 3e-4),   # our current model
+        "cd": np.where(land_mask, 5e-3, 3e-4),  # our current model
         "h_m": np.where(land_mask, 400.0, 500.0),
     },
     "physical": {
@@ -300,13 +306,15 @@ drag_configs = {
 # ═══════════════════════════════════════════════════════════════════════
 # PART 1: Ekman drag sensitivity with OBSERVED SLP
 # ═══════════════════════════════════════════════════════════════════════
-print("\n" + "="*120)
+print("\n" + "=" * 120)
 print("  PART 1: Wind from OBSERVED SLP — drag coefficient sensitivity")
-print("="*120)
+print("=" * 120)
 
-print(f"\n{'Config':>20} {'Cd_oc':>8} {'h_m_oc':>7} {'k_oc':>8} | "
-      f"{'r_u':>6} {'r_v':>6} {'r_spd':>6} {'RMSE':>6} {'bias':>6} | "
-      f"{'r_u_oc':>7} {'r_v_oc':>7}")
+print(
+    f"\n{'Config':>20} {'Cd_oc':>8} {'h_m_oc':>7} {'k_oc':>8} | "
+    f"{'r_u':>6} {'r_v':>6} {'r_spd':>6} {'RMSE':>6} {'bias':>6} | "
+    f"{'r_u_oc':>7} {'r_v_oc':>7}"
+)
 print("-" * 110)
 
 for dc_name, dc in drag_configs.items():
@@ -327,18 +335,20 @@ for dc_name, dc in drag_configs.items():
     h_oc = dc["h_m"][~land_mask].mean()
     k_oc = cd_oc / h_oc
 
-    print(f"{dc_name:>20} {cd_oc:.1e} {h_oc:7.0f} {k_oc:.1e} | "
-          f"{m_all['r_u']:6.3f} {m_all['r_v']:6.3f} {m_all['r_spd']:6.3f} "
-          f"{m_all['rmse_spd']:6.2f} {m_all['bias_spd']:+6.2f} | "
-          f"{m_oc['r_u']:7.3f} {m_oc['r_v']:7.3f}")
+    print(
+        f"{dc_name:>20} {cd_oc:.1e} {h_oc:7.0f} {k_oc:.1e} | "
+        f"{m_all['r_u']:6.3f} {m_all['r_v']:6.3f} {m_all['r_spd']:6.3f} "
+        f"{m_all['rmse_spd']:6.2f} {m_all['bias_spd']:+6.2f} | "
+        f"{m_oc['r_u']:7.3f} {m_oc['r_v']:7.3f}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # PART 2: dp_base sweep — reconstructed SLP with physical drag
 # ═══════════════════════════════════════════════════════════════════════
-print("\n" + "="*120)
+print("\n" + "=" * 120)
 print("  PART 2: Wind from RECONSTRUCTED SLP — dp_base sweep (using physical Cd)")
-print("="*120)
+print("=" * 120)
 
 cd_phys = drag_configs["physical"]["cd"]
 h_m_phys = drag_configs["physical"]["h_m"]
@@ -346,8 +356,10 @@ h_m_phys = drag_configs["physical"]["h_m"]
 dp_base_values = [300, 400, 500, 600, 700, 800]
 alpha_fer_values = [3000, 4000, 5000]
 
-print(f"\n{'dp_base':>8} {'alpha':>6} | {'r_u':>6} {'r_v':>6} {'r_spd':>6} {'RMSE':>6} {'bias':>6} | "
-      f"{'SLP_corr':>8} {'SLP_RMSE':>8} | {'r_u_oc':>7} {'r_v_oc':>7} {'r_u_ln':>7} {'r_v_ln':>7}")
+print(
+    f"\n{'dp_base':>8} {'alpha':>6} | {'r_u':>6} {'r_v':>6} {'r_spd':>6} {'RMSE':>6} {'bias':>6} | "
+    f"{'SLP_corr':>8} {'SLP_RMSE':>8} | {'r_u_oc':>7} {'r_v_oc':>7} {'r_u_ln':>7} {'r_v_ln':>7}"
+)
 print("-" * 120)
 
 best_config = None
@@ -360,8 +372,9 @@ for dp_base in dp_base_values:
         slp_all = np.zeros((12, nlat, nlon))
 
         for m in range(12):
-            slp = compute_slp_from_T(col_T_smooth[m], itcz_rad[m], dp_thermal[m],
-                                     dp_base=dp_base, alpha_fer=alpha_fer)
+            slp = compute_slp_from_T(
+                col_T_smooth[m], itcz_rad[m], dp_thermal[m], dp_base=dp_base, alpha_fer=alpha_fer
+            )
             slp_all[m] = slp
             Z = geopotential_from_slp(slp, col_T_smooth[m])
             u_g, v_g = blended_wind(Z)
@@ -378,17 +391,19 @@ for dp_base in dp_base_values:
         obs_ann = np.nanmean(slp_obs_5, axis=0)
         valid = np.isfinite(obs_ann)
         slp_corr = np.corrcoef(slp_ann[valid], obs_ann[valid])[0, 1]
-        slp_rmse = np.sqrt(np.mean((slp_ann[valid] - obs_ann[valid])**2)) / 100
+        slp_rmse = np.sqrt(np.mean((slp_ann[valid] - obs_ann[valid]) ** 2)) / 100
 
-        score = m_all['r_u'] + m_all['r_v'] + 0.5 * slp_corr
+        score = m_all["r_u"] + m_all["r_v"] + 0.5 * slp_corr
         if score > best_score:
             best_score = score
             best_config = (dp_base, alpha_fer)
 
-        print(f"{dp_base:>8} {alpha_fer:>6} | {m_all['r_u']:6.3f} {m_all['r_v']:6.3f} {m_all['r_spd']:6.3f} "
-              f"{m_all['rmse_spd']:6.2f} {m_all['bias_spd']:+6.2f} | "
-              f"{slp_corr:8.3f} {slp_rmse:8.1f} | "
-              f"{m_oc['r_u']:7.3f} {m_oc['r_v']:7.3f} {m_ln['r_u']:7.3f} {m_ln['r_v']:7.3f}")
+        print(
+            f"{dp_base:>8} {alpha_fer:>6} | {m_all['r_u']:6.3f} {m_all['r_v']:6.3f} {m_all['r_spd']:6.3f} "
+            f"{m_all['rmse_spd']:6.2f} {m_all['bias_spd']:+6.2f} | "
+            f"{slp_corr:8.3f} {slp_rmse:8.1f} | "
+            f"{m_oc['r_u']:7.3f} {m_oc['r_v']:7.3f} {m_ln['r_u']:7.3f} {m_ln['r_v']:7.3f}"
+        )
 
 print(f"\nBest config: dp_base={best_config[0]}, alpha_fer={best_config[1]}")
 
@@ -396,9 +411,9 @@ print(f"\nBest config: dp_base={best_config[0]}, alpha_fer={best_config[1]}")
 # ═══════════════════════════════════════════════════════════════════════
 # PART 3: Turning angle comparison with best config
 # ═══════════════════════════════════════════════════════════════════════
-print("\n" + "="*100)
+print("\n" + "=" * 100)
 print("  PART 3: Turning angles — current vs physical Cd (obs SLP)")
-print("="*100)
+print("=" * 100)
 print(f"{'Lat':>6} {'Obs':>8} {'Cur Cd':>8} {'Phys Cd':>8}")
 print("-" * 40)
 
@@ -457,17 +472,18 @@ for j, la in enumerate(lat):
 # PART 4: Zonal mean comparison — best recon config
 # ═══════════════════════════════════════════════════════════════════════
 dp_b, a_f = best_config
-print(f"\n{'='*120}")
+print(f"\n{'=' * 120}")
 print(f"  PART 4: Zonal mean U-wind — best recon (dp_base={dp_b}, alpha={a_f}) vs obs")
-print(f"{'='*120}")
+print(f"{'=' * 120}")
 
 # Compute winds for best config
 u_best = np.zeros((12, nlat, nlon))
 v_best = np.zeros((12, nlat, nlon))
 slp_best = np.zeros((12, nlat, nlon))
 for m in range(12):
-    slp = compute_slp_from_T(col_T_smooth[m], itcz_rad[m], dp_thermal[m],
-                             dp_base=dp_b, alpha_fer=a_f)
+    slp = compute_slp_from_T(
+        col_T_smooth[m], itcz_rad[m], dp_thermal[m], dp_base=dp_b, alpha_fer=a_f
+    )
     slp_best[m] = slp
     Z = geopotential_from_slp(slp, col_T_smooth[m])
     u_g, v_g = blended_wind(Z)
@@ -479,7 +495,9 @@ for m in range(12):
 u_obs_phys = drag_configs["physical"]["_u_ekm"]
 v_obs_phys = drag_configs["physical"]["_v_ekm"]
 
-print(f"{'Lat':>6} {'Obs u':>7} {'ObsSLP':>7} {'Recon':>7} | {'Obs spd':>8} {'ObsSLP':>8} {'Recon':>8}")
+print(
+    f"{'Lat':>6} {'Obs u':>7} {'ObsSLP':>7} {'Recon':>7} | {'Obs spd':>8} {'ObsSLP':>8} {'Recon':>8}"
+)
 print("-" * 65)
 
 for j, la in enumerate(lat):
@@ -487,19 +505,27 @@ for j, la in enumerate(lat):
     u_op = np.mean(np.nanmean(u_obs_phys, axis=0)[j])
     u_r = np.mean(np.nanmean(u_best, axis=0)[j])
 
-    spd_o = np.nanmean(np.sqrt(np.nanmean(uwnd_obs_5, axis=0)[j]**2 + np.nanmean(vwnd_obs_5, axis=0)[j]**2))
-    spd_op = np.mean(np.sqrt(np.nanmean(u_obs_phys, axis=0)[j]**2 + np.nanmean(v_obs_phys, axis=0)[j]**2))
-    spd_r = np.mean(np.sqrt(np.nanmean(u_best, axis=0)[j]**2 + np.nanmean(v_best, axis=0)[j]**2))
+    spd_o = np.nanmean(
+        np.sqrt(np.nanmean(uwnd_obs_5, axis=0)[j] ** 2 + np.nanmean(vwnd_obs_5, axis=0)[j] ** 2)
+    )
+    spd_op = np.mean(
+        np.sqrt(np.nanmean(u_obs_phys, axis=0)[j] ** 2 + np.nanmean(v_obs_phys, axis=0)[j] ** 2)
+    )
+    spd_r = np.mean(
+        np.sqrt(np.nanmean(u_best, axis=0)[j] ** 2 + np.nanmean(v_best, axis=0)[j] ** 2)
+    )
 
-    print(f"{la:6.1f} {u_o:+7.2f} {u_op:+7.2f} {u_r:+7.2f} | {spd_o:8.2f} {spd_op:8.2f} {spd_r:8.2f}")
+    print(
+        f"{la:6.1f} {u_o:+7.2f} {u_op:+7.2f} {u_r:+7.2f} | {spd_o:8.2f} {spd_op:8.2f} {spd_r:8.2f}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # PART 5: Regional winds for best config
 # ═══════════════════════════════════════════════════════════════════════
-print(f"\n{'='*120}")
-print(f"  PART 5: Regional wind comparison (July) — best recon vs obs")
-print(f"{'='*120}")
+print(f"\n{'=' * 120}")
+print("  PART 5: Regional wind comparison (July) — best recon vs obs")
+print(f"{'=' * 120}")
 
 regions = {
     "NH Westerlies (40-60N)": (40, 60, 0, 360),
@@ -511,7 +537,9 @@ regions = {
 }
 
 m = 6
-print(f"{'Region':>35} | {'Obs u':>6} {'Obs v':>6} {'spd':>5} | {'ObsSLP u':>8} {'v':>5} {'spd':>5} | {'Recon u':>7} {'v':>5} {'spd':>5}")
+print(
+    f"{'Region':>35} | {'Obs u':>6} {'Obs v':>6} {'spd':>5} | {'ObsSLP u':>8} {'v':>5} {'spd':>5} | {'Recon u':>7} {'v':>5} {'spd':>5}"
+)
 print("-" * 105)
 
 for region_name, (lat_lo, lat_hi, lon_lo, lon_hi) in regions.items():
@@ -531,17 +559,19 @@ for region_name, (lat_lo, lat_hi, lon_lo, lon_hi) in regions.items():
     up, vp = mean_wind(u_obs_phys, v_obs_phys)
     ur, vr = mean_wind(u_best, v_best)
 
-    print(f"{region_name:>35} | {uo:+6.2f} {vo:+6.2f} {np.hypot(uo,vo):5.1f} | "
-          f"{up:+8.2f} {vp:+5.2f} {np.hypot(up,vp):5.1f} | "
-          f"{ur:+7.2f} {vr:+5.2f} {np.hypot(ur,vr):5.1f}")
+    print(
+        f"{region_name:>35} | {uo:+6.2f} {vo:+6.2f} {np.hypot(uo, vo):5.1f} | "
+        f"{up:+8.2f} {vp:+5.2f} {np.hypot(up, vp):5.1f} | "
+        f"{ur:+7.2f} {vr:+5.2f} {np.hypot(ur, vr):5.1f}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # PART 6: SLP comparison — obs vs best recon
 # ═══════════════════════════════════════════════════════════════════════
-print(f"\n{'='*100}")
+print(f"\n{'=' * 100}")
 print(f"  PART 6: Zonal mean SLP — obs vs recon (dp_base={dp_b})")
-print(f"{'='*100}")
+print(f"{'=' * 100}")
 print(f"{'Lat':>6} {'Obs':>7} {'Recon':>7} {'Diff':>7}")
 print("-" * 30)
 
@@ -556,6 +586,7 @@ for j, la in enumerate(lat):
 # ── Plots ────────────────────────────────────────────────────────────
 try:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -565,10 +596,12 @@ try:
 
     for ax, (midx, mname) in zip(axes[:2], [(6, "July"), (0, "January")]):
         obs_zm = np.nanmean(uwnd_obs_5[midx], axis=1)
-        ax.plot(lat, obs_zm, 'k-', lw=2.5, label="Obs 10m")
-        ax.plot(lat, np.mean(u_obs_phys[midx], axis=1), 'b-', lw=1.5, label="Ekman (obs SLP, phys Cd)")
-        ax.plot(lat, np.mean(u_best[midx], axis=1), 'r-', lw=1.5, label=f"Ekman (recon, dp={dp_b})")
-        ax.axhline(0, color='gray', lw=0.5)
+        ax.plot(lat, obs_zm, "k-", lw=2.5, label="Obs 10m")
+        ax.plot(
+            lat, np.mean(u_obs_phys[midx], axis=1), "b-", lw=1.5, label="Ekman (obs SLP, phys Cd)"
+        )
+        ax.plot(lat, np.mean(u_best[midx], axis=1), "r-", lw=1.5, label=f"Ekman (recon, dp={dp_b})")
+        ax.axhline(0, color="gray", lw=0.5)
         ax.set_xlabel("Latitude")
         ax.set_ylabel("U (m/s)")
         ax.set_title(mname)
@@ -578,10 +611,14 @@ try:
 
     ax = axes[2]
     obs_zm = np.nanmean(np.nanmean(uwnd_obs_5, axis=0), axis=1)
-    ax.plot(lat, obs_zm, 'k-', lw=2.5, label="Obs 10m")
-    ax.plot(lat, np.mean(np.nanmean(u_obs_phys, axis=0), axis=1), 'b-', lw=1.5, label="Ekman (obs SLP)")
-    ax.plot(lat, np.mean(np.nanmean(u_best, axis=0), axis=1), 'r-', lw=1.5, label=f"Recon dp={dp_b}")
-    ax.axhline(0, color='gray', lw=0.5)
+    ax.plot(lat, obs_zm, "k-", lw=2.5, label="Obs 10m")
+    ax.plot(
+        lat, np.mean(np.nanmean(u_obs_phys, axis=0), axis=1), "b-", lw=1.5, label="Ekman (obs SLP)"
+    )
+    ax.plot(
+        lat, np.mean(np.nanmean(u_best, axis=0), axis=1), "r-", lw=1.5, label=f"Recon dp={dp_b}"
+    )
+    ax.axhline(0, color="gray", lw=0.5)
     ax.set_xlabel("Latitude")
     ax.set_ylabel("U (m/s)")
     ax.set_title("Annual mean")
@@ -601,8 +638,8 @@ try:
     for ax, (midx, mname) in zip(axes[:2], [(6, "July"), (0, "January")]):
         obs_zm = np.nanmean(slp_obs_5[midx], axis=1) / 100
         rec_zm = np.mean(slp_best[midx], axis=1) / 100
-        ax.plot(lat, obs_zm, 'k-', lw=2.5, label="Obs SLP")
-        ax.plot(lat, rec_zm, 'r-', lw=1.5, label="Reconstructed")
+        ax.plot(lat, obs_zm, "k-", lw=2.5, label="Obs SLP")
+        ax.plot(lat, rec_zm, "r-", lw=1.5, label="Reconstructed")
         ax.set_xlabel("Latitude")
         ax.set_ylabel("hPa")
         ax.set_title(mname)
@@ -611,8 +648,8 @@ try:
         ax.grid(True, alpha=0.3)
 
     ax = axes[2]
-    ax.plot(lat, obs_slp_ann_zm, 'k-', lw=2.5, label="Obs SLP")
-    ax.plot(lat, rec_slp_ann_zm, 'r-', lw=1.5, label="Reconstructed")
+    ax.plot(lat, obs_slp_ann_zm, "k-", lw=2.5, label="Obs SLP")
+    ax.plot(lat, rec_slp_ann_zm, "r-", lw=1.5, label="Reconstructed")
     ax.set_xlabel("Latitude")
     ax.set_ylabel("hPa")
     ax.set_title("Annual mean")
@@ -642,9 +679,16 @@ try:
         vmax = 12 if "Diff" not in title else 6
         cmap = "YlOrRd" if "Diff" not in title else "RdBu_r"
         vmin = 0 if "Diff" not in title else -6
-        im = ax.pcolormesh(lon, lat, spd if "Diff" not in title else u_plot,
-                           cmap=cmap, vmin=vmin, vmax=vmax, shading="auto")
-        ax.quiver(lon, lat, u_plot, v_plot, scale=100, width=0.003, color='black', alpha=0.7)
+        im = ax.pcolormesh(
+            lon,
+            lat,
+            spd if "Diff" not in title else u_plot,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            shading="auto",
+        )
+        ax.quiver(lon, lat, u_plot, v_plot, scale=100, width=0.003, color="black", alpha=0.7)
         ax.set_title(title)
         plt.colorbar(im, ax=ax, shrink=0.8, label="m/s")
 
@@ -657,13 +701,19 @@ try:
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.set_title("Speed: obs 10m vs Ekman(obs SLP) vs Ekman(recon SLP)")
 
-    spd_obs = np.nanmean(np.sqrt(np.nanmean(uwnd_obs_5, axis=0)**2 + np.nanmean(vwnd_obs_5, axis=0)**2), axis=1)
-    spd_phys = np.mean(np.sqrt(np.nanmean(u_obs_phys, axis=0)**2 + np.nanmean(v_obs_phys, axis=0)**2), axis=1)
-    spd_rec = np.mean(np.sqrt(np.nanmean(u_best, axis=0)**2 + np.nanmean(v_best, axis=0)**2), axis=1)
+    spd_obs = np.nanmean(
+        np.sqrt(np.nanmean(uwnd_obs_5, axis=0) ** 2 + np.nanmean(vwnd_obs_5, axis=0) ** 2), axis=1
+    )
+    spd_phys = np.mean(
+        np.sqrt(np.nanmean(u_obs_phys, axis=0) ** 2 + np.nanmean(v_obs_phys, axis=0) ** 2), axis=1
+    )
+    spd_rec = np.mean(
+        np.sqrt(np.nanmean(u_best, axis=0) ** 2 + np.nanmean(v_best, axis=0) ** 2), axis=1
+    )
 
-    ax.plot(lat, spd_obs, 'k-', lw=2.5, label="Obs 10m")
-    ax.plot(lat, spd_phys, 'b-', lw=1.5, label="Ekman (obs SLP)")
-    ax.plot(lat, spd_rec, 'r-', lw=1.5, label=f"Ekman (recon dp={dp_b})")
+    ax.plot(lat, spd_obs, "k-", lw=2.5, label="Obs 10m")
+    ax.plot(lat, spd_phys, "b-", lw=1.5, label="Ekman (obs SLP)")
+    ax.plot(lat, spd_rec, "r-", lw=1.5, label=f"Ekman (recon dp={dp_b})")
     ax.set_xlabel("Latitude")
     ax.set_ylabel("Speed (m/s)")
     ax.legend()

@@ -15,7 +15,7 @@ OUTPUT = Path(__file__).resolve().parent.parent / "frontend" / "public" / "data"
 
 
 def main() -> None:
-    print(f"Downloading populated places from Natural Earth...")
+    print("Downloading populated places from Natural Earth...")
     with urllib.request.urlopen(GEOJSON_URL) as resp:
         data = json.loads(resp.read())
 

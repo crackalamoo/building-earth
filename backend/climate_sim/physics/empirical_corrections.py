@@ -112,10 +112,13 @@ def compute_amoc_velocity(
 
     # Velocity envelope: ramp up from 35N, flat 40-57N, taper to 65N
     envelope = np.where(
-        lat_1d < 35, 0.0,
-        np.where(lat_1d < 40, (lat_1d - 35.0) / 5.0,
-                 np.where(lat_1d < 57, 1.0,
-                          np.maximum(1.0 - (lat_1d - 57.0) / 8.0, 0.0)))
+        lat_1d < 35,
+        0.0,
+        np.where(
+            lat_1d < 40,
+            (lat_1d - 35.0) / 5.0,
+            np.where(lat_1d < 57, 1.0, np.maximum(1.0 - (lat_1d - 57.0) / 8.0, 0.0)),
+        ),
     )
 
     for j in range(nlat):

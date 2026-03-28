@@ -126,7 +126,7 @@ def _apply_nearest_neighbor_fallback(
         lon_diff = np.where(lon_diff > 180, lon_diff - 360, lon_diff)
         lon_diff = np.where(lon_diff < -180, lon_diff + 360, lon_diff)
         cos_lat = np.cos(np.radians(fb_lats))[:, np.newaxis]
-        land_dist_sq = lat_diff**2 + (lon_diff * cos_lat)**2
+        land_dist_sq = lat_diff**2 + (lon_diff * cos_lat) ** 2
 
         # Find nearest land cell for each fallback point
         nearest_land_idx = np.argmin(land_dist_sq, axis=1)
@@ -149,7 +149,7 @@ def _apply_nearest_neighbor_fallback(
             lon_diff_o = np.where(lon_diff_o > 180, lon_diff_o - 360, lon_diff_o)
             lon_diff_o = np.where(lon_diff_o < -180, lon_diff_o + 360, lon_diff_o)
             cos_lat_o = np.cos(np.radians(far_fb_lats))[:, np.newaxis]
-            ocean_dist_sq = lat_diff_o**2 + (lon_diff_o * cos_lat_o)**2
+            ocean_dist_sq = lat_diff_o**2 + (lon_diff_o * cos_lat_o) ** 2
 
             nearest_ocean_idx = np.argmin(ocean_dist_sq, axis=1)
             nearest_lat_idx[too_far] = ocean_indices_arr[nearest_ocean_idx, 0]
@@ -179,7 +179,7 @@ def _apply_nearest_neighbor_fallback(
         lon_diff = np.where(lon_diff > 180, lon_diff - 360, lon_diff)
         lon_diff = np.where(lon_diff < -180, lon_diff + 360, lon_diff)
         cos_lat = np.cos(np.radians(fb_lats))[:, np.newaxis]
-        dist_sq = lat_diff**2 + (lon_diff * cos_lat)**2
+        dist_sq = lat_diff**2 + (lon_diff * cos_lat) ** 2
 
         nearest_idx = np.argmin(dist_sq, axis=1)
         nearest_lat_idx = ocean_indices_arr[nearest_idx, 0]
@@ -214,21 +214,33 @@ def _apply_interpolation_overrides(
     #   sources: list of (coarse_lat, coarse_lon) — cells to blend between
     #   blend_axis: "lat" or "lon" — which axis to weight by proximity
     OVERRIDES = [
-        {   # Sicily → Italy (not Tunisia)
-            "fine_lat": (36.0, 39.0), "fine_lon": (12.0, 16.0),
-            "fine_type": "land", "sources": [(42.5, 12.5)], "blend_axis": "lat",
+        {  # Sicily → Italy (not Tunisia)
+            "fine_lat": (36.0, 39.0),
+            "fine_lon": (12.0, 16.0),
+            "fine_type": "land",
+            "sources": [(42.5, 12.5)],
+            "blend_axis": "lat",
         },
-        {   # Libya coast → Libya interior (not Greece)
-            "fine_lat": (30.0, 35.0), "fine_lon": (15.0, 25.0),
-            "fine_type": "land", "sources": [(27.5, 17.5), (27.5, 22.5)], "blend_axis": "lon",
+        {  # Libya coast → Libya interior (not Greece)
+            "fine_lat": (30.0, 35.0),
+            "fine_lon": (15.0, 25.0),
+            "fine_type": "land",
+            "sources": [(27.5, 17.5), (27.5, 22.5)],
+            "blend_axis": "lon",
         },
-        {   # Red Sea → E Mediterranean + Gulf of Aden
-            "fine_lat": (12.0, 30.0), "fine_lon": (32.0, 44.0),
-            "fine_type": "ocean", "sources": [(32.5, 27.5), (7.5, 52.5)], "blend_axis": "lat",
+        {  # Red Sea → E Mediterranean + Gulf of Aden
+            "fine_lat": (12.0, 30.0),
+            "fine_lon": (32.0, 44.0),
+            "fine_type": "ocean",
+            "sources": [(32.5, 27.5), (7.5, 52.5)],
+            "blend_axis": "lat",
         },
-        {   # Aegean Sea → E Mediterranean
-            "fine_lat": (35.0, 41.0), "fine_lon": (23.0, 28.0),
-            "fine_type": "ocean", "sources": [(32.5, 22.5), (32.5, 27.5)], "blend_axis": "lon",
+        {  # Aegean Sea → E Mediterranean
+            "fine_lat": (35.0, 41.0),
+            "fine_lon": (23.0, 28.0),
+            "fine_type": "ocean",
+            "sources": [(32.5, 22.5), (32.5, 27.5)],
+            "blend_axis": "lon",
         },
     ]
 
@@ -241,8 +253,10 @@ def _apply_interpolation_overrides(
 
         type_mask = fine_land_mask if is_land else ~fine_land_mask
         region = (
-            (fine_lat2d >= lat_min) & (fine_lat2d <= lat_max)
-            & (fine_lon2d >= lon_min) & (fine_lon2d <= lon_max)
+            (fine_lat2d >= lat_min)
+            & (fine_lat2d <= lat_max)
+            & (fine_lon2d >= lon_min)
+            & (fine_lon2d <= lon_max)
             & type_mask
         )
         if not np.any(region):
@@ -256,10 +270,12 @@ def _apply_interpolation_overrides(
             source_indices.append((i_lat, i_lon))
 
         # Compute weights by proximity along the blend axis
-        src_coords = np.array([
-            coarse_lats[si[0]] if blend_axis == "lat" else coarse_lons[si[1]]
-            for si in source_indices
-        ])
+        src_coords = np.array(
+            [
+                coarse_lats[si[0]] if blend_axis == "lat" else coarse_lons[si[1]]
+                for si in source_indices
+            ]
+        )
 
         fine_coord = fine_lat2d if blend_axis == "lat" else fine_lon2d
 
@@ -316,7 +332,7 @@ def _build_bilinear_weights(
     # Find the coarse cell indices that bracket each fine point
     # For latitude: find i such that coarse_lats[i] <= fine_lat < coarse_lats[i+1]
     # searchsorted gives us the index where fine_lat would be inserted
-    lat_idx_upper = np.searchsorted(coarse_lats, fine_lats_flat, side='right')
+    lat_idx_upper = np.searchsorted(coarse_lats, fine_lats_flat, side="right")
     lat_idx_lower = lat_idx_upper - 1
 
     # Clamp to valid range
@@ -324,7 +340,7 @@ def _build_bilinear_weights(
     lat_idx_upper = np.clip(lat_idx_upper, 0, nlat_coarse - 1)
 
     # For longitude: handle wraparound
-    lon_idx_upper = np.searchsorted(coarse_lons, fine_lons_flat, side='right')
+    lon_idx_upper = np.searchsorted(coarse_lons, fine_lons_flat, side="right")
     lon_idx_lower = lon_idx_upper - 1
 
     # Wrap longitude indices
@@ -418,9 +434,14 @@ def _build_bilinear_weights(
     # Apply manual overrides for regions where type-aware interpolation
     # produces geographic teleconnections (e.g., Sicily matching Tunisia).
     _apply_interpolation_overrides(
-        lat_indices, lon_indices, normalized_weights,
-        fine_lat2d, fine_lon2d, fine_land_mask,
-        coarse_lats, coarse_lons,
+        lat_indices,
+        lon_indices,
+        normalized_weights,
+        fine_lat2d,
+        fine_lon2d,
+        fine_land_mask,
+        coarse_lats,
+        coarse_lons,
     )
 
     return lat_indices, lon_indices, normalized_weights, uses_wrong_type
@@ -618,8 +639,12 @@ def interpolate_layer_map(
         coarse_land_mask = compute_land_mask(coarse_lon2d, coarse_lat2d)
         fine_land_mask = compute_land_mask(fine_lon2d, fine_lat2d)
         lat_idx, lon_idx, wts, _ = _build_bilinear_weights(
-            coarse_lats, coarse_lons, fine_lat2d, fine_lon2d,
-            coarse_land_mask, fine_land_mask,
+            coarse_lats,
+            coarse_lons,
+            fine_lat2d,
+            fine_lon2d,
+            coarse_land_mask,
+            fine_land_mask,
         )
         interp_elev = interpolate_field_bilinear(coarse_elevation, lat_idx, lon_idx, wts)
         elev_delta = np.maximum(0, fine_elevation - interp_elev)

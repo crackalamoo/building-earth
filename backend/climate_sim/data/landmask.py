@@ -34,16 +34,14 @@ def compute_ocean_albedo_direct(mu: np.ndarray) -> np.ndarray:
     mu_safe = np.maximum(mu, 0.001)
 
     # CESM parameterization
-    alpha = (
-        0.026 / (np.power(mu_safe, 1.7) + 0.065)
-        + 0.15 * (mu_safe - 0.1) * (mu_safe - 0.5) * (mu_safe - 1.0)
+    alpha = 0.026 / (np.power(mu_safe, 1.7) + 0.065) + 0.15 * (mu_safe - 0.1) * (mu_safe - 0.5) * (
+        mu_safe - 1.0
     )
 
     return np.clip(alpha, 0.0, 1.0)
 
-_MASK_CACHE: dict[
-    tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]
-] = {}
+
+_MASK_CACHE: dict[tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]] = {}
 
 
 @functools.lru_cache(maxsize=1)
@@ -64,7 +62,9 @@ def _prepared_lake_geometry():
     return prep(geometry)
 
 
-def _grid_signature(lon2d: np.ndarray, lat2d: np.ndarray) -> tuple[int, int, float, float, float, float]:
+def _grid_signature(
+    lon2d: np.ndarray, lat2d: np.ndarray
+) -> tuple[int, int, float, float, float, float]:
     """Return a tuple uniquely identifying a regular lon/lat grid."""
     nlat, nlon = lon2d.shape
     lon0 = float(lon2d[0, 0])
@@ -75,7 +75,8 @@ def _grid_signature(lon2d: np.ndarray, lat2d: np.ndarray) -> tuple[int, int, flo
 
 
 def _compute_land_and_lake_masks(
-    lon2d: np.ndarray, lat2d: np.ndarray,
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Determine land/sea classification by testing each cell center."""
     prepared_land = _prepared_land_geometry()
@@ -106,26 +107,26 @@ def _compute_land_and_lake_masks(
     _OVERRIDES: dict[float, tuple[list[tuple[float, float]], list[tuple[float, float]]]] = {
         5.0: (
             [  # Force land
-                (62.5, 337.5),   # Iceland
-                (7.5, 82.5),     # Sri Lanka
-                (32.5, 132.5),   # Japan (southern)
-                (37.5, 137.5),   # Japan (central)
+                (62.5, 337.5),  # Iceland
+                (7.5, 82.5),  # Sri Lanka
+                (32.5, 132.5),  # Japan (southern)
+                (37.5, 137.5),  # Japan (central)
                 (-37.5, 177.5),  # New Zealand North Island
-                (22.5, 282.5),   # Cuba
-                (7.5, 277.5),    # Panama
-                (17.5, 122.5),   # Philippines (northern)
-                (-2.5, 122.5),   # Sulawesi
-                (47.5, 237.5),   # Washington State / BC
-                (12.5, 272.5),   # Honduras / Nicaragua
-                (12.5, 122.5),   # Philippines (central / Visayas)
-                (-7.5, 147.5),   # Papua New Guinea (eastern)
+                (22.5, 282.5),  # Cuba
+                (7.5, 277.5),  # Panama
+                (17.5, 122.5),  # Philippines (northern)
+                (-2.5, 122.5),  # Sulawesi
+                (47.5, 237.5),  # Washington State / BC
+                (12.5, 272.5),  # Honduras / Nicaragua
+                (12.5, 122.5),  # Philippines (central / Visayas)
+                (-7.5, 147.5),  # Papua New Guinea (eastern)
                 (-72.5, 287.5),  # West Antarctica (Antarctic Peninsula base)
                 (-72.5, 237.5),  # West Antarctica (Marie Byrd Land)
                 (-72.5, 247.5),  # West Antarctica (Marie Byrd Land)
-                (22.5, 37.5),    # Red Sea
+                (22.5, 37.5),  # Red Sea
             ],
             [  # Force ocean
-                (32.5, 22.5),    # Eastern Mediterranean (off Libya)
+                (32.5, 22.5),  # Eastern Mediterranean (off Libya)
             ],
         ),
     }
@@ -160,6 +161,7 @@ def compute_lake_mask(lon2d: np.ndarray, lat2d: np.ndarray) -> np.ndarray:
     _, lake_mask = _MASK_CACHE[key]
     return lake_mask
 
+
 def compute_heat_capacity_field(
     lon2d: np.ndarray,
     lat2d: np.ndarray,
@@ -169,8 +171,12 @@ def compute_heat_capacity_field(
 ) -> np.ndarray:
     """Assign per-cell heat capacity based on land/sea classification."""
     land_mask = compute_land_mask(lon2d, lat2d)
-    ocean_heat_capacity = ocean_heat_capacity if ocean_heat_capacity is not None else OCEAN_HEAT_CAPACITY_M2
-    land_heat_capacity = land_heat_capacity if land_heat_capacity is not None else LAND_HEAT_CAPACITY_M2
+    ocean_heat_capacity = (
+        ocean_heat_capacity if ocean_heat_capacity is not None else OCEAN_HEAT_CAPACITY_M2
+    )
+    land_heat_capacity = (
+        land_heat_capacity if land_heat_capacity is not None else LAND_HEAT_CAPACITY_M2
+    )
     return np.where(land_mask, land_heat_capacity, ocean_heat_capacity)
 
 
@@ -192,7 +198,9 @@ def compute_albedo_field(
     land_albedo = land_albedo if land_albedo is not None else LAND_ALBEDO
     ocean_albedo = ocean_albedo if ocean_albedo is not None else OCEAN_ALBEDO
     polar_land_albedo = polar_land_albedo if polar_land_albedo is not None else POLAR_LAND_ALBEDO
-    tree_line_lat = tree_line_latitude_deg if tree_line_latitude_deg is not None else TREE_LINE_LATITUDE_DEG
+    tree_line_lat = (
+        tree_line_latitude_deg if tree_line_latitude_deg is not None else TREE_LINE_LATITUDE_DEG
+    )
 
     # Start with ocean albedo everywhere
     albedo = np.full_like(lat2d, ocean_albedo)
@@ -204,6 +212,7 @@ def compute_albedo_field(
 
     return albedo
 
+
 def _default_grid(resolution_deg: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
     """Generate a lon/lat grid matching the modeling module defaults."""
     lats = np.arange(-90.0 + resolution_deg / 2, 90.0, resolution_deg)
@@ -212,7 +221,9 @@ def _default_grid(resolution_deg: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
     return lon2d, lat2d
 
 
-def _plot_mask(land_mask: np.ndarray, lake_mask: np.ndarray, lon2d: np.ndarray, lat2d: np.ndarray) -> None:
+def _plot_mask(
+    land_mask: np.ndarray, lake_mask: np.ndarray, lon2d: np.ndarray, lat2d: np.ndarray
+) -> None:
     """Render the land and lake masks for quick inspection."""
     lon_centers = lon2d[0, :]
     lon_wrapped = ((lon_centers + 180.0) % 360.0) - 180.0

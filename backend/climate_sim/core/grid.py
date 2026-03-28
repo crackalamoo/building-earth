@@ -12,6 +12,7 @@ def create_lat_lon_grid(resolution_deg: float = 1.0) -> tuple[np.ndarray, np.nda
     lon2d, lat2d = np.meshgrid(lons, lats)
     return lon2d, lat2d
 
+
 def expand_latitude_field(latitude_field: np.ndarray, lon_size: int) -> np.ndarray:
     """Broadcast a latitude-only monthly field across longitude indices."""
     return np.repeat(latitude_field[..., None], lon_size, axis=2)

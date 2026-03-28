@@ -38,7 +38,6 @@ from climate_sim.data.constants import (
     LATENT_HEAT_VAPORIZATION_J_KG,
     STANDARD_LAPSE_RATE_K_PER_M,
 )
-from climate_sim.physics.humidity import compute_saturation_specific_humidity
 from climate_sim.physics.precipitation import (
     compute_convective_precipitation,
 )
@@ -58,30 +57,30 @@ W_CRIT = 0.005  # m/s - threshold for rising/sinking discrimination
 
 # RH exponents for cloud types
 # Lower exponents = less sensitivity to RH (clouds form at lower RH)
-RH_EXPONENT_MARINE_SC = 0.5    # Marine Sc: weak RH sensitivity (inversion traps moisture)
-RH_EXPONENT_STRATIFORM = 1.0   # Stratiform: linear RH sensitivity
+RH_EXPONENT_MARINE_SC = 0.5  # Marine Sc: weak RH sensitivity (inversion traps moisture)
+RH_EXPONENT_STRATIFORM = 1.0  # Stratiform: linear RH sensitivity
 
 # Convective precipitation onset threshold (Bretherton et al. 2004, Rushley et al. 2018)
 # Precipitation picks up sharply at column RH ~ 0.7-0.8 over tropical oceans.
 # High cloud parameters
 # Increase factors to get ~20-30% high cloud coverage
-HIGH_CLOUD_CONVECTIVE_FACTOR = 0.8   # Fraction of convective clouds that produce anvils
-HIGH_CLOUD_FRONTAL_FACTOR = 0.5      # Fraction of frontal precip that produces cirrus
-HIGH_CLOUD_BACKGROUND_MIN = 0.05     # Minimum background thin cirrus
-HIGH_CLOUD_BACKGROUND_Q_SCALE = 15.0 # Cirrus scales with column moisture (q in kg/kg)
+HIGH_CLOUD_CONVECTIVE_FACTOR = 0.8  # Fraction of convective clouds that produce anvils
+HIGH_CLOUD_FRONTAL_FACTOR = 0.5  # Fraction of frontal precip that produces cirrus
+HIGH_CLOUD_BACKGROUND_MIN = 0.05  # Minimum background thin cirrus
+HIGH_CLOUD_BACKGROUND_Q_SCALE = 15.0  # Cirrus scales with column moisture (q in kg/kg)
 
 # Layer heights for cloud geometry
 CONVECTIVE_CLOUD_TOP_HEIGHT_M = 10000.0  # Deep convective clouds reach ~10 km
 CONVECTIVE_CLOUD_BASE_HEIGHT_M = 1500.0  # LCL for convective clouds ~1.5 km
-STRATIFORM_CLOUD_TOP_HEIGHT_M = 1500.0   # Shallow stratiform decks at ~1.5 km
-STRATIFORM_CLOUD_BASE_HEIGHT_M = 500.0   # Stratiform bases ~0.5 km
-MARINE_SC_CLOUD_TOP_HEIGHT_M = 1000.0    # Marine Sc tops at ~1 km (below inversion)
-MARINE_SC_CLOUD_BASE_HEIGHT_M = 300.0    # Marine Sc bases ~300 m
+STRATIFORM_CLOUD_TOP_HEIGHT_M = 1500.0  # Shallow stratiform decks at ~1.5 km
+STRATIFORM_CLOUD_BASE_HEIGHT_M = 500.0  # Stratiform bases ~0.5 km
+MARINE_SC_CLOUD_TOP_HEIGHT_M = 1000.0  # Marine Sc tops at ~1 km (below inversion)
+MARINE_SC_CLOUD_BASE_HEIGHT_M = 300.0  # Marine Sc bases ~300 m
 
 # High cloud (cirrus/anvil) parameters
 # High clouds form from detrainment of convective anvils and large-scale ascent
-HIGH_CLOUD_TOP_HEIGHT_M = 12000.0    # Cirrus/anvils at ~12 km (tropopause)
-HIGH_CLOUD_BASE_HEIGHT_M = 8000.0    # High cloud bases ~8 km
+HIGH_CLOUD_TOP_HEIGHT_M = 12000.0  # Cirrus/anvils at ~12 km (tropopause)
+HIGH_CLOUD_BASE_HEIGHT_M = 8000.0  # High cloud bases ~8 km
 
 # ============================================================
 # OPTICAL DEPTH CONSTANTS
@@ -91,24 +90,24 @@ HIGH_CLOUD_BASE_HEIGHT_M = 8000.0    # High cloud bases ~8 km
 
 # Cloud type          τ_SW    τ_LW    (reason)
 CONVECTIVE_CLOUD_TAU_SW = 40.0
-CONVECTIVE_CLOUD_TAU_LW = 40.0   # Water cloud: τ_LW = τ_SW
+CONVECTIVE_CLOUD_TAU_LW = 40.0  # Water cloud: τ_LW = τ_SW
 
 STRATIFORM_CLOUD_TAU_SW = 7.0
-STRATIFORM_CLOUD_TAU_LW = 7.0    # Water cloud: τ_LW = τ_SW
+STRATIFORM_CLOUD_TAU_LW = 7.0  # Water cloud: τ_LW = τ_SW
 
 MARINE_SC_CLOUD_TAU_SW = 10.0
-MARINE_SC_CLOUD_TAU_LW = 10.0    # Water cloud: τ_LW = τ_SW
+MARINE_SC_CLOUD_TAU_LW = 10.0  # Water cloud: τ_LW = τ_SW
 
-HIGH_CLOUD_TAU_SW = 0.8          # Ice cloud: thin in SW
-HIGH_CLOUD_TAU_LW = 1.5          # Ice cloud: thicker in LW (more absorbing)
+HIGH_CLOUD_TAU_SW = 0.8  # Ice cloud: thin in SW
+HIGH_CLOUD_TAU_LW = 1.5  # Ice cloud: thicker in LW (more absorbing)
 # q-dependent LW optical depth: cirrus IWP scales with moisture availability.
 # Tropical cirrus (q~0.013) → tau~1.5, polar cirrus (q~0.001) → tau~1.04.
-HIGH_CLOUD_TAU_LW_BASE = 1.3     # Minimum LW optical depth (dry polar cirrus)
-HIGH_CLOUD_TAU_LW_Q_SCALE = 15.0 # tau_LW = base + scale * q
+HIGH_CLOUD_TAU_LW_BASE = 1.3  # Minimum LW optical depth (dry polar cirrus)
+HIGH_CLOUD_TAU_LW_Q_SCALE = 15.0  # tau_LW = base + scale * q
 
 # Two-stream G parameter for albedo: α = τ/(τ+G)
-TWO_STREAM_G_WATER = 7.0         # Water clouds
-TWO_STREAM_G_ICE = 12.0          # Ice clouds (forward scattering)
+TWO_STREAM_G_WATER = 7.0  # Water clouds
+TWO_STREAM_G_ICE = 12.0  # Ice clouds (forward scattering)
 
 # Single-scattering albedo ω₀
 WATER_CLOUD_OMEGA0 = 0.99
@@ -116,8 +115,8 @@ ICE_CLOUD_OMEGA0 = 0.97
 
 # Clear-sky SW absorptance (split between atmosphere and boundary layer)
 # Total ~20%, but water vapor is concentrated in lower troposphere
-CLEAR_SKY_SW_ABSORPTANCE_ATM = 0.12   # Free atmosphere (O3, some H2O)
-CLEAR_SKY_SW_ABSORPTANCE_BL = 0.08    # Boundary layer (H2O-rich)
+CLEAR_SKY_SW_ABSORPTANCE_ATM = 0.12  # Free atmosphere (O3, some H2O)
+CLEAR_SKY_SW_ABSORPTANCE_BL = 0.08  # Boundary layer (H2O-rich)
 # TODO: BL absorptance should depend on humidity (range ~5-12%)
 
 # Legacy aliases for backwards compatibility
@@ -226,27 +225,27 @@ class CloudPrecipOutput:
     """
 
     # Convective cloud properties (deep towers, anvils)
-    convective_frac: np.ndarray      # Cloud fraction (0-1)
-    convective_albedo: np.ndarray    # Per-cloud albedo
-    convective_top_K: np.ndarray     # Cloud top temperature (K)
-    convective_precip: np.ndarray    # Precipitation rate (kg/m²/s)
+    convective_frac: np.ndarray  # Cloud fraction (0-1)
+    convective_albedo: np.ndarray  # Per-cloud albedo
+    convective_top_K: np.ndarray  # Cloud top temperature (K)
+    convective_precip: np.ndarray  # Precipitation rate (kg/m²/s)
 
     # Stratiform cloud properties (shallow decks, frontal clouds)
-    stratiform_frac: np.ndarray      # Cloud fraction (0-1)
-    stratiform_albedo: np.ndarray    # Per-cloud albedo
-    stratiform_top_K: np.ndarray     # Cloud top temperature (K)
-    stratiform_precip: np.ndarray    # Precipitation rate (kg/m²/s)
+    stratiform_frac: np.ndarray  # Cloud fraction (0-1)
+    stratiform_albedo: np.ndarray  # Per-cloud albedo
+    stratiform_top_K: np.ndarray  # Cloud top temperature (K)
+    stratiform_precip: np.ndarray  # Precipitation rate (kg/m²/s)
 
     # Marine stratocumulus properties (ocean + subsidence zones)
-    marine_sc_frac: np.ndarray       # Cloud fraction (0-1)
-    marine_sc_albedo: np.ndarray     # Per-cloud albedo
-    marine_sc_top_K: np.ndarray      # Cloud top temperature (K)
-    marine_sc_precip: np.ndarray     # Precipitation rate (kg/m²/s)
+    marine_sc_frac: np.ndarray  # Cloud fraction (0-1)
+    marine_sc_albedo: np.ndarray  # Per-cloud albedo
+    marine_sc_top_K: np.ndarray  # Cloud top temperature (K)
+    marine_sc_precip: np.ndarray  # Precipitation rate (kg/m²/s)
 
     # High cloud properties (cirrus, anvils at tropopause)
-    high_cloud_frac: np.ndarray      # Cloud fraction (0-1)
-    high_cloud_albedo: np.ndarray    # Per-cloud albedo
-    high_cloud_top_K: np.ndarray     # Cloud top temperature (K)
+    high_cloud_frac: np.ndarray  # Cloud fraction (0-1)
+    high_cloud_albedo: np.ndarray  # Per-cloud albedo
+    high_cloud_top_K: np.ndarray  # Cloud top temperature (K)
 
     # ============================================================
     # LONGWAVE OPTICAL PROPERTIES (for thermal IR emission/absorption)
@@ -381,8 +380,6 @@ def compute_lts(
     lts = T_atm_K - T_bl_K + GAMMA_DRY * delta_z
 
     return lts
-
-
 
 
 def compute_convective_clouds(
@@ -589,15 +586,21 @@ def compute_cloud_top_temperatures(
         (convective_top_K, stratiform_top_K, marine_sc_top_K, high_cloud_top_K)
     """
     # Convective cloud tops: high altitude, very cold
-    convective_top_K = T_surface_K - STANDARD_LAPSE_RATE_K_PER_M * config.convective_cloud_top_height_m
+    convective_top_K = (
+        T_surface_K - STANDARD_LAPSE_RATE_K_PER_M * config.convective_cloud_top_height_m
+    )
     convective_top_K = np.maximum(convective_top_K, 180.0)  # Floor at tropopause
 
     # Stratiform cloud tops: low altitude, warm
-    stratiform_top_K = T_surface_K - STANDARD_LAPSE_RATE_K_PER_M * config.stratiform_cloud_top_height_m
+    stratiform_top_K = (
+        T_surface_K - STANDARD_LAPSE_RATE_K_PER_M * config.stratiform_cloud_top_height_m
+    )
     stratiform_top_K = np.maximum(stratiform_top_K, 240.0)  # Reasonable floor
 
     # Marine Sc cloud tops: very low altitude, very warm (near surface)
-    marine_sc_top_K = T_surface_K - STANDARD_LAPSE_RATE_K_PER_M * config.marine_sc_cloud_top_height_m
+    marine_sc_top_K = (
+        T_surface_K - STANDARD_LAPSE_RATE_K_PER_M * config.marine_sc_cloud_top_height_m
+    )
     marine_sc_top_K = np.maximum(marine_sc_top_K, 250.0)  # Reasonable floor
 
     # High cloud tops: very high altitude, at tropopause
@@ -854,7 +857,13 @@ def compute_unified_vertical_velocity(
     w_pressure = compute_vertical_velocity_from_pressure(dp_norm, w_scale=w_pressure_scale)
 
     # Frontal component (if wind and temperature available)
-    if T is not None and wind_u is not None and wind_v is not None and dx is not None and dy is not None:
+    if (
+        T is not None
+        and wind_u is not None
+        and wind_v is not None
+        and dx is not None
+        and dy is not None
+    ):
         w_frontal = compute_vertical_velocity_from_warm_advection(
             T, wind_u, wind_v, dx, dy, w_scale=w_frontal_scale
         )
@@ -932,8 +941,8 @@ def compute_clouds_and_precipitation(
         marine_sc_frac = np.zeros_like(T_bl_K)
 
     # 5. Compute cloud top temperatures
-    convective_top_K, stratiform_top_K, marine_sc_top_K, high_cloud_top_K = compute_cloud_top_temperatures(
-        T_surface_K, config
+    convective_top_K, stratiform_top_K, marine_sc_top_K, high_cloud_top_K = (
+        compute_cloud_top_temperatures(T_surface_K, config)
     )
 
     # ============================================================

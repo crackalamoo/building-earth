@@ -14,6 +14,7 @@ ARCTIC_CIRCLE_LATITUDE_DEG = 66.5
 # Seawater freezes at about -1.8°C due to salinity
 SEAWATER_FREEZE_C = -1.8
 
+
 @dataclass(frozen=True)
 class SnowAlbedoConfig:
     """Configuration for the diagnostic snow albedo scheme."""
@@ -49,8 +50,8 @@ class SnowAlbedoConfig:
     vegetation_albedo_enabled: bool = True
     # Bare soil albedo depends on soil type (mineralogy) and moisture
     # Soil type: sand deserts (hyperarid) are bright; clay/rock/organic soils are darker
-    desert_soil_albedo: float = 0.30   # Global desert average (Sahara 0.35, Gobi 0.22, etc.)
-    normal_soil_albedo: float = 0.22   # Clay, rock, laterite, loam
+    desert_soil_albedo: float = 0.30  # Global desert average (Sahara 0.35, Gobi 0.22, etc.)
+    normal_soil_albedo: float = 0.22  # Clay, rock, laterite, loam
     soil_type_precip_threshold: float = 150.0  # mm/yr: below = sandy desert
     # Moisture darkening: wet soil ~0.05 darker than dry (pore water reduces scattering)
     soil_moisture_darkening: float = 0.05
@@ -59,7 +60,7 @@ class SnowAlbedoConfig:
 
     # Vegetation fraction = ground cover (bare soil vs any plant cover)
     # Low threshold: 400-500 mm/yr gives full grass/shrub cover
-    veg_precip_min_mm_year: float = 50.0    # Below this: hyperarid, ~0% cover
+    veg_precip_min_mm_year: float = 50.0  # Below this: hyperarid, ~0% cover
     veg_precip_max_mm_year: float = 1000.0  # Above this: full ground cover
 
     # Growing season: caps max achievable ground cover when short
@@ -149,7 +150,8 @@ class AlbedoModel:
         # Growing season cap: short seasons limit max achievable ground cover
         if monthly_temperatures_c is not None:
             warm_months = np.sum(
-                monthly_temperatures_c > self.config.veg_growing_threshold_c, axis=0,
+                monthly_temperatures_c > self.config.veg_growing_threshold_c,
+                axis=0,
             )
             # Hermite ramp from tundra_floor (0 months) to 1.0 (full_months)
             # Hermite keeps cap low for 1-2 months, rises steeply toward 5
@@ -168,7 +170,9 @@ class AlbedoModel:
         return veg_frac
 
     def compute_bare_soil_albedo(
-        self, soil_moisture: np.ndarray, annual_precip_mm_year: np.ndarray,
+        self,
+        soil_moisture: np.ndarray,
+        annual_precip_mm_year: np.ndarray,
     ) -> np.ndarray:
         """Compute bare soil albedo from soil type (mineralogy) and moisture.
 
@@ -184,9 +188,8 @@ class AlbedoModel:
         t = np.clip(annual_precip_mm_year / (2.0 * thresh), 0.0, 1.0)
         soil_frac = t * t * (3.0 - 2.0 * t)  # 0=desert, 1=normal
         dry_albedo = (
-            (1.0 - soil_frac) * self.config.desert_soil_albedo
-            + soil_frac * self.config.normal_soil_albedo
-        )
+            1.0 - soil_frac
+        ) * self.config.desert_soil_albedo + soil_frac * self.config.normal_soil_albedo
 
         # Moisture darkening
         return dry_albedo - self.config.soil_moisture_darkening * soil_moisture
@@ -268,9 +271,8 @@ class AlbedoModel:
 
             # Blend bare soil and vegetation
             land_base_albedo = (
-                (1.0 - vegetation_fraction) * bare_soil_albedo
-                + vegetation_fraction * veg_albedo
-            )
+                1.0 - vegetation_fraction
+            ) * bare_soil_albedo + vegetation_fraction * veg_albedo
 
             # Apply only to land cells, keep base_albedo for ocean
             snow_free_albedo = np.where(self.land_mask, land_base_albedo, base_albedo)
@@ -286,8 +288,7 @@ class AlbedoModel:
             # Blend with diffuse albedo under clouds if cloud_fraction provided
             if cloud_fraction is not None:
                 effective_ocean_albedo = (
-                    cloud_fraction * OCEAN_ALBEDO_DIFFUSE
-                    + (1.0 - cloud_fraction) * ocean_albedo
+                    cloud_fraction * OCEAN_ALBEDO_DIFFUSE + (1.0 - cloud_fraction) * ocean_albedo
                 )
             else:
                 effective_ocean_albedo = ocean_albedo
@@ -328,9 +329,7 @@ class AlbedoModel:
         # Apply zenith-angle correction to sea ice albedo
         if effective_mu is not None and self.config.snow_ice_zenith_correction > 0:
             zenith_boost = self.config.snow_ice_zenith_correction * (1.0 - effective_mu)
-            effective_sea_ice_albedo = np.clip(
-                self.config.sea_ice_albedo + zenith_boost, 0.0, 0.95
-            )
+            effective_sea_ice_albedo = np.clip(self.config.sea_ice_albedo + zenith_boost, 0.0, 0.95)
         else:
             effective_sea_ice_albedo = self.config.sea_ice_albedo
 
@@ -471,10 +470,9 @@ def _compute_flux_weighted_ocean_albedo(
             h = np.linspace(-h0, h0, n_hour_angles)
 
             # cos(zenith) at each hour angle
-            mu = (
-                sin_lat[i_lat, 0] * sin_dec[0, i_month]
-                + cos_lat[i_lat, 0] * cos_dec[0, i_month] * np.cos(h)
-            )
+            mu = sin_lat[i_lat, 0] * sin_dec[0, i_month] + cos_lat[i_lat, 0] * cos_dec[
+                0, i_month
+            ] * np.cos(h)
             mu = np.maximum(mu, 0.001)
 
             # Albedo at each point

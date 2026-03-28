@@ -26,12 +26,8 @@ class ModelConfig:
     wind: WindConfig = field(default_factory=WindConfig)
     advection: AdvectionConfig = field(default_factory=AdvectionConfig)
     snow: SnowAlbedoConfig = field(default_factory=SnowAlbedoConfig)
-    sensible_heat: SensibleHeatExchangeConfig = field(
-        default_factory=SensibleHeatExchangeConfig
-    )
-    latent_heat: LatentHeatExchangeConfig = field(
-        default_factory=LatentHeatExchangeConfig
-    )
+    sensible_heat: SensibleHeatExchangeConfig = field(default_factory=SensibleHeatExchangeConfig)
+    latent_heat: LatentHeatExchangeConfig = field(default_factory=LatentHeatExchangeConfig)
     ocean_advection: OceanAdvectionConfig = field(default_factory=OceanAdvectionConfig)
     vertical_motion: VerticalMotionConfig = field(default_factory=VerticalMotionConfig)
     orographic: OrographicConfig = field(default_factory=OrographicConfig)

@@ -14,11 +14,14 @@ import numpy as np
 
 from climate_sim.data.constants import R_EARTH_METERS
 
+
 @dataclass(frozen=True)
 class OceanAdvectionConfig:
     """Configuration for ocean heat advection by Sverdrup-Stommel currents."""
+
     enabled: bool = True
     include_stommel: bool = True  # Include western boundary closure
+
 
 # Ocean properties
 RHO_WATER = 1025.0  # kg/m³, seawater density
@@ -450,10 +453,10 @@ def compute_ekman_pumping(
     # North neighbor is land → offshore = M_y < 0 (southward, away from land)
     # South neighbor is land → offshore = M_y > 0 (northward, away from land)
     for di, dj, get_transport, get_dx in [
-        (0, 1, lambda: -M_x, lambda: dx),      # east land → M_x < 0 is offshore
-        (0, -1, lambda: M_x, lambda: dx),       # west land → M_x > 0 is offshore
-        (-1, 0, lambda: -M_y, lambda: dy),       # north land → M_y < 0 is offshore
-        (1, 0, lambda: M_y, lambda: dy),         # south land → M_y > 0 is offshore
+        (0, 1, lambda: -M_x, lambda: dx),  # east land → M_x < 0 is offshore
+        (0, -1, lambda: M_x, lambda: dx),  # west land → M_x > 0 is offshore
+        (-1, 0, lambda: -M_y, lambda: dy),  # north land → M_y < 0 is offshore
+        (1, 0, lambda: M_y, lambda: dy),  # south land → M_y > 0 is offshore
     ]:
         # Find land neighbors in this direction
         neighbor_land = np.roll(np.roll(land_mask, -di, axis=0), -dj, axis=1)
@@ -515,16 +518,23 @@ def compute_ocean_currents(
     # Handle regions where Sverdrup breaks down using wind-friction balance
     mixed_layer_depth = 100.0
     for j in range(nlat):
-        row_mask = ocean_mask[j:j+1, :]
+        row_mask = ocean_mask[j : j + 1, :]
         if np.all(ocean_mask[j, :]):  # Circumpolar (ACC)
             u_gyre[j, :], _ = compute_wind_friction_velocity(
-                tau_x[j:j+1, :], tau_y[j:j+1, :], row_mask, ACC_FRICTION_COEFF, mixed_layer_depth
+                tau_x[j : j + 1, :],
+                tau_y[j : j + 1, :],
+                row_mask,
+                ACC_FRICTION_COEFF,
+                mixed_layer_depth,
             )
             v_gyre[j, :] = 0.0
         elif np.abs(lat_deg[j]) < MIN_LATITUDE_DEG:  # Equatorial
             u_gyre[j, :], v_gyre[j, :] = compute_wind_friction_velocity(
-                tau_x[j:j+1, :], tau_y[j:j+1, :], row_mask,
-                EQUATORIAL_FRICTION_COEFF, EQUATORIAL_MIXED_LAYER_DEPTH
+                tau_x[j : j + 1, :],
+                tau_y[j : j + 1, :],
+                row_mask,
+                EQUATORIAL_FRICTION_COEFF,
+                EQUATORIAL_MIXED_LAYER_DEPTH,
             )
 
     if include_ekman:
@@ -541,24 +551,27 @@ def compute_ocean_currents(
 
     # Compute coastal upwelling from offshore Ekman transport
     w_ekman_pumping = compute_ekman_pumping(
-        tau_x, tau_y, lat_deg, resolution_deg, ocean_mask, ~ocean_mask,
+        tau_x,
+        tau_y,
+        lat_deg,
+        resolution_deg,
+        ocean_mask,
+        ~ocean_mask,
     )
     w_ekman_pumping = np.where(ocean_mask, w_ekman_pumping, np.nan)
 
     return {
-        'tau_x': tau_x,
-        'tau_y': tau_y,
-        'curl_tau': curl_tau,
-        'sverdrup_transport': sverdrup_transport,
-        'psi_interior': psi_interior,
-        'psi': psi,
-        'u_gyre': u_gyre,
-        'v_gyre': v_gyre,
-        'u_ekman': u_ekman,
-        'v_ekman': v_ekman,
-        'u_velocity': u_velocity,
-        'v_velocity': v_velocity,
-        'w_ekman_pumping': w_ekman_pumping,
+        "tau_x": tau_x,
+        "tau_y": tau_y,
+        "curl_tau": curl_tau,
+        "sverdrup_transport": sverdrup_transport,
+        "psi_interior": psi_interior,
+        "psi": psi,
+        "u_gyre": u_gyre,
+        "v_gyre": v_gyre,
+        "u_ekman": u_ekman,
+        "v_ekman": v_ekman,
+        "u_velocity": u_velocity,
+        "v_velocity": v_velocity,
+        "w_ekman_pumping": w_ekman_pumping,
     }
-
-

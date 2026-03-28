@@ -13,7 +13,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.physics.precipitation import compute_precipitation_rh_gate
 
 
@@ -76,10 +75,10 @@ class OrographicModel:
 
         # --- Directional blockage ratios (precomputed from fine-res data) ---
         # Wind blocking (H=1000m BL depth): for advection
-        self.r_east_pos = face_stats["r_east_pos"]      # for u > 0
-        self.r_east_neg = face_stats["r_east_neg"]      # for u < 0
-        self.r_north_pos = face_stats["r_north_pos"]    # for v > 0
-        self.r_north_neg = face_stats["r_north_neg"]    # for v < 0
+        self.r_east_pos = face_stats["r_east_pos"]  # for u > 0
+        self.r_east_neg = face_stats["r_east_neg"]  # for u < 0
+        self.r_north_pos = face_stats["r_north_pos"]  # for v > 0
+        self.r_north_neg = face_stats["r_north_neg"]  # for v < 0
 
         # Eddy blocking (H=5000m moisture-weighted tropo depth): for diffusion
         # Use min of both directions (eddies are bidirectional)
@@ -138,8 +137,11 @@ class OrographicModel:
         return u_out, v_out
 
     def compute_orographic_precipitation(
-        self, w_orographic: np.ndarray, humidity_q: np.ndarray,
-        temperature_K: np.ndarray, rh: np.ndarray,
+        self,
+        w_orographic: np.ndarray,
+        humidity_q: np.ndarray,
+        temperature_K: np.ndarray,
+        rh: np.ndarray,
     ) -> np.ndarray:
         """Direct orographic precipitation rate (kg/m²/s).
 
@@ -155,9 +157,7 @@ class OrographicModel:
         rh_gate = compute_precipitation_rh_gate(rh)
         return rh_gate * eff * np.maximum(w_orographic, 0.0) * humidity_q * rho
 
-    def compute_effects(
-        self, wind_u: np.ndarray, wind_v: np.ndarray
-    ) -> dict[str, np.ndarray]:
+    def compute_effects(self, wind_u: np.ndarray, wind_v: np.ndarray) -> dict[str, np.ndarray]:
         """Main entry point: compute all orographic effects.
 
         Returns dict with:

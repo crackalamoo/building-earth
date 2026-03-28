@@ -33,7 +33,13 @@ from climate_sim.physics.snow_albedo import SnowAlbedoConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.orographic_effects import OrographicConfig
 from climate_sim.core.grid import create_lat_lon_grid
-from climate_sim.plotting import add_status_readout, build_temperature_cmap, plot_layered_monthly_temperature_cycle, plot_monthly_temperature_cycle, plot_obs_vs_sim_grid
+from climate_sim.plotting import (
+    add_status_readout,
+    build_temperature_cmap,
+    plot_layered_monthly_temperature_cycle,
+    plot_monthly_temperature_cycle,
+    plot_obs_vs_sim_grid,
+)
 from climate_sim.data.calendar import MONTH_NAMES
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.runtime.cli import add_common_model_arguments
@@ -84,8 +90,7 @@ OUTFILE = PROC_DIR / "ref_climatology_1deg_1981-2010.nc"
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Download NOAA climatology, run the climate model, and evaluate "
-            "simulation performance."
+            "Download NOAA climatology, run the climate model, and evaluate simulation performance."
         )
     )
     default_atmosphere = RadiationConfig().include_atmosphere
@@ -304,8 +309,8 @@ def build_humidity_precip_reference() -> xr.Dataset | None:
         clim_vwnd = vwnd_1deg.groupby("time.month").mean("time")
 
     data_vars: dict = {
-        "shum_clim": clim_shum,       # kg/kg
-        "precip_clim": clim_precip,    # mm/day
+        "shum_clim": clim_shum,  # kg/kg
+        "precip_clim": clim_precip,  # mm/day
     }
     if clim_slp is not None:
         data_vars["slp_clim"] = clim_slp  # Pa
@@ -364,13 +369,18 @@ def aggregate_humidity_precip_to_sim_grid(
 
     shum_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
     precip_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
-    slp_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float) if slp_src is not None else None
-    uwnd_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float) if uwnd_src is not None else None
-    vwnd_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float) if vwnd_src is not None else None
+    slp_out = (
+        np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float) if slp_src is not None else None
+    )
+    uwnd_out = (
+        np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float) if uwnd_src is not None else None
+    )
+    vwnd_out = (
+        np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float) if vwnd_src is not None else None
+    )
 
     lat_masks = [
-        (lat_noaa >= lat_edges_min[i]) & (lat_noaa < lat_edges_max[i])
-        for i in range(nlat_sim)
+        (lat_noaa >= lat_edges_min[i]) & (lat_noaa < lat_edges_max[i]) for i in range(nlat_sim)
     ]
 
     for j in range(nlon_sim):
@@ -451,7 +461,9 @@ def compute_humidity_precip_statistics(
     print("Humidity Evaluation (g/kg)")
     print("=" * 60)
 
-    header = f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    header = (
+        f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    )
     print(header)
     print("-" * len(header))
 
@@ -471,15 +483,19 @@ def compute_humidity_precip_statistics(
     corr_land = weighted_pattern_correlation(sim_q_gkg, obs_q_gkg, weights_land)
     corr_ocean = weighted_pattern_correlation(sim_q_gkg, obs_q_gkg, weights_ocean)
     corr_global = weighted_pattern_correlation(sim_q_gkg, obs_q_gkg, cell_areas)
-    print(f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}")
+    print(
+        f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}"
+    )
 
     # Area-weighted means
     sim_q_land = weighted_mean(sim_q_gkg, weights_land)
     obs_q_land = weighted_mean(obs_q_gkg, weights_land)
     sim_q_ocean = weighted_mean(sim_q_gkg, weights_ocean)
     obs_q_ocean = weighted_mean(obs_q_gkg, weights_ocean)
-    print(f"Mean q:  Sim land={sim_q_land:.1f}  Obs land={obs_q_land:.1f}  "
-          f"Sim ocean={sim_q_ocean:.1f}  Obs ocean={obs_q_ocean:.1f}")
+    print(
+        f"Mean q:  Sim land={sim_q_land:.1f}  Obs land={obs_q_land:.1f}  "
+        f"Sim ocean={sim_q_ocean:.1f}  Obs ocean={obs_q_ocean:.1f}"
+    )
 
     # --- Relative Humidity evaluation (%) ---
     if sim_t_bl is not None and obs_t_sfc is not None:
@@ -512,20 +528,26 @@ def compute_humidity_precip_statistics(
         corr_land = weighted_pattern_correlation(sim_rh, obs_rh, weights_land)
         corr_ocean = weighted_pattern_correlation(sim_rh, obs_rh, weights_ocean)
         corr_global = weighted_pattern_correlation(sim_rh, obs_rh, cell_areas)
-        print(f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}")
+        print(
+            f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}"
+        )
 
         sim_rh_land = weighted_mean(sim_rh, weights_land)
         obs_rh_land = weighted_mean(obs_rh, weights_land)
         sim_rh_ocean = weighted_mean(sim_rh, weights_ocean)
         obs_rh_ocean = weighted_mean(obs_rh, weights_ocean)
-        print(f"Mean RH:  Sim land={sim_rh_land:.1f}%  Obs land={obs_rh_land:.1f}%  "
-              f"Sim ocean={sim_rh_ocean:.1f}%  Obs ocean={obs_rh_ocean:.1f}%")
+        print(
+            f"Mean RH:  Sim land={sim_rh_land:.1f}%  Obs land={obs_rh_land:.1f}%  "
+            f"Sim ocean={sim_rh_ocean:.1f}%  Obs ocean={obs_rh_ocean:.1f}%"
+        )
 
     print("\n" + "=" * 60)
     print("Precipitation Evaluation (mm/day)")
     print("=" * 60)
 
-    header = f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    header = (
+        f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    )
     print(header)
     print("-" * len(header))
 
@@ -544,14 +566,18 @@ def compute_humidity_precip_statistics(
     corr_land = weighted_pattern_correlation(sim_p_mmday, obs_p_mmday, weights_land)
     corr_ocean = weighted_pattern_correlation(sim_p_mmday, obs_p_mmday, weights_ocean)
     corr_global = weighted_pattern_correlation(sim_p_mmday, obs_p_mmday, cell_areas)
-    print(f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}")
+    print(
+        f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}"
+    )
 
     sim_p_land = weighted_mean(sim_p_mmday, weights_land)
     obs_p_land = weighted_mean(obs_p_mmday, weights_land)
     sim_p_ocean = weighted_mean(sim_p_mmday, weights_ocean)
     obs_p_ocean = weighted_mean(obs_p_mmday, weights_ocean)
-    print(f"Mean P:  Sim land={sim_p_land:.2f}  Obs land={obs_p_land:.2f}  "
-          f"Sim ocean={sim_p_ocean:.2f}  Obs ocean={obs_p_ocean:.2f}")
+    print(
+        f"Mean P:  Sim land={sim_p_land:.2f}  Obs land={obs_p_land:.2f}  "
+        f"Sim ocean={sim_p_ocean:.2f}  Obs ocean={obs_p_ocean:.2f}"
+    )
 
 
 def compute_slp_statistics(
@@ -578,7 +604,9 @@ def compute_slp_statistics(
     print("Sea Level Pressure Evaluation (hPa)")
     print("=" * 60)
 
-    header = f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    header = (
+        f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    )
     print(header)
     print("-" * len(header))
 
@@ -597,7 +625,9 @@ def compute_slp_statistics(
     corr_land = weighted_pattern_correlation(sim_hpa, obs_hpa, weights_land)
     corr_ocean = weighted_pattern_correlation(sim_hpa, obs_hpa, weights_ocean)
     corr_global = weighted_pattern_correlation(sim_hpa, obs_hpa, cell_areas)
-    print(f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}")
+    print(
+        f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}"
+    )
 
     sim_mean = weighted_mean(sim_hpa, cell_areas)
     obs_mean = weighted_mean(obs_hpa, cell_areas)
@@ -633,8 +663,12 @@ def plot_humidity_precip_anomaly(
     # Build layers: always have q, optionally add RH
     layers: list[tuple[str, np.ndarray]] = [("Specific Humidity", q_with_annual)]
     styles: list[dict] = [
-        {"cmap": colormaps["BrBG"], "norm": Normalize(vmin=-q_vmax, vmax=q_vmax),
-         "colorbar_label": "Humidity anomaly (g/kg)", "unit": "g/kg"},
+        {
+            "cmap": colormaps["BrBG"],
+            "norm": Normalize(vmin=-q_vmax, vmax=q_vmax),
+            "colorbar_label": "Humidity anomaly (g/kg)",
+            "unit": "g/kg",
+        },
     ]
 
     if sim_t_bl is not None and obs_t_sfc is not None:
@@ -653,8 +687,12 @@ def plot_humidity_precip_anomaly(
 
         layers.append(("Relative Humidity", rh_with_annual))
         styles.append(
-            {"cmap": colormaps["BrBG"], "norm": Normalize(vmin=-rh_vmax, vmax=rh_vmax),
-             "colorbar_label": "RH anomaly (%)", "unit": "%"},
+            {
+                "cmap": colormaps["BrBG"],
+                "norm": Normalize(vmin=-rh_vmax, vmax=rh_vmax),
+                "colorbar_label": "RH anomaly (%)",
+                "unit": "%",
+            },
         )
 
     plot_layered_monthly_temperature_cycle(
@@ -763,7 +801,9 @@ def compute_wind_statistics(
     print("Wind Speed Evaluation (m/s)")
     print("=" * 70)
 
-    header = f"{'Band':<22}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    header = (
+        f"{'Band':<22}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    )
     print(header)
     print("-" * len(header))
 
@@ -791,7 +831,9 @@ def compute_wind_statistics(
     corr_land = weighted_pattern_correlation(sim_wspd, obs_wspd, weights_land)
     corr_ocean = weighted_pattern_correlation(sim_wspd, obs_wspd, weights_ocean)
     corr_global = weighted_pattern_correlation(sim_wspd, obs_wspd, cell_areas)
-    print(f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}")
+    print(
+        f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}"
+    )
 
     corr_u = weighted_pattern_correlation(sim_u, obs_u, cell_areas)
     corr_v = weighted_pattern_correlation(sim_v, obs_v, cell_areas)
@@ -803,9 +845,11 @@ def compute_wind_statistics(
     obs_ocean = weighted_mean(obs_wspd, weights_ocean)
     sim_global = weighted_mean(sim_wspd, cell_areas)
     obs_global = weighted_mean(obs_wspd, cell_areas)
-    print(f"Mean wind speed:  Sim land={sim_land:.2f}  Obs land={obs_land:.2f}  "
-          f"Sim ocean={sim_ocean:.2f}  Obs ocean={obs_ocean:.2f}  "
-          f"Sim global={sim_global:.2f}  Obs global={obs_global:.2f} m/s")
+    print(
+        f"Mean wind speed:  Sim land={sim_land:.2f}  Obs land={obs_land:.2f}  "
+        f"Sim ocean={sim_ocean:.2f}  Obs ocean={obs_ocean:.2f}  "
+        f"Sim global={sim_global:.2f}  Obs global={obs_global:.2f} m/s"
+    )
 
 
 def plot_wind_speed_anomaly(
@@ -848,6 +892,7 @@ def plot_wind_speed_anomaly(
 # ----------------------------
 # Evaluation helpers
 # ----------------------------
+
 
 def aggregate_reference_to_sim_grid(
     ds: xr.Dataset,
@@ -900,8 +945,7 @@ def aggregate_reference_to_sim_grid(
 
     # Precompute latitude membership masks for efficiency.
     lat_masks = [
-        (lat_noaa >= lat_edges_min[i]) & (lat_noaa < lat_edges_max[i])
-        for i in range(nlat_sim)
+        (lat_noaa >= lat_edges_min[i]) & (lat_noaa < lat_edges_max[i]) for i in range(nlat_sim)
     ]
 
     for j in range(nlon_sim):
@@ -1049,9 +1093,7 @@ def weighted_pattern_correlation(
     return float(correlation)
 
 
-def weighted_min_max(
-    data: np.ndarray, weights: np.ndarray
-) -> tuple[float, float]:
+def weighted_min_max(data: np.ndarray, weights: np.ndarray) -> tuple[float, float]:
     """Compute min and max over valid (finite, weighted) cells, ignoring NaNs."""
     result = _prepare_weighted_arrays(data, weights=weights)
     if result is None:
@@ -1331,9 +1373,7 @@ def compute_bias_corrected_anomaly(
 
     # Combine using land mask
     bias_corrected_anomaly = np.where(
-        land_mask[None, ...],
-        land_diff_corrected,
-        ocean_diff_corrected
+        land_mask[None, ...], land_diff_corrected, ocean_diff_corrected
     )
 
     return bias_corrected_anomaly
@@ -1367,9 +1407,7 @@ def _plot_anomaly(
     norm = Normalize(vmin=-display_max, vmax=display_max)
     unit = temperature_unit(use_fahrenheit)
 
-    anomaly_with_annual = np.concatenate(
-        [anomaly, np.mean(anomaly, axis=0, keepdims=True)], axis=0
-    )
+    anomaly_with_annual = np.concatenate([anomaly, np.mean(anomaly, axis=0, keepdims=True)], axis=0)
 
     plot_monthly_temperature_cycle(
         lon2d,
@@ -1425,8 +1463,9 @@ def plot_baseline_and_anomaly(
     ]
 
     if obs_wspd is not None and sim_wspd is not None:
-        wspd_max = max(float(np.nanpercentile(obs_wspd, 99)),
-                       float(np.nanpercentile(sim_wspd, 99)), 1.0)
+        wspd_max = max(
+            float(np.nanpercentile(obs_wspd, 99)), float(np.nanpercentile(sim_wspd, 99)), 1.0
+        )
         wind_col: dict = {
             "obs": _append_annual(obs_wspd),
             "sim": _append_annual(sim_wspd),
@@ -1444,7 +1483,9 @@ def plot_baseline_and_anomaly(
         columns.append(wind_col)
 
     plot_obs_vs_sim_grid(
-        lon2d, lat2d, columns,
+        lon2d,
+        lat2d,
+        columns,
         title="Observed vs Simulated Climatology",
         use_fahrenheit=use_fahrenheit,
     )
@@ -1482,7 +1523,8 @@ CITIES_BIN = Path(__file__).resolve().parent.parent / "frontend" / "public" / "d
 
 
 def load_population_weights(
-    lon2d: np.ndarray, lat2d: np.ndarray,
+    lon2d: np.ndarray,
+    lat2d: np.ndarray,
 ) -> np.ndarray | None:
     """Load cities.bin and accumulate population into sim grid cells.
 
@@ -1595,8 +1637,12 @@ def plot_eval_metrics(
 
     # Linear regression for best-fit lines (overall, land, ocean)
     slope_all, intercept_all, _, _, _ = stats.linregress(obs_all, sim_all)
-    slope_land, intercept_land, _, _, _ = stats.linregress(obs_land, sim_land) if len(obs_land) > 2 else (np.nan, np.nan, 0, 0, 0)
-    slope_ocean, intercept_ocean, _, _, _ = stats.linregress(obs_ocean, sim_ocean) if len(obs_ocean) > 2 else (np.nan, np.nan, 0, 0, 0)
+    slope_land, intercept_land, _, _, _ = (
+        stats.linregress(obs_land, sim_land) if len(obs_land) > 2 else (np.nan, np.nan, 0, 0, 0)
+    )
+    slope_ocean, intercept_ocean, _, _, _ = (
+        stats.linregress(obs_ocean, sim_ocean) if len(obs_ocean) > 2 else (np.nan, np.nan, 0, 0, 0)
+    )
 
     # Create figure with two axes (we'll show/hide them with tabs)
     fig = plt.figure(figsize=(12, 7))
@@ -1643,7 +1689,8 @@ def plot_eval_metrics(
 
     # Hexbin for all data with density coloring
     hb = ax_scatter.hexbin(
-        obs_all, sim_all,
+        obs_all,
+        sim_all,
         gridsize=50,
         cmap="Blues",
         mincnt=1,
@@ -1652,18 +1699,27 @@ def plot_eval_metrics(
 
     # Overlay land/ocean distinction with transparent scatter
     ax_scatter.scatter(
-        obs_land[::10], sim_land[::10],  # Subsample for visibility
-        c="#8B4513", alpha=0.3, s=3, label=f"Land (r={r_land:.3f})", rasterized=True
+        obs_land[::10],
+        sim_land[::10],  # Subsample for visibility
+        c="#8B4513",
+        alpha=0.3,
+        s=3,
+        label=f"Land (r={r_land:.3f})",
+        rasterized=True,
     )
     ax_scatter.scatter(
-        obs_ocean[::10], sim_ocean[::10],
-        c="#1E90FF", alpha=0.3, s=3, label=f"Ocean (r={r_ocean:.3f})", rasterized=True
+        obs_ocean[::10],
+        sim_ocean[::10],
+        c="#1E90FF",
+        alpha=0.3,
+        s=3,
+        label=f"Ocean (r={r_ocean:.3f})",
+        rasterized=True,
     )
 
     # 1:1 reference line
     ax_scatter.plot(
-        [plot_min, plot_max], [plot_min, plot_max],
-        "k--", linewidth=1.5, label="1:1 line"
+        [plot_min, plot_max], [plot_min, plot_max], "k--", linewidth=1.5, label="1:1 line"
     )
 
     # Best-fit regression lines for land and ocean
@@ -1673,18 +1729,24 @@ def plot_eval_metrics(
     if np.isfinite(slope_land):
         fit_y_land = slope_land * fit_x + intercept_land
         ax_scatter.plot(
-            fit_x, fit_y_land,
-            color="#8B4513", linewidth=2, linestyle="-",
-            label=f"Land fit: y={slope_land:.2f}x{intercept_land:+.1f}"
+            fit_x,
+            fit_y_land,
+            color="#8B4513",
+            linewidth=2,
+            linestyle="-",
+            label=f"Land fit: y={slope_land:.2f}x{intercept_land:+.1f}",
         )
 
     # Ocean fit line
     if np.isfinite(slope_ocean):
         fit_y_ocean = slope_ocean * fit_x + intercept_ocean
         ax_scatter.plot(
-            fit_x, fit_y_ocean,
-            color="#1E90FF", linewidth=2, linestyle="-",
-            label=f"Ocean fit: y={slope_ocean:.2f}x{intercept_ocean:+.1f}"
+            fit_x,
+            fit_y_ocean,
+            color="#1E90FF",
+            linewidth=2,
+            linestyle="-",
+            label=f"Ocean fit: y={slope_ocean:.2f}x{intercept_ocean:+.1f}",
         )
 
     ax_scatter.set_xlim(plot_min, plot_max)
@@ -1718,12 +1780,10 @@ def plot_eval_metrics(
         valid_pop = np.isfinite(cell_rmse) & (pop_frac > 0)
 
         # Per-cell MSE across months in display units
-        cell_mse_display = cell_rmse_display ** 2
+        cell_mse_display = cell_rmse_display**2
 
         # Population-weighted global RMSE
-        pop_weighted_global_rmse = float(
-            np.sqrt(np.nansum(pop_frac * cell_mse_display))
-        )
+        pop_weighted_global_rmse = float(np.sqrt(np.nansum(pop_frac * cell_mse_display)))
 
         # For the map: scale RMSE by log(population) so that population
         # differences don't completely dominate RMSE differences.
@@ -1755,8 +1815,7 @@ def plot_eval_metrics(
             transform=projection,
         )
         ax_pop.set_title(
-            f"Population-Weighted RMSE ({unit})  —  "
-            f"Global: {pop_weighted_global_rmse:.2f} {unit}"
+            f"Population-Weighted RMSE ({unit})  —  Global: {pop_weighted_global_rmse:.2f} {unit}"
         )
 
         cbar_ax_pop = fig.add_axes([0.87, 0.15, 0.02, 0.75])
@@ -2018,7 +2077,9 @@ def main() -> None:
         if obs_slp is not None:
             compute_slp_statistics(sim_slp, obs_slp, land_mask, cell_areas)
         else:
-            print("\nWarning: SLP reference not available (delete processed/ref_humidity_precip_1deg_1981-2010.nc to re-download)")
+            print(
+                "\nWarning: SLP reference not available (delete processed/ref_humidity_precip_1deg_1981-2010.nc to re-download)"
+            )
 
     # --- Wind evaluation ---
     sim_wind_u = layers.get("wind_u_10m")
@@ -2035,12 +2096,18 @@ def main() -> None:
 
         if obs_uwnd is not None and obs_vwnd is not None:
             compute_wind_statistics(
-                sim_wind_u, sim_wind_v,
-                obs_uwnd, obs_vwnd,
-                land_mask, cell_areas, lat2d,
+                sim_wind_u,
+                sim_wind_v,
+                obs_uwnd,
+                obs_vwnd,
+                land_mask,
+                cell_areas,
+                lat2d,
             )
         else:
-            print("\nWarning: Wind reference not available (delete processed/ref_humidity_precip_1deg_1981-2010.nc to re-download)")
+            print(
+                "\nWarning: Wind reference not available (delete processed/ref_humidity_precip_1deg_1981-2010.nc to re-download)"
+            )
 
     sim_combined = np.where(land_mask[None, ...], sim_t2m, surface_cycle)
     obs_wspd = np.sqrt(obs_uwnd**2 + obs_vwnd**2) if obs_uwnd is not None else None
@@ -2099,8 +2166,15 @@ def main() -> None:
         plot_slp_anomaly(lon2d, lat2d, sim_slp, obs_slp, args.headless)
 
     # --- Wind speed anomaly plot ---
-    if obs_uwnd is not None and obs_vwnd is not None and sim_wind_u is not None and sim_wind_v is not None:
-        plot_wind_speed_anomaly(lon2d, lat2d, sim_wind_u, sim_wind_v, obs_uwnd, obs_vwnd, args.headless)
+    if (
+        obs_uwnd is not None
+        and obs_vwnd is not None
+        and sim_wind_u is not None
+        and sim_wind_v is not None
+    ):
+        plot_wind_speed_anomaly(
+            lon2d, lat2d, sim_wind_u, sim_wind_v, obs_uwnd, obs_vwnd, args.headless
+        )
 
     # Compute combined simulation field (T2m over land, surface over ocean)
     sim_combined = np.where(land_mask[None, ...], sim_t2m, surface_cycle)

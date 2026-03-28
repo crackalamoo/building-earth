@@ -7,7 +7,10 @@ get more and valleys get less.
 
 from __future__ import annotations
 
-from climate_sim.physics.humidity import compute_itcz_latitude, specific_humidity_to_relative_humidity
+from climate_sim.physics.humidity import (
+    compute_itcz_latitude,
+    specific_humidity_to_relative_humidity,
+)
 import numpy as np
 
 from climate_sim.core.grid import create_lat_lon_grid
@@ -59,9 +62,12 @@ def recompute_fields_at_1deg(
     fine_land_mask = compute_land_mask(fine_lon2d, fine_lat2d)
 
     lat_indices, lon_indices, weights, _ = _build_bilinear_weights(
-        coarse_lats, coarse_lons,
-        fine_lat2d, fine_lon2d,
-        coarse_land_mask, fine_land_mask,
+        coarse_lats,
+        coarse_lons,
+        fine_lat2d,
+        fine_lon2d,
+        coarse_land_mask,
+        fine_land_mask,
     )
 
     # --- 3. Interpolate input fields to 1° ---
@@ -70,14 +76,17 @@ def recompute_fields_at_1deg(
         result = np.zeros((12, nlat_fine, nlon_fine))
         for m in range(12):
             result[m] = interpolate_field_bilinear(
-                coarse[m], lat_indices, lon_indices, weights,
+                coarse[m],
+                lat_indices,
+                lon_indices,
+                weights,
             )
         return result
 
     T_bl = _interp_monthly("boundary_layer")  # °C
-    q = _interp_monthly("humidity")           # kg/kg
-    wind_u = _interp_monthly("wind_u_10m")    # m/s
-    wind_v = _interp_monthly("wind_v_10m")    # m/s
+    q = _interp_monthly("humidity")  # kg/kg
+    wind_u = _interp_monthly("wind_u_10m")  # m/s
+    wind_v = _interp_monthly("wind_v_10m")  # m/s
 
     # Convert to Kelvin for physics
     T_bl_K = T_bl + 273.15
@@ -87,12 +96,14 @@ def recompute_fields_at_1deg(
 
     elevation_1deg = compute_cell_elevation(fine_lon2d, fine_lat2d, cache=False)
     elevation_std_1deg, _ = compute_cell_elevation_statistics(
-        fine_lon2d, fine_lat2d,
+        fine_lon2d,
+        fine_lat2d,
         cache=True,
         cache_name="elevation_statistics_1deg_cache.npz",
     )
     face_stats_1deg = compute_face_elevation_statistics(
-        fine_lon2d, fine_lat2d,
+        fine_lon2d,
+        fine_lat2d,
         cache=True,
         cache_name="face_elevation_1deg_cache.npz",
     )
@@ -109,15 +120,17 @@ def recompute_fields_at_1deg(
 
     elevation_5deg = compute_cell_elevation(coarse_lon2d, coarse_lat2d, cache=True)
     elevation_std_5deg, _ = compute_cell_elevation_statistics(
-        coarse_lon2d, coarse_lat2d,
+        coarse_lon2d,
+        coarse_lat2d,
         cache=True,
         cache_name="elevation_statistics_5deg_cache.npz",
     )
     face_stats_5deg = compute_face_elevation_statistics(
-        coarse_lon2d, coarse_lat2d,
+        coarse_lon2d,
+        coarse_lat2d,
         cache=True,
         cache_name="face_elevation_5deg_cache.npz",
-    )    
+    )
 
     oro_model_5deg = OrographicModel(
         lon2d=coarse_lon2d,
@@ -128,7 +141,7 @@ def recompute_fields_at_1deg(
         config=OrographicConfig(),
         land_mask=coarse_land_mask,
     )
-    
+
     # --- 5. Compute precipitation at 1° for each month ---
     #
     # Strategy:
@@ -146,17 +159,34 @@ def recompute_fields_at_1deg(
     p_ls_bilinear_list = []
 
     for m in range(12):
-
         # --- Step 2: orographic modulation at 1° ---
-        itcz_rad = compute_itcz_latitude(layers["boundary_layer"][m], coarse_lat2d, spherical_cell_area(coarse_lon2d, coarse_lat2d, earth_radius_m=R_EARTH_METERS))
+        itcz_rad = compute_itcz_latitude(
+            layers["boundary_layer"][m],
+            coarse_lat2d,
+            spherical_cell_area(coarse_lon2d, coarse_lat2d, earth_radius_m=R_EARTH_METERS),
+        )
         assert np.all(itcz_rad == layers["itcz_rad"][m])
-        itcz_rad_fine = compute_itcz_latitude(T_bl_K[m], fine_lat2d, spherical_cell_area(fine_lon2d, fine_lat2d, earth_radius_m=R_EARTH_METERS))
-        rh = specific_humidity_to_relative_humidity(q[m], T_bl_K[m], itcz_rad=itcz_rad_fine, lat2d=fine_lat2d, lon2d=fine_lon2d)
+        itcz_rad_fine = compute_itcz_latitude(
+            T_bl_K[m],
+            fine_lat2d,
+            spherical_cell_area(fine_lon2d, fine_lat2d, earth_radius_m=R_EARTH_METERS),
+        )
+        rh = specific_humidity_to_relative_humidity(
+            q[m], T_bl_K[m], itcz_rad=itcz_rad_fine, lat2d=fine_lat2d, lon2d=fine_lon2d
+        )
 
         T_bl_K_coarse = layers["boundary_layer"][m] + 273.15  # convert to Kelvin
-        rh_coarse = specific_humidity_to_relative_humidity(layers["humidity"][m], T_bl_K_coarse, itcz_rad=itcz_rad, lat2d=coarse_lat2d, lon2d=coarse_lon2d)
+        rh_coarse = specific_humidity_to_relative_humidity(
+            layers["humidity"][m],
+            T_bl_K_coarse,
+            itcz_rad=itcz_rad,
+            lat2d=coarse_lat2d,
+            lon2d=coarse_lon2d,
+        )
 
-        w_oro_coarse = oro_model_5deg.compute_orographic_vertical_velocity(wind_u=layers["wind_u"][m], wind_v=layers["wind_v"][m])
+        w_oro_coarse = oro_model_5deg.compute_orographic_vertical_velocity(
+            wind_u=layers["wind_u"][m], wind_v=layers["wind_v"][m]
+        )
         p_oro_coarse = oro_model_5deg.compute_orographic_precipitation(
             w_oro_coarse, layers["humidity"][m], T_bl_K_coarse, rh_coarse
         )
@@ -164,14 +194,20 @@ def recompute_fields_at_1deg(
 
         w_oro = oro_model_1deg.compute_orographic_vertical_velocity(wind_u[m], wind_v[m])
         p_oro = oro_model_1deg.compute_orographic_precipitation(
-            w_oro, q[m], T_bl_K[m], rh,
+            w_oro,
+            q[m],
+            T_bl_K[m],
+            rh,
         )
         p_oro = np.where(fine_land_mask, np.maximum(p_oro, 0.0), 0.0)
 
         p_ls = original_precip[m] - p_oro_coarse
         p_ls = np.maximum(p_ls, 0.0)
         p_ls_bilinear = interpolate_field_bilinear(
-            p_ls, lat_indices, lon_indices, weights,
+            p_ls,
+            lat_indices,
+            lon_indices,
+            weights,
         )
 
         p_ls_bilinear_list.append(p_ls_bilinear)
@@ -196,7 +232,10 @@ def recompute_fields_at_1deg(
         coarse_precip_interp = np.zeros((12, nlat_fine, nlon_fine))
         for m in range(12):
             coarse_precip_interp[m] = interpolate_field_bilinear(
-                original_precip[m], lat_indices, lon_indices, weights,
+                original_precip[m],
+                lat_indices,
+                lon_indices,
+                weights,
             )
 
         with np.errstate(divide="ignore", invalid="ignore"):

@@ -10,7 +10,11 @@ from climate_sim.core.grid import create_lat_lon_grid, expand_latitude_field
 from climate_sim.core.math_core import LinearSolveCache
 from climate_sim.data.calendar import DAYS_PER_MONTH, SECONDS_PER_DAY
 from climate_sim.data.constants import ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K
-from climate_sim.data.elevation import compute_cell_elevation, compute_cell_elevation_statistics, compute_cell_roughness_length
+from climate_sim.data.elevation import (
+    compute_cell_elevation,
+    compute_cell_elevation_statistics,
+    compute_cell_roughness_length,
+)
 from climate_sim.data.landmask import (
     LAND_ALBEDO,
     OCEAN_ALBEDO,
@@ -39,7 +43,10 @@ from climate_sim.physics.solar import (
 )
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.physics.orographic_effects import OrographicModel
-from climate_sim.physics.empirical_corrections import compute_amoc_velocity, compute_ice_sheet_mask, EmpiricalCorrectionsConfig
+from climate_sim.physics.empirical_corrections import (
+    compute_amoc_velocity,
+    compute_ice_sheet_mask,
+)
 from climate_sim.data.elevation import compute_face_elevation_statistics
 from climate_sim.runtime.config import ModelConfig
 
@@ -199,7 +206,8 @@ def build_model_operators(
         elevation_std, _elevation_max = compute_cell_elevation_statistics(lon2d, lat2d)
         face_stats = compute_face_elevation_statistics(lon2d, lat2d)
         _oro_model = OrographicModel(
-            lon2d, lat2d,
+            lon2d,
+            lat2d,
             elevation=topographic_elevation,
             elevation_std=elevation_std,
             face_stats=face_stats,
@@ -218,7 +226,9 @@ def build_model_operators(
         heat_capacity_field,
         land_mask=land_mask,
         atmosphere_heat_capacity=radiation_config.atmosphere_heat_capacity,
-        boundary_layer_heat_capacity=radiation_config.boundary_layer_heat_capacity if radiation_config.include_atmosphere else None,
+        boundary_layer_heat_capacity=radiation_config.boundary_layer_heat_capacity
+        if radiation_config.include_atmosphere
+        else None,
         config=diffusion_config,
         barrier_factors=orographic_barrier_factors,
     )
@@ -264,14 +274,20 @@ def build_model_operators(
 
     # Precompute geographic ice sheet mask (Antarctica + Greenland)
     ice_sheet_mask = compute_ice_sheet_mask(
-        lat2d, lon2d, land_mask, model_config.empirical,
+        lat2d,
+        lon2d,
+        land_mask,
+        model_config.empirical,
     )
 
     # Precompute AMOC thermohaline velocity (static, geometry-only)
     amoc_velocity: tuple[np.ndarray, np.ndarray] | None = None
     if model_config.empirical.enabled and model_config.empirical.amoc_enabled:
         amoc_velocity = compute_amoc_velocity(
-            lat2d, lon2d, land_mask, model_config.empirical,
+            lat2d,
+            lon2d,
+            land_mask,
+            model_config.empirical,
         )
 
     # Build surface context

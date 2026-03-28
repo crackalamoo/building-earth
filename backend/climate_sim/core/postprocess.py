@@ -6,7 +6,10 @@ from typing import Dict
 
 import numpy as np
 
-from climate_sim.physics.atmosphere.atmosphere import compute_two_meter_temperature, log_law_map_wind_speed
+from climate_sim.physics.atmosphere.atmosphere import (
+    compute_two_meter_temperature,
+    log_law_map_wind_speed,
+)
 from climate_sim.physics.atmosphere.wind import WindConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.core.state import ModelState
@@ -23,7 +26,9 @@ def postprocess_periodic_cycle_results(
     resolved_radiation: RadiationConfig,
     return_layer_map: bool = False,
     topographic_elevation: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+) -> (
+    tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]
+):
     """Post-process solver results: convert units, compute diagnostics, build output dictionaries.
 
     Parameters
@@ -93,9 +98,15 @@ def postprocess_periodic_cycle_results(
 
     if all(wind is not None for wind in wind_fields_geostrophic):
         # Geostrophic wind (free atmosphere, no drag)
-        geostrophic_u = np.stack([wind[0] for wind in wind_fields_geostrophic if wind is not None], axis=0)
-        geostrophic_v = np.stack([wind[1] for wind in wind_fields_geostrophic if wind is not None], axis=0)
-        geostrophic_speed = np.stack([wind[2] for wind in wind_fields_geostrophic if wind is not None], axis=0)
+        geostrophic_u = np.stack(
+            [wind[0] for wind in wind_fields_geostrophic if wind is not None], axis=0
+        )
+        geostrophic_v = np.stack(
+            [wind[1] for wind in wind_fields_geostrophic if wind is not None], axis=0
+        )
+        geostrophic_speed = np.stack(
+            [wind[2] for wind in wind_fields_geostrophic if wind is not None], axis=0
+        )
         layers_map["wind_u_geostrophic"] = geostrophic_u
         layers_map["wind_v_geostrophic"] = geostrophic_v
         layers_map["wind_speed_geostrophic"] = geostrophic_speed
@@ -112,7 +123,9 @@ def postprocess_periodic_cycle_results(
         # Compute 10m wind from Ekman wind using log law
         land_mask = compute_land_mask(lon2d, lat2d)
         elevation_data = load_elevation_data()
-        roughness_length = compute_cell_roughness_length(lon2d, lat2d, land_mask=land_mask, data=elevation_data)
+        roughness_length = compute_cell_roughness_length(
+            lon2d, lat2d, land_mask=land_mask, data=elevation_data
+        )
 
         # Reference height: Ekman boundary layer effective height (200m land, 500m ocean)
         height_ref_m = np.where(land_mask, 200.0, 500.0)
@@ -130,7 +143,9 @@ def postprocess_periodic_cycle_results(
                 # Scale u and v components by the same ratio
                 scale_factor = np.zeros_like(ekman_speed_2d)
                 mask_nonzero = ekman_speed_2d > 1.0e-6
-                scale_factor[mask_nonzero] = wind_10m_speed[mask_nonzero] / ekman_speed_2d[mask_nonzero]
+                scale_factor[mask_nonzero] = (
+                    wind_10m_speed[mask_nonzero] / ekman_speed_2d[mask_nonzero]
+                )
 
                 wind_10m_u = ekman_wind[0] * scale_factor
                 wind_10m_v = ekman_wind[1] * scale_factor
@@ -141,27 +156,37 @@ def postprocess_periodic_cycle_results(
         if all(wind is not None for wind in wind_10m_fields):
             wind_10m_u = np.stack([wind[0] for wind in wind_10m_fields if wind is not None], axis=0)
             wind_10m_v = np.stack([wind[1] for wind in wind_10m_fields if wind is not None], axis=0)
-            wind_10m_speed = np.stack([wind[2] for wind in wind_10m_fields if wind is not None], axis=0)
+            wind_10m_speed = np.stack(
+                [wind[2] for wind in wind_10m_fields if wind is not None], axis=0
+            )
             layers_map["wind_u_10m"] = wind_10m_u
             layers_map["wind_v_10m"] = wind_10m_v
             layers_map["wind_speed_10m"] = wind_10m_speed
 
     humidity_fields = [state.humidity_field for state in monthly_states]
     if all(humidity is not None for humidity in humidity_fields):
-        humidity_q = np.stack([humidity for humidity in humidity_fields if humidity is not None], axis=0)
+        humidity_q = np.stack(
+            [humidity for humidity in humidity_fields if humidity is not None], axis=0
+        )
         layers_map["humidity"] = humidity_q
 
     # Extract precipitation fields from state
     precipitation_fields = [state.precipitation_field for state in monthly_states]
     if all(precip is not None for precip in precipitation_fields):
-        precipitation = np.stack([precip for precip in precipitation_fields if precip is not None], axis=0)
+        precipitation = np.stack(
+            [precip for precip in precipitation_fields if precip is not None], axis=0
+        )
         layers_map["precipitation"] = precipitation
 
     # Extract ocean current fields from state
     ocean_current_fields = [state.ocean_current_field for state in monthly_states]
     if all(current is not None for current in ocean_current_fields):
-        ocean_u = np.stack([current[0] for current in ocean_current_fields if current is not None], axis=0)
-        ocean_v = np.stack([current[1] for current in ocean_current_fields if current is not None], axis=0)
+        ocean_u = np.stack(
+            [current[0] for current in ocean_current_fields if current is not None], axis=0
+        )
+        ocean_v = np.stack(
+            [current[1] for current in ocean_current_fields if current is not None], axis=0
+        )
         layers_map["ocean_u"] = ocean_u
         layers_map["ocean_v"] = ocean_v
 

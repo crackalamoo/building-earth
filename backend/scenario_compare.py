@@ -33,6 +33,7 @@ from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.core.units import convert_temperature, temperature_unit
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
@@ -359,7 +360,9 @@ def main() -> None:
     # Load or compute baseline
     if args.base_cache:
         data_dir = os.getenv("DATA_DIR")
-        assert data_dir is not None, "Please set the DATA_DIR environment variable to enable caching."
+        assert data_dir is not None, (
+            "Please set the DATA_DIR environment variable to enable caching."
+        )
         data_dir = Path(data_dir)
         cache_path = data_dir / "main.npz"
         lon2d, lat2d = create_lat_lon_grid(args.resolution)
@@ -375,7 +378,9 @@ def main() -> None:
     # Load or compute experiment
     if args.exp_cache:
         data_dir = os.getenv("DATA_DIR")
-        assert data_dir is not None, "Please set the DATA_DIR environment variable to enable caching."
+        assert data_dir is not None, (
+            "Please set the DATA_DIR environment variable to enable caching."
+        )
         data_dir = Path(data_dir)
         cache_path = data_dir / "main.npz"
         with np.load(cache_path) as cached:
@@ -450,7 +455,9 @@ def main() -> None:
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
     for anomaly in anomalies:
-        anomalies[anomaly] = np.concatenate([anomalies[anomaly], np.mean(anomalies[anomaly], axis=0, keepdims=True)], axis=0)
+        anomalies[anomaly] = np.concatenate(
+            [anomalies[anomaly], np.mean(anomalies[anomaly], axis=0, keepdims=True)], axis=0
+        )
 
     if not args.headless:
         plot_layered_monthly_temperature_cycle(

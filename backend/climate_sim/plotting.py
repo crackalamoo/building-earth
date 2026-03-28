@@ -3,7 +3,7 @@
 
 import io
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -126,6 +126,7 @@ def plot_field(
 
     plt.show()
 
+
 def _format_lat(lat_deg: float) -> str:
     """Format latitude with hemisphere indicator."""
     hemisphere = "N" if lat_deg >= 0 else "S"
@@ -157,8 +158,7 @@ def add_status_readout(
         data_container={"field": field},
         format_message=lambda lon, lat, data, lon_idx, lat_idx: (
             f"{_format_lat(lat)}  {_format_lon(lon)}  "
-            f"{data['field'][lat_idx, lon_idx]:.1f}"
-            + (f" {unit_label}" if unit_label else "")
+            f"{data['field'][lat_idx, lon_idx]:.1f}" + (f" {unit_label}" if unit_label else "")
         ),
     )
 
@@ -318,17 +318,18 @@ def plot_layered_monthly_temperature_cycle(
     ax.set_global()
     ax.coastlines(linewidth=0.4)
     ax.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
-    ax.add_feature(cfeature.NaturalEarthFeature(
-        'physical', 'lakes', '110m',
-        edgecolor='#000000', facecolor='none'),
-        linewidth=0.2)
+    ax.add_feature(
+        cfeature.NaturalEarthFeature(
+            "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+        ),
+        linewidth=0.2,
+    )
     ax.add_feature(cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0)
 
     current_state = {"layer": 0, "month": 0}
 
     data_stack_display = [
-        convert_temperature(field, use_fahrenheit, is_delta=value_is_delta)
-        for field in data_stack
+        convert_temperature(field, use_fahrenheit, is_delta=value_is_delta) for field in data_stack
     ]
 
     style0 = layer_styles[0]
@@ -370,9 +371,7 @@ def plot_layered_monthly_temperature_cycle(
         valfmt="%0.0f",
     )
 
-    current_field = {
-        "data": data_stack_display[current_state["layer"]][current_state["month"]]
-    }
+    current_field = {"data": data_stack_display[current_state["layer"]][current_state["month"]]}
 
     add_dynamic_status_readout(
         fig=fig,
@@ -445,7 +444,9 @@ def plot_obs_vs_sim_grid(
 
     projection = ccrs.PlateCarree()
     fig, axes = plt.subplots(
-        2, ncols, figsize=(6 * ncols + 1, 9),
+        2,
+        ncols,
+        figsize=(6 * ncols + 1, 9),
         subplot_kw=dict(projection=projection),
     )
     if ncols == 1:
@@ -474,9 +475,12 @@ def plot_obs_vs_sim_grid(
             ax.set_global()
             ax.coastlines(linewidth=0.4)
             ax.add_feature(cfeature.BORDERS, linewidth=0.2, edgecolor="#444444")
-            ax.add_feature(cfeature.NaturalEarthFeature(
-                'physical', 'lakes', '110m',
-                edgecolor='#000000', facecolor='none'), linewidth=0.2)
+            ax.add_feature(
+                cfeature.NaturalEarthFeature(
+                    "physical", "lakes", "110m", edgecolor="#000000", facecolor="none"
+                ),
+                linewidth=0.2,
+            )
             ax.add_feature(cfeature.LAND, facecolor="#f5f5f5", edgecolor="none", zorder=0)
 
             raw = col[key]
@@ -484,9 +488,13 @@ def plot_obs_vs_sim_grid(
             display_data[ri].append(data)
 
             mesh = ax.pcolormesh(
-                lon2d, lat2d, data[0],
-                cmap=col["cmap"], norm=col["norm"],
-                shading="auto", transform=projection,
+                lon2d,
+                lat2d,
+                data[0],
+                cmap=col["cmap"],
+                norm=col["norm"],
+                shading="auto",
+                transform=projection,
             )
             meshes[ri].append(mesh)
 
@@ -495,9 +503,17 @@ def plot_obs_vs_sim_grid(
                 u_sub = u_full[0, q_lat, q_lon]
                 v_sub = v_full[0, q_lat, q_lon]
                 qv = ax.quiver(
-                    q_lon2d, q_lat2d, u_sub, v_sub,
-                    transform=projection, scale=120, width=0.003,
-                    headwidth=3, headlength=4, color="k", alpha=0.6,
+                    q_lon2d,
+                    q_lat2d,
+                    u_sub,
+                    v_sub,
+                    transform=projection,
+                    scale=120,
+                    width=0.003,
+                    headwidth=3,
+                    headlength=4,
+                    color="k",
+                    alpha=0.6,
                 )
                 quivers[ri].append(qv)
                 quiver_data[ri].append((u_full, v_full))
@@ -507,10 +523,26 @@ def plot_obs_vs_sim_grid(
 
         axes[0, ci].set_title(col["label"], fontsize=11)
 
-    axes[0, 0].text(-0.05, 0.5, "Observed", transform=axes[0, 0].transAxes,
-                    fontsize=11, va="center", ha="right", rotation=90)
-    axes[1, 0].text(-0.05, 0.5, "Simulated", transform=axes[1, 0].transAxes,
-                    fontsize=11, va="center", ha="right", rotation=90)
+    axes[0, 0].text(
+        -0.05,
+        0.5,
+        "Observed",
+        transform=axes[0, 0].transAxes,
+        fontsize=11,
+        va="center",
+        ha="right",
+        rotation=90,
+    )
+    axes[1, 0].text(
+        -0.05,
+        0.5,
+        "Simulated",
+        transform=axes[1, 0].transAxes,
+        fontsize=11,
+        va="center",
+        ha="right",
+        rotation=90,
+    )
 
     # One colorbar per column, placed manually to the right of each column
     for ci, col in enumerate(columns):
@@ -526,9 +558,13 @@ def plot_obs_vs_sim_grid(
 
     slider_ax = fig.add_axes([0.15, 0.04, 0.7, 0.03])
     slider = Slider(
-        slider_ax, label="Month", valmin=0,
+        slider_ax,
+        label="Month",
+        valmin=0,
         valmax=display_data[0][0].shape[0] - 1,
-        valinit=0, valstep=1, valfmt="%0.0f",
+        valinit=0,
+        valstep=1,
+        valfmt="%0.0f",
     )
 
     def on_update(idx: float) -> None:

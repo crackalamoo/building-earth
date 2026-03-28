@@ -30,15 +30,15 @@ DP_POLES = 0.0  # No explicit polar high (prevents excessive polar easterlies)
 # NH: continents fragment the westerlies → weaker zonal-mean low, concentrated
 #     in localized features (Icelandic Low, Aleutian Low) that the thermal
 #     term partially captures via T anomalies.
-DP_SUBPOLAR_NH = -600.0   # Pa — weaker (continental disruption of storm track)
+DP_SUBPOLAR_NH = -600.0  # Pa — weaker (continental disruption of storm track)
 DP_SUBPOLAR_SH = -1500.0  # Pa — stronger (uninterrupted circumpolar storm track)
 
 # Width of pressure features (radians) - controls smoothness of transitions
-SIGMA_ITCZ = np.deg2rad(6.0)         # ITCZ trough width
-SIGMA_SUBTROPICS = np.deg2rad(12.0)   # Subtropical high width
-SIGMA_SUBPOLAR_NH = np.deg2rad(8.0)   # NH subpolar width
+SIGMA_ITCZ = np.deg2rad(6.0)  # ITCZ trough width
+SIGMA_SUBTROPICS = np.deg2rad(12.0)  # Subtropical high width
+SIGMA_SUBPOLAR_NH = np.deg2rad(8.0)  # NH subpolar width
 SIGMA_SUBPOLAR_SH = np.deg2rad(10.0)  # SH subpolar: slightly broader
-SIGMA_POLES = np.deg2rad(8.0)         # Polar high width
+SIGMA_POLES = np.deg2rad(8.0)  # Polar high width
 
 # Thermal pressure coefficient: δp = -β δT
 # When a column warms by δT, it expands, upper-level mass diverges, and surface
@@ -53,11 +53,12 @@ THERMAL_PRESSURE_COEFFICIENT = 200.0  # Pa/K
 # Rossby deformation radius: L_R = N*H / f, the minimum scale at which
 # temperature anomalies can organise upper-level mass redistribution and
 # create surface pressure anomalies.  Used for latitude-dependent smoothing.
-_BRUNT_VAISALA_FREQ = 0.01          # s⁻¹, typical tropospheric N
-_TROPOPAUSE_HEIGHT_M = 10_000.0     # m, effective scale height
-_OMEGA = 7.2921e-5                  # rad/s, Earth's angular velocity
-_MIN_ROSSBY_RADIUS_KM = 500.0       # floor near poles (prevents blow-up)
-_MAX_ROSSBY_RADIUS_KM = 4000.0      # cap in deep tropics
+_BRUNT_VAISALA_FREQ = 0.01  # s⁻¹, typical tropospheric N
+_TROPOPAUSE_HEIGHT_M = 10_000.0  # m, effective scale height
+_OMEGA = 7.2921e-5  # rad/s, Earth's angular velocity
+_MIN_ROSSBY_RADIUS_KM = 500.0  # floor near poles (prevents blow-up)
+_MAX_ROSSBY_RADIUS_KM = 4000.0  # cap in deep tropics
+
 
 def _get_latitude_centers(nlat: int) -> np.ndarray:
     """Return latitude centers (deg) for a grid with nlat latitude points."""
@@ -97,24 +98,22 @@ def hadley_pressure_anomaly(lat_rad: np.ndarray, itcz_rad: np.ndarray) -> np.nda
     subtrop_strength_south = DP_SUBTROPICS
 
     # ITCZ low pressure trough
-    dp_itcz = DP_ITCZ * np.exp(-((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2)
+    dp_itcz = DP_ITCZ * np.exp(-(((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2))
 
     # Subtropical highs (follow ITCZ, strength modulated by cell width)
-    dp_subtrop = (
-        subtrop_strength_south * np.exp(-((lat_rad - lat_subtrop_south) / SIGMA_SUBTROPICS) ** 2)
-        + subtrop_strength_north * np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_SUBTROPICS) ** 2)
-    )
+    dp_subtrop = subtrop_strength_south * np.exp(
+        -(((lat_rad - lat_subtrop_south) / SIGMA_SUBTROPICS) ** 2)
+    ) + subtrop_strength_north * np.exp(-(((lat_rad - lat_subtrop_north) / SIGMA_SUBTROPICS) ** 2))
 
     # Subpolar lows (fixed latitudes, hemisphere-dependent amplitude and width)
-    dp_subpolar = (
-        DP_SUBPOLAR_SH * np.exp(-((lat_rad + LAT_SUBPOLAR) / SIGMA_SUBPOLAR_SH) ** 2)
-        + DP_SUBPOLAR_NH * np.exp(-((lat_rad - LAT_SUBPOLAR) / SIGMA_SUBPOLAR_NH) ** 2)
-    )
+    dp_subpolar = DP_SUBPOLAR_SH * np.exp(
+        -(((lat_rad + LAT_SUBPOLAR) / SIGMA_SUBPOLAR_SH) ** 2)
+    ) + DP_SUBPOLAR_NH * np.exp(-(((lat_rad - LAT_SUBPOLAR) / SIGMA_SUBPOLAR_NH) ** 2))
 
     # Polar highs (fixed latitudes)
     dp_poles = DP_POLES * (
-        np.exp(-((lat_rad + LAT_POLES) / SIGMA_POLES) ** 2)
-        + np.exp(-((lat_rad - LAT_POLES) / SIGMA_POLES) ** 2)
+        np.exp(-(((lat_rad + LAT_POLES) / SIGMA_POLES) ** 2))
+        + np.exp(-(((lat_rad - LAT_POLES) / SIGMA_POLES) ** 2))
     )
 
     return dp_itcz + dp_subtrop + dp_subpolar + dp_poles
@@ -178,22 +177,20 @@ def _smooth_temperature_field(
     pad_width = int(np.ceil(3 * max_sigma_lon))
 
     # Wrap field in longitude for periodic boundary
-    field_wrapped = np.pad(field, ((0, 0), (pad_width, pad_width)), mode='wrap')
+    field_wrapped = np.pad(field, ((0, 0), (pad_width, pad_width)), mode="wrap")
 
     # Apply latitude-dependent smoothing row by row (zonal + meridional sigma both vary)
     smoothed_wrapped = np.zeros_like(field_wrapped)
     for i in range(nlat):
         sigma_lon = sigma_lon_by_lat[i]
         smoothed_wrapped[i, :] = gaussian_filter(
-            field_wrapped[i, :],
-            sigma=sigma_lon,
-            mode='nearest'
+            field_wrapped[i, :], sigma=sigma_lon, mode="nearest"
         )
 
     # Meridional smoothing: apply row-by-row with varying sigma
     # We approximate by using the mean sigma (the variation is modest: ~1-7 cells)
     mean_sigma_lat = np.mean(sigma_lat_by_lat)
-    smoothed_wrapped = gaussian_filter(smoothed_wrapped, sigma=(mean_sigma_lat, 0), mode='nearest')
+    smoothed_wrapped = gaussian_filter(smoothed_wrapped, sigma=(mean_sigma_lat, 0), mode="nearest")
 
     # Extract the central portion (unwrap)
     smoothed = smoothed_wrapped[:, pad_width:-pad_width]
@@ -270,7 +267,9 @@ def compute_pressure(
         target_mean = area_weighted_mean(temperature, weights)
     elif humidity_q is not None:
         virtual_temperature = temperature * (1 + 0.61 * humidity_q)
-        temp_smooth = _smooth_temperature_field(virtual_temperature, lat_deg, smoothing_length_km=None)
+        temp_smooth = _smooth_temperature_field(
+            virtual_temperature, lat_deg, smoothing_length_km=None
+        )
         target_mean = area_weighted_mean(virtual_temperature, weights)
     else:
         temp_smooth = _smooth_temperature_field(temperature, lat_deg, smoothing_length_km=None)
@@ -305,7 +304,9 @@ def compute_pressure(
         lat2d_nonnull: np.ndarray = lat2d  # type: ignore[assignment]
         lon2d_nonnull: np.ndarray = lon2d  # type: ignore[assignment]
         with time_block("compute_itcz_in_pressure"):
-            cell_areas = spherical_cell_area(lon2d_nonnull, lat2d_nonnull, earth_radius_m=R_EARTH_METERS)
+            cell_areas = spherical_cell_area(
+                lon2d_nonnull, lat2d_nonnull, earth_radius_m=R_EARTH_METERS
+            )
             itcz_lat_rad = compute_itcz_latitude(temperature, lat2d_nonnull, cell_areas)
     else:
         itcz_lat_rad = itcz_rad

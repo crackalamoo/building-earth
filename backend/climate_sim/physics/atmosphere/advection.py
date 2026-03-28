@@ -13,6 +13,7 @@ from climate_sim.data.constants import R_EARTH_METERS
 @dataclass(frozen=True)
 class AdvectionConfig:
     """Configuration for atmospheric advection."""
+
     enabled: bool = True
 
 
@@ -80,7 +81,7 @@ class AdvectionOperator:
         self._inv_two_delta_y = 1.0 / (2.0 * self._delta_y)
 
         # Handle potential division by zero near poles
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(divide="ignore", invalid="ignore"):
             self._inv_two_delta_x = np.zeros_like(self._delta_x)
             valid = np.abs(self._delta_x) > 0.0
             self._inv_two_delta_x[valid] = 1.0 / (2.0 * self._delta_x[valid])
@@ -239,11 +240,11 @@ class AdvectionOperator:
             # Limit factor: can't remove more than 90% of mass
             max_removable = 0.9 * np.maximum(mass, 0)
             # Avoid division by zero
-            with np.errstate(divide='ignore', invalid='ignore'):
+            with np.errstate(divide="ignore", invalid="ignore"):
                 limit_factor = np.where(
                     total_outflux > 1e-30,
                     np.minimum(1.0, max_removable / (total_outflux + 1e-30)),
-                    1.0
+                    1.0,
                 )
             limit_factor = np.nan_to_num(limit_factor, nan=1.0, posinf=1.0, neginf=1.0)
 
@@ -254,16 +255,14 @@ class AdvectionOperator:
             flux_east = np.where(
                 flux_east >= 0,
                 flux_east * limit_factor,  # Leaving this cell
-                flux_east * limit_east_neighbor  # Leaving east neighbor
+                flux_east * limit_east_neighbor,  # Leaving east neighbor
             )
 
             # North face: if flux_north > 0, limit by this cell's factor
             #            if flux_north < 0, limit by north neighbor's factor
             limit_north_neighbor = np.roll(limit_factor, -1, axis=0)
             flux_north = np.where(
-                flux_north >= 0,
-                flux_north * limit_factor,
-                flux_north * limit_north_neighbor
+                flux_north >= 0, flux_north * limit_factor, flux_north * limit_north_neighbor
             )
             # Re-enforce polar boundaries
             flux_north[-1, :] = 0.0
@@ -365,7 +364,7 @@ class AdvectionOperator:
 
         # If u > 0 (eastward), use backward difference (upwind from west)
         # If u < 0 (westward), use forward difference (upwind from east)
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(divide="ignore", invalid="ignore"):
             inv_delta_x = np.zeros_like(self._delta_x)
             valid = np.abs(self._delta_x) > 0.0
             inv_delta_x[valid] = 1.0 / self._delta_x[valid]
@@ -437,7 +436,7 @@ class AdvectionOperator:
 
         # Precompute inverse spacings
         inv_delta_y = 1.0 / self._delta_y
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(divide="ignore", invalid="ignore"):
             inv_delta_x = np.zeros_like(self._delta_x)
             valid = np.abs(self._delta_x) > 0.0
             inv_delta_x[valid] = 1.0 / self._delta_x[valid]
@@ -541,7 +540,7 @@ class AdvectionOperator:
 
         # Face dimensions
         face_height = R * dlat  # For zonal faces
-        face_width = R * dlon   # For meridional faces
+        face_width = R * dlon  # For meridional faces
 
         # Wind at faces
         u_east_face = 0.5 * (wind_u + np.roll(wind_u, -1, axis=1))

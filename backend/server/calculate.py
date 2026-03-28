@@ -111,9 +111,7 @@ def _validate_ast(tree: ast.AST) -> None:
     """Walk the AST and reject any disallowed node types."""
     for node in ast.walk(tree):
         if not isinstance(node, _ALLOWED_NODES):
-            raise ExpressionError(
-                f"Disallowed expression element: {type(node).__name__}"
-            )
+            raise ExpressionError(f"Disallowed expression element: {type(node).__name__}")
         # Only allow calls to known math functions
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name):

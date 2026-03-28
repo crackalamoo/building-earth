@@ -71,6 +71,7 @@ def compute_two_meter_temperature(
 
     return surface_K.copy()
 
+
 def log_law_map_wind_speed(
     wind_speed_ref_m_s: np.ndarray,
     height_ref_m: np.ndarray | float,

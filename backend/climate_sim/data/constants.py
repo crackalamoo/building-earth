@@ -16,11 +16,15 @@ STANDARD_LAPSE_RATE_K_PER_M = 6.5 / 1000.0
 # This constant is used as fallback when humidity is not available
 BOUNDARY_LAYER_EMISSIVITY = 0.50  # Fallback: moderate humidity
 BOUNDARY_LAYER_HEIGHT_M = 1000.0
-BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K = 1.2 * HEAT_CAPACITY_AIR_J_KG_K * BOUNDARY_LAYER_HEIGHT_M  # density * cp * height ≈ 9.05e5 J m-2 K-1
+BOUNDARY_LAYER_HEAT_CAPACITY_J_M2_K = (
+    1.2 * HEAT_CAPACITY_AIR_J_KG_K * BOUNDARY_LAYER_HEIGHT_M
+)  # density * cp * height ≈ 9.05e5 J m-2 K-1
 
 # Free atmosphere layer constants (when boundary layer enabled)
 ATMOSPHERE_LAYER_HEIGHT_M = 7500.0
-ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K = 1.2 * HEAT_CAPACITY_AIR_J_KG_K * ATMOSPHERE_LAYER_HEIGHT_M  # density * cp * height ≈ 7.24e6 J m-2 K-1
+ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K = (
+    1.2 * HEAT_CAPACITY_AIR_J_KG_K * ATMOSPHERE_LAYER_HEIGHT_M
+)  # density * cp * height ≈ 7.24e6 J m-2 K-1
 # Midpoint of the atmosphere layer (where T_atm represents)
 ATMOSPHERE_LAYER_MIDPOINT_M = BOUNDARY_LAYER_HEIGHT_M + ATMOSPHERE_LAYER_HEIGHT_M / 2.0  # ~4750 m
 

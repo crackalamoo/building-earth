@@ -97,8 +97,20 @@ async def chat(request: Request) -> StreamingResponse:
     prev_lon: float | None = body.get("prevLon")
     prev_month: int | None = body.get("prevMonth")
 
-    month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    month_names = [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    ]
 
     context_parts: list[str] = []
     loc_changed = (
@@ -201,7 +213,9 @@ async def chat(request: Request) -> StreamingResponse:
                             imperial=imperial,
                         )
                         # Send tool progress event
-                        field_meta = OBS_FIELD_INFO if tc["name"] == "sample_observations" else FIELD_INFO
+                        field_meta = (
+                            OBS_FIELD_INFO if tc["name"] == "sample_observations" else FIELD_INFO
+                        )
                         labels = [
                             field_meta.get(f, {}).get("label", f)
                             for f in args.get("fields", [args.get("field", "?")])
@@ -214,16 +228,20 @@ async def chat(request: Request) -> StreamingResponse:
                 except Exception:
                     result = {"error": "Failed to process tool call"}
                     yield f"data: {json.dumps({'tool': '?'})}\n\n"
-                assistant_tool_calls.append({
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                })
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": json.dumps(result),
-                })
+                assistant_tool_calls.append(
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps(result),
+                    }
+                )
             # Insert assistant message with tool calls before tool results
             messages.insert(
                 len(messages) - len(assistant_tool_calls),

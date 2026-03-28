@@ -74,7 +74,9 @@ class SensibleHeatExchangeModel:
         if boundary_layer_heat_capacity_J_m2_K is not None:
             heat_capacity_boundary = np.asarray(boundary_layer_heat_capacity_J_m2_K, dtype=float)
             if heat_capacity_boundary.shape == ():
-                heat_capacity_boundary = np.full(land_mask_bool.shape, float(heat_capacity_boundary))
+                heat_capacity_boundary = np.full(
+                    land_mask_bool.shape, float(heat_capacity_boundary)
+                )
             self._boundary_layer_heat_capacity = np.maximum(heat_capacity_boundary, 1.0e-9)
         else:
             self._boundary_layer_heat_capacity = None
@@ -110,9 +112,7 @@ class SensibleHeatExchangeModel:
         atmosphere_temperature = np.asarray(atmosphere_temperature_K, dtype=float)
 
         if surface_temperature.shape != self._surface_heat_capacity.shape:
-            raise ValueError(
-                "Surface temperature must match the surface heat capacity field shape"
-            )
+            raise ValueError("Surface temperature must match the surface heat capacity field shape")
         if atmosphere_temperature.shape != self._surface_heat_capacity.shape:
             raise ValueError(
                 "Atmosphere temperature must match the surface heat capacity field shape"
@@ -181,7 +181,9 @@ class SensibleHeatExchangeModel:
             heat_flux_bl_atm = np.zeros_like(heat_flux_surf_bl)
 
             surface_tendency = -heat_flux_surf_bl / self._surface_heat_capacity
-            boundary_tendency = (heat_flux_surf_bl - heat_flux_bl_atm) / self._boundary_layer_heat_capacity
+            boundary_tendency = (
+                heat_flux_surf_bl - heat_flux_bl_atm
+            ) / self._boundary_layer_heat_capacity
             atmosphere_tendency = heat_flux_bl_atm / self._atmosphere_heat_capacity
 
             if log_diagnostics:
@@ -192,18 +194,32 @@ class SensibleHeatExchangeModel:
                 tau_bl_atm_days = area_weighted_mean(tau_bl_atm, cell_area_m2) / SECONDS_PER_DAY
 
                 print("\n=== Sensible Heat Exchange Diagnostics ===")
-                print(f"\nHeat Fluxes (W/m²):")
-                print(f"Surface → Boundary layer:          {area_weighted_mean(heat_flux_surf_bl, cell_area_m2):7.2f}")
-                print(f"Boundary layer → Atmosphere:       {area_weighted_mean(heat_flux_bl_atm, cell_area_m2):7.2f}")
-                print(f"\nConductances (W/m²/K):")
-                print(f"Surface-boundary (g_surf):         {area_weighted_mean(g_surf, cell_area_m2):7.2f}")
-                print(f"Boundary-atmosphere (g_mix):       {area_weighted_mean(g_mix_bl_atm, cell_area_m2):7.2f}")
-                print(f"\nTemperature Differences (K):")
-                print(f"Surface - Near-surface air:        {area_weighted_mean(delta_surf_bl, cell_area_m2):7.2f}")
-                print(f"Boundary layer - Atmosphere:       {area_weighted_mean(delta_bl_atm, cell_area_m2):7.2f}")
-                print(f"\nEffective Timescales:")
+                print("\nHeat Fluxes (W/m²):")
+                print(
+                    f"Surface → Boundary layer:          {area_weighted_mean(heat_flux_surf_bl, cell_area_m2):7.2f}"
+                )
+                print(
+                    f"Boundary layer → Atmosphere:       {area_weighted_mean(heat_flux_bl_atm, cell_area_m2):7.2f}"
+                )
+                print("\nConductances (W/m²/K):")
+                print(
+                    f"Surface-boundary (g_surf):         {area_weighted_mean(g_surf, cell_area_m2):7.2f}"
+                )
+                print(
+                    f"Boundary-atmosphere (g_mix):       {area_weighted_mean(g_mix_bl_atm, cell_area_m2):7.2f}"
+                )
+                print("\nTemperature Differences (K):")
+                print(
+                    f"Surface - Near-surface air:        {area_weighted_mean(delta_surf_bl, cell_area_m2):7.2f}"
+                )
+                print(
+                    f"Boundary layer - Atmosphere:       {area_weighted_mean(delta_bl_atm, cell_area_m2):7.2f}"
+                )
+                print("\nEffective Timescales:")
                 print(f"Boundary-atmosphere coupling:      {tau_bl_atm_days:7.2f} days")
-                print(f"Mean wind speed (10m):             {area_weighted_mean(wind_abs, cell_area_m2):7.2f} m/s")
+                print(
+                    f"Mean wind speed (10m):             {area_weighted_mean(wind_abs, cell_area_m2):7.2f} m/s"
+                )
                 print("=" * 40)
 
             return surface_tendency, boundary_tendency, atmosphere_tendency
@@ -307,9 +323,11 @@ class SensibleHeatExchangeModel:
             # From boundary-atmosphere flux: g_mix_bl_atm * (T_bl - T_atm)
             # where g_mix_bl_atm = 1 / r_mix_bl_atm (turbulent mixing conductance)
             Cbl = self._boundary_layer_heat_capacity
-            tau_bl_atm = (self._boundary_layer_heat_capacity * self._atmosphere_heat_capacity) / (
-                self._boundary_layer_heat_capacity + self._atmosphere_heat_capacity
-            ) / (rho * cp * ch * wind_abs)
+            tau_bl_atm = (
+                (self._boundary_layer_heat_capacity * self._atmosphere_heat_capacity)
+                / (self._boundary_layer_heat_capacity + self._atmosphere_heat_capacity)
+                / (rho * cp * ch * wind_abs)
+            )
             r_mix_bl_atm = tau_bl_atm / Cbl
             bl_atm_conductance = 1.0 / np.maximum(r_mix_bl_atm, 1e-9)
 

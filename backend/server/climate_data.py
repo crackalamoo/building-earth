@@ -18,48 +18,127 @@ FIELD_INFO: dict[str, dict[str, str]] = {
     "precipitation": {"label": "Precipitation", "desc": "Precipitation rate", "unit": "kg/m²/s"},
     "humidity": {"label": "Humidity", "desc": "Specific humidity", "unit": "kg/kg"},
     "wind_speed_10m": {"label": "Surface wind speed", "desc": "10-m wind speed", "unit": "m/s"},
-    "cloud_fraction": {"label": "Cloud cover", "desc": "Total cloud cover", "unit": "fraction (0-1)"},
+    "cloud_fraction": {
+        "label": "Cloud cover",
+        "desc": "Total cloud cover",
+        "unit": "fraction (0-1)",
+    },
     "surface_pressure": {"label": "Air pressure", "desc": "Surface pressure", "unit": "Pa"},
     "elevation": {"label": "Elevation", "desc": "Elevation (negative = ocean depth)", "unit": "m"},
     # ── Temperature layers ──
     "surface": {"label": "Surface temperature", "desc": "Surface / SST temperature", "unit": "°C"},
-    "boundary_layer": {"label": "Lower atmosphere temp", "desc": "Boundary-layer temperature", "unit": "°C"},
-    "atmosphere": {"label": "Upper atmosphere temp", "desc": "Free-atmosphere temperature", "unit": "°C"},
+    "boundary_layer": {
+        "label": "Lower atmosphere temp",
+        "desc": "Boundary-layer temperature",
+        "unit": "°C",
+    },
+    "atmosphere": {
+        "label": "Upper atmosphere temp",
+        "desc": "Free-atmosphere temperature",
+        "unit": "°C",
+    },
     # ── Wind detail ──
     "wind_u_10m": {"label": "Surface wind E/W", "desc": "10-m eastward wind", "unit": "m/s"},
     "wind_v_10m": {"label": "Surface wind N/S", "desc": "10-m northward wind", "unit": "m/s"},
-    "wind_u": {"label": "Low-level wind E/W", "desc": "Boundary-layer eastward wind", "unit": "m/s"},
-    "wind_v": {"label": "Low-level wind N/S", "desc": "Boundary-layer northward wind", "unit": "m/s"},
-    "wind_speed": {"label": "Low-level wind speed", "desc": "Boundary-layer wind speed", "unit": "m/s"},
-    "wind_u_geostrophic": {"label": "Pressure-driven wind E/W", "desc": "Geostrophic eastward wind", "unit": "m/s"},
-    "wind_v_geostrophic": {"label": "Pressure-driven wind N/S", "desc": "Geostrophic northward wind", "unit": "m/s"},
-    "wind_speed_geostrophic": {"label": "Pressure-driven wind speed", "desc": "Geostrophic wind speed", "unit": "m/s"},
+    "wind_u": {
+        "label": "Low-level wind E/W",
+        "desc": "Boundary-layer eastward wind",
+        "unit": "m/s",
+    },
+    "wind_v": {
+        "label": "Low-level wind N/S",
+        "desc": "Boundary-layer northward wind",
+        "unit": "m/s",
+    },
+    "wind_speed": {
+        "label": "Low-level wind speed",
+        "desc": "Boundary-layer wind speed",
+        "unit": "m/s",
+    },
+    "wind_u_geostrophic": {
+        "label": "Pressure-driven wind E/W",
+        "desc": "Geostrophic eastward wind",
+        "unit": "m/s",
+    },
+    "wind_v_geostrophic": {
+        "label": "Pressure-driven wind N/S",
+        "desc": "Geostrophic northward wind",
+        "unit": "m/s",
+    },
+    "wind_speed_geostrophic": {
+        "label": "Pressure-driven wind speed",
+        "desc": "Geostrophic wind speed",
+        "unit": "m/s",
+    },
     # ── Derived fields ──
     "relative_humidity": {"label": "Relative humidity", "desc": "Relative humidity", "unit": "%"},
-    "saturation_humidity": {"label": "Saturation humidity", "desc": "Saturation specific humidity", "unit": "kg/kg"},
-    "wind_direction_10m": {"label": "Wind direction", "desc": "10-m wind direction (compass bearing, 0°=N)", "unit": "°"},
+    "saturation_humidity": {
+        "label": "Saturation humidity",
+        "desc": "Saturation specific humidity",
+        "unit": "kg/kg",
+    },
+    "wind_direction_10m": {
+        "label": "Wind direction",
+        "desc": "10-m wind direction (compass bearing, 0°=N)",
+        "unit": "°",
+    },
     "dew_point": {"label": "Dew point", "desc": "Dew point temperature", "unit": "°C"},
-    "lapse_rate": {"label": "Lapse rate", "desc": "Temperature lapse rate (BL to free atmosphere)", "unit": "°C/km"},
+    "lapse_rate": {
+        "label": "Lapse rate",
+        "desc": "Temperature lapse rate (BL to free atmosphere)",
+        "unit": "°C/km",
+    },
     # ── Cloud breakdown ──
     "cloud_high": {"label": "High clouds", "desc": "High cloud cover", "unit": "fraction (0-1)"},
     "cloud_low": {"label": "Low clouds", "desc": "Low cloud cover", "unit": "fraction (0-1)"},
-    "cloud_convective": {"label": "Storm clouds", "desc": "Convective cloud cover", "unit": "fraction (0-1)"},
-    "stratiform_cloud_frac": {"label": "Layer clouds", "desc": "Stratiform cloud fraction", "unit": "fraction (0-1)"},
-    "marine_sc_cloud_frac": {"label": "Ocean low clouds", "desc": "Marine stratocumulus cloud fraction", "unit": "fraction (0-1)"},
+    "cloud_convective": {
+        "label": "Storm clouds",
+        "desc": "Convective cloud cover",
+        "unit": "fraction (0-1)",
+    },
+    "stratiform_cloud_frac": {
+        "label": "Layer clouds",
+        "desc": "Stratiform cloud fraction",
+        "unit": "fraction (0-1)",
+    },
+    "marine_sc_cloud_frac": {
+        "label": "Ocean low clouds",
+        "desc": "Marine stratocumulus cloud fraction",
+        "unit": "fraction (0-1)",
+    },
     # ── Ocean & vertical ──
-    "ocean_u": {"label": "Ocean current E/W", "desc": "Ocean surface eastward current", "unit": "m/s"},
-    "ocean_v": {"label": "Ocean current N/S", "desc": "Ocean surface northward current", "unit": "m/s"},
-    "w_ekman_pumping": {"label": "Upwelling", "desc": "Ekman pumping velocity (positive = upwelling)", "unit": "m/s"},
-    "vertical_velocity": {"label": "Rising/sinking air", "desc": "Vertical velocity (positive = rising)", "unit": "m/s"},
+    "ocean_u": {
+        "label": "Ocean current E/W",
+        "desc": "Ocean surface eastward current",
+        "unit": "m/s",
+    },
+    "ocean_v": {
+        "label": "Ocean current N/S",
+        "desc": "Ocean surface northward current",
+        "unit": "m/s",
+    },
+    "w_ekman_pumping": {
+        "label": "Upwelling",
+        "desc": "Ekman pumping velocity (positive = upwelling)",
+        "unit": "m/s",
+    },
+    "vertical_velocity": {
+        "label": "Rising/sinking air",
+        "desc": "Vertical velocity (positive = rising)",
+        "unit": "m/s",
+    },
     # ── Surface properties ──
     "albedo": {"label": "Albedo", "desc": "Surface albedo", "unit": "fraction (0-1)"},
     "soil_moisture": {"label": "Soil moisture", "desc": "Soil moisture", "unit": "fraction (0-1)"},
-    "vegetation_fraction": {"label": "Vegetation", "desc": "Vegetation fraction", "unit": "fraction (0-1)"},
+    "vegetation_fraction": {
+        "label": "Vegetation",
+        "desc": "Vegetation fraction",
+        "unit": "fraction (0-1)",
+    },
 }
 
 # Aliases: npz stores these under different names than the frontend binary
 _FIELD_ALIASES = {"high_cloud_frac": "cloud_high", "convective_cloud_frac": "cloud_convective"}
-
 
 
 def _to_display_units(value: float, raw_unit: str, imperial: bool) -> tuple[float, str]:
@@ -185,7 +264,7 @@ class ClimateDataStore:
 
         # Saturation humidity & RH & dew point — all need BL temp + pressure + q
         t_bl = self._data.get("boundary_layer")  # °C, 36x72
-        p = self._data.get("surface_pressure")    # Pa, 36x72
+        p = self._data.get("surface_pressure")  # Pa, 36x72
         if t_bl is not None:
             t_c = np.clip(t_bl, -100.0, 80.0)
             e_sat_hPa = 6.112 * np.exp(17.67 * t_c / (t_c + 243.5))
@@ -222,7 +301,11 @@ class ClimateDataStore:
         return [f for f in FIELD_INFO if f in self._data]
 
     def sample_raw(
-        self, field: str, lat: float, lon: float, month: int,
+        self,
+        field: str,
+        lat: float,
+        lon: float,
+        month: int,
     ) -> float | None:
         """Sample a single field and return the raw float value (no unit conversion).
 
@@ -253,7 +336,13 @@ class ClimateDataStore:
         return float(arr[lat_idx, lon_idx])
 
     def sample(
-        self, field: str, lat: float, lon: float, month: int, *, imperial: bool = False,
+        self,
+        field: str,
+        lat: float,
+        lon: float,
+        month: int,
+        *,
+        imperial: bool = False,
     ) -> dict[str, Any]:
         """Sample a single field value at (lat, lon, month).
 
@@ -299,7 +388,13 @@ class ClimateDataStore:
         }
 
     def sample_many(
-        self, fields: list[str], lat: float, lon: float, month: int, *, imperial: bool = False,
+        self,
+        fields: list[str],
+        lat: float,
+        lon: float,
+        month: int,
+        *,
+        imperial: bool = False,
     ) -> list[dict[str, Any]]:
         """Sample multiple fields at the same location and month."""
         return [self.sample(f, lat, lon, month, imperial=imperial) for f in fields]
@@ -313,38 +408,52 @@ _HP_FILE = "ref_humidity_precip_1deg_1981-2010.nc"
 
 OBS_FIELD_INFO: dict[str, dict[str, str]] = {
     "land_temperature": {
-        "var": "t_land_clim", "file": _CLIM_FILE,
-        "label": "Observed land temp", "desc": "Observed 2-meter air temperature over land (GHCN_CAMS stations, land only)",
+        "var": "t_land_clim",
+        "file": _CLIM_FILE,
+        "label": "Observed land temp",
+        "desc": "Observed 2-meter air temperature over land (GHCN_CAMS stations, land only)",
         "unit": "°C",
     },
     "sst": {
-        "var": "t_sst_clim", "file": _CLIM_FILE,
-        "label": "Observed SST", "desc": "Observed sea surface temperature (COBE2 satellite, ocean only)",
+        "var": "t_sst_clim",
+        "file": _CLIM_FILE,
+        "label": "Observed SST",
+        "desc": "Observed sea surface temperature (COBE2 satellite, ocean only)",
         "unit": "°C",
     },
     "humidity": {
-        "var": "shum_clim", "file": _HP_FILE,
-        "label": "Observed humidity", "desc": "Observed specific humidity (NCEP reanalysis)",
+        "var": "shum_clim",
+        "file": _HP_FILE,
+        "label": "Observed humidity",
+        "desc": "Observed specific humidity (NCEP reanalysis)",
         "unit": "kg/kg",
     },
     "precipitation": {
-        "var": "precip_clim", "file": _HP_FILE,
-        "label": "Observed precip", "desc": "Observed precipitation (GPCP satellite+gauge)",
+        "var": "precip_clim",
+        "file": _HP_FILE,
+        "label": "Observed precip",
+        "desc": "Observed precipitation (GPCP satellite+gauge)",
         "unit": "kg/m²/s",  # stored as mm/day, converted on load
     },
     "pressure": {
-        "var": "slp_clim", "file": _HP_FILE,
-        "label": "Observed pressure", "desc": "Observed sea-level pressure (NCEP reanalysis)",
+        "var": "slp_clim",
+        "file": _HP_FILE,
+        "label": "Observed pressure",
+        "desc": "Observed sea-level pressure (NCEP reanalysis)",
         "unit": "Pa",
     },
     "wind_u": {
-        "var": "uwnd_clim", "file": _HP_FILE,
-        "label": "Observed wind E/W", "desc": "Observed eastward wind (NCEP reanalysis)",
+        "var": "uwnd_clim",
+        "file": _HP_FILE,
+        "label": "Observed wind E/W",
+        "desc": "Observed eastward wind (NCEP reanalysis)",
         "unit": "m/s",
     },
     "wind_v": {
-        "var": "vwnd_clim", "file": _HP_FILE,
-        "label": "Observed wind N/S", "desc": "Observed northward wind (NCEP reanalysis)",
+        "var": "vwnd_clim",
+        "file": _HP_FILE,
+        "label": "Observed wind N/S",
+        "desc": "Observed northward wind (NCEP reanalysis)",
         "unit": "m/s",
     },
 }
@@ -385,7 +494,13 @@ class ObsDataStore:
         return [f for f in OBS_FIELD_INFO if f in self._data]
 
     def sample(
-        self, field: str, lat: float, lon: float, month: int, *, imperial: bool = False,
+        self,
+        field: str,
+        lat: float,
+        lon: float,
+        month: int,
+        *,
+        imperial: bool = False,
     ) -> dict[str, Any]:
         """Sample an observation field at (lat, lon, month)."""
         if field not in self._data:
@@ -437,7 +552,11 @@ class ObsDataStore:
 
     @staticmethod
     def _nearest_valid(
-        arr: np.ndarray, lat_idx: int, lon_idx: int, month_idx: int, max_radius: int = 1,
+        arr: np.ndarray,
+        lat_idx: int,
+        lon_idx: int,
+        month_idx: int,
+        max_radius: int = 1,
     ) -> float:
         """Search surrounding cells for the closest non-NaN value."""
         if arr.ndim == 3:
@@ -459,7 +578,13 @@ class ObsDataStore:
         return float("nan")
 
     def sample_many(
-        self, fields: list[str], lat: float, lon: float, month: int, *, imperial: bool = False,
+        self,
+        fields: list[str],
+        lat: float,
+        lon: float,
+        month: int,
+        *,
+        imperial: bool = False,
     ) -> list[dict[str, Any]]:
         """Sample multiple observation fields at the same location and month."""
         return [self.sample(f, lat, lon, month, imperial=imperial) for f in fields]

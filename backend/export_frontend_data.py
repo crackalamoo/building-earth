@@ -28,6 +28,7 @@ from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.physics.orographic_effects import OrographicConfig
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
@@ -73,7 +74,7 @@ def _fill_island_vegetation(
     lon_ratio = fine_nlon // nlon
 
     precip = native_layers["precipitation"]  # (12, nlat, nlon) in kg/m²/s
-    surface = native_layers["surface"]       # (12, nlat, nlon)
+    surface = native_layers["surface"]  # (12, nlat, nlon)
 
     # Convert precipitation rate (kg/m²/s) to annual total (mm/year)
     # Each month's rate × seconds in that month, then sum
@@ -102,7 +103,7 @@ def _fill_island_vegetation(
             # precip is kg/m²/s per month; multiply by seconds → kg/m² = mm
             annual_precip = float(np.sum(precip[:, i, j] * month_seconds))
             u = np.clip((annual_precip - p_min) / (p_max - p_min), 0.0, 1.0)
-            veg_frac = u ** 0.6
+            veg_frac = u**0.6
 
             # Growing season cap
             warm_months = float(np.sum(surface[:, i, j] > growing_thresh))
@@ -213,7 +214,10 @@ def _write_binary_export(
         veg = native_layers["vegetation_fraction"].copy()
         if interpolate and "precipitation" in native_layers and "surface" in native_layers:
             veg = _fill_island_vegetation(
-                veg, native_layers, native_land_mask, land_mask,
+                veg,
+                native_layers,
+                native_land_mask,
+                land_mask,
             )
         fields.append(("vegetation_fraction", veg, "float16"))
         print(f"  vegetation_fraction: {veg.shape}")
@@ -299,13 +303,15 @@ def _write_binary_export(
             encoded = arr.astype(np.float32)
 
         raw = encoded.tobytes()
-        manifest["fields"].append({
-            "name": name,
-            "shape": list(arr.shape),
-            "dtype": dtype_str,
-            "offset": offset,
-            "bytes": len(raw),
-        })
+        manifest["fields"].append(
+            {
+                "name": name,
+                "shape": list(arr.shape),
+                "dtype": dtype_str,
+                "offset": offset,
+                "bytes": len(raw),
+            }
+        )
         blobs.append(raw)
         offset += len(raw)
 

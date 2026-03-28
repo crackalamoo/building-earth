@@ -11,6 +11,7 @@ from typing import Dict, List
 @dataclass
 class TimingEntry:
     """Single timing entry with nested timings."""
+
     name: str
     total_time: float = 0.0
     call_count: int = 0
@@ -20,12 +21,12 @@ class TimingEntry:
 
 class TimingProfiler:
     """Profiler that tracks nested timing information."""
-    
+
     def __init__(self) -> None:
         self.root = TimingEntry("root")
         self._stack: List[TimingEntry] = [self.root]
         self._start_times: List[float] = []
-    
+
     @contextmanager
     def time_block(self, name: str):
         """Context manager for timing a code block."""
@@ -35,11 +36,11 @@ class TimingProfiler:
             current.children[name] = entry
         else:
             entry = current.children[name]
-        
+
         self._stack.append(entry)
         start = time.perf_counter()
         self._start_times.append(start)
-        
+
         try:
             yield
         finally:
@@ -49,14 +50,14 @@ class TimingProfiler:
             entry.call_count += 1
             self._stack.pop()
             self._start_times.pop()
-    
+
     def get_total_time(self) -> float:
         """Get total time spent in root (sum of all children)."""
         return sum(child.total_time for child in self.root.children.values())
-    
+
     def print_summary(self, *, min_time_ms: float = 1.0, indent: str = "  ") -> None:
         """Print a formatted timing summary.
-        
+
         Parameters
         ----------
         min_time_ms
@@ -70,12 +71,14 @@ class TimingProfiler:
             if len(self.root.children) == 0:
                 print("No timing data collected (no timing blocks were entered).")
             else:
-                print(f"No timing data collected (found {len(self.root.children)} entries but total time is 0).")
+                print(
+                    f"No timing data collected (found {len(self.root.children)} entries but total time is 0)."
+                )
                 # Print debug info
                 for name, child in self.root.children.items():
                     print(f"  {name}: {child.total_time} s, {child.call_count} calls")
             return
-        
+
         print("\n" + "=" * 70)
         print("TIMING SUMMARY")
         print("=" * 70)
@@ -90,7 +93,7 @@ class TimingProfiler:
         print("=" * 70)
         print(f"Total time: {total:.3f} s")
         print()
-    
+
     def _print_entry(
         self,
         entry: TimingEntry,
@@ -102,11 +105,11 @@ class TimingProfiler:
         """Recursively print timing entries."""
         if entry.total_time < min_time_ms / 1000.0:
             return
-        
+
         prefix = indent * level
         pct = 100.0 * entry.total_time / total_time if total_time > 0 else 0.0
         avg_time = entry.total_time / entry.call_count if entry.call_count > 0 else 0.0
-        
+
         name_display = entry.name if entry.name != "root" else "Total"
         if entry.call_count > 1:
             print(
@@ -115,18 +118,15 @@ class TimingProfiler:
                 f"[{entry.call_count} calls, {avg_time:.3f} s avg]"
             )
         else:
-            print(
-                f"{prefix}{name_display:50s} "
-                f"{entry.total_time:8.3f} s ({pct:5.1f}%)"
-            )
-        
+            print(f"{prefix}{name_display:50s} {entry.total_time:8.3f} s ({pct:5.1f}%)")
+
         # Sort children by total time (descending)
         sorted_children = sorted(
             entry.children.values(),
             key=lambda e: e.total_time,
             reverse=True,
         )
-        
+
         for child in sorted_children:
             self._print_entry(child, total_time, min_time_ms, indent, level + 1)
 
@@ -155,4 +155,3 @@ def time_block(name: str):
     profiler = get_profiler()
     with profiler.time_block(name):
         yield
-

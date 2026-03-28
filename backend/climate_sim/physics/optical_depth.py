@@ -628,7 +628,10 @@ def compute_column_radiation_with_clouds(
     # OLR: cloud adds τ at cloud top
     # Downward: cloud adds τ at cloud base
     T_eff_up_conv, T_eff_down_conv, eps_conv = compute_effective_temperatures_analytical(
-        humidity_q, T_surface, T_bl, T_atm,
+        humidity_q,
+        T_surface,
+        T_bl,
+        T_atm,
         tau_cloud_from_top=tau_conv,
         cloud_top_m=conv_top_m,
         tau_cloud_from_bottom=tau_conv,
@@ -637,7 +640,10 @@ def compute_column_radiation_with_clouds(
 
     # === Stratiform clouds ===
     T_eff_up_strat, T_eff_down_strat, eps_strat = compute_effective_temperatures_analytical(
-        humidity_q, T_surface, T_bl, T_atm,
+        humidity_q,
+        T_surface,
+        T_bl,
+        T_atm,
         tau_cloud_from_top=tau_strat,
         cloud_top_m=strat_top_m,
         tau_cloud_from_bottom=tau_strat,
@@ -749,14 +755,26 @@ def compute_radiation_jacobian_with_clouds(
     # === Compute temperature derivatives at each z_tau1 level ===
     # d(T_eff)/d(T_surface), d(T_eff)/d(T_bl), d(T_eff)/d(T_atm)
 
-    dT_up_clear_dTs, dT_up_clear_dTbl, dT_up_clear_dTatm = compute_temperature_derivatives_at_height(z_tau1_up_clear)
-    dT_down_clear_dTs, dT_down_clear_dTbl, dT_down_clear_dTatm = compute_temperature_derivatives_at_height(z_tau1_down_clear)
+    dT_up_clear_dTs, dT_up_clear_dTbl, dT_up_clear_dTatm = (
+        compute_temperature_derivatives_at_height(z_tau1_up_clear)
+    )
+    dT_down_clear_dTs, dT_down_clear_dTbl, dT_down_clear_dTatm = (
+        compute_temperature_derivatives_at_height(z_tau1_down_clear)
+    )
 
-    dT_up_conv_dTs, dT_up_conv_dTbl, dT_up_conv_dTatm = compute_temperature_derivatives_at_height(z_tau1_up_conv)
-    dT_down_conv_dTs, dT_down_conv_dTbl, dT_down_conv_dTatm = compute_temperature_derivatives_at_height(z_tau1_down_conv)
+    dT_up_conv_dTs, dT_up_conv_dTbl, dT_up_conv_dTatm = compute_temperature_derivatives_at_height(
+        z_tau1_up_conv
+    )
+    dT_down_conv_dTs, dT_down_conv_dTbl, dT_down_conv_dTatm = (
+        compute_temperature_derivatives_at_height(z_tau1_down_conv)
+    )
 
-    dT_up_strat_dTs, dT_up_strat_dTbl, dT_up_strat_dTatm = compute_temperature_derivatives_at_height(z_tau1_up_strat)
-    dT_down_strat_dTs, dT_down_strat_dTbl, dT_down_strat_dTatm = compute_temperature_derivatives_at_height(z_tau1_down_strat)
+    dT_up_strat_dTs, dT_up_strat_dTbl, dT_up_strat_dTatm = (
+        compute_temperature_derivatives_at_height(z_tau1_up_strat)
+    )
+    dT_down_strat_dTs, dT_down_strat_dTbl, dT_down_strat_dTatm = (
+        compute_temperature_derivatives_at_height(z_tau1_down_strat)
+    )
 
     # === Compute flux derivatives using chain rule ===
 
@@ -788,9 +806,17 @@ def compute_radiation_jacobian_with_clouds(
     d_olr_strat_dTatm = eps_strat * 4.0 * sigma * T_eff_up_strat**3 * dT_up_strat_dTatm
 
     # Area-weighted
-    d_olr_dTs = clear_frac * d_olr_clear_dTs + conv_frac * d_olr_conv_dTs + strat_frac * d_olr_strat_dTs
-    d_olr_dTbl = clear_frac * d_olr_clear_dTbl + conv_frac * d_olr_conv_dTbl + strat_frac * d_olr_strat_dTbl
-    d_olr_dTatm = clear_frac * d_olr_clear_dTatm + conv_frac * d_olr_conv_dTatm + strat_frac * d_olr_strat_dTatm
+    d_olr_dTs = (
+        clear_frac * d_olr_clear_dTs + conv_frac * d_olr_conv_dTs + strat_frac * d_olr_strat_dTs
+    )
+    d_olr_dTbl = (
+        clear_frac * d_olr_clear_dTbl + conv_frac * d_olr_conv_dTbl + strat_frac * d_olr_strat_dTbl
+    )
+    d_olr_dTatm = (
+        clear_frac * d_olr_clear_dTatm
+        + conv_frac * d_olr_conv_dTatm
+        + strat_frac * d_olr_strat_dTatm
+    )
 
     # Downward = ε × σ × T_eff_down⁴
     # d(Down)/d(T_x) = ε × 4σT_eff³ × d(T_eff)/d(T_x)
@@ -807,8 +833,18 @@ def compute_radiation_jacobian_with_clouds(
     d_down_strat_dTbl = eps_strat * 4.0 * sigma * T_eff_down_strat**3 * dT_down_strat_dTbl
     d_down_strat_dTatm = eps_strat * 4.0 * sigma * T_eff_down_strat**3 * dT_down_strat_dTatm
 
-    d_down_dTs = clear_frac * d_down_clear_dTs + conv_frac * d_down_conv_dTs + strat_frac * d_down_strat_dTs
-    d_down_dTbl = clear_frac * d_down_clear_dTbl + conv_frac * d_down_conv_dTbl + strat_frac * d_down_strat_dTbl
-    d_down_dTatm = clear_frac * d_down_clear_dTatm + conv_frac * d_down_conv_dTatm + strat_frac * d_down_strat_dTatm
+    d_down_dTs = (
+        clear_frac * d_down_clear_dTs + conv_frac * d_down_conv_dTs + strat_frac * d_down_strat_dTs
+    )
+    d_down_dTbl = (
+        clear_frac * d_down_clear_dTbl
+        + conv_frac * d_down_conv_dTbl
+        + strat_frac * d_down_strat_dTbl
+    )
+    d_down_dTatm = (
+        clear_frac * d_down_clear_dTatm
+        + conv_frac * d_down_conv_dTatm
+        + strat_frac * d_down_strat_dTatm
+    )
 
     return d_olr_dTs, d_olr_dTbl, d_olr_dTatm, d_down_dTs, d_down_dTbl, d_down_dTatm

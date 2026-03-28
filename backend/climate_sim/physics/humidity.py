@@ -11,18 +11,22 @@ from climate_sim.physics.atmosphere.hadley import LAT_POLES, LAT_SUBPOLAR, compu
 from climate_sim.physics.atmosphere.pressure import LAT_SUBTROPICS_BASE, SUBTROPICS_ITCZ_COUPLING
 from climate_sim.core.math_core import spherical_cell_area, compute_divergence
 from climate_sim.core.timing import time_block
-from climate_sim.data.constants import R_EARTH_METERS, BOUNDARY_LAYER_HEIGHT_M, STANDARD_LAPSE_RATE_K_PER_M
+from climate_sim.data.constants import (
+    R_EARTH_METERS,
+    BOUNDARY_LAYER_HEIGHT_M,
+    STANDARD_LAPSE_RATE_K_PER_M,
+)
 from climate_sim.physics.vertical_motion import compute_subsidence_drying
 
 if TYPE_CHECKING:
-    from climate_sim.physics.clouds import CloudPrecipOutput
+    pass
 
 # Mean RH and anomalies at key latitude bands (like pressure anomalies)
 RH_MEAN = 0.65
-DRH_ITCZ = +0.15           # Humid at ITCZ (convergence, rising air)
-DRH_SUBTROPICS = -0.30     # Dry at subtropics (descending air, deserts)
-DRH_SUBPOLAR = +0.10       # Moderately humid (storm tracks)
-DRH_POLES = +0.20          # Humid at poles
+DRH_ITCZ = +0.15  # Humid at ITCZ (convergence, rising air)
+DRH_SUBTROPICS = -0.30  # Dry at subtropics (descending air, deserts)
+DRH_SUBPOLAR = +0.10  # Moderately humid (storm tracks)
+DRH_POLES = +0.20  # Humid at poles
 
 # Ocean has higher RH overall
 RH_MEAN_WATER = 0.75
@@ -32,10 +36,10 @@ DRH_SUBPOLAR_WATER = +0.05
 DRH_POLES_WATER = +0.15
 
 # Width of humidity features (radians)
-SIGMA_RH_ITCZ = np.deg2rad(10.0)       # ITCZ humid zone width
+SIGMA_RH_ITCZ = np.deg2rad(10.0)  # ITCZ humid zone width
 SIGMA_RH_SUBTROPICS = np.deg2rad(15.0)  # Subtropical dry zone width
-SIGMA_RH_SUBPOLAR = np.deg2rad(12.0)   # Subpolar storm track width
-SIGMA_RH_POLES = np.deg2rad(10.0)      # Polar humid zone width
+SIGMA_RH_SUBPOLAR = np.deg2rad(12.0)  # Subpolar storm track width
+SIGMA_RH_POLES = np.deg2rad(10.0)  # Polar humid zone width
 
 # Moisture advection parameters
 # Penetration length is longer for q advection (conserved quantity) vs RH
@@ -123,12 +127,14 @@ def advect_moisture_from_ocean(
 
         # Compute decay factor based on physical distance traveled
         wind_speed = np.sqrt(wind_u**2 + wind_v**2)
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(divide="ignore", invalid="ignore"):
             dist = np.where(
                 wind_speed > 0.1,
-                np.sqrt((wind_u * dx / np.maximum(wind_speed, 0.1))**2 +
-                        (wind_v * dy / np.maximum(wind_speed, 0.1))**2),
-                0.5 * (dx + dy)  # Fallback for calm conditions
+                np.sqrt(
+                    (wind_u * dx / np.maximum(wind_speed, 0.1)) ** 2
+                    + (wind_v * dy / np.maximum(wind_speed, 0.1)) ** 2
+                ),
+                0.5 * (dx + dy),  # Fallback for calm conditions
             )
 
         # Physical decay: exp(-distance / penetration_length)
@@ -152,15 +158,14 @@ def _sample_upwind(
     dx: np.ndarray,
     dy: float,
 ) -> np.ndarray:
-    """Sample field values from upwind locations using first-order upwind scheme.
-    """
+    """Sample field values from upwind locations using first-order upwind scheme."""
     nlat, nlon = field.shape
 
     # Upwind indices for zonal direction (periodic)
     # If u > 0 (eastward wind), upwind is to the west (j-1)
     # If u < 0 (westward wind), upwind is to the east (j+1)
     j_upwind_east = np.roll(np.arange(nlon), -1)  # j+1
-    j_upwind_west = np.roll(np.arange(nlon), 1)   # j-1
+    j_upwind_west = np.roll(np.arange(nlon), 1)  # j-1
 
     # Sample from west or east based on wind direction
     field_west = field[:, j_upwind_west]
@@ -181,7 +186,7 @@ def _sample_upwind(
 
     # Blend zonal and meridional based on wind magnitude
     wind_speed = np.sqrt(wind_u**2 + wind_v**2)
-    with np.errstate(divide='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", invalid="ignore"):
         weight_u = np.abs(wind_u) / np.maximum(wind_speed, 0.01)
         weight_v = np.abs(wind_v) / np.maximum(wind_speed, 0.01)
 
@@ -295,29 +300,30 @@ def relative_humidity_pattern(
     lat_subtrop_south = -LAT_SUBTROPICS_BASE + SUBTROPICS_ITCZ_COUPLING * itcz_rad
 
     # ITCZ humid anomaly
-    rh_itcz = drh_itcz * np.exp(-((lat_rad - itcz_rad) / SIGMA_RH_ITCZ) ** 2)
+    rh_itcz = drh_itcz * np.exp(-(((lat_rad - itcz_rad) / SIGMA_RH_ITCZ) ** 2))
 
     # Subtropical dry anomaly (both hemispheres)
     rh_subtrop = drh_subtropics * (
-        np.exp(-((lat_rad - lat_subtrop_south) / SIGMA_RH_SUBTROPICS) ** 2)
-        + np.exp(-((lat_rad - lat_subtrop_north) / SIGMA_RH_SUBTROPICS) ** 2)
+        np.exp(-(((lat_rad - lat_subtrop_south) / SIGMA_RH_SUBTROPICS) ** 2))
+        + np.exp(-(((lat_rad - lat_subtrop_north) / SIGMA_RH_SUBTROPICS) ** 2))
     )
 
     # Subpolar humid anomaly (fixed latitudes, both hemispheres)
     rh_subpolar = drh_subpolar * (
-        np.exp(-((lat_rad + LAT_SUBPOLAR) / SIGMA_RH_SUBPOLAR) ** 2)
-        + np.exp(-((lat_rad - LAT_SUBPOLAR) / SIGMA_RH_SUBPOLAR) ** 2)
+        np.exp(-(((lat_rad + LAT_SUBPOLAR) / SIGMA_RH_SUBPOLAR) ** 2))
+        + np.exp(-(((lat_rad - LAT_SUBPOLAR) / SIGMA_RH_SUBPOLAR) ** 2))
     )
 
     # Polar humid anomaly (fixed latitudes, both hemispheres)
     rh_polar = drh_poles * (
-        np.exp(-((lat_rad + LAT_POLES) / SIGMA_RH_POLES) ** 2)
-        + np.exp(-((lat_rad - LAT_POLES) / SIGMA_RH_POLES) ** 2)
+        np.exp(-(((lat_rad + LAT_POLES) / SIGMA_RH_POLES) ** 2))
+        + np.exp(-(((lat_rad - LAT_POLES) / SIGMA_RH_POLES) ** 2))
     )
 
     rh = rh_mean + rh_itcz + rh_subtrop + rh_subpolar + rh_polar
 
     return np.clip(rh, 0.1, 0.98)
+
 
 def compute_humidity_q(
     lat_2d: np.ndarray,
@@ -381,9 +387,13 @@ def compute_humidity_q(
 
             # Compute ocean RH with ocean-specific parameters
             rh_ocean = relative_humidity_pattern(
-                lat_2d_rad, itcz_ocean_2d,
-                RH_MEAN_WATER, DRH_ITCZ_WATER, DRH_SUBTROPICS_WATER,
-                DRH_SUBPOLAR_WATER, DRH_POLES_WATER
+                lat_2d_rad,
+                itcz_ocean_2d,
+                RH_MEAN_WATER,
+                DRH_ITCZ_WATER,
+                DRH_SUBTROPICS_WATER,
+                DRH_SUBPOLAR_WATER,
+                DRH_POLES_WATER,
             )
 
             # Blend: use ocean values for ocean cells, land values for land cells
@@ -406,6 +416,7 @@ def compute_humidity_q(
     q_sat = (0.622 * e_sat) / (p_hPa - (1 - 0.622) * e_sat)
 
     return q_sat * rh
+
 
 def compute_humidity_and_precipitation(
     wind_u: np.ndarray | None,
@@ -457,7 +468,8 @@ def compute_humidity_and_precipitation(
     if wind_u is not None and wind_v is not None:
         # Diagnostic humidity from wind-advected ocean moisture
         humidity_diagnostic = advect_moisture_from_ocean(
-            wind_u, wind_v,
+            wind_u,
+            wind_v,
             land_mask,
             lat2d,
             lon2d,
@@ -469,7 +481,9 @@ def compute_humidity_and_precipitation(
         divergence = compute_divergence(wind_u, wind_v, lat2d, lon2d)
         seconds_per_month = 30.0 * 24.0 * 3600.0
         drying_tendency = compute_subsidence_drying(divergence, humidity_diagnostic)
-        drying_factor = 1.0 + (drying_tendency * seconds_per_month) / np.maximum(humidity_diagnostic, 1e-10)
+        drying_factor = 1.0 + (drying_tendency * seconds_per_month) / np.maximum(
+            humidity_diagnostic, 1e-10
+        )
         drying_factor = np.clip(drying_factor, 0.8, 1.0)
         drying_factor = np.where(land_mask, drying_factor, 1.0)
         humidity_diagnostic = humidity_diagnostic * drying_factor
@@ -490,8 +504,7 @@ def compute_humidity_and_precipitation(
         ocean_bl_correction = (BOUNDARY_LAYER_HEIGHT_M - 500.0) / 2.0 * STANDARD_LAPSE_RATE_K_PER_M
         t_for_rh = np.where(land_mask, temperature_field, temperature_field + ocean_bl_correction)
         rh = specific_humidity_to_relative_humidity(
-            humidity_field, t_for_rh,
-            itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d
+            humidity_field, t_for_rh, itcz_rad=itcz_rad, lat2d=lat2d, lon2d=lon2d
         )
 
         # Use unified cloud-precipitation module

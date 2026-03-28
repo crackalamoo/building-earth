@@ -38,9 +38,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _convert_temperature(
-    values: np.ndarray, use_fahrenheit: bool
-) -> np.ndarray:
+def _convert_temperature(values: np.ndarray, use_fahrenheit: bool) -> np.ndarray:
     import numpy as np
 
     if not use_fahrenheit:
@@ -71,9 +69,7 @@ def _summarize_location(
     lat2d: np.ndarray,
     use_fahrenheit: bool,
 ) -> None:
-    lat_idx, lon_idx = _nearest_cell_indices(
-        lon2d, lat2d, location.latitude, location.longitude
-    )
+    lat_idx, lon_idx = _nearest_cell_indices(lon2d, lat2d, location.latitude, location.longitude)
     monthly = monthly_surface_cycle[:, lat_idx, lon_idx]
     annual_mean = monthly.mean()
     annual_min = monthly.min()
@@ -142,16 +138,14 @@ def main() -> None:
     )
     surface_cycle = layers["surface"]
 
-    cell_areas = spherical_cell_area(
-        lon2d, lat2d, earth_radius_m=R_EARTH_METERS
-    )
+    cell_areas = spherical_cell_area(lon2d, lat2d, earth_radius_m=R_EARTH_METERS)
     surface_area_mean = area_weighted_mean(surface_cycle.mean(axis=0), cell_areas)
     unit = _temperature_unit(args.fahrenheit)
     print(
         "Global surface layer: ",
         f"Tmin={_convert_temperature(surface_cycle.min(), args.fahrenheit):.1f} {unit}, ",
         f"Tmax={_convert_temperature(surface_cycle.max(), args.fahrenheit):.1f} {unit}, ",
-        f"area-weighted mean={_convert_temperature(surface_area_mean, args.fahrenheit):.1f} {unit}"
+        f"area-weighted mean={_convert_temperature(surface_area_mean, args.fahrenheit):.1f} {unit}",
     )
 
     locations = [
@@ -162,9 +156,7 @@ def main() -> None:
     ]
 
     for location in locations:
-        _summarize_location(
-            location, surface_cycle, lon2d, lat2d, args.fahrenheit
-        )
+        _summarize_location(location, surface_cycle, lon2d, lat2d, args.fahrenheit)
 
 
 if __name__ == "__main__":
