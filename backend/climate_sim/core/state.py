@@ -1,7 +1,5 @@
 """Core state types and utilities for the climate model."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import numpy as np

@@ -1,7 +1,5 @@
 """Grid generation helpers for regular latitude/longitude meshes."""
 
-from __future__ import annotations
-
 import numpy as np
 
 

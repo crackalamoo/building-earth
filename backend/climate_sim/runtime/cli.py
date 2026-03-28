@@ -1,7 +1,5 @@
 """Helpers for building consistent command-line interfaces."""
 
-from __future__ import annotations
-
 import argparse
 from typing import Iterable, Sequence
 

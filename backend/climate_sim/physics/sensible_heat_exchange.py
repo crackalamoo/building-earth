@@ -1,7 +1,5 @@
 """Neutral sensible heat exchange between the surface and atmosphere."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import numpy as np
@@ -14,7 +12,6 @@ from climate_sim.data.constants import (
     HEAT_CAPACITY_AIR_J_KG_K,
 )
 from climate_sim.data.elevation import VON_KARMAN_CONSTANT
-from climate_sim.data.calendar import SECONDS_PER_DAY
 from climate_sim.core.math_core import area_weighted_mean
 
 from climate_sim.physics.atmosphere.wind import WindModel
@@ -133,8 +130,6 @@ class SensibleHeatExchangeModel:
                 return zeros, zeros, zeros
             return zeros, zeros
 
-        Cbl = 1.2e5  # J m-2 K-1
-
         # Three-layer system with boundary layer
         if boundary_layer_temperature_K is not None:
             if self._boundary_layer_heat_capacity is None:
@@ -190,9 +185,6 @@ class SensibleHeatExchangeModel:
                 if cell_area_m2 is None:
                     raise ValueError("cell_area_m2 must be provided when log_diagnostics=True")
 
-                # Compute effective timescales
-                tau_bl_atm_days = area_weighted_mean(tau_bl_atm, cell_area_m2) / SECONDS_PER_DAY
-
                 print("\n=== Sensible Heat Exchange Diagnostics ===")
                 print("\nHeat Fluxes (W/m²):")
                 print(
@@ -205,20 +197,12 @@ class SensibleHeatExchangeModel:
                 print(
                     f"Surface-boundary (g_surf):         {area_weighted_mean(g_surf, cell_area_m2):7.2f}"
                 )
-                print(
-                    f"Boundary-atmosphere (g_mix):       {area_weighted_mean(g_mix_bl_atm, cell_area_m2):7.2f}"
-                )
                 print("\nTemperature Differences (K):")
                 print(
                     f"Surface - Near-surface air:        {area_weighted_mean(delta_surf_bl, cell_area_m2):7.2f}"
                 )
                 print(
-                    f"Boundary layer - Atmosphere:       {area_weighted_mean(delta_bl_atm, cell_area_m2):7.2f}"
-                )
-                print("\nEffective Timescales:")
-                print(f"Boundary-atmosphere coupling:      {tau_bl_atm_days:7.2f} days")
-                print(
-                    f"Mean wind speed (10m):             {area_weighted_mean(wind_abs, cell_area_m2):7.2f} m/s"
+                    f"\nMean wind speed (10m):             {area_weighted_mean(wind_abs, cell_area_m2):7.2f} m/s"
                 )
                 print("=" * 40)
 

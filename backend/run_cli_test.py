@@ -1,7 +1,5 @@
 """Simple CLI to print predicted climates for selected locations."""
 
-from __future__ import annotations
-
 import argparse
 from dataclasses import dataclass
 

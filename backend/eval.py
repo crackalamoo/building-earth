@@ -8,8 +8,6 @@ baseline. Results are summarised via area-weighted RMSE statistics over land,
 ocean, and the globe and displayed with interactive maps.
 """
 
-from __future__ import annotations
-
 import argparse
 import os
 import struct
@@ -353,7 +351,6 @@ def aggregate_humidity_precip_to_sim_grid(
     lat_edges_max = lat_centers_sim + 0.5 * dlat_sim
 
     lon_noaa_wrapped = lon_noaa % 360.0
-    lon_centers_sim_wrapped = lon_centers_sim % 360.0
     lon_edges_min_wrapped = (lon_centers_sim - 0.5 * dlon_sim) % 360.0
     lon_edges_max_wrapped = (lon_centers_sim + 0.5 * dlon_sim) % 360.0
 
@@ -1363,7 +1360,6 @@ def compute_bias_corrected_anomaly(
     """
 
     # Compute raw differences
-    sim_combined = np.where(land_mask[None, ...], sim_t2m, sim_surface)
     land_diff = sim_t2m - obs_land
     ocean_diff = sim_surface - obs_sst
 

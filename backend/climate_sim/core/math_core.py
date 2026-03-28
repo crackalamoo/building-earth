@@ -1,7 +1,5 @@
 """Lightweight numerical helpers shared across model components."""
 
-from __future__ import annotations
-
 import hashlib
 from dataclasses import dataclass, field
 from typing import Callable, Dict

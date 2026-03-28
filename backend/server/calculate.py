@@ -3,8 +3,6 @@
 Safely evaluates math expressions over climate field values using AST validation.
 """
 
-from __future__ import annotations
-
 import ast
 import math
 from typing import Any

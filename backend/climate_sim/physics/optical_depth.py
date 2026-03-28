@@ -13,8 +13,6 @@ Key concepts:
 The τ=1 level is found analytically using the Lambert W function.
 """
 
-from __future__ import annotations
-
 import numpy as np
 from scipy.special import lambertw
 

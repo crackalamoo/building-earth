@@ -1,7 +1,5 @@
 """Dataclasses for assembling model configurations used by the solver entry points."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 from climate_sim.physics.atmosphere.advection import AdvectionConfig

@@ -1,7 +1,5 @@
 """General-purpose periodic solver utilities for energy-balance models."""
 
-from __future__ import annotations
-
 from typing import Callable, Dict
 
 import numpy as np
@@ -395,8 +393,7 @@ def monthly_step(
         preconditioner_solve: Callable[[np.ndarray], np.ndarray] | None = None
         preconditioner_age = 10**9
         # Jacobian lagging: reuse Jacobian when residual is decreasing
-        cached_linearization: "Linearization | None" = None
-        prev_max_residual: float = float("inf")
+        cached_linearization = None
         jacobian_age: int = 0
         JACOBIAN_MAX_AGE = 3  # Recompute after this many reuses
         # Cache assembled Jacobian and preconditioner for reuse when linearization is lagged.

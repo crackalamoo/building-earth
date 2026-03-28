@@ -1,7 +1,5 @@
 """Atmospheric utility functions."""
 
-from __future__ import annotations
-
 import numpy as np
 
 from climate_sim.data.constants import BOUNDARY_LAYER_HEIGHT_M

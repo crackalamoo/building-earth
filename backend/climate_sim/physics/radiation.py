@@ -1,9 +1,6 @@
 """Radiative column model components with optional atmospheric layer."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -27,9 +24,6 @@ from climate_sim.physics.humidity import (
     compute_saturation_specific_humidity,
     specific_humidity_to_relative_humidity,
 )
-
-if TYPE_CHECKING:
-    from climate_sim.physics.clouds import CloudPrecipOutput
 
 # Water vapor scale height (~2 km observed globally). Used to compute effective
 # emission height since water vapor is exponentially distributed.
@@ -64,8 +58,9 @@ _EPS_DRY_ATM = (1 - _R_WINDOW) * (1 - np.exp(-_DP_P0_ATM * _A_NW)) + _R_WINDOW *
     1 - np.exp(-_DP_P0_ATM * _A_WIN)
 )
 
-# Import cloud height constants from clouds module
-from climate_sim.physics.clouds import (
+# Import cloud height constants from clouds module (after module-level constants to avoid circular import)
+from climate_sim.physics.clouds import (  # noqa: E402
+    CloudPrecipOutput,
     CONVECTIVE_CLOUD_BASE_HEIGHT_M,
     CONVECTIVE_CLOUD_TOP_HEIGHT_M,
     HIGH_CLOUD_BASE_HEIGHT_M,
@@ -360,7 +355,7 @@ def radiative_balance_rhs(
     itcz_rad: np.ndarray | None = None,
     lat2d: np.ndarray | None = None,
     lon2d: np.ndarray | None = None,
-    cloud_output: "CloudPrecipOutput | None" = None,
+    cloud_output: CloudPrecipOutput | None = None,
 ) -> np.ndarray:
     """Column energy-balance tendency for the configured radiative model."""
 
@@ -374,7 +369,6 @@ def radiative_balance_rhs(
 
     surface = _with_floor(temperature_K[0], floor)
 
-    nlayers = temperature_K.shape[0]
     atmosphere = _with_floor(temperature_K[2], floor)  # Free atmosphere (layer 2)
 
     # Compute cloud properties - use unified CloudPrecipOutput if available
@@ -383,16 +377,12 @@ def radiative_balance_rhs(
         # Separate convective, stratiform, marine Sc, and high clouds for accurate radiation
         conv_frac = cloud_output.convective_frac
         conv_albedo = cloud_output.convective_albedo
-        conv_top_K = cloud_output.convective_top_K
         strat_frac = cloud_output.stratiform_frac
         strat_albedo = cloud_output.stratiform_albedo
-        strat_top_K = cloud_output.stratiform_top_K
         marine_sc_frac = cloud_output.marine_sc_frac
         marine_sc_albedo = cloud_output.marine_sc_albedo
-        marine_sc_top_K = cloud_output.marine_sc_top_K
         high_frac = cloud_output.high_cloud_frac
         high_albedo = cloud_output.high_cloud_albedo
-        high_top_K = cloud_output.high_cloud_top_K
 
         # Low clouds (conv, strat, marine Sc) are mutually exclusive regimes:
         # - Convective: rising motion + unstable (low LTS)
@@ -731,13 +721,8 @@ def radiative_balance_rhs(
     # Total atmospheric SW absorptance (clear-sky + clouds)
     clear_sky_sw_abs_total = CLEAR_SKY_SW_ABSORPTANCE_ATM + CLEAR_SKY_SW_ABSORPTANCE_BL
     beta_atm = clear_sky_sw_abs_total + cloud_sw_absorptance
-    absorbed_shortwave_atm = beta_atm * insolation_W_m2
     sw_down_surface = (1.0 - alpha_atm - beta_atm) * insolation_W_m2
     absorbed_shortwave_sfc = sw_down_surface * (1.0 - albedo_field)
-
-    # Longwave budget
-    downward_longwave = downward_lw_weighted
-    absorbed_from_surface = eps_atm * emitted_surface
 
     boundary = _with_floor(temperature_K[1], floor)
 
@@ -799,8 +784,6 @@ def radiative_balance_rhs(
     # - Low clouds (conv, strat, marine_sc): absorbed in/near BL
     #
     # Compute clear-sky SW reaching each layer
-    sw_after_albedo = (1.0 - alpha_atm) * insolation_W_m2
-
     # Clear-sky absorption
     clear_sw_abs_atm = CLEAR_SKY_SW_ABSORPTANCE_ATM * insolation_W_m2
     clear_sw_abs_bl = CLEAR_SKY_SW_ABSORPTANCE_BL * insolation_W_m2
@@ -1031,7 +1014,7 @@ def radiative_balance_rhs_temperature_derivative(
     itcz_rad: np.ndarray | None = None,
     lat2d: np.ndarray | None = None,
     lon2d: np.ndarray | None = None,
-    cloud_output: "CloudPrecipOutput | None" = None,
+    cloud_output: CloudPrecipOutput | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Compute the Jacobian of radiative tendency with respect to temperature.
 
@@ -1056,7 +1039,6 @@ def radiative_balance_rhs_temperature_derivative(
         return (coeff / heat_capacity_field)[np.newaxis, :, :]
 
     surface = _with_floor(temperature_K[0], floor)
-    nlayers = temperature_K.shape[0]
     atmosphere = _with_floor(temperature_K[2], floor)  # Free atmosphere (layer 2)
 
     # Use cloud_output if available, otherwise compute simple fallback

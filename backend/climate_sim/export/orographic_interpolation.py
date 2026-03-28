@@ -5,8 +5,6 @@ but within each 5° cell we redistribute rain based on 1° terrain, so mountains
 get more and valleys get less.
 """
 
-from __future__ import annotations
-
 from climate_sim.physics.humidity import (
     compute_itcz_latitude,
     specific_humidity_to_relative_humidity,

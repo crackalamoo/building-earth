@@ -1,7 +1,5 @@
 """Load simulation output and sample individual fields at (lat, lon, month)."""
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any

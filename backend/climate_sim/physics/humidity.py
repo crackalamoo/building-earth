@@ -1,9 +1,5 @@
 """Humidity utilities."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
 import numpy as np
 
 from climate_sim.physics.atmosphere.pressure import compute_pressure
@@ -17,9 +13,6 @@ from climate_sim.data.constants import (
     STANDARD_LAPSE_RATE_K_PER_M,
 )
 from climate_sim.physics.vertical_motion import compute_subsidence_drying
-
-if TYPE_CHECKING:
-    pass
 
 # Mean RH and anomalies at key latitude bands (like pressure anomalies)
 RH_MEAN = 0.65
@@ -81,9 +74,7 @@ def advect_moisture_from_ocean(
         raise ValueError("temperature_field is required for q advection")
 
     temperature_C = temperature_field - 273.15
-    e_sat = 6.112 * np.exp(17.67 * temperature_C / (temperature_C + 243.5))
     p_hPa = 1013.25  # Approximate surface pressure
-    q_sat = (0.622 * e_sat) / (p_hPa - (1 - 0.622) * e_sat)
 
     # Over ocean, our BL layer (midpoint ~500m) is colder than the near-surface
     # marine BL (~250m midpoint for a real ~500m ocean BL). Correct q_sat cap

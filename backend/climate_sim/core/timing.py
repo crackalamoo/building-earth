@@ -1,7 +1,5 @@
 """Timing utilities for performance profiling."""
 
-from __future__ import annotations
-
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -15,8 +13,8 @@ class TimingEntry:
     name: str
     total_time: float = 0.0
     call_count: int = 0
-    children: Dict[str, TimingEntry] = field(default_factory=dict)
-    parent: TimingEntry | None = None
+    children: Dict[str, "TimingEntry"] = field(default_factory=dict)
+    parent: "TimingEntry | None" = None
 
 
 class TimingProfiler:

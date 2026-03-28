@@ -1,7 +1,5 @@
 """Land/sea masking utilities backed by Natural Earth geometry."""
 
-from __future__ import annotations
-
 import functools
 
 import numpy as np

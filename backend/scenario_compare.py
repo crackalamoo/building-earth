@@ -1,7 +1,5 @@
 """Compare climate model configurations by toggling model components."""
 
-from __future__ import annotations
-
 import argparse
 import os
 from pathlib import Path

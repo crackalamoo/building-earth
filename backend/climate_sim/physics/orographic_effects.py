@@ -7,8 +7,6 @@ Physics:
   wind component is reduced by Fr², representing flow going around rather than over terrain.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import numpy as np

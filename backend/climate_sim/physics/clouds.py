@@ -22,8 +22,6 @@ Cloud types:
 The physics flow is: Lift -> Clouds -> Precipitation (precipitation in precipitation.py)
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import numpy as np

@@ -1,7 +1,5 @@
 """Spherical interpolation utilities for upscaling coarse solver output."""
 
-from __future__ import annotations
-
 import numpy as np
 
 from climate_sim.data.constants import STANDARD_LAPSE_RATE_K_PER_M

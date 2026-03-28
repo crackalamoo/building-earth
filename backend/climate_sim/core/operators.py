@@ -1,7 +1,5 @@
 """Operator and grid construction for the climate model."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, replace
 
 import numpy as np

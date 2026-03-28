@@ -1,7 +1,5 @@
 """Per-IP sliding-window rate limiter for FastAPI routes."""
 
-from __future__ import annotations
-
 import os
 import time
 from collections import deque

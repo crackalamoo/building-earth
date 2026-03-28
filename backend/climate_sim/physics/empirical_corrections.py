@@ -1,7 +1,5 @@
 """Empirical corrections for processes the model cannot resolve from first principles."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import numpy as np

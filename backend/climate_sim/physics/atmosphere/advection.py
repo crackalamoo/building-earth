@@ -1,7 +1,5 @@
 """Atmospheric advection operator for temperature transport by wind."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import numpy as np

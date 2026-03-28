@@ -1,7 +1,5 @@
 """Boundary layer configuration for the climate model."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 from climate_sim.data.constants import (

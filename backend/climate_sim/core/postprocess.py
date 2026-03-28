@@ -1,7 +1,5 @@
 """Post-processing utilities for solver results."""
 
-from __future__ import annotations
-
 from typing import Dict
 
 import numpy as np

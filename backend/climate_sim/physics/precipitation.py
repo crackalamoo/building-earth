@@ -7,8 +7,6 @@ This module provides all precipitation computations:
 - Jacobian calculations for the implicit solver
 """
 
-from __future__ import annotations
-
 import numpy as np
 
 from climate_sim.data.constants import (

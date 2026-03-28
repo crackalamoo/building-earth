@@ -1,7 +1,5 @@
 """Lateral (meridional + zonal) diffusion utilities for energy transport."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import numpy as np
@@ -166,33 +164,27 @@ class DiffusionConfig:
             layer: Which layer scaling to use ("atmosphere" or "surface")
         """
         if layer == "surface":
-            if not self.use_latitude_dependent_surface:
-                return np.ones_like(lat_deg)
-            # Surface only has meridional scaling (ocean gyres don't enhance zonal)
-            if meridional:
-                tropical_scale = self.surface_meridional_tropical_scale
-                midlat_scale = self.surface_meridional_midlat_scale
-                polar_scale = self.surface_meridional_polar_scale
-            else:
-                return np.ones_like(lat_deg)
-        else:  # atmosphere
-            if not self.use_latitude_dependent_atmosphere:
-                return np.ones_like(lat_deg)
+            # Surface latitude scaling not yet implemented; return uniform.
+            return np.ones_like(lat_deg)
 
-            lat_rad = np.deg2rad(lat_deg)
-            # Eady-based: κ ∝ f × |dT/dy|
-            # f ∝ |sin(φ)|, |dT/dy| ∝ |sin(2φ)| for sinusoidal T profile
-            eady = np.abs(np.sin(lat_rad)) * np.abs(np.sin(2 * lat_rad))
-            # Normalize so 45° gives midlat_scale
-            eady_at_45 = np.sin(np.deg2rad(45.0)) * np.sin(np.deg2rad(90.0))
-            scaling = eady / eady_at_45 * self.atmosphere_meridional_midlat_scale
-            # Floor: tropics still need some eddy transport
-            scaling = np.maximum(scaling, self.atmosphere_meridional_tropical_scale)
-            # Cap to prevent excessive polar transport
-            if self.eady_kappa_max_m2_s > 0:
-                max_scaling = self.eady_kappa_max_m2_s / self.atmosphere_kappa_ref_m2_s
-                scaling = np.minimum(scaling, max_scaling)
-            return scaling
+        # atmosphere
+        if not self.use_latitude_dependent_atmosphere:
+            return np.ones_like(lat_deg)
+
+        lat_rad = np.deg2rad(lat_deg)
+        # Eady-based: κ ∝ f × |dT/dy|
+        # f ∝ |sin(φ)|, |dT/dy| ∝ |sin(2φ)| for sinusoidal T profile
+        eady = np.abs(np.sin(lat_rad)) * np.abs(np.sin(2 * lat_rad))
+        # Normalize so 45° gives midlat_scale
+        eady_at_45 = np.sin(np.deg2rad(45.0)) * np.sin(np.deg2rad(90.0))
+        scaling = eady / eady_at_45 * self.atmosphere_meridional_midlat_scale
+        # Floor: tropics still need some eddy transport
+        scaling = np.maximum(scaling, self.atmosphere_meridional_tropical_scale)
+        # Cap to prevent excessive polar transport
+        if self.eady_kappa_max_m2_s > 0:
+            max_scaling = self.eady_kappa_max_m2_s / self.atmosphere_kappa_ref_m2_s
+            scaling = np.minimum(scaling, max_scaling)
+        return scaling
 
 
 @dataclass
@@ -210,7 +202,7 @@ class DiffusionOperator:
     enabled: bool = True
 
     @classmethod
-    def disabled(cls, shape: tuple[int, int]) -> DiffusionOperator:
+    def disabled(cls, shape: tuple[int, int]) -> "DiffusionOperator":
         zeros = np.zeros(shape, dtype=float)
         return cls(
             north_coeff=zeros,
@@ -284,7 +276,7 @@ class LayeredDiffusionOperator:
     humidity: DiffusionOperator | None = None
 
     @classmethod
-    def disabled(cls, shape: tuple[int, int]) -> LayeredDiffusionOperator:
+    def disabled(cls, shape: tuple[int, int]) -> "LayeredDiffusionOperator":
         disabled = DiffusionOperator.disabled(shape)
         return cls(surface=disabled, atmosphere=disabled, boundary_layer=disabled)
 

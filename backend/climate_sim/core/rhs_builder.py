@@ -1,7 +1,5 @@
 """Right-hand-side factory for energy-balance model physics assembly."""
 
-from __future__ import annotations
-
 import os
 
 import numpy as np
@@ -821,17 +819,6 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
                     # dP/dq from precipitation model
                     t_bl = state.temperature[1]
-                    t_atm = state.temperature[2]
-
-                    # Get cloud fractions for Jacobian
-                    if cloud_output is not None:
-                        conv_frac = cloud_output.convective_frac
-                        strat_frac = cloud_output.stratiform_frac
-                        marine_frac = cloud_output.marine_sc_frac
-                    else:
-                        conv_frac = np.zeros_like(state.humidity_field)
-                        strat_frac = np.zeros_like(state.humidity_field)
-                        marine_frac = np.zeros_like(state.humidity_field)
 
                     # Compute vertical velocity from divergence + orographic (must match forward RHS)
                     if wind_u_q is not None and wind_v_q is not None:
