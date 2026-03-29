@@ -244,28 +244,35 @@ def compute_hadley_subsidence_velocity(
 
     Returns vertical velocity (m/s), positive = descent, negative = ascent.
 
-    Descent is a fixed-latitude pattern driven by radiative cooling of the
-    subtropical free troposphere (~10-35° in each hemisphere). This does NOT
-    depend on the ITCZ position — the desert doesn't move with the ITCZ.
-    ITCZ ascent then overrides descent where convection dominates.
+    Each hemisphere's Hadley cell has its descent zone positioned relative
+    to the ITCZ. The descent is centered ~25° poleward of the ITCZ in
+    each hemisphere, representing the latitude where upper-level air
+    cools radiatively and sinks. When the ITCZ shifts into a hemisphere
+    (e.g., into SH in DJF), that hemisphere's Hadley cell weakens and
+    the descent zone moves poleward, while the winter hemisphere's
+    cell strengthens and descent moves equatorward.
 
     Peak velocity is scaled down (0.6×) relative to the ITCZ ascent because
     the descent is spread over a broader area (~25° vs ~15° for the ascent).
     """
-    # Fixed subtropical descent: broad plateau from ~10° to ~35° in each
-    # hemisphere, driven by radiative cooling. Smooth tanh transitions.
-    inner_edge = np.deg2rad(10.0)  # equatorward edge of descent zone
-    outer_edge = np.deg2rad(35.0)  # poleward edge (Hadley-Ferrel boundary)
-    ramp = np.deg2rad(4.0)  # transition width
+    # Each hemisphere's Hadley cell has a descent zone that weakens when
+    # the ITCZ moves into that hemisphere (summer) and strengthens when
+    # the ITCZ moves into the opposite hemisphere (winter).
 
-    abs_lat = np.abs(lat_rad)
-    descent_envelope = (
-        0.5
-        * (1.0 + np.tanh((abs_lat - inner_edge) / ramp))
-        * 0.5
-        * (1.0 + np.tanh((outer_edge - abs_lat) / ramp))
-    )
-    w_descent = 0.6 * peak_velocity_m_s * descent_envelope
+    descent_width = np.deg2rad(12.0)
+
+    # NH descent
+    itcz_frac = np.clip(itcz_rad / np.deg2rad(15.0), -1, 1)  # -1 to +1
+    nh_strength = 0.6 * (1.0 - 0.3 * itcz_frac)  # 0.42 (summer) to 0.78 (winter)
+    nh_center = np.deg2rad(25.0) + np.deg2rad(5.0) * np.clip(itcz_frac, 0, 1)
+    nh_descent = nh_strength * np.exp(-(((lat_rad - nh_center) / descent_width) ** 2))
+
+    # SH descent: mirror of NH
+    sh_strength = 0.6 * (1.0 + 0.3 * itcz_frac)  # 0.42 (summer) to 0.78 (winter)
+    sh_center = -np.deg2rad(25.0) - np.deg2rad(5.0) * np.clip(-itcz_frac, 0, 1)
+    sh_descent = sh_strength * np.exp(-(((lat_rad - sh_center) / descent_width) ** 2))
+
+    w_descent = peak_velocity_m_s * (nh_descent + sh_descent)
 
     # ITCZ ascent (negative = upward)
     w_ascent = peak_velocity_m_s * np.exp(-(((lat_rad - itcz_rad) / SIGMA_ITCZ) ** 2))

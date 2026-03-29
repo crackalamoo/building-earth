@@ -85,18 +85,27 @@ def compute_moist_adiabatic_lapse_rate(T_K: np.ndarray, q: np.ndarray) -> np.nda
 
 
 def compute_precipitation_rh_gate(rh: np.ndarray) -> np.ndarray:
-    """Sundqvist (1989) RH gate for precipitation.
+    """Sundqvist (1989) RH gate for precipitation with soft onset.
 
-    C = 1 - sqrt((1 - RH) / (1 - RH_crit)) for RH > RH_crit, else 0.
-    Smooth, concave-up onset — zero below RH_crit=0.65, reaches 1.0 at RH=1.0.
+    Above RH_crit: C = 1 - sqrt((1 - RH) / (1 - RH_crit))  (standard Sundqvist)
+    Below RH_crit: C = C_crit * exp(-(RH_crit - RH) / scale)  (exponential tail)
+
+    The soft tail below RH_crit represents the physical reality that at 5°
+    resolution, some sub-grid columns may be saturated even when the grid-mean
+    BL RH is below threshold. It also prevents the hard zero from creating
+    bistability in the SM↔E↔q↔P feedback loop.
     """
     rh_clipped = np.clip(rh, 0.0, 0.999)
     RH_CRIT = 0.40  # sub-grid saturation: parts of 5° cell saturate before grid-mean
-    return np.where(
-        rh_clipped > RH_CRIT,
-        1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - RH_CRIT)),
-        0.0,
-    )
+    TAIL_SCALE = 0.08  # e-folding scale below RH_crit
+
+    # Exponential tail below RH_crit (floor value at RH_crit = FLOOR)
+    FLOOR = 0.01
+    gate_below = FLOOR * np.exp(-(RH_CRIT - rh_clipped) / TAIL_SCALE)
+
+    # Sundqvist above RH_crit, shifted up by FLOOR for continuity
+    gate_above = FLOOR + (1.0 - FLOOR) * (1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - RH_CRIT)))
+    return np.where(rh_clipped > RH_CRIT, gate_above, gate_below)
 
 
 def compute_convective_precipitation(

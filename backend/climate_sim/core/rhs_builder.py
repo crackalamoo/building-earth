@@ -80,6 +80,16 @@ class Linearization:
     temp_humidity_coupling: tuple[np.ndarray, ...] | None = (
         None  # dR_T/dq terms (dR_Tsfc/dq, dR_Tbl/dq, dR_Tatm/dq)
     )
+    # Soil moisture Jacobian components (for prognostic SM in Newton solver)
+    soil_diag: np.ndarray | None = None  # d(SM_tendency)/dSM diagonal
+    soil_humidity_coupling: np.ndarray | None = None  # d(SM_tendency)/dq
+    soil_temp_coupling: tuple[np.ndarray, ...] | None = (
+        None  # d(SM_tendency)/dT terms (dTsfc, dTbl, dTatm)
+    )
+    temp_soil_coupling: tuple[np.ndarray, ...] | None = (
+        None  # d(T_tendency)/dSM terms (dTsfc, dTbl, dTatm)
+    )
+    humidity_soil_coupling: np.ndarray | None = None  # d(q_tendency)/dSM
 
 
 type FloatArray = NDArray[np.floating]
@@ -763,6 +773,13 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             humidity_temp_coupling = None
             temp_humidity_coupling = None
 
+            # Soil moisture Jacobian defaults (set inside humidity block if available)
+            soil_diag = None
+            soil_humidity_coupling = None
+            soil_temp_coupling = None
+            temp_soil_coupling = None
+            humidity_soil_coupling = None
+
             # Build humidity diffusion matrix if operator is provided
             # Use the full matrix (not just off-diagonal) for proper Jacobian
             if (
@@ -953,6 +970,87 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
 
                     temp_humidity_coupling = (dR_Tsfc_dq, dR_Tbl_dq, dR_Tatm_dq)
 
+                    # Precipitation latent heating feedback on temperature:
+                    # P depends on T through dP/dT_bl and dP/dT_atm.
+                    # When T_bl warms → P increases → latent heat warms BL and atm.
+                    # This positive feedback is the dominant missing Jacobian term.
+                    diag[1] += bl_frac * dP_dT_bl * L_v / C_bl
+                    diag[2] += (1 - bl_frac) * dP_dT_atm * L_v / C_atm
+                    # Cross-layer: BL P-heating from atm T change and vice versa
+                    cross[1, 2] += bl_frac * dP_dT_atm * L_v / C_bl
+                    cross[2, 1] += (1 - bl_frac) * dP_dT_bl * L_v / C_atm
+
+                    # =============================================================
+                    # Soil moisture Jacobian (for prognostic SM in Newton solver)
+                    # =============================================================
+                    SOIL_CAPACITY_KG_M2 = 300.0
+                    TAU_SLOW_SECONDS = 365.0 * 86400.0
+
+                    if (
+                        latent_heat_model is not None
+                        and latent_heat_model.enabled
+                        and state.soil_moisture is not None
+                    ):
+                        # Compute dE/dSM from latent heat model
+                        dE_dSM = latent_heat_model.compute_evaporation_jacobian_wrt_soil_moisture(
+                            state.temperature[0],
+                            state.temperature[-1],  # atmosphere
+                            state.humidity_field,
+                            wind_speed_reference_m_s=state.wind_field[2]
+                            if state.wind_field is not None
+                            else None,
+                            itcz_rad=None,
+                            boundary_layer_temperature_K=state.temperature[1],
+                            soil_moisture=state.soil_moisture,
+                        )
+
+                        # SM tendency: dSM/dt = (P - E) / capacity - SM / tau_slow
+                        # Tendency derivatives stored in Linearization (solver multiplies by -dt)
+
+                        # d(Tsfc_tendency)/dSM = -dE_dSM * L_v / C_sfc
+                        # (negative: more SM -> more E -> surface cools)
+                        dR_Tsfc_dSM = -dE_dSM * L_v / C_sfc
+
+                        # d(q_tendency)/dSM = +dE_dSM / COLUMN_MASS
+                        # (positive: more SM -> more E -> more q)
+                        dR_q_dSM = dE_dSM / COLUMN_MASS_KG_M2
+
+                        # Land mask for SM coupling (SM is land-only)
+                        land = inputs.land_mask
+
+                        # d(SM_tendency)/dTsfc = -dE_dT_sfc / CAPACITY
+                        # (negative: warmer surface -> more E -> less SM)
+                        dR_SM_dTsfc = np.where(land, -dE_dT_sfc / SOIL_CAPACITY_KG_M2, 0.0)
+
+                        # d(SM_tendency)/dTbl = +dP_dT_bl / CAPACITY
+                        # (positive: warmer BL -> more P -> more SM)
+                        dR_SM_dTbl = np.where(land, dP_dT_bl / SOIL_CAPACITY_KG_M2, 0.0)
+
+                        # d(SM_tendency)/dTatm = +dP_dT_atm / CAPACITY
+                        dR_SM_dTatm = np.where(land, dP_dT_atm / SOIL_CAPACITY_KG_M2, 0.0)
+
+                        # d(SM_tendency)/dq = +dP_dq / CAPACITY
+                        # (positive: more q -> more P -> more SM)
+                        dR_SM_dq = np.where(land, dP_dq / SOIL_CAPACITY_KG_M2, 0.0)
+
+                        # d(SM_tendency)/dSM = -dE_dSM / CAPACITY - 1/tau_slow
+                        # Ocean cells: only the slow drainage term (identity + small offset)
+                        # since dE_dSM is already zero over ocean from the latent heat model
+                        soil_diag = np.where(
+                            land,
+                            -dE_dSM / SOIL_CAPACITY_KG_M2 - 1.0 / TAU_SLOW_SECONDS,
+                            -1.0 / TAU_SLOW_SECONDS,
+                        )
+
+                        soil_humidity_coupling = dR_SM_dq
+                        soil_temp_coupling = (dR_SM_dTsfc, dR_SM_dTbl, dR_SM_dTatm)
+                        temp_soil_coupling = (
+                            dR_Tsfc_dSM,
+                            np.zeros_like(dR_Tsfc_dSM),
+                            np.zeros_like(dR_Tsfc_dSM),
+                        )
+                        humidity_soil_coupling = dR_q_dSM
+
             return Linearization(
                 diag=diag,
                 cross=cross,
@@ -967,6 +1065,11 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 humidity_diag=humidity_diag,
                 humidity_temp_coupling=humidity_temp_coupling,
                 temp_humidity_coupling=temp_humidity_coupling,
+                soil_diag=soil_diag,
+                soil_humidity_coupling=soil_humidity_coupling,
+                soil_temp_coupling=soil_temp_coupling,
+                temp_soil_coupling=temp_soil_coupling,
+                humidity_soil_coupling=humidity_soil_coupling,
             )
         # No atmosphere case - cloud_output not used
         radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(

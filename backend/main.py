@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import sys
 import time
 
 import numpy as np
@@ -36,6 +37,7 @@ from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.atmosphere.wind import WindConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.orographic_effects import OrographicConfig
+from climate_sim.physics.empirical_corrections import EmpiricalCorrectionsConfig
 from climate_sim.data.constants import R_EARTH_METERS
 from climate_sim.physics.atmosphere.pressure import compute_pressure
 from climate_sim.physics.atmosphere.hadley import compute_itcz_latitude
@@ -85,6 +87,21 @@ def _print_mean(
 def main() -> None:
     args = _parse_args()
 
+    # --core-only sets defaults for advanced modules; explicit flags override
+    if args.core_only:
+        disabled = []
+        for name, attr in [
+            ("ocean currents", "ocean_advection"),
+            ("vertical motion", "vertical_motion"),
+            ("orographic effects", "orographic"),
+            ("empirical corrections", "empirical"),
+        ]:
+            flag = f"--{attr.replace('_', '-')}"
+            if flag not in sys.argv:
+                setattr(args, attr, False)
+                disabled.append(name)
+        print(f"Core-only mode: disabled {', '.join(disabled)}")
+
     start = time.time()
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
@@ -104,6 +121,9 @@ def main() -> None:
     ocean_advection_config = OceanAdvectionConfig(enabled=args.ocean_advection)
     vertical_motion_config = VerticalMotionConfig(enabled=args.vertical_motion)
     orographic_config = OrographicConfig(enabled=args.orographic)
+    empirical_config = EmpiricalCorrectionsConfig(
+        enabled=args.empirical,
+    )
 
     model_config = ModelConfig(
         radiation=radiation_config,
@@ -116,6 +136,7 @@ def main() -> None:
         ocean_advection=ocean_advection_config,
         vertical_motion=vertical_motion_config,
         orographic=orographic_config,
+        empirical=empirical_config,
         solar_constant=args.solar_constant,
         use_elliptical_orbit=args.elliptical_orbit,
     )

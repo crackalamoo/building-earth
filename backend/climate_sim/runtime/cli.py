@@ -220,6 +220,24 @@ def add_common_model_arguments(
         help_enable="Enable orographic effects (terrain-induced vertical velocity and flow blocking) (default)",
         help_disable="Disable orographic effects",
     )
+    add_boolean_flag(
+        parser,
+        dest="empirical",
+        default=True,
+        enable_option="--empirical",
+        disable_option="--no-empirical",
+        help_enable="Enable empirical corrections (ice sheet heat cap, AMOC) (default)",
+        help_disable="Disable empirical corrections",
+    )
+    parser.add_argument(
+        "--core-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable advanced physics (ocean currents, vertical motion/Hadley, "
+            "orographic effects, empirical corrections) to isolate core model behavior"
+        ),
+    )
     if include_temperature_unit:
         add_temperature_unit_argument(
             parser,

@@ -1,5 +1,7 @@
 """General-purpose periodic solver utilities for energy-balance models."""
 
+import os
+from dataclasses import replace
 from typing import Callable, Dict
 
 import numpy as np
@@ -92,6 +94,15 @@ INEXACT_NEWTON_GMRES_ATOL = 0.0
 INEXACT_NEWTON_GMRES_RESTART = 50
 INEXACT_NEWTON_GMRES_MAXITER = 50
 
+# Soil moisture constants (shared between Newton solver and post-Newton fast drain)
+SOIL_CAPACITY_KG_M2 = 300.0  # mm = kg/m², root zone depth
+SOIL_THETA_FC = 0.35  # field capacity
+SOIL_TAU_FAST_SECONDS = 3 * 86400.0  # fast gravitational drainage above field capacity
+SOIL_TAU_SLOW_SECONDS = 365.0 * 86400.0  # slow baseflow below field capacity
+
+# How often to update wind inside Newton loop.
+WIND_UPDATE_EVERY = 4
+
 
 def _build_surface_jacobian_block(
     ceff: np.ndarray,
@@ -157,43 +168,46 @@ def monthly_step(
             ocean_albedo=ocean_albedo,
             ice_sheet_mask=surface_context.ice_sheet_mask,
         )
+
+        def _compute_3layer_winds(t_atm: np.ndarray, t_bl: np.ndarray) -> tuple:
+            """Compute geostrophic + Ekman wind fields for the 3-layer system.
+
+            Returns (wind_field, bl_wind_field, bl_wind_unblocked) where
+            bl_wind_field has orographic blocking applied when available, and
+            bl_wind_unblocked is the pre-blocking (u, v) tuple (None if no
+            orographic model).
+            """
+            wind = surface_context.wind_model.wind_field(
+                t_atm,
+                temperature_boundary_layer=t_bl,
+                itcz_rad=itcz_rad,
+                ekman_drag=False,
+            )
+            bl_wind = surface_context.wind_model.wind_field(
+                t_atm,
+                temperature_boundary_layer=t_bl,
+                itcz_rad=itcz_rad,
+                ekman_drag=True,
+            )
+            bl_unblocked = None
+            if surface_context.orographic_model is not None:
+                bl_u, bl_v = bl_wind[0], bl_wind[1]
+                bl_unblocked = (bl_u, bl_v)
+                bl_u_blocked, bl_v_blocked = surface_context.orographic_model.apply_flow_blocking(
+                    bl_u, bl_v
+                )
+                bl_wind = (bl_u_blocked, bl_v_blocked, np.hypot(bl_u_blocked, bl_v_blocked))
+            return wind, bl_wind, bl_unblocked
+
         # Compute lagged wind field(s)
         lagged_wind_field = None
         lagged_boundary_layer_wind_field = None
+        lagged_bl_wind_unblocked = None
         if surface_context.wind_model:
             if start_temp_capped.shape[0] == 3:
-                # Three-layer: compute separate winds
-                # Atmosphere wind: use atmosphere T + BL T for height-weighted column average
-                lagged_wind_field = surface_context.wind_model.wind_field(
-                    start_temp_capped[2],
-                    temperature_boundary_layer=start_temp_capped[1],
-                    itcz_rad=itcz_rad,
-                    ekman_drag=False,
+                lagged_wind_field, lagged_boundary_layer_wind_field, lagged_bl_wind_unblocked = (
+                    _compute_3layer_winds(start_temp_capped[2], start_temp_capped[1])
                 )
-                # Boundary layer wind: use T_atm for pressure gradient, T_BL for drag
-                lagged_boundary_layer_wind_field = surface_context.wind_model.wind_field(
-                    start_temp_capped[2],
-                    temperature_boundary_layer=start_temp_capped[1],
-                    itcz_rad=itcz_rad,
-                    ekman_drag=True,
-                )
-                # Apply orographic flow blocking to BL winds
-                # Keep unblocked wind for orographic uplift calculation
-                if surface_context.orographic_model is not None:
-                    bl_u, bl_v = (
-                        lagged_boundary_layer_wind_field[0],
-                        lagged_boundary_layer_wind_field[1],
-                    )
-                    lagged_bl_wind_unblocked = (bl_u, bl_v)
-                    bl_u_blocked, bl_v_blocked = (
-                        surface_context.orographic_model.apply_flow_blocking(bl_u, bl_v)
-                    )
-                    bl_speed_blocked = np.hypot(bl_u_blocked, bl_v_blocked)
-                    lagged_boundary_layer_wind_field = (
-                        bl_u_blocked,
-                        bl_v_blocked,
-                        bl_speed_blocked,
-                    )
             elif start_temp_capped.shape[0] == 2:
                 lagged_wind_field = surface_context.wind_model.wind_field(
                     start_temp_capped[1], itcz_rad=itcz_rad, ekman_drag=True
@@ -249,7 +263,8 @@ def monthly_step(
         # Humidity is prognostic - carried from previous month, evolved after Newton converges
         lagged_humidity = state.humidity_field
         lagged_precipitation = state.precipitation_field
-        lagged_soil_moisture = state.soil_moisture
+        soil_moisture_iter = state.soil_moisture
+        start_soil_moisture = state.soil_moisture
 
         def _effective_surface_capacity(temp_surface: np.ndarray) -> np.ndarray:
             return surface_context.albedo_model.effective_heat_capacity_surface(
@@ -384,7 +399,7 @@ def monthly_step(
                     deep_ocean_temperature=deep_ocean_temp_2d,
                     precipitation_field=lagged_precipitation,
                     cloud_output=lagged_cloud_output,  # Unified clouds (frozen for Jacobian consistency)
-                    soil_moisture=lagged_soil_moisture,
+                    soil_moisture=soil_moisture_iter,
                     orographic_w=lagged_orographic_w,
                     itcz_rad=lagged_itcz,
                 )
@@ -451,9 +466,27 @@ def monthly_step(
 
             return sol
 
+        def _update_wind_from_temp(temp_arr: np.ndarray) -> None:
+            """Recompute lagged wind fields from current temperature iterate."""
+            nonlocal lagged_wind_field, lagged_boundary_layer_wind_field
+            if surface_context.wind_model is None:
+                return
+            if temp_arr.shape[0] != 3:
+                return
+            tc = np.maximum(temp_arr, temperature_floor)
+            with time_block("update_wind_fields"):
+                lagged_wind_field, lagged_boundary_layer_wind_field, _ = _compute_3layer_winds(
+                    tc[2], tc[1]
+                )
+
         for newton_iter in range(NEWTON_MAX_ITERS):
             with time_block("newton_iteration"):
                 temp_capped = np.maximum(temp_next, temperature_floor)
+
+                # Periodically update wind from current temperature iterate
+                # so advection of q uses winds consistent with current T.
+                if newton_iter > 0 and newton_iter % WIND_UPDATE_EVERY == 0:
+                    _update_wind_from_temp(temp_capped)
 
                 # Update cloud fractions from current iterate so clouds track
                 # the evolving humidity (prevents month-to-month oscillation).
@@ -463,6 +496,14 @@ def monthly_step(
                     )
 
                 state_capped = _init_state(temp_capped)
+                # Update precipitation on state from current clouds so the RHS
+                # latent heating uses current P (not lagged from previous month).
+                # This tightens the P->LH->T coupling within Newton iterations.
+                if lagged_cloud_output is not None:
+                    state_capped = replace(
+                        state_capped,
+                        precipitation_field=lagged_cloud_output.total_precip,
+                    )
                 with time_block("rhs_evaluation"):
                     rhs_value = rhs_fn(state_capped, insolation_W_m2, state_capped.itcz_rad)
 
@@ -491,8 +532,9 @@ def monthly_step(
                 nlat, nlon = surface_diag.shape
                 size = nlat * nlon
 
-                # Default: no implicit humidity for non-3-layer cases
+                # Default: no implicit humidity/soil for non-3-layer cases
                 include_implicit_humidity = False
+                include_implicit_soil = False
                 correction_humidity = None
 
                 if nlayers == 1:
@@ -533,6 +575,13 @@ def monthly_step(
                     include_implicit_humidity = (
                         lagged_humidity is not None
                         and linearization.humidity_advection_matrix is not None
+                    )
+
+                    # Include soil moisture as 5th prognostic variable when available
+                    include_implicit_soil = (
+                        include_implicit_humidity
+                        and soil_moisture_iter is not None
+                        and linearization.soil_diag is not None
                     )
 
                     # When linearization is reused (lagged Jacobian), only the surface
@@ -774,7 +823,7 @@ def monthly_step(
                                 itcz_rad=itcz_rad,
                                 boundary_layer_temperature_K=t_bl,
                                 precipitation_rate=lagged_precipitation,
-                                soil_moisture=state.soil_moisture,
+                                soil_moisture=soil_moisture_iter,
                             )
                             evap_rate = tendencies[-1]
                         else:
@@ -1010,6 +1059,37 @@ def monthly_step(
                         lagged_humidity - damping * correction_humidity, 1e-3
                     )
 
+                # Implicit SM update: solve SM equation separately using
+                # current P and E from the T+q Newton iterate.
+                # SM = SM_start + dt * ((P - E) / capacity - SM / tau_slow)
+                # => SM * (1 + dt / tau_slow) = SM_start + dt * (P - E) / capacity
+                # => SM = (SM_start + dt * (P - E) / capacity) / (1 + dt / tau_slow)
+                if include_implicit_soil and soil_moisture_iter is not None:
+                    # Use the evap_rate and precip_rate already computed
+                    # inside the humidity tendency block above
+                    if include_implicit_humidity:
+                        p_minus_e = precip_rate - evap_rate
+                        source_rate = p_minus_e / SOIL_CAPACITY_KG_M2
+                        # Semi-implicit backward Euler:
+                        # SM_new = (SM_start + dt * source_rate) / (1 + dt / tau_slow)
+                        denom_sm = 1.0 + dt_seconds / SOIL_TAU_SLOW_SECONDS
+                        sm_new = np.where(
+                            surface_context.land_mask,
+                            (start_soil_moisture + dt_seconds * source_rate) / denom_sm,
+                            1.0,
+                        )
+                        sm_new = np.clip(sm_new, 0.0, 1.0)
+                        # Light under-relaxation: take small steps toward equilibrium
+                        # to prevent ITCZ-edge bistability from causing oscillation.
+                        SM_RELAX = 0.15
+                        soil_moisture_iter = (
+                            SM_RELAX * sm_new + (1.0 - SM_RELAX) * soil_moisture_iter
+                        )
+                        soil_moisture_iter = np.clip(soil_moisture_iter, 0.0, 1.0)
+                        soil_moisture_iter = np.where(
+                            surface_context.land_mask, soil_moisture_iter, 1.0
+                        )
+
                 step = prev_temp - temp_next
                 if np.max(np.abs(step)) < NEWTON_STEP_TOLERANCE_K:
                     break
@@ -1018,6 +1098,7 @@ def monthly_step(
         final_temp = np.maximum(temp_next, temperature_floor)
         nlayers_final = final_temp.shape[0]
 
+        # Ensure final BL is also overridden (consistent with Newton loop)
         # Get wind for final precipitation/soil calculation
         if lagged_boundary_layer_wind_field is not None:
             wind_u, wind_v = (
@@ -1090,14 +1171,11 @@ def monthly_step(
                     / ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K
                 )
 
-        # Compute final precipitation from converged humidity using unified cloud physics
-        # This ensures precipitation is consistent with cloud coverage
+        # Compute final precipitation from converged humidity using prognostic P only.
+        # SM is now solved inside the Newton loop, eliminating phantom precipitation
+        # from diagnostic humidity.
         t_for_humidity = final_temp[1] if nlayers_final == 3 else final_temp[0]
         t_atm = final_temp[2] if nlayers_final == 3 else None
-        # Blend prognostic and diagnostic P for soil moisture.
-        # Pure prognostic P causes outer solver divergence at ITCZ-edge cells;
-        # pure diagnostic P uses phantom humidity.  Blending halves the phantom P
-        # while retaining enough smoothness for solver convergence.
         _, precip_prognostic = compute_humidity_and_precipitation(
             wind_u,
             wind_v,
@@ -1109,33 +1187,14 @@ def monthly_step(
             atmosphere_temperature=t_atm,
             humidity_q=lagged_humidity,
         )
-        _, precip_diagnostic = compute_humidity_and_precipitation(
-            wind_u,
-            wind_v,
-            surface_context.land_mask,
-            surface_context.lat2d,
-            surface_context.lon2d,
-            t_for_humidity,
-            itcz_rad=itcz_rad,
-            atmosphere_temperature=t_atm,
-        )
         if precip_prognostic is None:
             precip_prognostic = np.zeros_like(final_temp[0])
-        if precip_diagnostic is None:
-            precip_diagnostic = np.zeros_like(final_temp[0])
-        final_precipitation = 0.5 * precip_prognostic + 0.5 * precip_diagnostic
+        final_precipitation = precip_prognostic
         # Add condensation precipitation from saturation clamp
         if lagged_humidity is not None:
             final_precipitation = final_precipitation + condensation_precip
 
-        # Update soil moisture based on P-E balance
-        lagged_soil = state.soil_moisture
-        if lagged_soil is None:
-            q_sat_init = compute_saturation_specific_humidity(t_for_humidity)
-            rh_init = np.clip(lagged_humidity / np.maximum(q_sat_init, 1e-10), 0, 1)
-            lagged_soil = np.where(surface_context.land_mask, rh_init, 1.0)
-
-        # Compute evaporation for soil moisture update
+        # Compute evaporation for precipitation recycling/eddy additions
         if latent_heat_model is not None:
             boundary_temp = final_temp[1] if nlayers_final == 3 else None
             tendencies = latent_heat_model.compute_tendencies(
@@ -1146,7 +1205,7 @@ def monthly_step(
                 itcz_rad=itcz_rad,
                 boundary_layer_temperature_K=boundary_temp,
                 precipitation_rate=final_precipitation,
-                soil_moisture=lagged_soil,
+                soil_moisture=soil_moisture_iter,
             )
             evaporation_rate = tendencies[-1]
         else:
@@ -1154,7 +1213,7 @@ def monthly_step(
             tau_evap = 7 * 86400.0
             evaporation_rate = np.maximum(q_sat - lagged_humidity, 0) * COLUMN_MASS_KG_M2 / tau_evap
 
-        # Add precipitation recycling and eddy precip to final precipitation (for soil moisture)
+        # Add precipitation recycling and eddy precip to final precipitation
         if lagged_humidity is not None:
             grid_deg = abs(surface_context.lat2d[1, 0] - surface_context.lat2d[0, 0])
             final_precipitation = final_precipitation + compute_precipitation_recycling(
@@ -1180,33 +1239,25 @@ def monthly_step(
                 rh_soil,
             )
 
-        # Soil moisture evolution (semi-implicit two-component drainage)
-        # Soil capacity: 300mm root zone depth
-        SOIL_CAPACITY_KG_M2 = 300.0  # mm = kg/m²
-        THETA_FC = 0.35  # field capacity
-        TAU_FAST_SECONDS = 3 * 86400.0  # fast gravitational drainage above field capacity
-        TAU_SLOW_SECONDS = 365 * 86400.0  # slow baseflow below field capacity
-        p_minus_e = final_precipitation - evaporation_rate
-        source = p_minus_e / SOIL_CAPACITY_KG_M2  # θ/s from P-E
-
-        # Semi-implicit: solve dθ/dt = source - drainage(θ) analytically
-        # Below field capacity: dθ/dt = source - θ/τ_slow
-        #   θ(t) = (θ_0 - S*τ_s)*exp(-t/τ_s) + S*τ_s
-        # Above field capacity: fast-drain the excess, then slow-drain the rest
-        #   θ_excess decays as exp(-t/τ_fast), base drains at τ_slow
-
-        # Step 1: Apply slow drainage + source to full θ (analytic solution)
-        decay_slow = np.exp(-dt_seconds / TAU_SLOW_SECONDS)
-        equilibrium_slow = source * TAU_SLOW_SECONDS  # θ at which source = slow drainage
-        theta_after_slow = (lagged_soil - equilibrium_slow) * decay_slow + equilibrium_slow
-
-        # Step 2: Fast-drain any excess above field capacity
-        excess = np.maximum(theta_after_slow - THETA_FC, 0.0)
-        decay_fast = np.exp(-dt_seconds / TAU_FAST_SECONDS)
-        theta_after_fast = np.minimum(theta_after_slow, THETA_FC) + excess * decay_fast
-
-        new_soil = np.clip(theta_after_fast, 0.0, 1.0)
-        new_soil = np.where(surface_context.land_mask, new_soil, 1.0)
+        # Soil moisture: use Newton-converged SM with fast-drain correction only
+        # (slow drainage and P-E balance are handled inside the Newton solve)
+        if soil_moisture_iter is not None:
+            excess = np.maximum(soil_moisture_iter - SOIL_THETA_FC, 0.0)
+            decay_fast = np.exp(-dt_seconds / SOIL_TAU_FAST_SECONDS)
+            new_soil = np.minimum(soil_moisture_iter, SOIL_THETA_FC) + excess * decay_fast
+            new_soil = np.clip(new_soil, 0.0, 1.0)
+            new_soil = np.where(surface_context.land_mask, new_soil, 1.0)
+        elif state.soil_moisture is not None:
+            new_soil = state.soil_moisture
+        else:
+            # Bootstrap: initialize SM from relative humidity
+            q_sat_init = compute_saturation_specific_humidity(t_for_humidity)
+            rh_init = (
+                np.clip(lagged_humidity / np.maximum(q_sat_init, 1e-10), 0, 1)
+                if lagged_humidity is not None
+                else np.full_like(final_temp[0], 0.5)
+            )
+            new_soil = np.where(surface_context.land_mask, rh_init, 1.0)
 
         # Compute cloud fractions for diagnostics
         convective_frac = None
@@ -1837,6 +1888,16 @@ def find_periodic_climate_cycle(
                     if soil_next is not None and state.soil_moisture is not None:
                         soil_next = alpha * soil_next + (1.0 - alpha) * state.soil_moisture
                         soil_next = np.clip(soil_next, 0.0, 1.0)
+
+                # Clamp soil moisture changes to prevent oscillation at ITCZ-edge
+                # cells where P switches on/off between iterations.
+                if soil_next is not None and state.soil_moisture is not None:
+                    MAX_SOIL_STEP = 0.1  # max SM change per outer iteration
+                    delta_sm = soil_next - state.soil_moisture
+                    delta_sm = np.clip(delta_sm, -MAX_SOIL_STEP, MAX_SOIL_STEP)
+                    soil_next = state.soil_moisture + delta_sm
+                    soil_next = np.clip(soil_next, 0.0, 1.0)
+                    soil_next = np.where(surface_context.land_mask, soil_next, 1.0)
 
                 # Clamp per-cell changes to prevent oscillation at a few
                 # tropical cells (ITCZ migration zone) from blocking

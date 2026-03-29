@@ -30,10 +30,10 @@ Entry point: `solve_periodic_climate(resolution_deg, model_config, return_layer_
 Located in `climate_sim/physics/`. Each module has a config dataclass and implements `tendency()` for the solver. Key modules: `radiation.py`, `diffusion.py`, `humidity.py`, `clouds.py`, `snow_albedo.py`, `sensible_heat_exchange.py`, `latent_heat_exchange.py`, `atmosphere/wind.py`, `atmosphere/advection.py`, `ocean_currents.py`.
 
 Variable classification:
-- **Prognostic** (in state vector, solved by Newton): temperature (surface, BL, atmosphere), humidity
-- **Semi-diagnostic** (recomputed between Newton iterations, frozen during): wind, albedo, clouds, ocean currents, Ekman pumping
-- **Annual-cycle prognostic** (updated after each month, Anderson-accelerated across years): soil moisture
-- **Diagnostic** (computed after convergence): precipitation, vertical velocity, surface pressure, relative humidity, vegetation fraction
+- **Prognostic** (in state vector, solved by Newton): temperature (surface, BL, atmosphere), humidity, soil moisture
+- **Semi-diagnostic** (recomputed between Newton iterations, frozen during): albedo, clouds, ocean currents, Ekman pumping
+- **Semi-diagnostic, updated within Newton** (recomputed periodically during Newton): wind (every 4 iterations), precipitation (from cloud output each iteration)
+- **Diagnostic** (computed after convergence): vertical velocity, surface pressure, relative humidity, vegetation fraction
 
 
 ## Coding guidelines

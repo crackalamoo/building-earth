@@ -499,3 +499,62 @@ class LatentHeatExchangeModel:
         dE_dq = np.where(frozen, 0.0, dE_dq)
 
         return dE_dq
+
+    def compute_evaporation_jacobian_wrt_soil_moisture(
+        self,
+        surface_temperature_K: np.ndarray,
+        atmosphere_temperature_K: np.ndarray,
+        humidity_q: np.ndarray,
+        *,
+        wind_speed_reference_m_s: np.ndarray | None,
+        itcz_rad: np.ndarray | None = None,
+        boundary_layer_temperature_K: np.ndarray | None = None,
+        soil_moisture: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Compute derivative of evaporation rate w.r.t. soil moisture.
+
+        Only non-zero over land cells; zero over ocean and below freezing.
+        """
+        if not self.enabled or self._wind_model is None:
+            return np.zeros_like(surface_temperature_K, dtype=float)
+
+        surface_temperature = np.asarray(surface_temperature_K, dtype=float)
+        atmosphere_temperature = np.asarray(atmosphere_temperature_K, dtype=float)
+
+        pressure, rho, wind_speed_10m, ch = self._wind_model.compute_atmospheric_properties(
+            surface_temperature,
+            atmosphere_temperature,
+            wind_speed_reference_m_s,
+            itcz_rad=itcz_rad,
+        )
+
+        wind_abs = np.maximum(np.abs(wind_speed_10m), self._config.minimum_wind_speed_m_s)
+
+        # Compute q_sat at surface temperature
+        surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
+        e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
+        pressure_hPa = pressure / 100.0
+        denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
+        q_sat = (0.622 * e_sat) / denom
+
+        humidity_q_clamped = np.minimum(np.asarray(humidity_q, dtype=float), q_sat)
+        q_deficit = q_sat - humidity_q_clamped
+
+        theta_crit = self._config.manabe_theta_crit
+
+        # dE/dSM = rho * ch * |V| * (q_sat - q) / theta_crit when SM < theta_crit
+        dE_dSM = rho * ch * wind_abs * q_deficit / theta_crit
+
+        # Zero where SM >= theta_crit (beta already saturated at 1)
+        if soil_moisture is not None:
+            saturated = soil_moisture >= theta_crit
+            dE_dSM = np.where(saturated, 0.0, dE_dSM)
+
+        # Land only — zero over ocean
+        dE_dSM = np.where(self._land_mask, dE_dSM, 0.0)
+
+        # No evaporation below freezing
+        frozen = surface_temperature_C < self._config.freeze_threshold_c
+        dE_dSM = np.where(frozen, 0.0, dE_dSM)
+
+        return dE_dSM
