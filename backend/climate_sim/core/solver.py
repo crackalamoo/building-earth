@@ -824,6 +824,7 @@ def monthly_step(
                                 boundary_layer_temperature_K=t_bl,
                                 precipitation_rate=lagged_precipitation,
                                 soil_moisture=soil_moisture_iter,
+                                vegetation_fraction=state.vegetation_fraction,
                             )
                             evap_rate = tendencies[-1]
                         else:
@@ -1206,6 +1207,7 @@ def monthly_step(
                 boundary_layer_temperature_K=boundary_temp,
                 precipitation_rate=final_precipitation,
                 soil_moisture=soil_moisture_iter,
+                vegetation_fraction=state.vegetation_fraction,
             )
             evaporation_rate = tendencies[-1]
         else:

@@ -27,6 +27,17 @@ class LatentHeatExchangeConfig:
     # Below field capacity, evapotranspiration scales linearly with soil moisture.
     # Above field capacity, evapotranspiration is at full potential rate.
     manabe_theta_crit: float = 0.75
+    # Transpiration wilting point: deep-rooted vegetation (forests) can access
+    # soil water at lower SM than bare soil evaporation.  Beta_transp is linear
+    # between wilting_point and theta_crit (field capacity).
+    # Typical values: 0.05-0.10 sandy, 0.15-0.20 clay (Fu et al. 2022,
+    # Science Advances). Using 0.12 as a global average.
+    transpiration_wilting_point: float = 0.12
+    # Deep root water reserve: our 300mm bucket represents ~30cm of soil, but
+    # tropical forest roots extend 3-5m.  The deeper layers retain water that
+    # the shallow bucket can't track.  SM_effective for transpiration adds
+    # veg_fraction * this reserve to the bucket SM.
+    deep_root_sm_reserve: float = 0.25
     # No evaporation below freezing (ice-covered surface)
     freeze_threshold_c: float = SEAWATER_FREEZE_C
 
@@ -82,6 +93,48 @@ class LatentHeatExchangeModel:
     def enabled(self) -> bool:
         return self._config.enabled
 
+    def _land_beta(
+        self,
+        soil_moisture: np.ndarray | None,
+        q_sat: np.ndarray,
+        humidity_q: np.ndarray,
+        vegetation_fraction: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Compute land evapotranspiration factor blending soil evap and transpiration.
+
+        Soil evaporation:  beta_soil = clamp(SM / theta_crit, 0, 1)
+          — linear from 0 at SM=0 to 1 at SM=theta_crit (0.75)
+
+        Transpiration:     beta_transp = clamp((SM - wilt) / (theta_crit - wilt), 0, 1)
+          — linear from 0 at SM=wilt (0.10) to 1 at SM=theta_crit
+          — deep roots access water at lower SM than bare soil can
+
+        Combined:  beta = (1 - veg) * beta_soil + veg * beta_transp
+
+        At SM=0.02: beta_soil=0.03, beta_transp=0 → small total
+        At SM=0.15: beta_soil=0.20, beta_transp=0.08 → transpiration starting
+        At SM=0.35: beta_soil=0.47, beta_transp=0.38 → both active
+        """
+        theta_crit = self._config.manabe_theta_crit
+        if soil_moisture is not None:
+            beta_soil = np.minimum(soil_moisture / theta_crit, 1.0)
+        else:
+            rh = humidity_q / np.maximum(q_sat, 1e-10)
+            beta_soil = np.minimum(rh / theta_crit, 1.0)
+
+        if vegetation_fraction is None or soil_moisture is None:
+            return beta_soil
+
+        wilt = self._config.transpiration_wilting_point
+        # Deep root water: forests access water below our shallow bucket.
+        # Effective SM for transpiration includes a reserve proportional to
+        # vegetation fraction (more roots = more deep water access).
+        sm_eff = soil_moisture + vegetation_fraction * self._config.deep_root_sm_reserve
+        beta_transp = np.clip(
+            (sm_eff - wilt) / (theta_crit - wilt), 0.0, 1.0
+        )
+        return (1.0 - vegetation_fraction) * beta_soil + vegetation_fraction * beta_transp
+
     def compute_tendencies(
         self,
         surface_temperature_K: np.ndarray,
@@ -93,6 +146,7 @@ class LatentHeatExchangeModel:
         boundary_layer_temperature_K: np.ndarray | None = None,
         precipitation_rate: np.ndarray | None = None,
         soil_moisture: np.ndarray | None = None,
+        vegetation_fraction: np.ndarray | None = None,
     ) -> (
         tuple[np.ndarray, np.ndarray, np.ndarray]
         | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
@@ -155,14 +209,7 @@ class LatentHeatExchangeModel:
 
         humidity_q = np.minimum(humidity_q, q_sat)
         heat_flux = rho * 2.5e6 * ch * wind_abs * (q_sat - humidity_q)
-        # Manabe (1969) beta: β = min(θ/θ_crit, 1)
-        theta_crit = self._config.manabe_theta_crit
-        if soil_moisture is not None:
-            land_factor = np.minimum(soil_moisture / theta_crit, 1.0)
-        else:
-            # Fallback when soil moisture not yet initialized: use RH as proxy
-            rh = humidity_q / np.maximum(q_sat, 1e-10)
-            land_factor = np.minimum(rh / theta_crit, 1.0)
+        land_factor = self._land_beta(soil_moisture, q_sat, humidity_q, vegetation_fraction)
         heat_flux = np.where(self._land_mask, heat_flux * land_factor, heat_flux)
 
         # No evaporation below freezing (ice-covered surface can't evaporate liquid water)
@@ -219,6 +266,7 @@ class LatentHeatExchangeModel:
         boundary_layer_temperature_K: np.ndarray | None = None,
         precipitation_rate: np.ndarray | None = None,
         soil_moisture: np.ndarray | None = None,
+        vegetation_fraction: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return Jacobian (diagonal and cross-coupling) for latent heat exchange.
 
@@ -343,14 +391,8 @@ class LatentHeatExchangeModel:
             * (rho * dq_sat_dT_atm + q_deficit * drho_dT_atm)
         )
 
-        # Apply Manabe beta land factor (frozen during Newton iterations)
-        theta_crit = self._config.manabe_theta_crit
-        if soil_moisture is not None:
-            land_factor = np.minimum(soil_moisture / theta_crit, 1.0)
-        else:
-            q_sat_safe = np.maximum(q_sat, 1e-10)
-            rh = humidity_q_clamped / q_sat_safe
-            land_factor = np.minimum(rh / theta_crit, 1.0)
+        # Apply land evapotranspiration factor (frozen during Newton iterations)
+        land_factor = self._land_beta(soil_moisture, q_sat, humidity_q_clamped, vegetation_fraction)
         dheat_flux_dT_surf = np.where(
             self._land_mask, dheat_flux_dT_surf * land_factor, dheat_flux_dT_surf
         )
@@ -447,6 +489,7 @@ class LatentHeatExchangeModel:
         itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
         soil_moisture: np.ndarray | None = None,
+        vegetation_fraction: np.ndarray | None = None,
     ) -> np.ndarray:
         """Compute derivative of evaporation rate w.r.t. specific humidity.
 
@@ -479,19 +522,14 @@ class LatentHeatExchangeModel:
         # dE/dq = -rho * Ch * |V| (negative: higher q means less evaporation)
         dE_dq = -rho * ch * wind_abs
 
-        # Apply Manabe beta land factor
+        # Apply land evapotranspiration factor
         surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
-        theta_crit = self._config.manabe_theta_crit
-        if soil_moisture is not None:
-            land_factor = np.minimum(soil_moisture / theta_crit, 1.0)
-        else:
-            e_sat = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
-            pressure_hPa = pressure / 100.0
-            denom = np.maximum(pressure_hPa - (1 - 0.622) * e_sat, 1.0)
-            q_sat = (0.622 * e_sat) / denom
-            humidity_q_clamped = np.minimum(np.asarray(humidity_q, dtype=float), q_sat)
-            rh = humidity_q_clamped / np.maximum(q_sat, 1e-10)
-            land_factor = np.minimum(rh / theta_crit, 1.0)
+        e_sat_for_beta = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
+        pressure_hPa_beta = pressure / 100.0
+        denom_beta = np.maximum(pressure_hPa_beta - (1 - 0.622) * e_sat_for_beta, 1.0)
+        q_sat_beta = (0.622 * e_sat_for_beta) / denom_beta
+        humidity_q_arr = np.asarray(humidity_q, dtype=float)
+        land_factor = self._land_beta(soil_moisture, q_sat_beta, humidity_q_arr, vegetation_fraction)
         dE_dq = np.where(self._land_mask, dE_dq * land_factor, dE_dq)
 
         # No evaporation below freezing
@@ -510,6 +548,7 @@ class LatentHeatExchangeModel:
         itcz_rad: np.ndarray | None = None,
         boundary_layer_temperature_K: np.ndarray | None = None,
         soil_moisture: np.ndarray | None = None,
+        vegetation_fraction: np.ndarray | None = None,
     ) -> np.ndarray:
         """Compute derivative of evaporation rate w.r.t. soil moisture.
 
@@ -541,14 +580,31 @@ class LatentHeatExchangeModel:
         q_deficit = q_sat - humidity_q_clamped
 
         theta_crit = self._config.manabe_theta_crit
+        wilt = self._config.transpiration_wilting_point
 
-        # dE/dSM = rho * ch * |V| * (q_sat - q) / theta_crit when SM < theta_crit
-        dE_dSM = rho * ch * wind_abs * q_deficit / theta_crit
+        # d(beta)/dSM = (1-veg) * d(beta_soil)/dSM + veg * d(beta_transp)/dSM
+        # d(beta_soil)/dSM = 1/theta_crit when SM < theta_crit, else 0
+        # d(beta_transp)/dSM = 1/(theta_crit - wilt) when wilt < SM < theta_crit, else 0
+        dbeta_soil = np.where(
+            soil_moisture < theta_crit if soil_moisture is not None else True,
+            1.0 / theta_crit,
+            0.0,
+        )
+        # For transpiration, SM_eff = SM + veg*reserve. d(SM_eff)/dSM = 1.
+        # So d(beta_transp)/dSM = 1/(theta_crit - wilt) when wilt < SM_eff < theta_crit
+        sm_eff = soil_moisture + (vegetation_fraction * self._config.deep_root_sm_reserve
+                                  if vegetation_fraction is not None else 0.0)
+        dbeta_transp = np.where(
+            (sm_eff > wilt) & (sm_eff < theta_crit) if soil_moisture is not None else True,
+            1.0 / (theta_crit - wilt),
+            0.0,
+        )
+        if vegetation_fraction is not None:
+            dbeta_dSM = (1.0 - vegetation_fraction) * dbeta_soil + vegetation_fraction * dbeta_transp
+        else:
+            dbeta_dSM = dbeta_soil
 
-        # Zero where SM >= theta_crit (beta already saturated at 1)
-        if soil_moisture is not None:
-            saturated = soil_moisture >= theta_crit
-            dE_dSM = np.where(saturated, 0.0, dE_dSM)
+        dE_dSM = rho * ch * wind_abs * q_deficit * dbeta_dSM
 
         # Land only — zero over ocean
         dE_dSM = np.where(self._land_mask, dE_dSM, 0.0)

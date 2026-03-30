@@ -431,6 +431,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         boundary_layer_temperature_K=boundary_temperature,
                         precipitation_rate=precip_rate,
                         soil_moisture=state.soil_moisture,
+                        vegetation_fraction=state.vegetation_fraction,
                     )
                     assert isinstance(tendencies, tuple)
                     assert len(tendencies) == 4  # surface, BL, atm, evap_rate
@@ -681,6 +682,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     boundary_layer_temperature_K=state.temperature[1],
                     precipitation_rate=precip_rate,
                     soil_moisture=state.soil_moisture,
+                    vegetation_fraction=state.vegetation_fraction,
                 )
                 # Add latent heat directly to diagonal and cross terms
                 diag = diag + lh_diag
@@ -822,7 +824,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     if latent_heat_model is not None:
                         dE_dq = latent_heat_model.compute_evaporation_jacobian_wrt_humidity(
                             state.temperature[0],
-                            state.temperature[-1],  # Top layer (atmosphere)
+                            state.temperature[-1],
                             state.humidity_field,
                             wind_speed_reference_m_s=state.wind_field[2]
                             if state.wind_field is not None
@@ -830,6 +832,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             itcz_rad=None,
                             boundary_layer_temperature_K=state.temperature[1],
                             soil_moisture=state.soil_moisture,
+                            vegetation_fraction=state.vegetation_fraction,
                         )
                     else:
                         dE_dq = np.zeros_like(state.humidity_field)
@@ -994,7 +997,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                         # Compute dE/dSM from latent heat model
                         dE_dSM = latent_heat_model.compute_evaporation_jacobian_wrt_soil_moisture(
                             state.temperature[0],
-                            state.temperature[-1],  # atmosphere
+                            state.temperature[-1],
                             state.humidity_field,
                             wind_speed_reference_m_s=state.wind_field[2]
                             if state.wind_field is not None
@@ -1002,6 +1005,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             itcz_rad=None,
                             boundary_layer_temperature_K=state.temperature[1],
                             soil_moisture=state.soil_moisture,
+                            vegetation_fraction=state.vegetation_fraction,
                         )
 
                         # SM tendency: dSM/dt = (P - E) / capacity - SM / tau_slow
