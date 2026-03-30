@@ -69,6 +69,7 @@ URLS = {
     "slp": "https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis.derived/surface/slp.mon.mean.nc",
     "uwnd": "https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis.derived/surface/uwnd.mon.mean.nc",
     "vwnd": "https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis.derived/surface/vwnd.mon.mean.nc",
+    "cloud": "https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis.derived/other_gauss/tcdc.eatm.mon.ltm.1981-2010.nc",
 }
 
 BASELINE_START = "1981-01-01"
@@ -330,6 +331,178 @@ def build_humidity_precip_reference() -> xr.Dataset | None:
     print(f"Wrote humidity/precip reference: {HUMIDITY_PRECIP_OUTFILE}")
 
     return ds_out
+
+
+def load_cloud_reference() -> xr.Dataset | None:
+    """Load NCEP/NCAR total cloud cover climatology on the T42 Gaussian grid.
+
+    The raw file has shape (12, 94, 192) in % on a Gaussian grid with lat
+    running from 88.5N to 88.5S (north-to-south).  We flip to south-to-north
+    and save a processed version so later calls are fast.
+
+    Returns a Dataset with ``tcdc_clim`` (%, month × lat × lon) or None if
+    the file cannot be found.
+    """
+    raw_path = RAW_DIR / "tcdc.eatm.mon.ltm.1981-2010.nc"
+
+    if not raw_path.exists():
+        try:
+            raw_path = fetch(URLS["cloud"], RAW_DIR)
+        except Exception as e:
+            print(f"Warning: could not download cloud cover reference data: {e}")
+            return None
+
+    try:
+        ds = xr.open_dataset(raw_path, use_cftime=True)
+    except Exception as e:
+        print(f"Warning: could not open cloud cover reference file: {e}")
+        return None
+
+    tcdc = ds["tcdc"]  # %, shape (12, 94, 192)
+
+    # Normalize longitudes to 0–360 and flip latitude to south-to-north
+    ds = to_0360(ds, "lon")
+    tcdc = ds["tcdc"]
+    if float(tcdc["lat"].values[0]) > float(tcdc["lat"].values[-1]):
+        tcdc = tcdc.isel(lat=slice(None, None, -1))
+
+    # The file is already a 12-month LTM (long-term mean), so month dim = 12
+    # Rename the time/month dim if it's called something other than "month"
+    time_dim = [d for d in tcdc.dims if d not in ("lat", "lon")]
+    if time_dim and time_dim[0] != "month":
+        tcdc = tcdc.rename({time_dim[0]: "month"})
+
+    # Assign integer month coordinate 1–12
+    tcdc = tcdc.assign_coords(month=np.arange(1, 13, dtype=int))
+
+    ds_out = xr.Dataset(
+        {"tcdc_clim": tcdc},
+        coords={"month": np.arange(1, 13, dtype=int)},
+    )
+    print(f"Loaded cloud cover reference: {raw_path.name}  shape={tcdc.shape}")
+    return ds_out
+
+
+def aggregate_cloud_to_sim_grid(
+    ds: xr.Dataset,
+    lon2d_sim: np.ndarray,
+    lat2d_sim: np.ndarray,
+) -> np.ndarray:
+    """Aggregate T42 cloud cover climatology onto the simulation grid.
+
+    Uses the same cell-mean approach as :func:`aggregate_humidity_precip_to_sim_grid`.
+
+    Returns:
+        Array of shape (12, nlat_sim, nlon_sim) in % units.
+    """
+    lat_obs = np.asarray(ds["lat"].values, dtype=float)
+    lon_obs = np.asarray(ds["lon"].values, dtype=float) % 360.0
+    tcdc_src = np.asarray(ds["tcdc_clim"].values, dtype=float)
+
+    lat_centers_sim = lat2d_sim[:, 0]
+    lon_centers_sim = lon2d_sim[0, :]
+
+    dlat_sim = float(lat_centers_sim[1] - lat_centers_sim[0]) if lat_centers_sim.size > 1 else 180.0
+    dlon_sim = float(lon_centers_sim[1] - lon_centers_sim[0]) if lon_centers_sim.size > 1 else 360.0
+
+    lat_edges_min = lat_centers_sim - 0.5 * dlat_sim
+    lat_edges_max = lat_centers_sim + 0.5 * dlat_sim
+    lon_edges_min_wrapped = (lon_centers_sim - 0.5 * dlon_sim) % 360.0
+    lon_edges_max_wrapped = (lon_centers_sim + 0.5 * dlon_sim) % 360.0
+
+    nmonth = tcdc_src.shape[0]
+    nlat_sim = lat_centers_sim.size
+    nlon_sim = lon_centers_sim.size
+
+    tcdc_out = np.full((nmonth, nlat_sim, nlon_sim), np.nan, dtype=float)
+
+    lat_masks = [
+        (lat_obs >= lat_edges_min[i]) & (lat_obs < lat_edges_max[i]) for i in range(nlat_sim)
+    ]
+
+    for j in range(nlon_sim):
+        lon_min = lon_edges_min_wrapped[j]
+        lon_max = lon_edges_max_wrapped[j]
+        if lon_min < lon_max:
+            lon_mask = (lon_obs >= lon_min) & (lon_obs < lon_max)
+        else:
+            lon_mask = (lon_obs >= lon_min) | (lon_obs < lon_max)
+
+        if not np.any(lon_mask):
+            continue
+
+        for i in range(nlat_sim):
+            cell_mask = lat_masks[i][:, None] & lon_mask[None, :]
+            if not np.any(cell_mask):
+                continue
+            with np.errstate(invalid="ignore"):
+                tcdc_out[:, i, j] = np.nanmean(tcdc_src[:, cell_mask], axis=1)
+
+    return tcdc_out
+
+
+def compute_cloud_statistics(
+    sim_cloud_total: np.ndarray,
+    obs_cloud: np.ndarray,
+    land_mask: np.ndarray,
+    cell_areas: np.ndarray,
+) -> None:
+    """Print cloud cover evaluation statistics.
+
+    Args:
+        sim_cloud_total: Simulated total cloud fraction (0–1), shape (12, nlat, nlon).
+        obs_cloud: Observed total cloud cover (%), shape (12, nlat, nlon).
+        land_mask: Boolean land mask, shape (nlat, nlon).
+        cell_areas: Cell areas in m², shape (nlat, nlon).
+    """
+    weights_land = cell_areas * land_mask
+    weights_ocean = cell_areas * (~land_mask)
+
+    # Convert sim fraction (0–1) to % for comparison
+    sim_pct = sim_cloud_total * 100.0
+    obs_pct = obs_cloud
+    diff = sim_pct - obs_pct
+
+    def stats_for(d: np.ndarray, weights: np.ndarray) -> tuple[float, float]:
+        return weighted_mean(d, weights), weighted_rmse(d, weights)
+
+    print("\n" + "=" * 60)
+    print("Cloud Cover Evaluation (%)")
+    print("=" * 60)
+
+    header = (
+        f"{'Month':<12}{'Land bias':>10}{'Ocean bias':>11}{'Global bias':>12}{'Global RMSE':>12}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for m in range(12):
+        lb, _ = stats_for(diff[m], weights_land)
+        ob, _ = stats_for(diff[m], weights_ocean)
+        gb, gr = stats_for(diff[m], cell_areas)
+        print(f"{MONTH_NAMES[m]:<12}{lb:>10.1f}{ob:>11.1f}{gb:>12.1f}{gr:>12.1f}")
+
+    lb, _ = stats_for(diff, weights_land)
+    ob, _ = stats_for(diff, weights_ocean)
+    gb, gr = stats_for(diff, cell_areas)
+    print("-" * len(header))
+    print(f"{'Annual':<12}{lb:>10.1f}{ob:>11.1f}{gb:>12.1f}{gr:>12.1f}")
+
+    corr_land = weighted_pattern_correlation(sim_pct, obs_pct, weights_land)
+    corr_ocean = weighted_pattern_correlation(sim_pct, obs_pct, weights_ocean)
+    corr_global = weighted_pattern_correlation(sim_pct, obs_pct, cell_areas)
+    print(
+        f"\nPattern correlation:  Land={corr_land:.3f}  Ocean={corr_ocean:.3f}  Global={corr_global:.3f}"
+    )
+
+    sim_cc_land = weighted_mean(sim_pct, weights_land)
+    obs_cc_land = weighted_mean(obs_pct, weights_land)
+    sim_cc_ocean = weighted_mean(sim_pct, weights_ocean)
+    obs_cc_ocean = weighted_mean(obs_pct, weights_ocean)
+    print(
+        f"Mean CC:  Sim land={sim_cc_land:.1f}%  Obs land={obs_cc_land:.1f}%  "
+        f"Sim ocean={sim_cc_ocean:.1f}%  Obs ocean={obs_cc_ocean:.1f}%"
+    )
 
 
 def aggregate_humidity_precip_to_sim_grid(
@@ -2104,6 +2277,37 @@ def main() -> None:
             print(
                 "\nWarning: Wind reference not available (delete processed/ref_humidity_precip_1deg_1981-2010.nc to re-download)"
             )
+
+    # --- Cloud cover evaluation ---
+    cloud_ref = load_cloud_reference()
+    sim_cloud_total: np.ndarray | None = None
+    obs_cloud: np.ndarray | None = None
+
+    if cloud_ref is not None:
+        cloud_fields = [
+            layers.get("convective_cloud_frac"),
+            layers.get("stratiform_cloud_frac"),
+            layers.get("marine_sc_cloud_frac"),
+            layers.get("high_cloud_frac"),
+        ]
+        available = [f for f in cloud_fields if f is not None]
+        if available:
+            # Sum cloud fractions, cap at 1.0 (max overlap assumption)
+            sim_cloud_total = np.clip(sum(available), 0.0, 1.0)
+
+            if args.interpolate:
+                # Regrid obs T42 to 1° via xarray interpolation
+                tcdc_da = cloud_ref["tcdc_clim"]
+                lat_1deg = np.arange(-89.5, 90.5, 1.0)
+                lon_1deg = np.arange(0.5, 360.5, 1.0)
+                tcdc_1deg = tcdc_da.interp(lat=lat_1deg, lon=lon_1deg)
+                obs_cloud = np.asarray(tcdc_1deg.values, dtype=float)
+            else:
+                obs_cloud = aggregate_cloud_to_sim_grid(cloud_ref, lon2d, lat2d)
+
+            compute_cloud_statistics(sim_cloud_total, obs_cloud, land_mask, cell_areas)
+        else:
+            print("\nWarning: cloud fraction fields not in simulation output, skipping cloud eval.")
 
     sim_combined = np.where(land_mask[None, ...], sim_t2m, surface_cycle)
     obs_wspd = np.sqrt(obs_uwnd**2 + obs_vwnd**2) if obs_uwnd is not None else None
