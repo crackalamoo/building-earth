@@ -27,7 +27,7 @@ RHO_AIR = 1.2
 # Precipitation efficiency - fraction of moisture flux converted to precipitation.
 # Previously 0.30 with cloud-fraction area gating (~0.2), giving effective ~0.06.
 # Now that cloud fraction is removed (RH gate only), reduce to compensate.
-CONVECTIVE_PRECIP_EFFICIENCY = 0.05
+CONVECTIVE_PRECIP_EFFICIENCY = 0.02
 
 # Grid-mean convective vertical velocity contribution (m/s)
 # This represents the effective grid-mean vertical motion from convection.
@@ -85,27 +85,20 @@ def compute_moist_adiabatic_lapse_rate(T_K: np.ndarray, q: np.ndarray) -> np.nda
 
 
 def compute_precipitation_rh_gate(rh: np.ndarray) -> np.ndarray:
-    """Sundqvist (1989) RH gate for precipitation with soft onset.
+    """Linear RH gate for precipitation, calibrated from obs P/q vs RH.
 
-    Above RH_crit: C = 1 - sqrt((1 - RH) / (1 - RH_crit))  (standard Sundqvist)
-    Below RH_crit: C = C_crit * exp(-(RH_crit - RH) / scale)  (exponential tail)
+    Empirical analysis of NOAA 1981-2010 climatology shows that over land,
+    precipitation efficiency (P/q) scales roughly linearly with RH, reaching
+    zero near RH=0.15 and saturating near RH=1.0.  The Sundqvist (1989) sqrt
+    formula is too restrictive at moderate RH for 5° resolution (5-10x too low
+    at RH=0.5-0.65 where tropical land cells sit).
 
-    The soft tail below RH_crit represents the physical reality that at 5°
-    resolution, some sub-grid columns may be saturated even when the grid-mean
-    BL RH is below threshold. It also prevents the hard zero from creating
-    bistability in the SM↔E↔q↔P feedback loop.
+    gate = clamp((RH - RH_ZERO) / (RH_FULL - RH_ZERO), 0, 1)
     """
-    rh_clipped = np.clip(rh, 0.0, 0.999)
-    RH_CRIT = 0.40  # sub-grid saturation: parts of 5° cell saturate before grid-mean
-    TAIL_SCALE = 0.08  # e-folding scale below RH_crit
-
-    # Exponential tail below RH_crit (floor value at RH_crit = FLOOR)
-    FLOOR = 0.01
-    gate_below = FLOOR * np.exp(-(RH_CRIT - rh_clipped) / TAIL_SCALE)
-
-    # Sundqvist above RH_crit, shifted up by FLOOR for continuity
-    gate_above = FLOOR + (1.0 - FLOOR) * (1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - RH_CRIT)))
-    return np.where(rh_clipped > RH_CRIT, gate_above, gate_below)
+    rh_clipped = np.clip(rh, 0.0, 1.0)
+    RH_ZERO = 0.15  # gate = 0 below this (true deserts)
+    RH_FULL = 1.00  # gate = 1 at saturation
+    return np.clip((rh_clipped - RH_ZERO) / (RH_FULL - RH_ZERO), 0.0, 1.0)
 
 
 def compute_convective_precipitation(
