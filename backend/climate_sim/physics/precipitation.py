@@ -24,16 +24,12 @@ SPECIFIC_HEAT_AIR = HEAT_CAPACITY_AIR_J_KG_K
 # Air density at surface (kg/m³)
 RHO_AIR = 1.2
 
-# Precipitation efficiency - fraction of moisture flux converted to precipitation.
-# Previously 0.30 with cloud-fraction area gating (~0.2), giving effective ~0.06.
-# Now that cloud fraction is removed (RH gate only), reduce to compensate.
-CONVECTIVE_PRECIP_EFFICIENCY = 0.02
-
-# Grid-mean convective vertical velocity contribution (m/s)
-# This represents the effective grid-mean vertical motion from convection.
-# In-cloud updrafts are 1-5 m/s, but convection covers only ~5-10% of area,
-# so grid-mean contribution is ~0.05-0.5 m/s.
-CONVECTIVE_UPDRAFT_VELOCITY = 0.10  # m/s (grid-mean effective)
+# Convective precipitation coefficient (m/s).
+# P = gate(RH) × C × [(γ_d - γ_m)/γ_d] × q × ρ × w_factor
+# The lapse rate factor provides CAPE-like temperature dependence:
+# warmer/moister air has smaller γ_m → larger (γ_d-γ_m)/γ_d → stronger convection.
+# Uses q_sat(T_bl) for γ_m since rising saturated parcels set the buoyancy.
+CONVECTIVE_PRECIP_COEFF = 0.0040  # m/s
 
 # Sub-cloud evaporation (virga) parameters.
 # In subsidence zones, rain falling from isolated convective cells evaporates
@@ -104,18 +100,18 @@ def compute_precipitation_rh_gate(rh: np.ndarray) -> np.ndarray:
 def compute_convective_precipitation(
     rh: np.ndarray,
     q: np.ndarray,
-    w_updraft: float = CONVECTIVE_UPDRAFT_VELOCITY,
-    efficiency: float = CONVECTIVE_PRECIP_EFFICIENCY,
+    T_bl: np.ndarray | None = None,
+    coeff: float = CONVECTIVE_PRECIP_COEFF,
     rho: float = RHO_AIR,
     vertical_velocity: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Compute precipitation from moisture flux × RH gate.
+    """Compute precipitation from moisture flux × RH gate × CAPE-like factor.
 
-    P = rh_gate × efficiency × w_updraft × q × ρ × virga_factor
+    P = rh_gate × C × [(γ_d - γ_m)/γ_d] × q × ρ × w_factor
 
-    The RH gate is the sum of convective (Gompertz) and stratiform (Sundqvist)
-    RH factors, applied directly rather than through cloud fractions to avoid
-    double-counting moisture dependence.
+    The lapse rate factor (γ_d - γ_m)/γ_d provides temperature-dependent
+    convective intensity derived from CAPE theory: warmer/moister air releases
+    more latent heat per unit ascent, driving stronger convection.
 
     Parameters
     ----------
@@ -123,20 +119,35 @@ def compute_convective_precipitation(
         Relative humidity (0-1).
     q : np.ndarray
         Specific humidity (kg/kg).
-    w_updraft : float
-        Effective grid-mean updraft velocity (m/s). Default 0.10.
-    efficiency : float
-        Precipitation efficiency (0-1). Default 0.30.
+    T_bl : np.ndarray | None
+        Boundary layer temperature (K). Used to compute moist adiabatic lapse
+        rate for CAPE-like scaling. If None, uses a fixed midlatitude factor.
+    coeff : float
+        Precipitation coefficient (m/s). Default 0.006.
     rho : float
         Air density (kg/m³). Default 1.2.
     vertical_velocity : np.ndarray | None
-        Large-scale vertical velocity (m/s, positive = rising). When
-        negative (descent), sub-cloud evaporation reduces precipitation
-        reaching the surface.
+        Large-scale vertical velocity (m/s, positive = rising).
 
     """
     rh_gate = compute_precipitation_rh_gate(rh)
-    P_convective = rh_gate * efficiency * w_updraft * q * rho
+
+    # CAPE-like lapse rate factor: (γ_d - γ_m) / γ_d
+    # Uses q_sat(T_bl), not actual q, because once a parcel is lifted past the
+    # LCL it follows a moist adiabat at saturation.  The buoyancy (and thus
+    # convective intensity) depends on how much latent heat a *saturated* parcel
+    # releases per unit ascent, which is a function of temperature alone.
+    gamma_d = GRAVITY / SPECIFIC_HEAT_AIR  # ~0.00976 K/m
+    if T_bl is not None:
+        T_bl_C = np.clip(T_bl - 273.15, -100.0, 80.0)
+        e_sat = 611.2 * np.exp(17.67 * T_bl_C / (T_bl_C + 243.5))
+        q_sat_bl = 0.622 * e_sat / 101325
+        gamma_m = compute_moist_adiabatic_lapse_rate(T_bl, q_sat_bl)
+        cape_factor = np.clip((gamma_d - gamma_m) / gamma_d, 0.0, 1.0)
+    else:
+        cape_factor = 0.35  # typical midlatitude value
+
+    P_convective = rh_gate * coeff * cape_factor * q * rho
 
     # Vertical velocity scaling: smooth factor from VIRGA_FLOOR (strong descent)
     # through ~0.5 at w=0 to W_BOOST_MAX (strong ascent).
@@ -236,11 +247,17 @@ def compute_precipitation_jacobian(
 
     # =========================================================================
     # Convective precipitation Jacobian
-    # P = rh_gate × eff × w_updraft × q × ρ  (rh_gate frozen)
-    # ∂P/∂q = rh_gate × eff × w_updraft × ρ
+    # P = rh_gate × C × cape_factor × q × ρ  (rh_gate and cape_factor frozen)
+    # ∂P/∂q = rh_gate × C × cape_factor × ρ
     # =========================================================================
     rh_gate = compute_precipitation_rh_gate(rh)
-    dP_conv_dq = rh_gate * CONVECTIVE_PRECIP_EFFICIENCY * CONVECTIVE_UPDRAFT_VELOCITY * RHO_AIR
+    gamma_d = GRAVITY / SPECIFIC_HEAT_AIR
+    T_bl_C = np.clip(T_bl - 273.15, -100.0, 80.0)
+    e_sat = 611.2 * np.exp(17.67 * T_bl_C / (T_bl_C + 243.5))
+    q_sat_bl = 0.622 * e_sat / 101325
+    gamma_m = compute_moist_adiabatic_lapse_rate(T_bl, q_sat_bl)
+    cape_factor = np.clip((gamma_d - gamma_m) / gamma_d, 0.0, 1.0)
+    dP_conv_dq = rh_gate * CONVECTIVE_PRECIP_COEFF * cape_factor * RHO_AIR
     # Apply w_factor (descent suppression + ascent amplification)
     if vertical_velocity is not None:
         w_factor = VIRGA_FLOOR + (W_BOOST_MAX - VIRGA_FLOOR) / (

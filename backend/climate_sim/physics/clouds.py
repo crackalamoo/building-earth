@@ -978,6 +978,7 @@ def compute_clouds_and_precipitation(
     convective_precip = compute_convective_precipitation(
         rh,
         q,
+        T_bl=T_bl_K,
         vertical_velocity=vertical_velocity,
     )
 
