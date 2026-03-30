@@ -27,8 +27,7 @@ from climate_sim.physics.vertical_motion import (
     compute_bl_atm_mixing_tendencies,
     compute_hadley_subsidence_velocity,
     compute_hadley_upper_velocity,
-    hadley_subsidence_drying_jacobian,
-    hadley_convergence_moistening_jacobian,
+    hadley_moisture_tendency_jacobian,
     _ALPHA,
 )
 from climate_sim.physics.orographic_effects import OrographicModel
@@ -918,25 +917,23 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     dP_dq = np.maximum(dP_dq, 0.0)
                     humidity_diag = dE_dq / COLUMN_MASS_KG_M2 - dP_dq / COLUMN_MASS_KG_M2
 
-                    # Hadley subsidence drying Jacobian (stabilizing: always negative)
+                    # Hadley moisture redistribution Jacobian (descent + ascent)
                     if (
                         inputs.vertical_motion_cfg is not None
                         and inputs.vertical_motion_cfg.enabled
                         and inputs.vertical_motion_cfg.hadley_descent_velocity_m_s > 0
                     ):
                         lat_rad = np.deg2rad(inputs.lat2d)
-                        # Use itcz_rad from the current state evaluation
                         w_hadley = compute_hadley_subsidence_velocity(
                             lat_rad,
                             itcz_rad,
                             peak_velocity_m_s=inputs.vertical_motion_cfg.hadley_descent_velocity_m_s,
                         )
-                        humidity_diag += hadley_subsidence_drying_jacobian(
+                        humidity_diag += hadley_moisture_tendency_jacobian(
                             w_hadley,
                             humidity_field,
                             upper_troposphere_q_fraction=inputs.vertical_motion_cfg.upper_troposphere_q_fraction,
                         )
-                        humidity_diag += hadley_convergence_moistening_jacobian(w_hadley)
 
                     # Humidity-temperature coupling terms already computed above
 

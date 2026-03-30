@@ -280,102 +280,73 @@ def compute_hadley_subsidence_velocity(
     return w_descent - w_ascent
 
 
-def compute_hadley_subsidence_drying(
-    w_descent: np.ndarray,
-    humidity_field: np.ndarray,
-    upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
-    boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
-) -> np.ndarray:
-    """Compute humidity tendency from Hadley subsidence mixing dry air into BL.
-
-    dq/dt = (w / h_BL) * (q_upper - q_BL)
-
-    Only applies where w > 0 (descent). Ascent regions (w < 0) are handled
-    by convergence via advection, not by this term.
-    """
-    q_upper = np.minimum(humidity_field * upper_troposphere_q_fraction, Q_UPPER_FIXED_KG_KG)
-    delta_q = q_upper - humidity_field  # Always negative
-    mixing_rate = np.maximum(w_descent, 0.0) / boundary_layer_height_m
-    return mixing_rate * delta_q
-
-
-def hadley_subsidence_drying_jacobian(
-    w_descent: np.ndarray,
-    humidity_field: np.ndarray,
-    upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
-    boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
-) -> np.ndarray:
-    """Diagonal of the humidity Jacobian from Hadley subsidence drying.
-
-    When q_upper = min(f*q, Q_FIXED):
-    - f*q < Q_FIXED: d/dq = (w/h)(f - 1)
-    - f*q >= Q_FIXED: d/dq = -(w/h)  (q_upper is constant w.r.t. q)
-    """
-    mixing_rate = np.maximum(w_descent, 0.0) / boundary_layer_height_m
-    capped = humidity_field * upper_troposphere_q_fraction >= Q_UPPER_FIXED_KG_KG
-    return np.where(capped, -mixing_rate, mixing_rate * (upper_troposphere_q_fraction - 1.0))
-
-
-def compute_hadley_convergence_moistening(
+def compute_hadley_moisture_tendency(
     w_hadley: np.ndarray,
     humidity_field: np.ndarray,
     lat_rad: np.ndarray,
+    upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
     boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
 ) -> np.ndarray:
-    """Compute humidity tendency from Hadley cell surface convergence near the ITCZ.
+    """Conservative Hadley cell moisture redistribution.
 
-    Where the Hadley cell ascends (w < 0), mass continuity requires surface
-    convergence.  Trade winds bring moist subtropical BL air toward the ITCZ.
-    This is the moisture source that the 2-layer model's advection scheme
-    cannot resolve because it lacks mean-meridional overturning.
-
-    The moistening rate is:
-        dq/dt = |w| / h_BL × (q_source - q_local)
-
-    where q_source is the zonal-mean humidity in the surrounding subtropical
-    belt (15-30° from equator in both hemispheres).  This represents the
-    moisture carried equatorward by the trade winds.
-
-    Only applies where w < 0 (ascent).  Descent regions are handled by
-    ``compute_hadley_subsidence_drying``.
+    The Hadley overturning dries the subtropics (descent brings dry
+    upper-tropospheric air into the BL) and moistens the ITCZ (trade-wind
+    convergence brings subtropical BL air equatorward).  These must balance
+    globally: the moisture removed by subsidence was previously condensed
+    (releasing latent heat) in the ascending branch.
     """
-    # Ascent rate (positive magnitude where w < 0)
-    ascent_rate = np.maximum(-w_hadley, 0.0) / boundary_layer_height_m  # 1/s
+    cos_lat = np.cos(lat_rad)
+    h = boundary_layer_height_m
 
-    # Compute zonal-mean subtropical q as the moisture source.
-    # Subtropics = 15-30° latitude in both hemispheres.
-    lat_deg = np.rad2deg(np.abs(lat_rad))
-    # Use a smooth weight to select subtropical belt
-    # Peaks at 22.5°, tapers at 15° and 30°
-    subtrop_weight = np.exp(-(((lat_deg - 22.5) / 7.0) ** 2))
-    # Zonal mean weighted by subtropical belt
-    weighted_q = humidity_field * subtrop_weight
-    # Average over longitude (axis=1) and latitude (weighted)
-    q_source_zonal = np.sum(weighted_q, axis=1) / np.maximum(np.sum(subtrop_weight, axis=1), 1e-10)
-    # Broadcast back to 2D (same q_source at all longitudes)
-    q_source = q_source_zonal[:, np.newaxis] * np.ones(humidity_field.shape[1])
+    # --- Descent: dry air from upper troposphere mixes into BL ---
+    descent_rate = np.maximum(w_hadley, 0.0) / h  # 1/s, positive in descent
+    q_upper = np.minimum(
+        humidity_field * upper_troposphere_q_fraction, Q_UPPER_FIXED_KG_KG
+    )
+    drying = descent_rate * (q_upper - humidity_field)  # always ≤ 0
 
-    # Moistening tendency: convergence brings subtropical air into ITCZ
-    dq_dt = ascent_rate * (q_source - humidity_field)
+    # --- Ascent: find q_ref that makes the system conservative ---
+    ascent_rate = np.maximum(-w_hadley, 0.0) / h  # 1/s, positive in ascent
 
-    # Only moisten (don't dry) — convergence adds moisture
-    return np.maximum(dq_dt, 0.0)
+    # Total moisture removed by drying, area-weighted per longitude column
+    total_dried = -np.sum(drying * cos_lat, axis=0)  # shape (nlon,), ≥ 0
+    total_dried = np.maximum(total_dried, 0.0)
+
+    # To conserve moisture: Σ (ascent_rate × (q_ref - q) × cos_lat) = total_dried
+    # => q_ref = (total_dried + Σ(ascent_rate × q × cos_lat)) / Σ(ascent_rate × cos_lat)
+    ascent_cos = ascent_rate * cos_lat
+    ascent_q_sum = np.sum(ascent_rate * humidity_field * cos_lat, axis=0)  # (nlon,)
+    ascent_weight_sum = np.sum(ascent_cos, axis=0)  # (nlon,)
+    ascent_weight_sum = np.maximum(ascent_weight_sum, 1e-30)
+
+    q_ref = (total_dried + ascent_q_sum) / ascent_weight_sum  # (nlon,)
+
+    moistening = ascent_rate * (q_ref[np.newaxis, :] - humidity_field)
+
+    return drying + moistening
 
 
-def hadley_convergence_moistening_jacobian(
+def hadley_moisture_tendency_jacobian(
     w_hadley: np.ndarray,
+    humidity_field: np.ndarray,
+    upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
     boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
 ) -> np.ndarray:
-    """Diagonal of the humidity Jacobian from Hadley convergence moistening.
+    """Diagonal Jacobian of the unified Hadley moisture tendency."""
+    h = boundary_layer_height_m
 
-    d(dq/dt)/dq ≈ -|w| / h_BL  (where w < 0)
+    # Descent diagonal
+    descent_rate = np.maximum(w_hadley, 0.0) / h
+    capped = humidity_field * upper_troposphere_q_fraction >= Q_UPPER_FIXED_KG_KG
+    descent_jac = np.where(
+        capped, -descent_rate, descent_rate * (upper_troposphere_q_fraction - 1.0)
+    )
 
-    The q_source term also depends on q but across multiple cells,
-    so we only include the local (diagonal) part: -ascent_rate.
-    This is negative (stabilizing).
-    """
-    ascent_rate = np.maximum(-w_hadley, 0.0) / boundary_layer_height_m
-    return -ascent_rate
+    # Ascent diagonal
+    ascent_rate = np.maximum(-w_hadley, 0.0) / h
+    ascent_jac = -ascent_rate
+
+    return descent_jac + ascent_jac
 
 
 # Potential temperature factor: θ_atm = T_atm × (P0/P_ATM)^κ
