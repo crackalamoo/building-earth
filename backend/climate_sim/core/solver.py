@@ -78,6 +78,11 @@ NEWTON_BACKTRACK_REDUCTION = 0.5
 NEWTON_BACKTRACK_CUTOFF = 1e-3
 FIXED_POINT_MAX_ITERS = 60
 
+# Soft condensation: relax supersaturation toward q_sat with this timescale.
+# Moisture removed becomes precipitation with latent heat release, closing
+# the energy budget for moisture destroyed by the advection q_sat cap.
+TAU_CONDENSATION_S = 30.0 * 86400.0  # 30 days
+
 # Anderson acceleration parameters for periodic cycle solver
 ANDERSON_HISTORY_LIMIT = 6
 # Under-relaxation factor for outer (year-to-year) state updates.
@@ -705,6 +710,15 @@ def monthly_step(
                                     humidity_block -= dt_seconds * sparse.diags(
                                         linearization.humidity_diag.ravel(), format="csc"
                                     )
+                                # Soft condensation Jacobian: d(condensation_tendency)/dq
+                                # = -1/tau where q > q_sat, 0 otherwise
+                                q_sat_jac = compute_saturation_specific_humidity(temp_capped[1])
+                                cond_jac_diag = np.where(
+                                    lagged_humidity > q_sat_jac, -1.0 / TAU_CONDENSATION_S, 0.0
+                                )
+                                humidity_block -= dt_seconds * sparse.diags(
+                                    cond_jac_diag.ravel(), format="csc"
+                                )
                                 if (
                                     linearization.humidity_advection_matrix is not None
                                     and linearization.humidity_advection_matrix.nnz > 0
@@ -738,6 +752,18 @@ def monthly_step(
                                     )
                                 else:
                                     coupling_0q = coupling_1q = coupling_2q = zero_matrix
+
+                                cond_dTatm_dq = np.where(
+                                    lagged_humidity > q_sat_jac,
+                                    COLUMN_MASS_KG_M2
+                                    / TAU_CONDENSATION_S
+                                    * LATENT_HEAT_VAPORIZATION_J_KG
+                                    / ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K,
+                                    0.0,
+                                )
+                                coupling_2q = coupling_2q - dt_seconds * sparse.diags(
+                                    cond_dTatm_dq.ravel(), format="csc"
+                                )
 
                                 # Humidity-temperature coupling (dR_q/dT)
                                 if linearization.humidity_temp_coupling is not None:
@@ -925,11 +951,20 @@ def monthly_step(
                             eddy_kappa,
                             rh_bl,
                         )
+                        # Soft condensation: relax supersaturation back to q_sat
+                        # with fast timescale.
+                        q_excess = np.maximum(lagged_humidity - q_sat_bl, 0.0)
+                        condensation_tendency = -q_excess / TAU_CONDENSATION_S  # kg/kg/s, ≤ 0
+                        condensation_precip_rate = (
+                            q_excess / TAU_CONDENSATION_S * COLUMN_MASS_KG_M2
+                        )  # kg/m²/s
+
                         humidity_tendency = (
                             (evap_rate - precip_rate) / COLUMN_MASS_KG_M2
                             + advection_tendency
                             + diffusion_tendency
                             + hadley_drying
+                            + condensation_tendency
                         )
 
                         # Humidity residual: q_new - q_old - dt * tendency
@@ -940,6 +975,19 @@ def monthly_step(
                         )
                         residual_humidity = (
                             lagged_humidity - start_humidity - dt_seconds * humidity_tendency
+                        )
+
+                        # Latent heat from soft condensation → atmosphere
+                        condensation_heating_K_s = (
+                            condensation_precip_rate
+                            * LATENT_HEAT_VAPORIZATION_J_KG
+                            / ATMOSPHERE_LAYER_HEAT_CAPACITY_J_M2_K
+                        )
+                        # Subtract from atmosphere residual (extra heating =
+                        # larger RHS = smaller residual)
+                        temp_residuals[2] = (
+                            temp_residuals[2]
+                            - (dt_seconds * condensation_heating_K_s).ravel()
                         )
 
                         residual_flat = np.concatenate(
