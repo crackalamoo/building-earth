@@ -130,9 +130,7 @@ class LatentHeatExchangeModel:
         # Effective SM for transpiration includes a reserve proportional to
         # vegetation fraction (more roots = more deep water access).
         sm_eff = soil_moisture + vegetation_fraction * self._config.deep_root_sm_reserve
-        beta_transp = np.clip(
-            (sm_eff - wilt) / (theta_crit - wilt), 0.0, 1.0
-        )
+        beta_transp = np.clip((sm_eff - wilt) / (theta_crit - wilt), 0.0, 1.0)
         return (1.0 - vegetation_fraction) * beta_soil + vegetation_fraction * beta_transp
 
     def compute_tendencies(
@@ -524,12 +522,16 @@ class LatentHeatExchangeModel:
 
         # Apply land evapotranspiration factor
         surface_temperature_C = np.clip(surface_temperature_K - 273.15, -100.0, 80.0)
-        e_sat_for_beta = 6.112 * np.exp(17.67 * surface_temperature_C / (surface_temperature_C + 243.5))
+        e_sat_for_beta = 6.112 * np.exp(
+            17.67 * surface_temperature_C / (surface_temperature_C + 243.5)
+        )
         pressure_hPa_beta = pressure / 100.0
         denom_beta = np.maximum(pressure_hPa_beta - (1 - 0.622) * e_sat_for_beta, 1.0)
         q_sat_beta = (0.622 * e_sat_for_beta) / denom_beta
         humidity_q_arr = np.asarray(humidity_q, dtype=float)
-        land_factor = self._land_beta(soil_moisture, q_sat_beta, humidity_q_arr, vegetation_fraction)
+        land_factor = self._land_beta(
+            soil_moisture, q_sat_beta, humidity_q_arr, vegetation_fraction
+        )
         dE_dq = np.where(self._land_mask, dE_dq * land_factor, dE_dq)
 
         # No evaporation below freezing
@@ -592,15 +594,20 @@ class LatentHeatExchangeModel:
         )
         # For transpiration, SM_eff = SM + veg*reserve. d(SM_eff)/dSM = 1.
         # So d(beta_transp)/dSM = 1/(theta_crit - wilt) when wilt < SM_eff < theta_crit
-        sm_eff = soil_moisture + (vegetation_fraction * self._config.deep_root_sm_reserve
-                                  if vegetation_fraction is not None else 0.0)
+        sm_eff = soil_moisture + (
+            vegetation_fraction * self._config.deep_root_sm_reserve
+            if vegetation_fraction is not None
+            else 0.0
+        )
         dbeta_transp = np.where(
             (sm_eff > wilt) & (sm_eff < theta_crit) if soil_moisture is not None else True,
             1.0 / (theta_crit - wilt),
             0.0,
         )
         if vegetation_fraction is not None:
-            dbeta_dSM = (1.0 - vegetation_fraction) * dbeta_soil + vegetation_fraction * dbeta_transp
+            dbeta_dSM = (
+                1.0 - vegetation_fraction
+            ) * dbeta_soil + vegetation_fraction * dbeta_transp
         else:
             dbeta_dSM = dbeta_soil
 

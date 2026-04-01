@@ -300,9 +300,7 @@ def compute_hadley_moisture_tendency(
 
     # --- Descent: dry air from upper troposphere mixes into BL ---
     descent_rate = np.maximum(w_hadley, 0.0) / h  # 1/s, positive in descent
-    q_upper = np.minimum(
-        humidity_field * upper_troposphere_q_fraction, Q_UPPER_FIXED_KG_KG
-    )
+    q_upper = np.minimum(humidity_field * upper_troposphere_q_fraction, Q_UPPER_FIXED_KG_KG)
     drying = descent_rate * (q_upper - humidity_field)  # always ≤ 0
 
     # --- Ascent: find q_ref that makes the system conservative ---

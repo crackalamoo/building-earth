@@ -1,6 +1,5 @@
 """General-purpose periodic solver utilities for energy-balance models."""
 
-import os
 from dataclasses import replace
 from typing import Callable, Dict
 
@@ -986,8 +985,7 @@ def monthly_step(
                         # Subtract from atmosphere residual (extra heating =
                         # larger RHS = smaller residual)
                         temp_residuals[2] = (
-                            temp_residuals[2]
-                            - (dt_seconds * condensation_heating_K_s).ravel()
+                            temp_residuals[2] - (dt_seconds * condensation_heating_K_s).ravel()
                         )
 
                         residual_flat = np.concatenate(
