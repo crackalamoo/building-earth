@@ -78,7 +78,8 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
         )
     elif stage == 3:
         # Full atmospheric dynamics but no ocean heat transport (neither
-        # wind-driven gyres nor thermohaline/AMOC).
+        # wind-driven gyres nor thermohaline/AMOC).  Disable deep-root
+        # transpiration reserve to avoid veg↔P feedback instability
         return ModelConfig(
             radiation=RadiationConfig(),
             diffusion=DiffusionConfig(),
@@ -86,7 +87,7 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
             advection=AdvectionConfig(),
             snow=SnowAlbedoConfig(),
             sensible_heat=SensibleHeatExchangeConfig(),
-            latent_heat=LatentHeatExchangeConfig(),
+            latent_heat=LatentHeatExchangeConfig(deep_root_sm_reserve=0.0),
             ocean_advection=OceanAdvectionConfig(enabled=False),
             vertical_motion=VerticalMotionConfig(),
             orographic=OrographicConfig(),

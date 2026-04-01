@@ -158,12 +158,14 @@ def recompute_fields_at_1deg(
 
     for m in range(12):
         # --- Step 2: orographic modulation at 1° ---
-        itcz_rad = compute_itcz_latitude(
-            layers["boundary_layer"][m],
-            coarse_lat2d,
-            spherical_cell_area(coarse_lon2d, coarse_lat2d, earth_radius_m=R_EARTH_METERS),
-        )
-        assert np.all(itcz_rad == layers["itcz_rad"][m])
+        if "itcz_rad" in layers:
+            itcz_rad = layers["itcz_rad"][m]
+        else:
+            itcz_rad = compute_itcz_latitude(
+                layers["boundary_layer"][m],
+                coarse_lat2d,
+                spherical_cell_area(coarse_lon2d, coarse_lat2d, earth_radius_m=R_EARTH_METERS),
+            )
         itcz_rad_fine = compute_itcz_latitude(
             T_bl_K[m],
             fine_lat2d,

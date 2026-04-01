@@ -22,34 +22,34 @@
   const WRITEUPS: Record<number, { text: string; values: Map<string, TemperatureValue> }> = {
     1: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['13_C', { celsius: 13, isDelta: false }],
-        ['-87_C', { celsius: -87, isDelta: false }],
-        ['-19_C', { celsius: -19, isDelta: false }],
+        ['10_C', { celsius: 10, isDelta: false }],
+        ['-168_C', { celsius: -168, isDelta: false }],
+        ['-21_C', { celsius: -21, isDelta: false }],
       ]);
       return {
-        text: "This is Earth with no air — just bare rock in space. The only thing setting the temperature is sunlight hitting the surface and heat radiating back out.\n\nThe equator gets the most direct sunlight, but even there the surface only averages {13_C} — because half the time it's night, and all the heat escapes immediately. The poles spend months in darkness and drop to {-87_C}. The global average is {-19_C}, well below freezing.\n\nNothing could live here. The planet needs something to hold onto its heat.",
+        text: "This is Earth with no air — just bare rock in space. The only thing setting the temperature is sunlight hitting the surface and heat radiating back out.\n\nThe equator gets the most direct sunlight, but even there the surface only averages {10_C} — because half the time it's night, and all the heat escapes immediately. The poles spend months in darkness and drop to {-168_C}. The global average is {-21_C}, well below freezing.\n\nNothing could live here. The planet needs something to hold onto its heat.",
         values,
       };
     })(),
     2: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['-19_C', { celsius: -19, isDelta: false }],
-        ['11_C', { celsius: 11, isDelta: false }],
-        ['30_delta', { celsius: 30, isDelta: true }],
-        ['56_C', { celsius: 56, isDelta: false }],
+        ['-21_C', { celsius: -21, isDelta: false }],
+        ['19_C', { celsius: 19, isDelta: false }],
+        ['40_delta', { celsius: 40, isDelta: true }],
+        ['70_C', { celsius: 70, isDelta: false }],
       ]);
       return {
-        text: "Now there's air. Gases like CO₂ and water vapor let sunlight through but trap the heat trying to escape — like a blanket around the planet. This is the greenhouse effect.\n\nThe global average jumps {30_delta}, from {-19_C} to {11_C}. But look at the tropics: they hit {56_C} because there are no clouds to block sunlight and no wind to carry the heat away. Meanwhile the poles are still frozen.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
+        text: "Now there's air. Gases like CO₂ and water vapor let sunlight through but trap the heat trying to escape — like a blanket around the planet. This is the greenhouse effect.\n\nThe global average jumps {40_delta}, from {-21_C} to {19_C}. But look at the tropics: they hit {70_C} because there are no clouds to block sunlight and no wind to carry the heat away. Meanwhile the poles are still frozen.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
         values,
       };
     })(),
     3: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['31_C', { celsius: 31, isDelta: false }],
-        ['-11_C', { celsius: -11, isDelta: false }],
+        ['29_C', { celsius: 29, isDelta: false }],
+        ['-7_C', { celsius: -7, isDelta: false }],
       ]);
       return {
-        text: "Hot air is lighter than cold air. It rises at the equator, and cold air sinks at the poles — this creates wind.\n\nBut because the Earth is spinning, the wind doesn't blow straight from equator to pole. It curves, creating the trade winds near the tropics and the westerly winds that bring weather across Europe and North America.\n\nThis circulation carries heat from the tropics toward the poles. The equator cools to {31_C}. The poles warm to {-11_C}. The extreme temperature gap shrinks dramatically, and the map starts to look like the planet you know.",
+        text: "Hot air is lighter than cold air. It rises at the equator, and cold air sinks at the poles — this creates wind.\n\nBut because the Earth is spinning, the wind doesn't blow straight from equator to pole. It curves, creating the trade winds near the tropics and the westerly winds that bring weather across Europe and North America.\n\nThis circulation carries heat from the tropics toward the poles. The equator cools to {29_C}. The poles warm to {-7_C}. The extreme temperature gap shrinks dramatically, and the map starts to look like the planet you know.",
         values,
       };
     })(),
