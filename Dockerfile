@@ -1,12 +1,3 @@
-# Stage 1: Build frontend
-FROM node:22-alpine AS frontend-build
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
-COPY frontend/ ./
-RUN npm run build
-
-# Stage 2: Python runtime
 FROM python:3.13-slim
 WORKDIR /app
 
@@ -24,9 +15,6 @@ RUN uv sync --no-dev --no-install-project
 
 # Copy backend source
 COPY backend/ backend/
-
-# Copy built frontend
-COPY --from=frontend-build /app/frontend/dist frontend/dist
 
 # Copy climate data
 COPY data/main.npz data/main.npz
