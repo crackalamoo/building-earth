@@ -1,6 +1,7 @@
 # type: ignore[attr-defined]
 """Shared utilities for binary export."""
 
+import gzip
 import json
 from pathlib import Path
 
@@ -288,18 +289,20 @@ def write_binary_export(
         offset += len(raw)
 
     # Write files
-    bin_path = output_dir / f"{file_prefix}.bin"
+    gz_path = output_dir / f"{file_prefix}.bin.gz"
     manifest_path = output_dir / f"{file_prefix}.manifest.json"
 
-    with open(bin_path, "wb") as f:
-        for blob in blobs:
-            f.write(blob)
+    raw_data = b"".join(blobs)
+    raw_size = len(raw_data) / (1024 * 1024)
+
+    with gzip.open(gz_path, "wb", compresslevel=9) as f:
+        f.write(raw_data)
 
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
 
-    bin_size = bin_path.stat().st_size / (1024 * 1024)
-    print(f"Wrote {bin_path} ({bin_size:.2f} MB)")
+    gz_size = gz_path.stat().st_size / (1024 * 1024)
+    print(f"Wrote {gz_path} ({gz_size:.2f} MB, {raw_size:.1f} MB uncompressed)")
     print(f"Wrote {manifest_path}")
 
 

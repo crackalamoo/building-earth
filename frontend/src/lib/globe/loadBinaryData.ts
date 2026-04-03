@@ -2,6 +2,29 @@
  * Fetch and decode binary climate data from main.manifest.json + main.bin.
  */
 
+/**
+ * Fetch a gzip-compressed .bin.gz file and return the decompressed ArrayBuffer.
+ * Some servers (Vite dev) transparently decompress via Content-Encoding: gzip,
+ * while others (Cloudflare Pages) serve raw gzip bytes. We detect which case
+ * by checking for the gzip magic number (0x1f 0x8b) in the first two bytes.
+ */
+async function fetchBinary(url: string): Promise<ArrayBuffer> {
+  const res = await fetch(`${url}.gz`);
+  if (!res.ok) throw new Error(`Failed to load ${url}.gz: ${res.status}`);
+  const buf = await res.arrayBuffer();
+  const header = new Uint8Array(buf, 0, 2);
+  if (header[0] === 0x1f && header[1] === 0x8b) {
+    // Still gzip-compressed — decompress client-side
+    const ds = new DecompressionStream('gzip');
+    const writer = ds.writable.getWriter();
+    writer.write(new Uint8Array(buf));
+    writer.close();
+    return new Response(ds.readable).arrayBuffer();
+  }
+  // Already decompressed by the browser
+  return buf;
+}
+
 interface ManifestField {
   name: string;
   shape: number[];
@@ -98,20 +121,16 @@ function decodeField(buffer: ArrayBuffer, field: ManifestField): Float32Array | 
 }
 
 export async function loadBinaryData(basePath: string = ''): Promise<ClimateLayerData> {
-  const [manifestRes, binRes] = await Promise.all([
+  const [manifestRes, buffer] = await Promise.all([
     fetch(`${basePath}/main.manifest.json`),
-    fetch(`${basePath}/main.bin`),
+    fetchBinary(`${basePath}/main.bin`),
   ]);
 
   if (!manifestRes.ok) {
     throw new Error(`Failed to load manifest: ${manifestRes.status}`);
   }
-  if (!binRes.ok) {
-    throw new Error(`Failed to load binary data: ${binRes.status}`);
-  }
 
   const manifest: Manifest = await manifestRes.json();
-  const buffer = await binRes.arrayBuffer();
 
   const result: Record<string, FieldData> = {};
 
@@ -210,14 +229,13 @@ export function preloadStageFile(stage: number, basePath: string = ''): Promise<
   const promise = (async () => {
     const prefix = stage === 4 ? 'main' : `stage${stage}`;
     try {
-      const [manifestRes, binRes] = await Promise.all([
+      const [manifestRes, buffer] = await Promise.all([
         fetch(`${basePath}/${prefix}.manifest.json`),
-        fetch(`${basePath}/${prefix}.bin`),
+        fetchBinary(`${basePath}/${prefix}.bin`),
       ]);
-      if (!manifestRes.ok || !binRes.ok) return;
+      if (!manifestRes.ok) return;
 
       const manifestData: Manifest = await manifestRes.json();
-      const buffer = await binRes.arrayBuffer();
 
       // Decode in worker
       const decoded = await new Promise<ClimateLayerData>((resolve, reject) => {

@@ -1,5 +1,6 @@
 """Load simulation output and sample individual fields at (lat, lon, month)."""
 
+import gzip
 import json
 from pathlib import Path
 from typing import Any
@@ -204,7 +205,7 @@ class ClimateDataStore:
     def __init__(
         self,
         npz_path: str | Path = "data/main.npz",
-        bin_path: str | Path = "frontend/public/main.bin",
+        bin_path: str | Path = "frontend/public/main.bin.gz",
         manifest_path: str | Path = "frontend/public/main.manifest.json",
     ) -> None:
         self._data: dict[str, np.ndarray] = {}
@@ -218,7 +219,11 @@ class ClimateDataStore:
             return
         with open(manifest_path) as f:
             manifest = json.load(f)
-        raw = bin_path.read_bytes()
+        if bin_path.suffix == '.gz':
+            with gzip.open(bin_path, 'rb') as f:
+                raw = f.read()
+        else:
+            raw = bin_path.read_bytes()
         for field in manifest["fields"]:
             name = field["name"]
             if name in _SKIP_FIELDS:
