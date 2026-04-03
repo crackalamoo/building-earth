@@ -31,7 +31,7 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
-from climate_sim.physics.snow_albedo import (
+from climate_sim.physics.surface_albedo import (
     AlbedoModel,
     compute_monthly_flux_weighted_ocean_albedo,
 )
@@ -151,7 +151,7 @@ def build_model_operators(
     )
 
     # Get configs
-    snow_cfg = model_config.snow
+    snow_cfg = model_config.surface_albedo
     sensible_heat_cfg = model_config.sensible_heat
     latent_heat_cfg = model_config.latent_heat
     boundary_layer_cfg = BoundaryLayerConfig()

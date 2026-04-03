@@ -20,7 +20,7 @@ from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
-from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.surface_albedo import SurfaceAlbedoConfig
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.core.grid import create_lat_lon_grid
 from climate_sim.plotting import (
@@ -105,7 +105,7 @@ def main() -> None:
     start = time.time()
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
-    snow_config = SnowAlbedoConfig(
+    snow_config = SurfaceAlbedoConfig(
         enabled=args.snow,
         latent_heat_enabled=args.latent_heat,
     )
@@ -130,7 +130,7 @@ def main() -> None:
         diffusion=diffusion_config,
         wind=wind_config,
         advection=advection_config,
-        snow=snow_config,
+        surface_albedo=snow_config,
         sensible_heat=sensible_heat_config,
         latent_heat=latent_heat_config,
         ocean_advection=ocean_advection_config,

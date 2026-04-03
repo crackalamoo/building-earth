@@ -27,7 +27,7 @@ from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
-from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.surface_albedo import SurfaceAlbedoConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.orographic_effects import OrographicConfig
 from climate_sim.core.grid import create_lat_lon_grid
@@ -2040,7 +2040,7 @@ def main() -> None:
 
     radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
     diffusion_config = DiffusionConfig(enabled=args.diffusion)
-    snow_config = SnowAlbedoConfig(
+    snow_config = SurfaceAlbedoConfig(
         enabled=args.snow,
         latent_heat_enabled=args.latent_heat,
     )
@@ -2057,7 +2057,7 @@ def main() -> None:
         radiation=radiation_config,
         diffusion=diffusion_config,
         advection=advection_config,
-        snow=snow_config,
+        surface_albedo=snow_config,
         sensible_heat=sensible_heat_config,
         latent_heat=latent_heat_config,
         orographic=orographic_config,

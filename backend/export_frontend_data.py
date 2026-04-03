@@ -18,7 +18,7 @@ from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.runtime.config import ModelConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.diffusion import DiffusionConfig
-from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.surface_albedo import SurfaceAlbedoConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
@@ -81,7 +81,7 @@ def _fill_island_vegetation(
     days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     month_seconds = np.array([d * 86400.0 for d in days_per_month])  # (12,)
 
-    # Veg params (matching SnowAlbedoConfig defaults)
+    # Veg params (matching SurfaceAlbedoConfig defaults)
     p_min, p_max = 50.0, 1000.0
     growing_thresh = 5.0
     full_months = 5.0
@@ -371,7 +371,7 @@ def main() -> None:
         print(f"Running climate simulation at {args.resolution}° resolution...")
         radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
         diffusion_config = DiffusionConfig(enabled=args.diffusion)
-        snow_config = SnowAlbedoConfig(
+        snow_config = SurfaceAlbedoConfig(
             enabled=args.snow,
             latent_heat_enabled=args.latent_heat,
         )
@@ -393,7 +393,7 @@ def main() -> None:
             diffusion=diffusion_config,
             wind=wind_config,
             advection=advection_config,
-            snow=snow_config,
+            surface_albedo=snow_config,
             sensible_heat=sensible_heat_config,
             latent_heat=latent_heat_config,
             ocean_advection=ocean_advection_config,

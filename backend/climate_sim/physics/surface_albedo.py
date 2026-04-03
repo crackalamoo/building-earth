@@ -14,7 +14,7 @@ SEAWATER_FREEZE_C = -1.8
 
 
 @dataclass(frozen=True)
-class SnowAlbedoConfig:
+class SurfaceAlbedoConfig:
     """Configuration for the diagnostic snow albedo scheme."""
 
     enabled: bool = True
@@ -74,7 +74,7 @@ class AlbedoModel:
         lat2d: np.ndarray,
         lon2d: np.ndarray,
         land_mask: np.ndarray,
-        config: SnowAlbedoConfig | None = None,
+        config: SurfaceAlbedoConfig | None = None,
     ) -> None:
         """Initialize the snow albedo model.
 
@@ -90,7 +90,7 @@ class AlbedoModel:
         if config is not None:
             self.config = config
         else:
-            self.config = SnowAlbedoConfig()
+            self.config = SurfaceAlbedoConfig()
 
     def guess_albedo_field(self) -> np.ndarray:
         """Initial albedo guess with high values at polar latitudes.

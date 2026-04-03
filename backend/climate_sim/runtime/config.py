@@ -9,7 +9,7 @@ from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
-from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.surface_albedo import SurfaceAlbedoConfig
 from climate_sim.physics.vertical_motion import VerticalMotionConfig
 from climate_sim.physics.orographic_effects import OrographicConfig
 from climate_sim.physics.empirical_corrections import EmpiricalCorrectionsConfig
@@ -23,7 +23,7 @@ class ModelConfig:
     diffusion: DiffusionConfig = field(default_factory=DiffusionConfig)
     wind: WindConfig = field(default_factory=WindConfig)
     advection: AdvectionConfig = field(default_factory=AdvectionConfig)
-    snow: SnowAlbedoConfig = field(default_factory=SnowAlbedoConfig)
+    surface_albedo: SurfaceAlbedoConfig = field(default_factory=SurfaceAlbedoConfig)
     sensible_heat: SensibleHeatExchangeConfig = field(default_factory=SensibleHeatExchangeConfig)
     latent_heat: LatentHeatExchangeConfig = field(default_factory=LatentHeatExchangeConfig)
     ocean_advection: OceanAdvectionConfig = field(default_factory=OceanAdvectionConfig)

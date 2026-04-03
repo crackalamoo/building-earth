@@ -27,7 +27,7 @@ Entry point: `solve_periodic_climate(resolution_deg, model_config, return_layer_
 
 ## Physics modules
 
-Located in `climate_sim/physics/`. Each module has a config dataclass and implements `tendency()` for the solver. Key modules: `radiation.py`, `diffusion.py`, `humidity.py`, `clouds.py`, `snow_albedo.py`, `sensible_heat_exchange.py`, `latent_heat_exchange.py`, `atmosphere/wind.py`, `atmosphere/advection.py`, `ocean_currents.py`.
+Located in `climate_sim/physics/`. Each module has a config dataclass and implements `tendency()` for the solver. Key modules: `radiation.py`, `diffusion.py`, `humidity.py`, `clouds.py`, `surface_albedo.py`, `sensible_heat_exchange.py`, `latent_heat_exchange.py`, `atmosphere/wind.py`, `atmosphere/advection.py`, `ocean_currents.py`.
 
 Variable classification:
 - **Prognostic** (in state vector, solved by Newton): temperature (surface, BL, atmosphere), humidity

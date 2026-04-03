@@ -13,7 +13,7 @@ from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
-from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.surface_albedo import SurfaceAlbedoConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
 from climate_sim.physics.orographic_effects import OrographicConfig
@@ -285,11 +285,11 @@ def main() -> None:
         include_atmosphere=args.experiment_atmosphere,
     )
 
-    base_snow = SnowAlbedoConfig(
+    base_snow = SurfaceAlbedoConfig(
         enabled=args.base_snow,
         latent_heat_enabled=args.base_latent_heat,
     )
-    exp_snow = SnowAlbedoConfig(
+    exp_snow = SurfaceAlbedoConfig(
         enabled=args.experiment_snow,
         latent_heat_enabled=args.experiment_latent_heat,
     )
@@ -334,7 +334,7 @@ def main() -> None:
         radiation=base_rad,
         diffusion=base_diff,
         advection=base_advection,
-        snow=base_snow,
+        surface_albedo=base_snow,
         sensible_heat=base_sensible_heat,
         latent_heat=base_latent_heat,
         ocean_advection=base_ocean_advection,
@@ -346,7 +346,7 @@ def main() -> None:
         radiation=exp_rad,
         diffusion=exp_diff,
         advection=exp_advection,
-        snow=exp_snow,
+        surface_albedo=exp_snow,
         sensible_heat=exp_sensible_heat,
         latent_heat=exp_latent_heat,
         ocean_advection=exp_ocean_advection,
