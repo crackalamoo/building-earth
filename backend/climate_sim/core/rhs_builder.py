@@ -25,6 +25,8 @@ from climate_sim.physics.vertical_motion import (
     VerticalMotionConfig,
     compute_vertical_motion_tendencies,
     compute_bl_atm_mixing_tendencies,
+    _bl_atm_mixing_tau,
+    _BL_ATM_MIXING_T_SCALE,
     compute_hadley_subsidence_velocity,
     compute_hadley_upper_velocity,
     hadley_moisture_tendency_jacobian,
@@ -744,14 +746,24 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 C_bl = inputs.radiation_config.boundary_layer_heat_capacity
                 C_atm = inputs.radiation_config.atmosphere_heat_capacity
                 theta_atm_jac = state.temperature[2] * _ALPHA
-                T_SCALE_MIXING = 15.0  # Must match vertical_motion.py
-                inversion_jac = np.maximum(theta_atm_jac - state.temperature[1], 0.0)
-                tau = tau_mix * (1.0 + (inversion_jac / T_SCALE_MIXING) ** 2)
-                # dT_bl/dt = (α*T_atm - T_bl) / τ_eff  (τ_eff treated as frozen)
-                diag[1] += -1.0 / tau
+                tau = _bl_atm_mixing_tau(theta_atm_jac, state.temperature[1], tau_mix)
+                # Full derivative of f(T_bl) = (θ-T_bl) / τ(θ-T_bl) w.r.t. T_bl:
+                #   df/dT_bl = [(x/Ts)²-1] / [τ_base × (1+(x/Ts)²)²]
+                # where x = max(θ-T_bl, 0).  This is negative (stabilizing)
+                # for x < Ts and positive (destabilizing) for x > Ts.
+                # Clamp to non-positive to maintain solver stability.
+                x = np.maximum(theta_atm_jac - state.temperature[1], 0.0)
+                x_norm_sq = (x / _BL_ATM_MIXING_T_SCALE) ** 2
+                denom = tau_mix * (1.0 + x_norm_sq) ** 2
+                df_dTbl = np.where(
+                    x > 0,
+                    np.minimum((x_norm_sq - 1.0) / denom, 0.0),
+                    -1.0 / tau,
+                )
+                diag[1] += df_dTbl
                 cross[1, 2] += _ALPHA / tau
-                # dT_atm/dt = -(C_bl/C_atm) * (α*T_atm - T_bl) / τ_eff
-                diag[2] += -(C_bl / C_atm) * _ALPHA / tau
+                # dT_atm/dt = -(C_bl/C_atm) * f => Jacobian mirrors BL terms
+                diag[2] += (C_bl / C_atm) * df_dTbl
                 cross[2, 1] += (C_bl / C_atm) / tau
 
             # Use updated surface diffusion matrix if ocean ψ was applied
