@@ -1,1 +1,3 @@
-# 2025-proj0
+# Building Earth
+
+A first-principles climate simulation.
