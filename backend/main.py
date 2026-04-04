@@ -987,6 +987,9 @@ def main() -> None:
     # Ocean currents plot
     ocean_u = layers.get("ocean_u")
     ocean_v = layers.get("ocean_v")
+    w_ekman = layers.get("w_ekman_pumping")
+    ekman_u = layers.get("ekman_u")
+    ekman_v = layers.get("ekman_v")
     if ocean_u is not None and ocean_v is not None and not args.headless:
         projection = ccrs.PlateCarree()
         fig_ocean, ax_ocean = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=projection))
@@ -1010,6 +1013,14 @@ def main() -> None:
         ocean_u_sorted = ocean_u[:, :, lon_sort_idx]
         ocean_v_sorted = ocean_v[:, :, lon_sort_idx]
 
+        # Sort Ekman current arrays if available
+        if ekman_u is not None and ekman_v is not None:
+            ekman_u_sorted = ekman_u[:, :, lon_sort_idx]
+            ekman_v_sorted = ekman_v[:, :, lon_sort_idx]
+        else:
+            ekman_u_sorted = None
+            ekman_v_sorted = None
+
         # Compute ocean current speed (with NaN handling)
         ocean_speed = np.sqrt(
             np.nan_to_num(ocean_u_sorted, nan=0.0) ** 2
@@ -1023,6 +1034,18 @@ def main() -> None:
         max_speed = float(np.nanmax(ocean_speed))
         if not np.isfinite(max_speed) or max_speed <= 0.0:
             max_speed = 0.1
+
+        # Prepare upwelling velocity data (convert to mm/s for display)
+        if w_ekman is not None:
+            w_ekman_sorted = w_ekman[:, :, lon_sort_idx]
+            # Convert m/s to mm/s for readability
+            w_ekman_mm_s = w_ekman_sorted * 1000.0
+            max_upwelling = float(np.nanmax(np.abs(w_ekman_mm_s)))
+            if not np.isfinite(max_upwelling) or max_upwelling <= 0.0:
+                max_upwelling = 0.01
+        else:
+            w_ekman_sorted = None
+            w_ekman_mm_s = None
 
         stride = max(1, int(round(1.0 / args.resolution)))
         lat_coords = lat2d[::stride, 0]
@@ -1042,7 +1065,10 @@ def main() -> None:
         cmap_ocean = cmocean.cm.tempo
         norm_ocean = Normalize(vmin=0.0, vmax=max_speed)
 
-        current_state_ocean = {"month": 0}
+        current_state_ocean = {"month": 0, "view": "Ocean Currents"}
+        ocean_view_names = ["Ocean Currents"]
+        if w_ekman_mm_s is not None:
+            ocean_view_names.append("Upwelling Velocity")
         stream_container_ocean: dict[str, object | None] = {"obj": None}
         speed_mesh_container: dict[str, object | None] = {"mesh": None}
 
@@ -1083,44 +1109,84 @@ def main() -> None:
 
         def _draw_streamplot_ocean() -> None:
             idx = current_state_ocean["month"]
-            u_slice = ocean_u_sorted[idx, ::stride, ::stride]
-            v_slice = ocean_v_sorted[idx, ::stride, ::stride]
-            speed_slice = ocean_speed[idx, ::stride, ::stride]
-
-            # Update background speed mesh
+            view = current_state_ocean["view"]
             speed_mesh = speed_mesh_container["mesh"]
-            if speed_mesh is not None:
-                speed_mesh.set_array(ocean_speed[idx].ravel())
 
-            # Replace NaN with 0 for streamplot (it can't handle NaN)
-            u_safe = np.nan_to_num(u_slice, nan=0.0)
-            v_safe = np.nan_to_num(v_slice, nan=0.0)
-
-            u_deg_slice, v_deg_slice = _to_deg_per_sec_ocean(u_safe, v_safe)
-
+            # Clear any existing streamplot
             current_stream = stream_container_ocean["obj"]
             _clear_streamplot_ocean(current_stream)
+            stream_container_ocean["obj"] = None
 
-            new_stream = ax_ocean.streamplot(
-                lon_coords,
-                lat_coords,
-                u_deg_slice,
-                v_deg_slice,
-                color="#1a1a1a",
-                transform=projection,
-                density=1.8,
-                linewidth=0.8,
-                arrowsize=1.2,
-            )
+            if view == "Upwelling Velocity" and w_ekman_mm_s is not None:
+                # Show upwelling velocity heatmap with Ekman current streamlines
+                if speed_mesh is not None:
+                    speed_mesh.set_array(w_ekman_mm_s[idx].ravel())
+                    speed_mesh.set_cmap(cmocean.cm.matter)
+                    speed_mesh.set_norm(Normalize(vmin=0.0, vmax=max_upwelling))
+                cbar_ocean.set_label("Upwelling velocity (mm/s)")
 
-            stream_container_ocean["obj"] = new_stream
-            stream_container_ocean["u_data"] = u_slice
-            stream_container_ocean["v_data"] = v_slice
-            stream_container_ocean["speed_data"] = speed_slice
-            stream_container_ocean["lon_coords"] = lon_coords
-            stream_container_ocean["lat_coords"] = lat_coords
+                # Overlay Ekman current streamlines
+                if ekman_u_sorted is not None and ekman_v_sorted is not None:
+                    eu_slice = ekman_u_sorted[idx, ::stride, ::stride]
+                    ev_slice = ekman_v_sorted[idx, ::stride, ::stride]
+                    eu_safe = np.nan_to_num(eu_slice, nan=0.0)
+                    ev_safe = np.nan_to_num(ev_slice, nan=0.0)
+                    eu_deg, ev_deg = _to_deg_per_sec_ocean(eu_safe, ev_safe)
+                    new_stream = ax_ocean.streamplot(
+                        lon_coords,
+                        lat_coords,
+                        eu_deg,
+                        ev_deg,
+                        color="#1a1a1a",
+                        transform=projection,
+                        density=1.8,
+                        linewidth=0.8,
+                        arrowsize=1.2,
+                    )
+                    stream_container_ocean["obj"] = new_stream
 
-            ax_ocean.set_title(f"Ocean Currents – {month_names[idx]}")
+                stream_container_ocean["w_ekman_data"] = w_ekman_mm_s[idx, ::stride, ::stride]
+                stream_container_ocean.pop("u_data", None)
+                stream_container_ocean["lon_coords"] = lon_coords
+                stream_container_ocean["lat_coords"] = lat_coords
+                ax_ocean.set_title(f"Upwelling Velocity – {month_names[idx]}")
+            else:
+                # Show ocean currents with streamlines
+                u_slice = ocean_u_sorted[idx, ::stride, ::stride]
+                v_slice = ocean_v_sorted[idx, ::stride, ::stride]
+                speed_slice = ocean_speed[idx, ::stride, ::stride]
+
+                if speed_mesh is not None:
+                    speed_mesh.set_array(ocean_speed[idx].ravel())
+                    speed_mesh.set_cmap(cmocean.cm.tempo)
+                    speed_mesh.set_norm(norm_ocean)
+                cbar_ocean.set_label("Current speed (m/s)")
+
+                u_safe = np.nan_to_num(u_slice, nan=0.0)
+                v_safe = np.nan_to_num(v_slice, nan=0.0)
+                u_deg_slice, v_deg_slice = _to_deg_per_sec_ocean(u_safe, v_safe)
+
+                new_stream = ax_ocean.streamplot(
+                    lon_coords,
+                    lat_coords,
+                    u_deg_slice,
+                    v_deg_slice,
+                    color="#1a1a1a",
+                    transform=projection,
+                    density=1.8,
+                    linewidth=0.8,
+                    arrowsize=1.2,
+                )
+
+                stream_container_ocean["obj"] = new_stream
+                stream_container_ocean["u_data"] = u_slice
+                stream_container_ocean["v_data"] = v_slice
+                stream_container_ocean["speed_data"] = speed_slice
+                stream_container_ocean.pop("w_ekman_data", None)
+                stream_container_ocean["lon_coords"] = lon_coords
+                stream_container_ocean["lat_coords"] = lat_coords
+                ax_ocean.set_title(f"Ocean Currents – {month_names[idx]}")
+
             fig_ocean.canvas.draw_idle()
 
         slider_ocean_ax = fig_ocean.add_axes([0.2, 0.08, 0.6, 0.03])
@@ -1140,6 +1206,18 @@ def main() -> None:
 
         month_slider_ocean.on_changed(_on_ocean_month_change)
 
+        # Add radio button for view selection
+        if len(ocean_view_names) > 1:
+            radio_ocean_ax = fig_ocean.add_axes([0.02, 0.55, 0.14, 0.12])
+            radio_ocean_ax.set_title("Variable", fontsize=9)
+            ocean_view_selector = RadioButtons(radio_ocean_ax, ocean_view_names, active=0)
+
+            def _on_ocean_view_change(label: str) -> None:
+                current_state_ocean["view"] = label
+                _draw_streamplot_ocean()
+
+            ocean_view_selector.on_clicked(_on_ocean_view_change)
+
         # Add hover functionality
         add_dynamic_status_readout(
             fig=fig_ocean,
@@ -1150,12 +1228,20 @@ def main() -> None:
             format_message=lambda lon, lat, data, lon_idx, lat_idx: (
                 (
                     f"{_format_lat(lat)}  {_format_lon(lon)}  "
-                    f"Speed: {np.nan_to_num(data.get('speed_data', [[0]])[lat_idx, lon_idx], nan=0.0):.3f} m/s  "
-                    f"U: {np.nan_to_num(data.get('u_data', [[0]])[lat_idx, lon_idx], nan=0.0):.3f} m/s  "
-                    f"V: {np.nan_to_num(data.get('v_data', [[0]])[lat_idx, lon_idx], nan=0.0):.3f} m/s"
+                    f"w_E: {np.nan_to_num(data.get('w_ekman_data', [[0]])[lat_idx, lon_idx], nan=0.0):.4f} mm/s"
                 )
-                if data.get("u_data") is not None
-                else ""
+                if data.get("w_ekman_data") is not None
+                and current_state_ocean["view"] == "Upwelling Velocity"
+                else (
+                    (
+                        f"{_format_lat(lat)}  {_format_lon(lon)}  "
+                        f"Speed: {np.nan_to_num(data.get('speed_data', [[0]])[lat_idx, lon_idx], nan=0.0):.3f} m/s  "
+                        f"U: {np.nan_to_num(data.get('u_data', [[0]])[lat_idx, lon_idx], nan=0.0):.3f} m/s  "
+                        f"V: {np.nan_to_num(data.get('v_data', [[0]])[lat_idx, lon_idx], nan=0.0):.3f} m/s"
+                    )
+                    if data.get("u_data") is not None
+                    else ""
+                )
             ),
         )
 

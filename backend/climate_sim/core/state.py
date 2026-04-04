@@ -17,6 +17,7 @@ class ModelState:
     humidity_field: np.ndarray | None = None
     boundary_layer_wind_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     ocean_current_field: tuple[np.ndarray, np.ndarray] | None = None  # (u, v) in m/s
+    ocean_ekman_current_field: tuple[np.ndarray, np.ndarray] | None = None  # Ekman (u, v) in m/s
     ocean_current_psi: np.ndarray | None = None  # Streamfunction in Sv
     precipitation_field: np.ndarray | None = None  # Precipitation rate in kg/m²/s
     soil_moisture: np.ndarray | None = None  # Soil moisture fraction (0-1), only for land

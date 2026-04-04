@@ -222,6 +222,7 @@ def monthly_step(
 
         # Compute lagged ocean currents from 10m wind (boundary layer or atmosphere wind)
         lagged_ocean_current_field = None
+        lagged_ocean_ekman_current_field = None
         lagged_ocean_current_psi = None
         lagged_ekman_pumping = None
         # Deep ocean temperature is static (latitude-dependent only)
@@ -254,6 +255,10 @@ def monthly_step(
                 lagged_ocean_current_field = (
                     ocean_results["u_velocity"],
                     ocean_results["v_velocity"],
+                )
+                lagged_ocean_ekman_current_field = (
+                    ocean_results["u_ekman"],
+                    ocean_results["v_ekman"],
                 )
                 lagged_ocean_current_psi = ocean_results["psi"]
                 lagged_ekman_pumping = ocean_results["w_ekman_pumping"]
@@ -397,6 +402,7 @@ def monthly_step(
                     humidity_field=lagged_humidity,
                     boundary_layer_wind_field=lagged_boundary_layer_wind_field,
                     ocean_current_field=lagged_ocean_current_field,
+                    ocean_ekman_current_field=lagged_ocean_ekman_current_field,
                     ocean_current_psi=lagged_ocean_current_psi,
                     ocean_ekman_pumping=lagged_ekman_pumping,
                     deep_ocean_temperature=deep_ocean_temp_2d,
@@ -1405,6 +1411,7 @@ def monthly_step(
             humidity_field=lagged_humidity,
             boundary_layer_wind_field=lagged_boundary_layer_wind_field,
             ocean_current_field=lagged_ocean_current_field,
+            ocean_ekman_current_field=lagged_ocean_ekman_current_field,
             ocean_current_psi=lagged_ocean_current_psi,
             ocean_ekman_pumping=lagged_ekman_pumping,
             deep_ocean_temperature=deep_ocean_temp_2d,
@@ -2138,6 +2145,7 @@ def solve_periodic_climate(
 
                     # Compute ocean currents from boundary layer wind
                     ocean_current_field = None
+                    ocean_ekman_current_field = None
                     ocean_current_psi = None
                     ekman_pumping = None
                     if ocean_advection_enabled and bl_wind is not None:
@@ -2152,6 +2160,10 @@ def solve_periodic_climate(
                         ocean_current_field = (
                             ocean_results["u_velocity"],
                             ocean_results["v_velocity"],
+                        )
+                        ocean_ekman_current_field = (
+                            ocean_results["u_ekman"],
+                            ocean_results["v_ekman"],
                         )
                         ocean_current_psi = ocean_results["psi"]
                         ekman_pumping = ocean_results["w_ekman_pumping"]
@@ -2169,6 +2181,7 @@ def solve_periodic_climate(
                         humidity_field=month_state.humidity_field,
                         boundary_layer_wind_field=bl_wind,
                         ocean_current_field=ocean_current_field,
+                        ocean_ekman_current_field=ocean_ekman_current_field,
                         ocean_current_psi=ocean_current_psi,
                         ocean_ekman_pumping=ekman_pumping,
                         deep_ocean_temperature=deep_temp_2d,
@@ -2192,6 +2205,7 @@ def solve_periodic_climate(
 
                     # Compute ocean currents from atmosphere wind
                     ocean_current_field = None
+                    ocean_ekman_current_field = None
                     ocean_current_psi = None
                     ekman_pumping = None
                     if ocean_advection_enabled and wind_field is not None:
@@ -2206,6 +2220,10 @@ def solve_periodic_climate(
                         ocean_current_field = (
                             ocean_results["u_velocity"],
                             ocean_results["v_velocity"],
+                        )
+                        ocean_ekman_current_field = (
+                            ocean_results["u_ekman"],
+                            ocean_results["v_ekman"],
                         )
                         ocean_current_psi = ocean_results["psi"]
                         ekman_pumping = ocean_results["w_ekman_pumping"]
@@ -2223,6 +2241,7 @@ def solve_periodic_climate(
                         humidity_field=month_state.humidity_field,
                         boundary_layer_wind_field=month_state.boundary_layer_wind_field,
                         ocean_current_field=ocean_current_field,
+                        ocean_ekman_current_field=ocean_ekman_current_field,
                         ocean_current_psi=ocean_current_psi,
                         ocean_ekman_pumping=ekman_pumping,
                         deep_ocean_temperature=deep_temp_2d,

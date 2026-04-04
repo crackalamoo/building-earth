@@ -188,6 +188,18 @@ def postprocess_periodic_cycle_results(
         layers_map["ocean_u"] = ocean_u
         layers_map["ocean_v"] = ocean_v
 
+    # Extract Ekman current fields from state
+    ekman_current_fields = [state.ocean_ekman_current_field for state in monthly_states]
+    if all(ec is not None for ec in ekman_current_fields):
+        ekman_u = np.stack(
+            [ec[0] for ec in ekman_current_fields if ec is not None], axis=0
+        )
+        ekman_v = np.stack(
+            [ec[1] for ec in ekman_current_fields if ec is not None], axis=0
+        )
+        layers_map["ekman_u"] = ekman_u
+        layers_map["ekman_v"] = ekman_v
+
     # Extract Ekman pumping from state
     ekman_pumping_fields = [state.ocean_ekman_pumping for state in monthly_states]
     if all(ep is not None for ep in ekman_pumping_fields):
