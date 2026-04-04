@@ -372,6 +372,10 @@
       />
     {/if}
     {#if stage === 0 && !revealClicked}
+      <div class="title-card">
+        <h1 class="title">Building Earth</h1>
+        <p class="subtitle">A first-principles climate simulation</p>
+      </div>
       <button class="reveal-btn" on:click={advanceStage}>
         Let there be light
       </button>
@@ -432,13 +436,25 @@
 </main>
 
 <style>
+  @font-face {
+    font-family: 'Space Grotesk';
+    font-style: normal;
+    font-weight: 300 700;
+    font-display: swap;
+    src: url('/fonts/SpaceGrotesk-Latin.woff2') format('woff2');
+  }
+
   :global(html, body) {
     margin: 0;
     padding: 0;
     background: #000;
     color: #fff;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Space Grotesk', sans-serif;
     overflow: hidden;
+  }
+
+  :global(button, input, select, textarea) {
+    font-family: inherit;
   }
 
   :global(#app) {
@@ -459,6 +475,35 @@
     min-height: 0;
   }
 
+  .title-card {
+    position: absolute;
+    top: 3rem;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    z-index: 10;
+  }
+
+  .title {
+    font-size: 4rem;
+    font-weight: 300;
+    letter-spacing: 0.08em;
+    color: #fff;
+    text-shadow: 0 2px 30px rgba(0, 0, 0, 0.8);
+    margin: 0;
+  }
+
+  .subtitle {
+    font-size: 1.15rem;
+    font-weight: 400;
+    letter-spacing: 0.06em;
+    color: rgba(255, 255, 255, 0.85);
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+    margin: 0;
+  }
+
   .reveal-btn {
     position: absolute;
     bottom: 3rem;
@@ -472,7 +517,6 @@
     border-radius: 6px;
     cursor: pointer;
     letter-spacing: 0.05em;
-    z-index: 10;
     transition: background 0.2s, border-color 0.2s;
   }
 
