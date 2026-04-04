@@ -6,6 +6,8 @@
   import { computeSuggestions, streamChat } from './chatUtils';
   import type { ChatMessage, MsgPart } from './chatUtils';
   import { renderMarkdown } from './renderMarkdown';
+  import { temperatureToColor } from './globe/colormap';
+  import { precipMmdayToColor } from './globe/precipitationColormap';
 
   const dispatch = createEventDispatcher();
 
@@ -18,6 +20,9 @@
 
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
   const MAX_MESSAGES = 50;
+
+  function tempCss(c: number): string { const [r,g,b] = temperatureToColor(c); return `rgb(${r},${g},${b})`; }
+  function precipCss(mmMonth: number): string { const [r,g,b] = precipMmdayToColor(mmMonth / 30.44); return `rgb(${r},${g},${b})`; }
 
   // Chat state
   let messages: ChatMessage[] = [];
@@ -228,6 +233,7 @@
     y1: PAD_T + INNER_H - ((cycleTemps[i] - tempPlotMin) / tempRange) * INNER_H,
     x2: PAD_L + (i + 1.5) * (INNER_W / 12),
     y2: PAD_T + INNER_H - ((cycleTemps[i + 1] - tempPlotMin) / tempRange) * INNER_H,
+    tAvg: (cycleTemps[i] + cycleTemps[i + 1]) / 2,
   }));
   $: chartDots = cycleTemps.map((t, i) => ({
     cx: PAD_L + (i + 0.5) * (INNER_W / 12),
@@ -553,24 +559,38 @@
           {@const minH = 2}
           {@const displayH = Math.max(bar.h, minH)}
           {@const displayY = PAD_T + INNER_H - displayH}
+          {@const c = precipCss(bar.p)}
           <rect
             x={bar.x} y={displayY} width={BAR_W} height={displayH}
-            fill={bar.active ? 'rgba(42,158,158,0.7)' : 'rgba(42,158,158,0.25)'}
+            fill={c}
+            opacity={bar.active ? 0.6 : 0.4}
+            stroke={bar.active ? 'rgba(255,255,255,0.6)' : 'none'}
+            stroke-width="1"
           />
         {/each}
 
+        <!-- Temp line segment gradients -->
+        <defs>
+          {#each chartLines as seg, i}
+            <linearGradient id="tgrad-sim-{i}" x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2} gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color={tempCss(cycleTemps[i])} />
+              <stop offset="100%" stop-color={tempCss(cycleTemps[i + 1])} />
+            </linearGradient>
+          {/each}
+        </defs>
         <!-- Temp line segments -->
-        {#each chartLines as seg}
-          <line x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2} stroke="#f4a460" stroke-width="2" />
+        {#each chartLines as seg, i}
+          <line x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2} stroke="url(#tgrad-sim-{i})" stroke-width="2" />
         {/each}
 
         <!-- Temp dots + label for active month -->
         {#each chartDots as dot}
+          {@const c = tempCss(dot.t)}
           <circle
-            cx={dot.cx} cy={dot.cy} r={dot.active ? 5 : 3}
-            fill={dot.active ? '#f4a460' : '#c47830'}
-            stroke={dot.isCurrent && !dot.active ? 'rgba(255,255,255,0.4)' : dot.active ? '#fff' : 'none'}
-            stroke-width="1.5"
+            cx={dot.cx} cy={dot.cy} r={dot.active ? 5 : 4}
+            fill={c}
+            stroke={dot.active ? '#fff' : 'rgba(255,255,255,0.25)'}
+            stroke-width={dot.active ? 1.5 : 1}
           />
           {#if dot.active}
             {@const barY = chartBars[displayMonthIdx].y}
@@ -636,19 +656,32 @@
             {@const displayH = Math.max(bar.h, minH)}
             {@const displayY = PAD_T + INNER_H - displayH}
             {@const active = i === displayMonthIdx}
+            {@const c = precipCss(obsPrecips[i] ?? 0)}
             <rect
               x={bar.x} y={displayY} width={BAR_W} height={displayH}
-              fill={active ? 'rgba(42,158,158,0.5)' : 'rgba(42,158,158,0.2)'}
-              stroke="rgba(42,158,158,0.5)" stroke-width="0.75" stroke-dasharray="3 2"
+              fill={c}
+              opacity={active ? 0.7 : 0.3}
+              stroke={active ? 'rgba(255,255,255,0.6)' : c} stroke-width={active ? 1 : 0.75} stroke-dasharray={active ? 'none' : '3 2'}
             />
           {/if}
         {/each}
 
+        <!-- Obs temp line segment gradients -->
+        <defs>
+          {#each obsChartLines as seg, i}
+            {#if seg.valid}
+              <linearGradient id="tgrad-obs-{i}" x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2} gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color={tempCss(obsTemps[i] ?? 0)} />
+                <stop offset="100%" stop-color={tempCss(obsTemps[i + 1] ?? 0)} />
+              </linearGradient>
+            {/if}
+          {/each}
+        </defs>
         <!-- Obs temp line segments -->
-        {#each obsChartLines as seg}
+        {#each obsChartLines as seg, i}
           {#if seg.valid}
             <line x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2}
-              stroke="#f4a460" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.7" />
+              stroke="url(#tgrad-obs-{i})" stroke-width="1.5" stroke-dasharray="4 3" />
           {/if}
         {/each}
 
@@ -656,10 +689,11 @@
         {#each obsChartDots as dot, i}
           {#if dot.valid}
             {@const active = i === displayMonthIdx}
-            <circle cx={dot.cx} cy={dot.cy} r={active ? 5 : 2.5}
-              fill={active ? '#f4a460' : '#c47830'}
-              stroke={active ? '#fff' : 'none'} stroke-width="1.5"
-              opacity={active ? 1 : 0.7}
+            {@const c = tempCss(dot.t ?? 0)}
+            <circle cx={dot.cx} cy={dot.cy} r={active ? 5 : 4}
+              fill={c}
+              stroke={active ? '#fff' : 'rgba(255,255,255,0.25)'}
+              stroke-width={active ? 1.5 : 1}
             />
             {#if active}
               {@const obsBar = obsChartBars[i]}
