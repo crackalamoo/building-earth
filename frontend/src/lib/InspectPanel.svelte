@@ -5,6 +5,7 @@
   import { useImperial } from './stores';
   import { computeSuggestions, streamChat } from './chatUtils';
   import type { ChatMessage, MsgPart } from './chatUtils';
+  import { renderMarkdown } from './renderMarkdown';
 
   const dispatch = createEventDispatcher();
 
@@ -726,10 +727,14 @@
                       <span class="tool-chip">{field}</span>
                     {/each}
                   </div>
+                {:else if msg.role === 'assistant'}
+                  {@html renderMarkdown(part.content)}
                 {:else}
                   {part.content}
                 {/if}
               {/each}
+            {:else if msg.role === 'assistant'}
+              {@html renderMarkdown(msg.content)}
             {:else}
               {msg.content}
             {/if}
@@ -951,17 +956,80 @@
 
   .chat-msg {
     line-height: 1.5;
-    white-space: pre-wrap;
     word-wrap: break-word;
   }
 
   .chat-msg.user {
     color: #aadede;
     font-weight: 500;
+    white-space: pre-wrap;
   }
 
   .chat-msg.assistant {
     color: #ddd;
+  }
+
+  /* Markdown content inside assistant messages */
+  .chat-msg.assistant :global(p) {
+    margin: 0.4em 0;
+  }
+  .chat-msg.assistant :global(p:first-child) {
+    margin-top: 0;
+  }
+  .chat-msg.assistant :global(p:last-child) {
+    margin-bottom: 0;
+  }
+  .chat-msg.assistant :global(h2),
+  .chat-msg.assistant :global(h3) {
+    margin: 0.8em 0 0.3em;
+    font-size: 1em;
+    font-weight: 600;
+    color: #aadede;
+  }
+  .chat-msg.assistant :global(h2:first-child),
+  .chat-msg.assistant :global(h3:first-child) {
+    margin-top: 0;
+  }
+  .chat-msg.assistant :global(table) {
+    border-collapse: collapse;
+    font-size: 0.85em;
+    margin: 0.5em 0;
+    width: 100%;
+  }
+  .chat-msg.assistant :global(th),
+  .chat-msg.assistant :global(td) {
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    padding: 0.25em 0.5em;
+    text-align: left;
+  }
+  .chat-msg.assistant :global(th) {
+    background: rgba(26, 107, 107, 0.2);
+    color: #aadede;
+    font-weight: 500;
+  }
+  .chat-msg.assistant :global(blockquote) {
+    border-left: 3px solid rgba(26, 107, 107, 0.5);
+    margin: 0.5em 0;
+    padding: 0.25em 0.75em;
+    color: rgba(255, 255, 255, 0.7);
+  }
+  .chat-msg.assistant :global(ol),
+  .chat-msg.assistant :global(ul) {
+    margin: 0.4em 0;
+    padding-left: 1.5em;
+  }
+  .chat-msg.assistant :global(code) {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    font-size: 0.9em;
+  }
+  .chat-msg.assistant :global(strong) {
+    color: #fff;
+  }
+  .chat-msg.assistant :global(.katex-display) {
+    margin: 0.5em 0;
+    overflow-x: auto;
   }
 
   .retry-btn {
