@@ -193,7 +193,7 @@
 
   $: tempMin = Math.min(Math.min(...cycleTemps), isFinite(obsTempMin) ? obsTempMin : Infinity);
   $: tempMax = Math.max(Math.max(...cycleTemps), isFinite(obsTempMax) ? obsTempMax : -Infinity);
-  $: precipMax = Math.max(Math.max(...cyclePrecip, 1), obsPrecipPeak) * 1.25;
+  $: precipMax = Math.max(Math.max(...cyclePrecip, 1), obsPrecipPeak, 20) * 1.25; // min 20mm/mo
 
   $: currentMonthIdx = Math.floor(monthProgress) % 12;
   $: displayMonthIdx = hoveredMonthIdx !== null ? hoveredMonthIdx : currentMonthIdx;
@@ -210,9 +210,11 @@
   const BAR_W = INNER_W / 12 * 0.6;
   const MONTH_SHORT = ['J','F','M','A','M','J','J','A','S','O','N','D'];
 
-  $: tempPadded = (tempMax - tempMin || 10) * TEMP_PAD;
-  $: tempPlotMin = tempMin - tempPadded;
-  $: tempPlotMax = tempMax + tempPadded;
+  $: tempSpan = Math.max(tempMax - tempMin, 10); // minimum 10°C range
+  $: tempPadded = tempSpan * TEMP_PAD;
+  $: tempMid = (tempMax + tempMin) / 2;
+  $: tempPlotMin = tempMid - tempSpan / 2 - tempPadded;
+  $: tempPlotMax = tempMid + tempSpan / 2 + tempPadded;
   $: tempRange = tempPlotMax - tempPlotMin;
   $: chartBars = cyclePrecip.map((p, i) => ({
     x: PAD_L + (i + 0.2) * (INNER_W / 12),
