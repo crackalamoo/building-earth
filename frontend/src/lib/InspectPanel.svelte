@@ -593,19 +593,34 @@
           >{m.label}</text>
         {/each}
 
-        <!-- Y axis labels -->
-        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="11">
+        <!-- Y axis labels (clickable to toggle units) -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(tempPlotMax).toFixed(0) + '°' : tempPlotMax.toFixed(0) + '°'}
         </text>
-        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="11">
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(tempPlotMin).toFixed(0) + '°' : tempPlotMin.toFixed(0) + '°'}
         </text>
-        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="11">
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {$useImperial ? (precipMax / 25.4).toFixed(1) + 'in' : precipMax.toFixed(0) + 'mm'}/mo
         </text>
 
         <!-- Chart label -->
         <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="11">Simulated</text>
+
+        <!-- Invisible hit areas per month column -->
+        {#each hitAreas as hit}
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <rect
+            x={hit.x} y={PAD_T} width={INNER_W / 12} height={INNER_H + PAD_B}
+            fill="rgba(0,0,0,0.001)"
+            style="cursor: pointer; pointer-events: all;"
+            on:mousemove={() => hoveredMonthIdx = hit.i}
+            on:click|stopPropagation={() => { dispatch('setMonth', hit.i); hoveredMonthIdx = null; }}
+          />
+        {/each}
       </svg>
 
       <!-- Observed chart -->
@@ -670,14 +685,17 @@
           >{m.label}</text>
         {/each}
 
-        <!-- Y axis labels (same scale) -->
-        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="11">
+        <!-- Y axis labels (clickable to toggle units) -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(tempPlotMax).toFixed(0) + '°' : tempPlotMax.toFixed(0) + '°'}
         </text>
-        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="11">
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(tempPlotMin).toFixed(0) + '°' : tempPlotMin.toFixed(0) + '°'}
         </text>
-        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="11">
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {$useImperial ? (precipMax / 25.4).toFixed(1) + 'in' : precipMax.toFixed(0) + 'mm'}/mo
         </text>
 
@@ -700,6 +718,9 @@
       <div class="cycle-footer">
         <span class="legend-temp">— Temperature</span>
         <span class="legend-precip">▪ Precipitation</span>
+        <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
+          {imp ? '°F / in' : '°C / mm'}
+        </span>
       </div>
     </div>
   {:else}
