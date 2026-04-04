@@ -14,7 +14,7 @@ from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.diffusion import DiffusionConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
 from climate_sim.physics.atmosphere.wind import WindConfig
-from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.surface_albedo import SurfaceAlbedoConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.ocean_currents import OceanAdvectionConfig
@@ -56,7 +56,7 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
             diffusion=DiffusionConfig(enabled=False),
             wind=WindConfig(enabled=False),
             advection=AdvectionConfig(enabled=False),
-            snow=SnowAlbedoConfig(enabled=False),
+            surface_albedo=SurfaceAlbedoConfig(enabled=False),
             sensible_heat=SensibleHeatExchangeConfig(enabled=False),
             latent_heat=LatentHeatExchangeConfig(enabled=False),
             ocean_advection=OceanAdvectionConfig(enabled=False),
@@ -69,7 +69,7 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
             diffusion=DiffusionConfig(enabled=False),
             wind=WindConfig(enabled=False),
             advection=AdvectionConfig(enabled=False),
-            snow=SnowAlbedoConfig(enabled=False),
+            surface_albedo=SurfaceAlbedoConfig(enabled=False),
             sensible_heat=SensibleHeatExchangeConfig(),
             latent_heat=LatentHeatExchangeConfig(enabled=False),
             ocean_advection=OceanAdvectionConfig(enabled=False),
@@ -85,7 +85,7 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
             diffusion=DiffusionConfig(),
             wind=WindConfig(),
             advection=AdvectionConfig(),
-            snow=SnowAlbedoConfig(),
+            surface_albedo=SurfaceAlbedoConfig(),
             sensible_heat=SensibleHeatExchangeConfig(),
             latent_heat=LatentHeatExchangeConfig(deep_root_sm_reserve=0.0),
             ocean_advection=OceanAdvectionConfig(enabled=False),

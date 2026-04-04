@@ -13,7 +13,7 @@ from climate_sim.runtime.cli import add_common_model_arguments
 from climate_sim.runtime.config import ModelConfig
 from climate_sim.physics.radiation import RadiationConfig
 from climate_sim.physics.diffusion import DiffusionConfig
-from climate_sim.physics.snow_albedo import SnowAlbedoConfig
+from climate_sim.physics.surface_albedo import SurfaceAlbedoConfig
 from climate_sim.physics.sensible_heat_exchange import SensibleHeatExchangeConfig
 from climate_sim.physics.latent_heat_exchange import LatentHeatExchangeConfig
 from climate_sim.physics.atmosphere.advection import AdvectionConfig
@@ -74,7 +74,7 @@ def run_full_export(args: argparse.Namespace) -> None:
         print(f"Running climate simulation at {args.resolution}° resolution...")
         radiation_config = RadiationConfig(include_atmosphere=args.atmosphere)
         diffusion_config = DiffusionConfig(enabled=args.diffusion)
-        snow_config = SnowAlbedoConfig(
+        surface_albedo_config = SurfaceAlbedoConfig(
             enabled=args.snow,
             latent_heat_enabled=args.latent_heat,
         )
@@ -96,7 +96,7 @@ def run_full_export(args: argparse.Namespace) -> None:
             diffusion=diffusion_config,
             wind=wind_config,
             advection=advection_config,
-            snow=snow_config,
+            surface_albedo=surface_albedo_config,
             sensible_heat=sensible_heat_config,
             latent_heat=latent_heat_config,
             ocean_advection=ocean_advection_config,
