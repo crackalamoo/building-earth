@@ -182,6 +182,62 @@ export function sampleField2D(field: FieldData, lat: number, lon: number): numbe
 }
 
 /**
+ * Find the nearest land cell to a given lat/lon using the high-res land mask.
+ * Spirals outward up to maxRadius cells. Returns snapped lat/lon or the
+ * original coordinates if no land is found within range.
+ */
+export function snapToLand(
+  landMask: FieldData,
+  lat: number,
+  lon: number,
+  maxRadius = 40,
+): { lat: number; lon: number } {
+  const [nlat, nlon] = landMask.shape;
+  const data = landMask.data as Uint8Array;
+  const resolution = 180 / nlat;
+
+  // Convert lat/lon to grid indices (grid starts at south pole)
+  const latIdx = Math.round((lat + 90 - resolution / 2) / resolution);
+  const lonIdx = Math.round(((lon + 180) % 360) / resolution);
+  const clampLat = (i: number) => Math.max(0, Math.min(nlat - 1, i));
+  const wrapLon = (j: number) => ((j % nlon) + nlon) % nlon;
+
+  // Check original cell first
+  if (data[clampLat(latIdx) * nlon + wrapLon(lonIdx)] > 0) {
+    return { lat, lon };
+  }
+
+  // Spiral outward
+  for (let r = 1; r <= maxRadius; r++) {
+    let bestDist = Infinity;
+    let bestLat = lat;
+    let bestLon = lon;
+    for (let di = -r; di <= r; di++) {
+      for (let dj = -r; dj <= r; dj++) {
+        if (Math.abs(di) !== r && Math.abs(dj) !== r) continue; // only ring
+        const li = clampLat(latIdx + di);
+        const lj = wrapLon(lonIdx + dj);
+        if (data[li * nlon + lj] > 0) {
+          const dist = di * di + dj * dj;
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestLat = li * resolution - 90 + resolution / 2;
+            bestLon = lj * resolution - 180 + resolution / 2;
+            if (bestLon > 180) bestLon -= 360;
+          }
+        }
+      }
+    }
+    if (bestDist < Infinity) {
+      return { lat: bestLat, lon: bestLon };
+    }
+  }
+
+  // No land found within range — use original
+  return { lat, lon };
+}
+
+/**
  * Convert temperature_2m FieldData to the nested number[][][] format
  * expected by the existing Globe temperature renderer.
  */

@@ -5,7 +5,7 @@
   import InspectPanel from './lib/InspectPanel.svelte';
   import ControlBar from './lib/ControlBar.svelte';
   import Legend from './lib/Legend.svelte';
-  import { loadLandMask1deg } from './lib/globe/loadBinaryData';
+  import { loadLandMask1deg, snapToLand } from './lib/globe/loadBinaryData';
   import type { ClimateLayerData } from './lib/globe/loadBinaryData';
   import { useImperial } from './lib/stores';
   import OnboardingOverlay from './lib/OnboardingOverlay.svelte';
@@ -66,6 +66,33 @@
   let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
   let controlsVisible = false;
   let revealClicked = false;
+
+  // Post-onboarding location prompt
+  let locationDismissed = false;
+
+  function dismissLocationPrompt() {
+    locationDismissed = true;
+  }
+
+  function requestLocation() {
+    locationDismissed = true;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        let { latitude: lat, longitude: lon } = pos.coords;
+        // Snap to nearest land cell using high-res land mask
+        if (layerData?.land_mask) {
+          const snapped = snapToLand(layerData.land_mask, lat, lon);
+          lat = snapped.lat;
+          lon = snapped.lon;
+        }
+        pickLoc = { lat, lon };
+        globeComponent?.flyTo(lat, lon);
+      },
+      () => {
+        // Permission denied or error — just dismiss
+      },
+    );
+  }
 
   // Stage-derived state
   $: stage = $currentStage;
@@ -139,6 +166,7 @@
       pickLoc = null;
       return;
     }
+    if (!locationDismissed) dismissLocationPrompt();
     const { lat, lon } = e.detail;
     pickLoc = { lat, lon };
   }
@@ -394,6 +422,9 @@
         {stage}
         loading={false}
         buttonLabel={null}
+        {locationDismissed}
+        on:locate={requestLocation}
+        on:dismissLocation={dismissLocationPrompt}
       />
     {/if}
     {#if stage >= 1 && activeLayer === 'temperature'}

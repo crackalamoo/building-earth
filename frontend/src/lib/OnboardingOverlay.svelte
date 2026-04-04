@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { createEventDispatcher, onDestroy } from 'svelte';
+  import { createEventDispatcher } from 'svelte';
   import { useImperial } from './stores';
   import type { Stage } from './onboardingState';
 
   export let stage: Stage;
   export let loading = false;
   export let buttonLabel: string | null = null;
+  export let locationDismissed = false;
 
   const dispatch = createEventDispatcher();
 
@@ -99,19 +100,11 @@
     useImperial.update(v => !v);
   }
 
-  // Stage 4 writeup auto-fades after 15 seconds
-  let stage4Faded = false;
-  let fadeTimer: ReturnType<typeof setTimeout> | null = null;
-  $: if (stage === 4 && !stage4Faded) {
-    fadeTimer = setTimeout(() => { stage4Faded = true; }, 15000);
-  }
-  onDestroy(() => { if (fadeTimer) clearTimeout(fadeTimer); });
-
-  $: visible = stage >= 1 && stage <= 4 && !loading && !(stage === 4 && stage4Faded);
+  $: visible = stage >= 1 && stage <= 4 && !loading && !(stage === 4 && locationDismissed);
 </script>
 
 {#if visible && writeupInfo}
-  <div class="overlay" class:fade-in={true} class:fade-out={stage === 4}>
+  <div class="overlay" class:fade-in={true}>
     <div class="writeup">
       {#each segments as seg}
         {#if seg.type === 'text'}
@@ -141,6 +134,14 @@
         Skip to full model
       </button>
     {/if}
+    {#if stage === 4}
+      <button class="next-btn" on:click={() => dispatch('locate')}>
+        Where am I?
+      </button>
+      <button class="skip-link" on:click={() => dispatch('dismissLocation')}>
+        Click anywhere to explore
+      </button>
+    {/if}
   </div>
 {/if}
 
@@ -166,16 +167,7 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
-  .fade-out {
-    animation: fadeOut 2s ease 13s forwards;
-  }
-
-  @keyframes fadeOut {
-    from { opacity: 1; }
-    to { opacity: 0; pointer-events: none; }
-  }
-
-  .writeup {
+.writeup {
     font-size: 0.95rem;
     line-height: 1.6;
     color: rgba(255, 255, 255, 0.88);

@@ -147,6 +147,87 @@
     sunOrbitAngle = 0;
   }
 
+  /** Rotate the globe so a lat/lon faces the camera, then place a marker. */
+  export function flyTo(lat: number, lon: number, duration = 1500): void {
+    if (!camera || !controls) return;
+
+    controls.autoRotate = false;
+
+    const startDist = camera.position.length();
+    const mobile = container.clientWidth <= 640 || container.clientHeight <= 500;
+    const targetDist = mobile ? 2.8 : 2.2;
+
+    // --- Rotation: bring target longitude to face camera ---
+    const camAngle = Math.atan2(camera.position.x, camera.position.z);
+    const currentRotY = globe?.rotation.y ?? 0;
+    const theta = lon * (Math.PI / 180);
+    const pointAzimuth = Math.atan2(-Math.cos(theta), Math.sin(theta));
+    // Offset so target lands at horizontal center of space left of inspect panel.
+    // Panel: min(700, 0.9*W) on right. Desired position: (W-P)/2 from left.
+    // NDC shift = P/W. Convert to rotation angle on unit sphere at distance d:
+    //   α ≈ ndcShift * (d - 1) * tan(hFov/2)
+    const W = container.clientWidth;
+    const panelW = mobile ? 0 : Math.min(700, W * 0.9);
+    const ndcShift = panelW / W;
+    const aspect = W / container.clientHeight;
+    const hFovHalf = Math.atan(Math.tan((45 / 2) * Math.PI / 180) * aspect);
+    const offsetRad = -(ndcShift * (targetDist - 1) * Math.tan(hFovHalf));
+    const targetRotY = camAngle - pointAzimuth + offsetRad;
+    let deltaRot = targetRotY - currentRotY;
+    while (deltaRot > Math.PI) deltaRot -= 2 * Math.PI;
+    while (deltaRot < -Math.PI) deltaRot += 2 * Math.PI;
+    const startRotY = currentRotY;
+    const startPolar = Math.acos(camera.position.y / startDist);
+    // Tilt camera to target latitude, with vertical offset on mobile
+    // to keep the point above the bottom sheet (65vh panel).
+    let targetPolar = (90 - lat) * (Math.PI / 180);
+    if (mobile) {
+      const vFovHalf = (45 / 2) * Math.PI / 180;
+      // Panel covers 65vh → available 35vh → center at 17.5vh from top
+      // Shift up from screen center: 0.325 of viewport height → NDC = 0.65
+      const vertNdcShift = 0.65;
+      targetPolar += vertNdcShift * (targetDist - 1) * Math.tan(vFovHalf);
+    }
+    const fixedAzimuth = Math.atan2(camera.position.x, camera.position.z);
+    const startTime = performance.now();
+
+    function animate() {
+      const t = Math.min((performance.now() - startTime) / duration, 1);
+      const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+
+      // Rotate globe
+      const rot = startRotY + deltaRot * ease;
+      if (globe) globe.rotation.y = rot;
+      if (blueMarbleGlobe) blueMarbleGlobe.rotation.y = rot;
+      if (precipGlobe) precipGlobe.rotation.y = rot;
+      if (bordersGroup) bordersGroup.rotation.y = rot;
+      if (windParticles) windParticles.getObject().rotation.y = rot;
+      if (treeInstances) treeInstances.getObject().rotation.y = rot;
+      if (cloudInstances) cloudInstances.getObject().rotation.y = rot;
+      if (cityLights) cityLights.getObject().rotation.y = rot;
+
+      // Zoom + tilt camera (fixed azimuth)
+      const dist = startDist + (targetDist - startDist) * ease;
+      const polar = startPolar + (targetPolar - startPolar) * ease;
+      camera.position.set(
+        dist * Math.sin(polar) * Math.sin(fixedAzimuth),
+        dist * Math.cos(polar),
+        dist * Math.sin(polar) * Math.cos(fixedAzimuth),
+      );
+      controls.update();
+
+      if (t < 1) requestAnimationFrame(animate);
+    }
+    animate();
+
+    // Place marker
+    const target = activeLayer === 'blue-marble' ? blueMarbleGlobe : activeLayer === 'precipitation' ? precipGlobe : globe;
+    if (target) {
+      placeMarker(lat, lon, target);
+      dispatch('pick', { lat, lon, screenX: 0, screenY: 0 });
+    }
+  }
+
   export function setAutoRotate(enabled: boolean): void {
     if (controls) {
       controls.autoRotate = enabled;
