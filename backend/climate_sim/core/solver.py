@@ -469,7 +469,10 @@ def monthly_step(
             if info != 0:
                 # GMRES did not converge: refresh preconditioner and fall back to direct solve.
                 with time_block("factorize_solver"):
-                    preconditioner_solve = splinalg.factorized(jacobian)
+                    # Add tiny regularization to prevent exact singularity
+                    # from cloud Jacobian chain-rule terms
+                    reg = sparse.eye(jacobian.shape[0], format="csc") * 1e-14
+                    preconditioner_solve = splinalg.factorized(jacobian + reg)
                 preconditioner_age = 0
                 return preconditioner_solve(rhs)
 

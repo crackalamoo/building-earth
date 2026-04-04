@@ -62,14 +62,22 @@ _EPS_DRY_ATM = (1 - _R_WINDOW) * (1 - np.exp(-_DP_P0_ATM * _A_NW)) + _R_WINDOW *
 from climate_sim.physics.clouds import (  # noqa: E402
     CloudPrecipOutput,
     CONVECTIVE_CLOUD_BASE_HEIGHT_M,
+    CONVECTIVE_CLOUD_TAU_SW,
     CONVECTIVE_CLOUD_TOP_HEIGHT_M,
     HIGH_CLOUD_BASE_HEIGHT_M,
     HIGH_CLOUD_TOP_HEIGHT_M,
     MARINE_SC_CLOUD_BASE_HEIGHT_M,
     MARINE_SC_CLOUD_TOP_HEIGHT_M,
     STRATIFORM_CLOUD_BASE_HEIGHT_M,
+    STRATIFORM_CLOUD_TAU_SW,
     STRATIFORM_CLOUD_TOP_HEIGHT_M,
+    TWO_STREAM_G_WATER,
 )
+
+# Partial weight for cloud-fraction chain-rule terms in the radiation Jacobian.
+# Full contribution (1.0) destabilises the Newton solver; 0.10 provides the
+# stability benefit of cloud feedback while keeping the preconditioner accurate.
+_CLOUD_JAC_DAMPING = 0.10
 
 
 @dataclass(frozen=True)
@@ -1015,12 +1023,16 @@ def radiative_balance_rhs_temperature_derivative(
     lat2d: np.ndarray | None = None,
     lon2d: np.ndarray | None = None,
     cloud_output: CloudPrecipOutput | None = None,
+    cloud_jacobian: dict[str, np.ndarray] | None = None,
+    insolation_W_m2: np.ndarray | None = None,
+    albedo_field: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Compute the Jacobian of radiative tendency with respect to temperature.
 
     Returns diagonal terms (self-feedback) and cross-layer coupling terms.
-    Cloud fractions and heights are frozen during Newton iterations; only
-    cloud temperatures (via lapse rate from surface) contribute to derivatives.
+
+    If cloud_jacobian is provided (dC/dT_bl, dC/dT_atm, dC/dq), adds
+    chain-rule contributions: dF/dT += dF/dC × dC/dT.
 
     Returns
     -------
@@ -1315,6 +1327,109 @@ def radiative_balance_rhs_temperature_derivative(
         (clear_frac * _ee_cross * d_bb_bl_up_dT + cloud_abs_frac * d_emitted_bl_up_dT)
         - _d_down_dTbl
     ) / config.atmosphere_heat_capacity
+
+    # ================================================================
+    # CLOUD JACOBIAN CHAIN RULE: dF/dT += dF/dC × dC/dT
+    # ================================================================
+    # Cloud fractions affect radiation through OLR, DLR, and SW.
+    # When cloud_jacobian provides dC/dT_bl, dC/dT_atm, dC/dq, we add
+    # the corresponding terms to the Jacobian matrix.
+    if cloud_jacobian is not None and insolation_W_m2 is not None:
+        # Compute dF_layer/dC for each cloud type at frozen temperatures.
+        # The key radiative sensitivities:
+        #
+        # Increasing low cloud (conv/strat) at the expense of clear sky:
+        #   - Increases DLR (warm cloud bases emit more than clear atm)
+        #   - Increases SW reflection (higher albedo)
+        #   - Changes OLR (cloud top emission vs clear-sky emission)
+        #   - Reduces high cloud effective fraction (overlap)
+        #
+        # We compute net tendency sensitivity per unit cloud fraction change.
+
+        # -- SW sensitivity --
+        # More low cloud → more reflection → less SW reaching surface.
+        # dSW_sfc/dC_low ≈ -cloud_albedo × insolation × (1-overlap) / C_sfc
+        # Approximate using mean cloud albedos from the forward model.
+        conv_albedo_val = CONVECTIVE_CLOUD_TAU_SW / (CONVECTIVE_CLOUD_TAU_SW + TWO_STREAM_G_WATER)
+        strat_albedo_val = STRATIFORM_CLOUD_TAU_SW / (STRATIFORM_CLOUD_TAU_SW + TWO_STREAM_G_WATER)
+
+        # SW reaching low cloud level (after high cloud reflection + clear-sky absorption)
+        if albedo_field is not None:
+            sfc_albedo = albedo_field
+        else:
+            sfc_albedo = np.full_like(surface, 0.15)
+        sw_in = insolation_W_m2
+        # Simplified: dSW_surface/dC_low ≈ -cloud_albedo × sw_in × (1 - sfc_albedo)
+        # (each unit of low cloud fraction reflects cloud_albedo of incident SW)
+        dSW_sfc_dC_conv = -conv_albedo_val * sw_in * (1.0 - sfc_albedo)
+        dSW_sfc_dC_strat = -strat_albedo_val * sw_in * (1.0 - sfc_albedo)
+
+        # -- LW sensitivity (OLR and DLR) --
+        # Low cloud replaces clear sky: changes OLR and DLR.
+        # dOLR/dC_conv = cloud_top_emission - clear_emission (cold tops reduce OLR)
+        emitted_clear_up_val = eps_clear * sigma * np.power(T_atm_up, 4)
+        emitted_conv_up_val = eps_conv_cloud * sigma * np.power(current_conv_top_K, 4)
+        emitted_strat_up_val = transmittance_atm * eps_strat_cloud * sigma * np.power(
+            current_strat_top_K, 4
+        ) + eps_clear * sigma * np.power(atmosphere, 4)
+        emitted_high_up_val = eps_high_cloud * sigma * np.power(current_high_top_K, 4)
+
+        # OLR sensitivity (positive = more OLR): increasing low cloud changes
+        # clear_frac and high_effective_frac via overlap
+        dOLR_dC_conv = (
+            emitted_conv_up_val
+            - emitted_clear_up_val
+            - high_frac * (emitted_high_up_val - emitted_clear_up_val)
+        )
+        dOLR_dC_strat = (
+            emitted_strat_up_val
+            - emitted_clear_up_val
+            - high_frac * (emitted_high_up_val - emitted_clear_up_val)
+        )
+        # DLR sensitivity: more low cloud → more downward emission from warm base
+        clear_down_val = eps_clear * sigma * np.power(T_atm_down, 4)
+        conv_down_val = eps_conv_cloud * sigma * np.power(current_conv_base_K, 4)
+        strat_down_val = eps_strat_cloud * sigma * np.power(current_strat_base_K, 4)
+        high_down_val = eps_high_cloud * sigma * np.power(current_high_base_K, 4)
+
+        dDLR_dC_conv = conv_down_val - clear_down_val - high_frac * (high_down_val - clear_down_val)
+        dDLR_dC_strat = (
+            strat_down_val - clear_down_val - high_frac * (high_down_val - clear_down_val)
+        )
+
+        # -- Net tendency sensitivity per layer --
+        # Surface: gains from DLR (through BL), loses from SW reflection
+        # dF_sfc/dC = (trans_bl × dDLR/dC + dSW_sfc/dC) / C_sfc
+        dF_sfc_dC_conv = (trans_bl * dDLR_dC_conv + dSW_sfc_dC_conv) / heat_capacity_field
+        dF_sfc_dC_strat = (trans_bl * dDLR_dC_strat + dSW_sfc_dC_strat) / heat_capacity_field
+
+        dF_bl_dC_conv = (eps_bl * dDLR_dC_conv) / config.boundary_layer_heat_capacity
+        dF_bl_dC_strat = (eps_bl * dDLR_dC_strat) / config.boundary_layer_heat_capacity
+
+        dF_atm_dC_conv = (-dOLR_dC_conv - dDLR_dC_conv) / config.atmosphere_heat_capacity
+        dF_atm_dC_strat = (-dOLR_dC_strat - dDLR_dC_strat) / config.atmosphere_heat_capacity
+
+        # -- Apply chain rule: dF/dT += damping × dF/dC × dC/dT --
+        # Only conv and strat derivatives are provided; high cloud
+        # derivatives are omitted (net-warming feedback destabilises solver).
+        dC_conv_dT_bl = _CLOUD_JAC_DAMPING * cloud_jacobian["dC_conv_dT_bl"]
+        dC_conv_dT_atm = _CLOUD_JAC_DAMPING * cloud_jacobian["dC_conv_dT_atm"]
+        dC_strat_dT_bl = _CLOUD_JAC_DAMPING * cloud_jacobian["dC_strat_dT_bl"]
+
+        # Surface from T_bl (via clouds): cross[0, 1]
+        cross[0, 1] += dF_sfc_dC_conv * dC_conv_dT_bl + dF_sfc_dC_strat * dC_strat_dT_bl
+        # Surface from T_atm (via clouds): cross[0, 2]
+        cross[0, 2] += dF_sfc_dC_conv * dC_conv_dT_atm
+
+        # BL from T_bl (self, via clouds): boundary_diag
+        boundary_diag += dF_bl_dC_conv * dC_conv_dT_bl + dF_bl_dC_strat * dC_strat_dT_bl
+        # BL from T_atm (via clouds): cross[1, 2]
+        cross[1, 2] += dF_bl_dC_conv * dC_conv_dT_atm
+
+        # Atm from T_bl (via clouds): cross[2, 1]
+        cross[2, 1] += dF_atm_dC_conv * dC_conv_dT_bl + dF_atm_dC_strat * dC_strat_dT_bl
+        # Atm from T_atm (self, via clouds): atmosphere_diag
+        atmosphere_diag += dF_atm_dC_conv * dC_conv_dT_atm
 
     diag = np.stack([surface_diag, boundary_diag, atmosphere_diag])
 
