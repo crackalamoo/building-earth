@@ -1066,7 +1066,7 @@
     display: none;
   }
 
-  @media (max-width: 640px) {
+  @media (max-width: 640px), (max-height: 500px) {
     .inspect-panel {
       top: auto;
       bottom: 0;

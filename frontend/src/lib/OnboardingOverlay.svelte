@@ -241,17 +241,21 @@
     color: rgba(255, 255, 255, 0.7);
   }
 
-  @media (max-width: 640px) {
+  @media (max-width: 640px), (max-height: 500px) {
     .overlay {
       width: 100vw;
-      bottom: auto;
-      top: auto;
+      top: 0;
+      right: 0;
       padding: 1rem;
-      max-height: 40vh;
+      max-height: 50vh;
+      overflow-y: hidden;
     }
 
     .writeup {
       font-size: 0.9rem;
+      overflow-y: auto;
+      flex-shrink: 1;
+      min-height: 0;
     }
   }
 </style>

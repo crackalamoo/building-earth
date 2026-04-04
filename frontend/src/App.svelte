@@ -504,6 +504,22 @@
     margin: 0;
   }
 
+  @media (max-width: 640px), (max-height: 500px) {
+    .title-card {
+      top: 2rem;
+      left: 1.5rem;
+      transform: none;
+    }
+
+    .title {
+      font-size: 2.5rem;
+    }
+
+    .subtitle {
+      font-size: 0.95rem;
+    }
+  }
+
   .reveal-btn {
     position: absolute;
     bottom: 3rem;
