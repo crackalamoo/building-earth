@@ -33,7 +33,6 @@ from climate_sim.physics.vertical_motion import (
     _ALPHA,
 )
 from climate_sim.physics.orographic_effects import OrographicModel
-from climate_sim.physics.surface_albedo import AlbedoModel
 from climate_sim.physics.precipitation import (
     compute_precipitation_jacobian,
     compute_precipitation_recycling_jacobian,
@@ -45,7 +44,6 @@ from climate_sim.physics.humidity import (
     specific_humidity_to_relative_humidity,
 )
 from climate_sim.physics.clouds import (
-    compute_cloud_fraction_jacobian,
     compute_clouds_and_precipitation,
     compute_vertical_velocity_from_divergence,
     CloudPrecipOutput,
@@ -122,9 +120,6 @@ class RhsBuildInputs:
     humidity_diffusion_operator: DiffusionOperator | None = None
     orographic_model: OrographicModel | None = None
     amoc_velocity: tuple[FloatArray, FloatArray] | None = None
-    albedo_model: AlbedoModel | None = None
-    base_albedo_field: FloatArray | None = None
-    ice_sheet_mask: FloatArray | None = None
 
 
 def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
@@ -489,11 +484,11 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
         state: ModelState, insolation: np.ndarray, itcz_rad: np.ndarray
     ) -> Linearization:
         """Compute Jacobian of RHS with respect to temperature."""
+        del insolation
 
         # Unified cloud physics: compute cloud fractions for separate cloud types
         # (convective, stratiform, marine Sc, high clouds) with proper emission temperatures
         cloud_output: CloudPrecipOutput | None = state.cloud_output
-        computed_vertical_velocity: np.ndarray | None = None
         nlayers = state.temperature.shape[0]
         humidity_field = state.humidity_field
 
@@ -526,7 +521,6 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     )
             else:
                 vertical_velocity = np.zeros_like(humidity_field)
-            computed_vertical_velocity = vertical_velocity
 
             surface_temp = state.temperature[0]
             T_bl = state.temperature[1]
@@ -547,47 +541,6 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
             )
 
         if inputs.radiation_config.include_atmosphere:
-            # Cloud fraction Jacobian for chain rule
-            cld_jac = None
-            if cloud_output is not None and humidity_field is not None:
-                T_bl_jac = state.temperature[1]
-                T_atm_jac = state.temperature[2]
-                rh_jac = specific_humidity_to_relative_humidity(
-                    humidity_field,
-                    T_bl_jac,
-                    itcz_rad=itcz_rad,
-                    lat2d=inputs.lat2d,
-                    lon2d=inputs.lon2d,
-                )
-                w_jac = (
-                    computed_vertical_velocity
-                    if computed_vertical_velocity is not None
-                    else np.zeros_like(humidity_field)
-                )
-                cld_jac = compute_cloud_fraction_jacobian(
-                    T_bl_jac,
-                    T_atm_jac,
-                    humidity_field,
-                    rh_jac,
-                    w_jac,
-                    cloud_output,
-                )
-
-            # Compute snow/ice albedo derivative dα/dT_sfc for chain rule.
-            # Snow fraction uses T_surface, so the derivative goes into
-            # surface_diag (self-feedback on surface temperature).
-            albedo_derivative: np.ndarray | None = None
-            if (
-                inputs.albedo_model is not None
-                and inputs.base_albedo_field is not None
-            ):
-                T_sfc_C = state.temperature[0] - 273.15
-                albedo_derivative = inputs.albedo_model.compute_albedo_derivative(
-                    T_sfc_C,
-                    inputs.base_albedo_field,
-                    ice_sheet_mask=inputs.ice_sheet_mask,
-                )
-
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 state.temperature,
                 heat_capacity_field=inputs.heat_capacity_field,
@@ -597,11 +550,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 lat2d=inputs.lat2d,
                 lon2d=inputs.lon2d,
                 itcz_rad=itcz_rad,
-                cloud_output=cloud_output,
-                cloud_jacobian=cld_jac,
-                insolation_W_m2=insolation,
-                albedo_field=state.albedo_field,
-                albedo_derivative=albedo_derivative,
+                cloud_output=cloud_output,  # Use unified cloud physics (frozen for linearization)
             )
             assert isinstance(radiative_derivative, tuple)
             radiative_diag, cross = radiative_derivative

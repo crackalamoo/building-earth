@@ -124,14 +124,9 @@ CONVECTIVE_CLOUD_TAU = CONVECTIVE_CLOUD_TAU_SW
 STRATIFORM_CLOUD_TAU = STRATIFORM_CLOUD_TAU_SW
 MARINE_SC_CLOUD_TAU = MARINE_SC_CLOUD_TAU_SW
 
-# MSE instability thresholds (for precipitation)
+# MSE instability thresholds
 MSE_INSTABILITY_THRESHOLD = 5000.0  # J/kg - minimum instability for convection
 MSE_SATURATION_SCALE = 20000.0  # J/kg - instability scale for saturation
-
-# MSE instability thresholds (for convective cloud fraction)
-# Tighter than precipitation: summer midlat ~20,000 → 0.88, winter ~-200 → 0.12
-MSE_CLOUD_TRIGGER_THRESHOLD = 10000.0  # J/kg
-MSE_CLOUD_TRIGGER_SCALE = 5000.0  # J/kg
 UPPER_TROPOSPHERE_Q_FRACTION = 0.20  # q_upper / q_BL (dry air aloft)
 
 # Precipitation parameters
@@ -385,72 +380,64 @@ def compute_lts(
     return lts
 
 
-# Shared Sundqvist cloud fraction formula and its derivative.
-# Used by convective, stratiform, and Jacobian — single source of truth.
-SUNDQVIST_RH_CRIT = 0.55
-
-
-def sundqvist_cloud_fraction(rh: np.ndarray, rh_crit: float = SUNDQVIST_RH_CRIT) -> np.ndarray:
-    """Sundqvist (1989) diagnostic cloud fraction: 1 - sqrt((1-RH)/(1-RH_c))."""
-    rh_clipped = np.clip(rh, 0.0, 0.999)
-    return np.where(
-        rh_clipped > rh_crit,
-        1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - rh_crit)),
-        0.0,
-    )
-
-
-def sundqvist_dC_dRH(rh: np.ndarray, rh_crit: float = SUNDQVIST_RH_CRIT) -> np.ndarray:
-    """Derivative of Sundqvist formula w.r.t. RH."""
-    rh_clipped = np.clip(rh, 0.0, 0.999)
-    return np.where(
-        rh_clipped > rh_crit,
-        1.0 / (2.0 * np.sqrt(np.maximum((1.0 - rh_clipped) * (1.0 - rh_crit), 1e-12))),
-        0.0,
-    )
-
-
 def compute_convective_clouds(
-    mse_instability: np.ndarray,
+    lts: np.ndarray,
     vertical_velocity: np.ndarray,
     rh: np.ndarray,
     config: CloudConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute convective cloud fraction and albedo.
+    """Compute convective cloud fraction and albedo using LTS-based scheme.
 
-    Convective clouds form when the boundary layer is thermodynamically
-    unstable (high MSE instability) and there is sufficient moisture.
-    Large-scale ascent helps but is not required — sub-monthly buoyancy-
-    driven convection (afternoon thunderstorms) occurs even when the
-    monthly-mean w is small.
+    Convective clouds require:
+    1. Low LTS (unstable atmosphere) - LTS < LTS_crit
+    2. Rising motion (w > w_crit)
+    3. Sufficient moisture (RH^b factor)
 
-    C_conv = 0.60 × Sundqvist(RH, 0.55) × max(w_factor, mse_factor)
+    Formula: C_conv = C_max × RH^b × sigma(w - w_crit) × sigma(LTS_crit - LTS)
 
-    The max of w_factor and mse_factor allows convection from EITHER
-    resolved synoptic-scale ascent OR thermodynamic instability.
+    Parameters
+    ----------
+    lts : np.ndarray
+        Lower tropospheric stability (K). Lower = more unstable.
+    vertical_velocity : np.ndarray
+        Large-scale vertical velocity (m/s). Positive = rising.
+    rh : np.ndarray
+        Relative humidity (0-1).
+    config : CloudConfig
+        Cloud configuration parameters.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        (convective_frac, convective_albedo)
     """
-    rh_factor = sundqvist_cloud_fraction(rh)
-
-    # Dynamic trigger: large-scale ascent
-    w_factor = sigmoid(vertical_velocity - W_CRIT, scale=W_CRIT)
-
-    # Thermodynamic trigger: MSE instability
-    # Summer midlat ~20,000 J/kg → 0.88; winter midlat ~-200 → 0.12
-    # Tropics ~25,000 → 0.95; Sahara ~22,000 → 0.91 (blocked by RH)
-    mse_factor = sigmoid(
-        mse_instability - MSE_CLOUD_TRIGGER_THRESHOLD,
-        scale=MSE_CLOUD_TRIGGER_SCALE,
+    # RH factor: Sundqvist (1989) diagnostic cloud fraction formula.
+    # C = 1 - sqrt((1 - RH) / (1 - RH_crit)) for RH > RH_crit, else 0.
+    # Smooth concave-up onset, same formula used for precipitation RH gate.
+    RH_CRIT = 0.55  # sub-grid saturation threshold
+    rh_clipped = np.clip(rh, 0.0, 0.999)
+    rh_factor = np.where(
+        rh_clipped > RH_CRIT,
+        1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - RH_CRIT)),
+        0.0,
     )
 
-    # Convection from EITHER resolved ascent OR thermodynamic instability.
-    # MSE factor scaled to 0.4 to represent the fraction of monthly
-    # area-time with active convective clouds (~10-12 days/month ×
-    # ~30% of grid cell per event).
-    trigger = np.maximum(w_factor, 0.4 * mse_factor)
+    # Rising motion factor: sigma(w - w_crit)
+    # w > w_crit → factor approaches 1
+    # w < w_crit → factor approaches 0
+    w_factor = sigmoid(vertical_velocity - W_CRIT, scale=W_CRIT)
 
-    convective_frac = 0.60 * rh_factor * trigger
+    # Instability factor: sigma(LTS_crit - LTS)
+    # LTS < LTS_crit → factor approaches 1 (unstable, convection favored)
+    # LTS > LTS_crit → factor approaches 0 (stable, convection suppressed)
+    lts_factor = sigmoid(LTS_CRIT - lts, scale=5.0)  # 5 K transition width
+
+    # Convective cloud fraction
+    # Max ~0.60 in active convection zones (ITCZ)
+    convective_frac = 0.60 * rh_factor * w_factor * lts_factor
     convective_frac = np.clip(convective_frac, 0.0, 0.60)
 
+    # Cloud albedo from config
     convective_albedo = np.full_like(rh, config.convective_cloud_albedo_base)
 
     return convective_frac, convective_albedo
@@ -474,7 +461,15 @@ def compute_stratiform_clouds(
     # RH factor: Sundqvist (1989) diagnostic scheme.
     # C = 1 - sqrt((1 - RH) / (1 - RH_crit)) for RH > RH_crit, else 0.
     # More conservative than Gompertz at moderate RH — zero below threshold,
-    rh_factor = sundqvist_cloud_fraction(rh)
+    # then concave-up onset. Physically: sub-grid humidity variability means
+    # grid-mean RH must exceed ~0.70 before any fraction is truly saturated.
+    RH_CRIT = 0.55  # sub-grid saturation threshold (same as convective)
+    rh_clipped = np.clip(rh, 0.0, 0.999)
+    rh_factor = np.where(
+        rh_clipped > RH_CRIT,
+        1.0 - np.sqrt((1.0 - rh_clipped) / (1.0 - RH_CRIT)),
+        0.0,
+    )
 
     # Rising motion factor: sigma(w + w_crit)
     # w > -w_crit → factor approaches 1 (allow weak subsidence)
@@ -929,16 +924,13 @@ def compute_clouds_and_precipitation(
     # 1. Compute LTS (Lower Tropospheric Stability)
     lts = compute_lts(T_bl_K, T_atm_K)
 
-    # 1b. Compute MSE instability for convective trigger
-    mse_instab = compute_mse_instability(T_bl_K, T_atm_K, q)
-
-    # 2. Compute convective clouds (MSE instability × RH)
-    convective_frac, _ = compute_convective_clouds(mse_instab, vertical_velocity, rh, config)
+    # 2. Compute convective clouds (low LTS + rising + RH)
+    convective_frac, _ = compute_convective_clouds(lts, vertical_velocity, rh, config)
 
     # 3. Compute stratiform clouds (rising + RH, no stability requirement)
     stratiform_frac, _ = compute_stratiform_clouds(lts, vertical_velocity, rh, config)
 
-    # 4. Compute marine stratocumulus (subsidence + ocean + RH)
+    # 4. Compute marine stratocumulus (high LTS + subsidence + ocean + RH)
     if ocean_mask is not None:
         marine_sc_frac, _ = compute_marine_stratocumulus(
             lts, vertical_velocity, rh, ocean_mask, config
@@ -1026,131 +1018,3 @@ def compute_clouds_and_precipitation(
         abs_sw_marine_sc=abs_sw_marine,
         abs_sw_high=abs_sw_high,
     )
-
-
-def compute_cloud_fraction_jacobian(
-    T_bl_K: np.ndarray,
-    T_atm_K: np.ndarray,
-    q: np.ndarray,
-    rh: np.ndarray,
-    vertical_velocity: np.ndarray,
-    cloud_output: CloudPrecipOutput,
-) -> dict[str, np.ndarray]:
-    """Compute derivatives of cloud fractions w.r.t. T_bl, T_atm, q.
-
-    These are used in the radiation Jacobian chain rule:
-        dF/dT_i += sum_c (dF/dC_c × dC_c/dT_i)
-
-    Returns dictionary with keys:
-        dC_conv_dT_bl, dC_conv_dT_atm, dC_conv_dq,
-        dC_strat_dT_bl, dC_strat_dq,
-        dC_high_dT_bl, dC_high_dT_atm, dC_high_dq
-    Marine Sc is zero (disabled) so no derivatives needed.
-    """
-    Lv = LATENT_HEAT_VAPORIZATION_J_KG
-    cp = HEAT_CAPACITY_AIR_J_KG_K
-
-    # ── Common: RH derivatives ──
-    # RH = q / q_sat(T_bl)
-    # q_sat from Magnus: e_sat = 611.2 * exp(17.67*T_C / (T_C + 243.5))
-    # q_sat = 0.622 * e_sat / 101325
-    T_C = np.clip(T_bl_K - 273.15, -80.0, 60.0)
-    e_sat = 611.2 * np.exp(17.67 * T_C / (T_C + 243.5))
-    q_sat = 0.622 * e_sat / 101325.0
-    q_sat_safe = np.maximum(q_sat, 1e-10)
-    rh_clipped = np.clip(q / q_sat_safe, 0.0, 0.999)
-
-    # dq_sat/dT (Magnus derivative, T in Kelvin but formula uses Celsius)
-    dqsat_dT = q_sat * 17.67 * 243.5 / (T_C + 243.5) ** 2
-
-    # dRH/dT_bl = -q * dq_sat/dT / q_sat^2
-    dRH_dT_bl = -q * dqsat_dT / (q_sat_safe**2)
-    # dRH/dq = 1 / q_sat
-    dRH_dq = 1.0 / q_sat_safe
-
-    # ── Sundqvist factor and derivative (shared helpers) ──
-    dSundqvist_dRH = sundqvist_dC_dRH(rh_clipped)
-    sundqvist_val = sundqvist_cloud_fraction(rh_clipped)
-
-    # ── Convective cloud derivatives ──
-    # C_conv = 0.60 * sundqvist(RH) * max(w_factor, mse_factor)
-    # Clipped to [0, 0.60]
-    conv_frac = cloud_output.convective_frac
-
-    w_factor = sigmoid(vertical_velocity - W_CRIT, scale=W_CRIT)
-
-    MSE_CLOUD_TRIGGER_THRESHOLD = 10000.0
-    MSE_CLOUD_TRIGGER_SCALE = 5000.0
-    mse_instab = compute_mse_instability(T_bl_K, T_atm_K, q)
-    mse_factor = sigmoid(mse_instab - MSE_CLOUD_TRIGGER_THRESHOLD, scale=MSE_CLOUD_TRIGGER_SCALE)
-
-    trigger = np.maximum(w_factor, mse_factor)
-    mse_dominant = mse_factor >= w_factor  # where MSE pathway is active
-
-    # d(sigmoid(x, s))/dx = sig * (1-sig) / s
-    dmse_sig = mse_factor * (1.0 - mse_factor) / MSE_CLOUD_TRIGGER_SCALE
-
-    # MSE_instab = MSE_bl - MSE_upper
-    # dMSE/dT_bl = cp (BL contributes +cp*T_bl)
-    # dMSE/dT_atm = -cp (upper contributes -cp*T_atm)
-    # dMSE/dq = Lv * (1 - UPPER_TROPOSPHERE_Q_FRACTION) = Lv * 0.80
-    dMSE_dT_bl = cp
-    dMSE_dT_atm = -cp
-    dMSE_dq = Lv * (1.0 - UPPER_TROPOSPHERE_Q_FRACTION)
-
-    # d(trigger)/dT_bl = d(mse_factor)/dT_bl where MSE dominant, else 0
-    dtrigger_dT_bl = np.where(mse_dominant, dmse_sig * dMSE_dT_bl, 0.0)
-    dtrigger_dT_atm = np.where(mse_dominant, dmse_sig * dMSE_dT_atm, 0.0)
-    dtrigger_dq = np.where(mse_dominant, dmse_sig * dMSE_dq, 0.0)
-
-    # Product rule: C = 0.60 * sundqvist * trigger
-    # dC/dT_bl = 0.60 * (dSundqvist/dRH * dRH/dT_bl * trigger + sundqvist * dtrigger/dT_bl)
-    # dC/dT_atm = 0.60 * sundqvist * dtrigger/dT_atm
-    # dC/dq = 0.60 * (dSundqvist/dRH * dRH/dq * trigger + sundqvist * dtrigger/dq)
-    not_clipped = (conv_frac > 0.0) & (conv_frac < 0.60)
-
-    dC_conv_dT_bl = np.where(
-        not_clipped,
-        0.60 * (dSundqvist_dRH * dRH_dT_bl * trigger + sundqvist_val * dtrigger_dT_bl),
-        0.0,
-    )
-    dC_conv_dT_atm = np.where(
-        not_clipped,
-        0.60 * sundqvist_val * dtrigger_dT_atm,
-        0.0,
-    )
-    dC_conv_dq = np.where(
-        not_clipped,
-        0.60 * (dSundqvist_dRH * dRH_dq * trigger + sundqvist_val * dtrigger_dq),
-        0.0,
-    )
-
-    # ── Stratiform cloud derivatives ──
-    # C_strat = 0.70 * sundqvist(RH) * sigmoid(w + W_CRIT, W_CRIT)
-    # w_factor_strat doesn't depend on T or q, so only RH path
-    strat_frac = cloud_output.stratiform_frac
-    w_factor_strat = sigmoid(vertical_velocity + W_CRIT, scale=W_CRIT)
-    not_clipped_strat = (strat_frac > 0.0) & (strat_frac < 0.70)
-
-    dC_strat_dT_bl = np.where(
-        not_clipped_strat,
-        0.70 * dSundqvist_dRH * dRH_dT_bl * w_factor_strat,
-        0.0,
-    )
-    dC_strat_dq = np.where(
-        not_clipped_strat,
-        0.70 * dSundqvist_dRH * dRH_dq * w_factor_strat,
-        0.0,
-    )
-
-    # High cloud derivatives omitted: high cloud has net-warming feedback
-    # that destabilises the solver. High cloud fraction is still updated
-    # in the forward model between iterations (semi-diagnostic).
-
-    return {
-        "dC_conv_dT_bl": dC_conv_dT_bl,
-        "dC_conv_dT_atm": dC_conv_dT_atm,
-        "dC_conv_dq": dC_conv_dq,
-        "dC_strat_dT_bl": dC_strat_dT_bl,
-        "dC_strat_dq": dC_strat_dq,
-    }

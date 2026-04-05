@@ -22,7 +22,7 @@ class SurfaceAlbedoConfig:
     snow_albedo: float = 0.45  # Seasonal snow at low elevations
     ice_sheet_albedo: float = 0.80  # Permanent ice sheets (Antarctica, Greenland)
     freeze_temperature_c: float = -5.0
-    melt_temperature_c: float = 3.0  # Sub-monthly variability: snow persists at monthly mean >0°C
+    melt_temperature_c: float = 1.0  # Snow melts above 1°C
 
     latent_melt_center_K: float = 273.15
     latent_melt_halfwidth_K: float = 2.0
@@ -230,7 +230,6 @@ class AlbedoModel:
         cloud_fraction: np.ndarray | None = None,
         ocean_albedo: np.ndarray | None = None,
         ice_sheet_mask: np.ndarray | None = None,
-        snow_temperature_K: np.ndarray | None = None,
     ) -> np.ndarray:
         """Return an albedo field with snow, sea ice, and vegetation adjustments applied."""
 
@@ -251,13 +250,6 @@ class AlbedoModel:
             )
 
         temperatures_c = surface_temperatures - 273.15
-
-        # Use near-surface air temperature for snow/ice fraction if provided,
-        # otherwise fall back to surface skin temperature.
-        if snow_temperature_K is not None:
-            snow_temperatures_c = snow_temperature_K - 273.15
-        else:
-            snow_temperatures_c = temperatures_c
 
         # =====================================================================
         # 1. Compute snow-free land surface albedo from vegetation and soil moisture
@@ -306,9 +298,10 @@ class AlbedoModel:
         # 2. Compute snow fraction from temperature
         # =====================================================================
         denom = self.config.melt_temperature_c - self.config.freeze_temperature_c
-        u = (self.config.melt_temperature_c - snow_temperatures_c) / denom
+        u = (self.config.melt_temperature_c - temperatures_c) / denom
         u_clamped = np.clip(u, 0.0, 1.0)
         snow_fraction = u_clamped * u_clamped * (3.0 - 2.0 * u_clamped)
+        snow_fraction = np.clip(snow_fraction, 0.0, 1.0)
         land_snow_fraction = np.where(self.land_mask, snow_fraction, 0.0)
 
         # =====================================================================
@@ -359,61 +352,6 @@ class AlbedoModel:
         adjusted = adjusted + (effective_sea_ice_albedo - adjusted) * sea_ice_fraction
 
         return adjusted
-
-    def compute_albedo_derivative(
-        self,
-        temperatures_c: np.ndarray,
-        snow_free_albedo: np.ndarray,
-        ice_sheet_mask: np.ndarray | None = None,
-    ) -> np.ndarray:
-        """Compute dα/dT_surface (per °C or K, same units).
-
-        Returns the derivative of surface albedo w.r.t. surface temperature,
-        accounting for snow fraction (land) and sea ice fraction (ocean).
-        Ice sheet cells are excluded (their albedo is forced, not T-dependent
-        in the same way).
-        """
-        dalpha_dT = np.zeros_like(temperatures_c)
-
-        # Snow derivative on land:
-        # snow_frac = H(u) where H(u) = u²(3-2u), u = (T_melt - T) / denom
-        # dH/dT = 6u(1-u) × du/dT, du/dT = -1/denom
-        denom = self.config.melt_temperature_c - self.config.freeze_temperature_c
-        u = (self.config.melt_temperature_c - temperatures_c) / denom
-        in_transition = (u > 0.0) & (u < 1.0)
-        u_safe = np.clip(u, 0.0, 1.0)
-        dH_du = 6.0 * u_safe * (1.0 - u_safe)  # Hermite derivative
-        du_dT = -1.0 / denom
-        dsnow_dT = dH_du * du_dT  # negative: warming reduces snow
-
-        # dα/dT on land = (α_snow - α_bare) × dsnow_frac/dT
-        snow_albedo = self.config.snow_albedo
-        dalpha_land = (snow_albedo - snow_free_albedo) * dsnow_dT
-        dalpha_land = np.where(in_transition, dalpha_land, 0.0)
-        dalpha_dT = np.where(self.land_mask, dalpha_land, dalpha_dT)
-
-        # Sea ice derivative on ocean:
-        # ice_frac = H(v) × max_frac, v = (T_freeze - T) / (T_freeze - T_full)
-        if self.config.sea_ice_enabled:
-            denom_ice = self.config.sea_ice_freeze_c - self.config.sea_ice_full_c
-            if abs(denom_ice) > 1e-6:
-                v = (self.config.sea_ice_freeze_c - temperatures_c) / denom_ice
-                in_transition_ice = (v > 0.0) & (v < 1.0)
-                v_safe = np.clip(v, 0.0, 1.0)
-                dH_dv = 6.0 * v_safe * (1.0 - v_safe)
-                dv_dT = -1.0 / denom_ice
-                dice_dT = dH_dv * dv_dT * self.config.sea_ice_max_fraction
-
-                sea_ice_albedo = self.config.sea_ice_albedo
-                dalpha_ocean = (sea_ice_albedo - snow_free_albedo) * dice_dT
-                dalpha_ocean = np.where(in_transition_ice, dalpha_ocean, 0.0)
-                dalpha_dT = np.where(~self.land_mask, dalpha_ocean, dalpha_dT)
-
-        # Zero out ice sheet cells (forced albedo, not T-dependent)
-        if ice_sheet_mask is not None:
-            dalpha_dT = np.where(ice_sheet_mask, 0.0, dalpha_dT)
-
-        return dalpha_dT
 
     def effective_heat_capacity_surface(
         self,

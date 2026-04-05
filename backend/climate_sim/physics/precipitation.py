@@ -278,8 +278,7 @@ def compute_precipitation_jacobian(
     # Zero out where cape_factor was clipped to 0 or 1
     raw_cape = (gamma_d - gamma_m) / gamma_d
     dcape_dT = np.where((raw_cape > 0.0) & (raw_cape < 1.0), dcape_dT, 0.0)
-    _CAPE_JAC_DAMPING = 0.25  # damp positive feedback for solver stability
-    dP_conv_dT_bl = _CAPE_JAC_DAMPING * rh_gate * CONVECTIVE_PRECIP_COEFF * q * RHO_AIR * dcape_dT
+    dP_conv_dT_bl = rh_gate * CONVECTIVE_PRECIP_COEFF * q * RHO_AIR * dcape_dT
 
     # Apply w_factor (descent suppression + ascent amplification)
     if vertical_velocity is not None:

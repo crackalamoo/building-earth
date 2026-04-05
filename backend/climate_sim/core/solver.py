@@ -162,7 +162,6 @@ def monthly_step(
 
         # Lag albedo and wind during Newton iterations for Jacobian consistency
         start_temp_capped = np.maximum(start_temp, temperature_floor)
-        snow_temp_K = None  # Use T_surface (default)
         lagged_albedo_field = surface_context.albedo_model.apply_snow_albedo(
             base_albedo_field,
             start_temp_capped[0],
@@ -171,7 +170,6 @@ def monthly_step(
             effective_mu=effective_mu,
             ocean_albedo=ocean_albedo,
             ice_sheet_mask=surface_context.ice_sheet_mask,
-            snow_temperature_K=snow_temp_K,
         )
 
         def _compute_3layer_winds(t_atm: np.ndarray, t_bl: np.ndarray) -> tuple:
@@ -224,7 +222,6 @@ def monthly_step(
 
         # Compute lagged ocean currents from 10m wind (boundary layer or atmosphere wind)
         lagged_ocean_current_field = None
-        lagged_ocean_ekman_current_field = None
         lagged_ocean_current_psi = None
         lagged_ekman_pumping = None
         # Deep ocean temperature is static (latitude-dependent only)
@@ -257,10 +254,6 @@ def monthly_step(
                 lagged_ocean_current_field = (
                     ocean_results["u_velocity"],
                     ocean_results["v_velocity"],
-                )
-                lagged_ocean_ekman_current_field = (
-                    ocean_results["u_ekman"],
-                    ocean_results["v_ekman"],
                 )
                 lagged_ocean_current_psi = ocean_results["psi"]
                 lagged_ekman_pumping = ocean_results["w_ekman_pumping"]
@@ -404,7 +397,6 @@ def monthly_step(
                     humidity_field=lagged_humidity,
                     boundary_layer_wind_field=lagged_boundary_layer_wind_field,
                     ocean_current_field=lagged_ocean_current_field,
-                    ocean_ekman_current_field=lagged_ocean_ekman_current_field,
                     ocean_current_psi=lagged_ocean_current_psi,
                     ocean_ekman_pumping=lagged_ekman_pumping,
                     deep_ocean_temperature=deep_ocean_temp_2d,
@@ -471,10 +463,7 @@ def monthly_step(
             if info != 0:
                 # GMRES did not converge: refresh preconditioner and fall back to direct solve.
                 with time_block("factorize_solver"):
-                    # Add tiny regularization to prevent exact singularity
-                    # from cloud Jacobian chain-rule terms
-                    reg = sparse.eye(jacobian.shape[0], format="csc") * 1e-14
-                    preconditioner_solve = splinalg.factorized(jacobian + reg)
+                    preconditioner_solve = splinalg.factorized(jacobian)
                 preconditioner_age = 0
                 return preconditioner_solve(rhs)
 
@@ -1417,7 +1406,6 @@ def monthly_step(
             humidity_field=lagged_humidity,
             boundary_layer_wind_field=lagged_boundary_layer_wind_field,
             ocean_current_field=lagged_ocean_current_field,
-            ocean_ekman_current_field=lagged_ocean_ekman_current_field,
             ocean_current_psi=lagged_ocean_current_psi,
             ocean_ekman_pumping=lagged_ekman_pumping,
             deep_ocean_temperature=deep_ocean_temp_2d,
@@ -1431,7 +1419,6 @@ def monthly_step(
             vertical_velocity=final_vertical_velocity,
         )
 
-        final_snow_temp = None
         final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(
             base_albedo_field,
             final_temp[0],
@@ -1440,7 +1427,6 @@ def monthly_step(
             effective_mu=effective_mu,
             ocean_albedo=ocean_albedo,
             ice_sheet_mask=surface_context.ice_sheet_mask,
-            snow_temperature_K=final_snow_temp,
         )
 
         # Update wind diagnostics for output using the converged ITCZ.
@@ -1813,7 +1799,6 @@ def find_periodic_climate_cycle(
                                 if monthly_ocean_albedo is not None
                                 else None
                             )
-                            iter_snow_temp = None
                             s.albedo_field = surface_context.albedo_model.apply_snow_albedo(
                                 base_albedo,
                                 s.temperature[0],
@@ -1823,7 +1808,6 @@ def find_periodic_climate_cycle(
                                 effective_mu=month_mu,
                                 ocean_albedo=month_ocean_alb,
                                 ice_sheet_mask=surface_context.ice_sheet_mask,
-                                snow_temperature_K=iter_snow_temp,
                             )
                     print(
                         f"Converged at iter {iter_idx} (RMS={residual_rms:.3f}K  95p={residual_95p:.3f}K)"
@@ -2057,9 +2041,6 @@ def solve_periodic_climate(
             humidity_diffusion_operator=humidity_diffusion_op,
             orographic_model=operators.orographic_model,
             amoc_velocity=operators.amoc_velocity,
-            albedo_model=operators.albedo_model,
-            base_albedo_field=operators.base_albedo_field,
-            ice_sheet_mask=operators.surface_context.ice_sheet_mask,
         )
         rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
 
@@ -2158,7 +2139,6 @@ def solve_periodic_climate(
 
                     # Compute ocean currents from boundary layer wind
                     ocean_current_field = None
-                    ocean_ekman_current_field = None
                     ocean_current_psi = None
                     ekman_pumping = None
                     if ocean_advection_enabled and bl_wind is not None:
@@ -2173,10 +2153,6 @@ def solve_periodic_climate(
                         ocean_current_field = (
                             ocean_results["u_velocity"],
                             ocean_results["v_velocity"],
-                        )
-                        ocean_ekman_current_field = (
-                            ocean_results["u_ekman"],
-                            ocean_results["v_ekman"],
                         )
                         ocean_current_psi = ocean_results["psi"]
                         ekman_pumping = ocean_results["w_ekman_pumping"]
@@ -2194,7 +2170,6 @@ def solve_periodic_climate(
                         humidity_field=month_state.humidity_field,
                         boundary_layer_wind_field=bl_wind,
                         ocean_current_field=ocean_current_field,
-                        ocean_ekman_current_field=ocean_ekman_current_field,
                         ocean_current_psi=ocean_current_psi,
                         ocean_ekman_pumping=ekman_pumping,
                         deep_ocean_temperature=deep_temp_2d,
@@ -2218,7 +2193,6 @@ def solve_periodic_climate(
 
                     # Compute ocean currents from atmosphere wind
                     ocean_current_field = None
-                    ocean_ekman_current_field = None
                     ocean_current_psi = None
                     ekman_pumping = None
                     if ocean_advection_enabled and wind_field is not None:
@@ -2233,10 +2207,6 @@ def solve_periodic_climate(
                         ocean_current_field = (
                             ocean_results["u_velocity"],
                             ocean_results["v_velocity"],
-                        )
-                        ocean_ekman_current_field = (
-                            ocean_results["u_ekman"],
-                            ocean_results["v_ekman"],
                         )
                         ocean_current_psi = ocean_results["psi"]
                         ekman_pumping = ocean_results["w_ekman_pumping"]
@@ -2254,7 +2224,6 @@ def solve_periodic_climate(
                         humidity_field=month_state.humidity_field,
                         boundary_layer_wind_field=month_state.boundary_layer_wind_field,
                         ocean_current_field=ocean_current_field,
-                        ocean_ekman_current_field=ocean_ekman_current_field,
                         ocean_current_psi=ocean_current_psi,
                         ocean_ekman_pumping=ekman_pumping,
                         deep_ocean_temperature=deep_temp_2d,
