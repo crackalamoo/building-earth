@@ -11,6 +11,15 @@ HEAT_CAPACITY_AIR_J_M2_K = 1.02e7  # J m-2 K-1
 SHORTWAVE_ABSORPTANCE_ATMOSPHERE = 0.2 - 0.025
 STANDARD_LAPSE_RATE_K_PER_M = 6.5 / 1000.0
 
+# Environmental lapse rate for the T2m elevation correction.
+# The observed temperature decrease between surface stations at different
+# elevations (~3 °C/km) is much gentler than the free-air rate (6.5 °C/km)
+# because mountain surfaces are warmed by solar heating, reducing the
+# effective lapse. The free-air rate is correct for atmospheric layer
+# physics (radiation, clouds, vertical profiles), but the T2m diagnostic
+# should use the environmental rate when adjusting for surface elevation.
+ENVIRONMENTAL_LAPSE_RATE_K_PER_M = 3.5 / 1000.0
+
 # Boundary layer constants
 # BL emissivity is now humidity-dependent in radiation.py
 # This constant is used as fallback when humidity is not available

@@ -4,6 +4,7 @@ import numpy as np
 
 from climate_sim.data.constants import BOUNDARY_LAYER_HEIGHT_M
 from climate_sim.data.constants import STANDARD_LAPSE_RATE_K_PER_M
+from climate_sim.data.constants import ENVIRONMENTAL_LAPSE_RATE_K_PER_M
 
 
 def adjust_temperature_by_elevation(
@@ -28,7 +29,7 @@ def adjust_temperature_by_elevation(
 
     temp = np.asarray(temperature_c, dtype=float)
     delta = np.asarray(elevation_delta_m, dtype=float)
-    adjusted = temp - STANDARD_LAPSE_RATE_K_PER_M * delta
+    adjusted = temp - ENVIRONMENTAL_LAPSE_RATE_K_PER_M * delta
     return adjusted.astype(float, copy=False)
 
 

@@ -21,8 +21,15 @@ class SurfaceAlbedoConfig:
     latent_heat_enabled: bool = True
     snow_albedo: float = 0.45  # Seasonal snow at low elevations
     ice_sheet_albedo: float = 0.80  # Permanent ice sheets (Antarctica, Greenland)
-    freeze_temperature_c: float = -5.0
-    melt_temperature_c: float = 1.0  # Snow melts above 1°C
+    # Snow transition for land at coarse (5°) resolution:
+    # A 5° cell spans ~500km with sub-grid terrain variability.  Mountains
+    # retain snow even when the cell-mean is well above freezing, and
+    # valleys may be snow-free even when the mean is below freezing.
+    # The wide transition (-3 to +7°C) keeps the snow-albedo feedback
+    # gain below 1, preventing bistability in the Newton solver.
+    # Gain ≈ (Δα × SW) / (ΔT × λ) ≈ (0.26/10 × 200) / 7.5 ≈ 0.7 < 1.
+    freeze_temperature_c: float = -3.0
+    melt_temperature_c: float = 7.0
 
     latent_melt_center_K: float = 273.15
     latent_melt_halfwidth_K: float = 2.0
