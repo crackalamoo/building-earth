@@ -5,6 +5,9 @@
   import { useImperial } from './stores';
   import { computeSuggestions, streamChat } from './chatUtils';
   import type { ChatMessage, MsgPart } from './chatUtils';
+  import { renderMarkdown } from './renderMarkdown';
+  import { temperatureToColor } from './globe/colormap';
+  import { precipMmdayToColor } from './globe/precipitationColormap';
 
   const dispatch = createEventDispatcher();
 
@@ -13,9 +16,13 @@
   export let monthProgress: number;
   export let temperatureData: number[][][] | null;
   export let layerData: ClimateLayerData | null;
+  export let stage: number = 4;
 
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
   const MAX_MESSAGES = 50;
+
+  function tempCss(c: number): string { const [r,g,b] = temperatureToColor(c); return `rgb(${r},${g},${b})`; }
+  function precipCss(mmMonth: number): string { const [r,g,b] = precipMmdayToColor(mmMonth / 30.44); return `rgb(${r},${g},${b})`; }
 
   // Chat state
   let messages: ChatMessage[] = [];
@@ -30,7 +37,7 @@
   let sentLon: number | null = null;
   let sentMonth: number | null = null;
 
-  $: suggestions = computeSuggestions(lat, ocean, elevation, cycleTemps, cyclePrecip, wind, currentMonthIdx, tempC);
+  $: suggestions = computeSuggestions(lat, ocean, elevation, cycleTemps, cyclePrecip, wind, currentMonthIdx, tempC, stage);
 
   let activeTab: 'cycle' | 'ask' = 'ask';
   let hoveredMonthIdx: number | null = null;
@@ -123,6 +130,15 @@
     return data[latIndex(lat, nlat) * nlon + lonIndex(lon, nlon)];
   }
 
+  /** High-res land check (720×1440) — matches the elevation grid. */
+  function isLandHighRes(lat: number, lon: number): boolean {
+    if (!layerData?.land_mask) return true;
+    const data = layerData.land_mask.data as Uint8Array;
+    const nlat = layerData.land_mask.shape[0];
+    const nlon = layerData.land_mask.shape[1];
+    return data[latIndex(lat, nlat) * nlon + lonIndex(lon, nlon)] !== 0;
+  }
+
   // ── Annual cycle data ──
 
   function sampleT2mMonth(lat: number, lon: number, month: number): number {
@@ -182,7 +198,7 @@
 
   $: tempMin = Math.min(Math.min(...cycleTemps), isFinite(obsTempMin) ? obsTempMin : Infinity);
   $: tempMax = Math.max(Math.max(...cycleTemps), isFinite(obsTempMax) ? obsTempMax : -Infinity);
-  $: precipMax = Math.max(Math.max(...cyclePrecip, 1), obsPrecipPeak) * 1.25;
+  $: precipMax = Math.max(Math.max(...cyclePrecip, 1), obsPrecipPeak, 20) * 1.25; // min 20mm/mo
 
   $: currentMonthIdx = Math.floor(monthProgress) % 12;
   $: displayMonthIdx = hoveredMonthIdx !== null ? hoveredMonthIdx : currentMonthIdx;
@@ -199,9 +215,11 @@
   const BAR_W = INNER_W / 12 * 0.6;
   const MONTH_SHORT = ['J','F','M','A','M','J','J','A','S','O','N','D'];
 
-  $: tempPadded = (tempMax - tempMin || 10) * TEMP_PAD;
-  $: tempPlotMin = tempMin - tempPadded;
-  $: tempPlotMax = tempMax + tempPadded;
+  $: tempSpan = Math.max(tempMax - tempMin, 10); // minimum 10°C range
+  $: tempPadded = tempSpan * TEMP_PAD;
+  $: tempMid = (tempMax + tempMin) / 2;
+  $: tempPlotMin = tempMid - tempSpan / 2 - tempPadded;
+  $: tempPlotMax = tempMid + tempSpan / 2 + tempPadded;
   $: tempRange = tempPlotMax - tempPlotMin;
   $: chartBars = cyclePrecip.map((p, i) => ({
     x: PAD_L + (i + 0.2) * (INNER_W / 12),
@@ -215,6 +233,7 @@
     y1: PAD_T + INNER_H - ((cycleTemps[i] - tempPlotMin) / tempRange) * INNER_H,
     x2: PAD_L + (i + 1.5) * (INNER_W / 12),
     y2: PAD_T + INNER_H - ((cycleTemps[i + 1] - tempPlotMin) / tempRange) * INNER_H,
+    tAvg: (cycleTemps[i] + cycleTemps[i + 1]) / 2,
   }));
   $: chartDots = cycleTemps.map((t, i) => ({
     cx: PAD_L + (i + 0.5) * (INNER_W / 12),
@@ -262,6 +281,7 @@
 
   $: imp = $useImperial;
   $: elevation = sampleElevation(lat, lon);
+  $: isLand = isLandHighRes(lat, lon);
   $: tempC = (monthProgress, sampleT2m(lat, lon));
   $: ocean = (monthProgress, sampleOceanInfo(lat, lon));
   $: wind = (monthProgress, sampleWind(lat, lon));
@@ -303,6 +323,7 @@
           lat, lon, month,
           prevLat: sentLat, prevLon: sentLon, prevMonth: sentMonth,
           imperial: $useImperial,
+          stage,
           messages: messages.filter(m => m.content !== '').map(m => ({ role: m.role, content: m.content })),
         },
         abortController.signal,
@@ -454,7 +475,7 @@
   });
 </script>
 
-<!-- svelte-ignore a11y-click-events-have-key-events -->
+<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div
   class="inspect-panel"
   class:dragging
@@ -478,31 +499,31 @@
 
   <div class="stats">
     <div class="stat">
-      <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+      <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
         {imp ? cToF(tempC).toFixed(1) + '°F' : tempC.toFixed(1) + '°C'}
       </span>
     </div>
     {#if ocean.isOcean && ocean.sstC !== null}
       <div class="stat sst">
-        Sea: <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+        Sea: <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(ocean.sstC).toFixed(1) + '°F' : ocean.sstC.toFixed(1) + '°C'}
         </span>
       </div>
     {/if}
     {#if elevation !== null}
       <div class="stat elev">
-        {ocean.isOcean ? 'Depth' : 'Elev'}: <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+        {isLand ? 'Elev' : 'Depth'}: <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
           {#if imp}
-            {ocean.isOcean ? Math.abs(Math.round(mToFt(elevation))).toLocaleString() : Math.round(mToFt(elevation)).toLocaleString()} ft
+            {isLand ? Math.round(mToFt(elevation)).toLocaleString() : Math.abs(Math.round(mToFt(elevation))).toLocaleString()} ft
           {:else}
-            {ocean.isOcean ? Math.abs(Math.round(elevation)).toLocaleString() : Math.round(elevation).toLocaleString()} m
+            {isLand ? Math.round(elevation).toLocaleString() : Math.abs(Math.round(elevation)).toLocaleString()} m
           {/if}
         </span>
       </div>
     {/if}
     <div class="stat wind-stat">
       <span class="wind-arrow" style="transform: rotate({wind.dir}deg)">↓</span>
-      <span class="unit-toggle" on:click|stopPropagation={toggleUnits}>
+      <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
         {#if imp}
           {kphToMph(wind.speed * 3.6).toFixed(0)} mph
         {:else}
@@ -538,32 +559,46 @@
           {@const minH = 2}
           {@const displayH = Math.max(bar.h, minH)}
           {@const displayY = PAD_T + INNER_H - displayH}
+          {@const c = precipCss(bar.p)}
           <rect
             x={bar.x} y={displayY} width={BAR_W} height={displayH}
-            fill={bar.active ? 'rgba(42,158,158,0.7)' : 'rgba(42,158,158,0.25)'}
+            fill={c}
+            opacity={bar.active ? 0.6 : 0.4}
+            stroke={bar.active ? 'rgba(255,255,255,0.6)' : 'none'}
+            stroke-width="1"
           />
         {/each}
 
+        <!-- Temp line segment gradients -->
+        <defs>
+          {#each chartLines as seg, i}
+            <linearGradient id="tgrad-sim-{i}" x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2} gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color={tempCss(cycleTemps[i])} />
+              <stop offset="100%" stop-color={tempCss(cycleTemps[i + 1])} />
+            </linearGradient>
+          {/each}
+        </defs>
         <!-- Temp line segments -->
-        {#each chartLines as seg}
-          <line x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2} stroke="#f4a460" stroke-width="2" />
+        {#each chartLines as seg, i}
+          <line x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2} stroke="url(#tgrad-sim-{i})" stroke-width="2" />
         {/each}
 
         <!-- Temp dots + label for active month -->
         {#each chartDots as dot}
+          {@const c = tempCss(dot.t)}
           <circle
-            cx={dot.cx} cy={dot.cy} r={dot.active ? 5 : 3}
-            fill={dot.active ? '#f4a460' : '#c47830'}
-            stroke={dot.isCurrent && !dot.active ? 'rgba(255,255,255,0.4)' : dot.active ? '#fff' : 'none'}
-            stroke-width="1.5"
+            cx={dot.cx} cy={dot.cy} r={dot.active ? 5 : 4}
+            fill={c}
+            stroke={dot.active ? '#fff' : 'rgba(255,255,255,0.25)'}
+            stroke-width={dot.active ? 1.5 : 1}
           />
           {#if dot.active}
             {@const barY = chartBars[displayMonthIdx].y}
             {@const precipLabelY = Math.min(barY - 4, dot.cy - 20)}
-            <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="9">
+            <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="11">
               {$useImperial ? (cyclePrecip[displayMonthIdx] / 25.4).toFixed(1) + '"' : cyclePrecip[displayMonthIdx].toFixed(0) + 'mm'}
             </text>
-            <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="10">
+            <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="12">
               {$useImperial ? cToF(dot.t).toFixed(0) + '°F' : dot.t.toFixed(0) + '°C'}
             </text>
           {/if}
@@ -575,24 +610,39 @@
             x={m.x} y={CHART_H - 6}
             text-anchor="middle"
             fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#555'}
-            font-size="10"
+            font-size="12"
             font-weight={m.active ? '600' : '400'}
           >{m.label}</text>
         {/each}
 
-        <!-- Y axis labels -->
-        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="9">
+        <!-- Y axis labels (clickable to toggle units) -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(tempPlotMax).toFixed(0) + '°' : tempPlotMax.toFixed(0) + '°'}
         </text>
-        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="9">
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(tempPlotMin).toFixed(0) + '°' : tempPlotMin.toFixed(0) + '°'}
         </text>
-        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="9">
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {$useImperial ? (precipMax / 25.4).toFixed(1) + 'in' : precipMax.toFixed(0) + 'mm'}/mo
         </text>
 
         <!-- Chart label -->
-        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="9">Simulated</text>
+        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="11">Simulated</text>
+
+        <!-- Invisible hit areas per month column -->
+        {#each hitAreas as hit}
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <rect
+            x={hit.x} y={PAD_T} width={INNER_W / 12} height={INNER_H + PAD_B}
+            fill="rgba(0,0,0,0.001)"
+            style="cursor: pointer; pointer-events: all;"
+            on:mousemove={() => hoveredMonthIdx = hit.i}
+            on:click|stopPropagation={() => { dispatch('setMonth', hit.i); hoveredMonthIdx = null; }}
+          />
+        {/each}
       </svg>
 
       <!-- Observed chart -->
@@ -606,19 +656,32 @@
             {@const displayH = Math.max(bar.h, minH)}
             {@const displayY = PAD_T + INNER_H - displayH}
             {@const active = i === displayMonthIdx}
+            {@const c = precipCss(obsPrecips[i] ?? 0)}
             <rect
               x={bar.x} y={displayY} width={BAR_W} height={displayH}
-              fill={active ? 'rgba(42,158,158,0.5)' : 'rgba(42,158,158,0.2)'}
-              stroke="rgba(42,158,158,0.5)" stroke-width="0.75" stroke-dasharray="3 2"
+              fill={c}
+              opacity={active ? 0.7 : 0.3}
+              stroke={active ? 'rgba(255,255,255,0.6)' : c} stroke-width={active ? 1 : 0.75} stroke-dasharray={active ? 'none' : '3 2'}
             />
           {/if}
         {/each}
 
+        <!-- Obs temp line segment gradients -->
+        <defs>
+          {#each obsChartLines as seg, i}
+            {#if seg.valid}
+              <linearGradient id="tgrad-obs-{i}" x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2} gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color={tempCss(obsTemps[i] ?? 0)} />
+                <stop offset="100%" stop-color={tempCss(obsTemps[i + 1] ?? 0)} />
+              </linearGradient>
+            {/if}
+          {/each}
+        </defs>
         <!-- Obs temp line segments -->
-        {#each obsChartLines as seg}
+        {#each obsChartLines as seg, i}
           {#if seg.valid}
             <line x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2}
-              stroke="#f4a460" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.7" />
+              stroke="url(#tgrad-obs-{i})" stroke-width="1.5" stroke-dasharray="4 3" />
           {/if}
         {/each}
 
@@ -626,20 +689,21 @@
         {#each obsChartDots as dot, i}
           {#if dot.valid}
             {@const active = i === displayMonthIdx}
-            <circle cx={dot.cx} cy={dot.cy} r={active ? 5 : 2.5}
-              fill={active ? '#f4a460' : '#c47830'}
-              stroke={active ? '#fff' : 'none'} stroke-width="1.5"
-              opacity={active ? 1 : 0.7}
+            {@const c = tempCss(dot.t ?? 0)}
+            <circle cx={dot.cx} cy={dot.cy} r={active ? 5 : 4}
+              fill={c}
+              stroke={active ? '#fff' : 'rgba(255,255,255,0.25)'}
+              stroke-width={active ? 1.5 : 1}
             />
             {#if active}
               {@const obsBar = obsChartBars[i]}
               {@const precipLabelY = obsBar.valid ? Math.min(obsBar.y - 4, dot.cy - 20) : dot.cy - 20}
               {#if obsBar.valid}
-                <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="9">
+                <text x={dot.cx} y={precipLabelY} text-anchor="middle" fill="rgba(42,158,158,0.9)" font-size="11">
                   {$useImperial ? (obsPrecips[i]! / 25.4).toFixed(1) + '"' : obsPrecips[i]!.toFixed(0) + 'mm'}
                 </text>
               {/if}
-              <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="10">
+              <text x={dot.cx} y={dot.cy - 9} text-anchor="middle" fill="#f4a460" font-size="12">
                 {$useImperial ? cToF(dot.t!).toFixed(0) + '°F' : dot.t!.toFixed(0) + '°C'}
               </text>
             {/if}
@@ -652,24 +716,27 @@
             x={m.x} y={CHART_H - 6}
             text-anchor="middle"
             fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#555'}
-            font-size="10"
+            font-size="12"
             font-weight={m.active ? '600' : '400'}
           >{m.label}</text>
         {/each}
 
-        <!-- Y axis labels (same scale) -->
-        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="9">
+        <!-- Y axis labels (clickable to toggle units) -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={PAD_L - 4} y={PAD_T + 4} text-anchor="end" fill="#f4a460" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(tempPlotMax).toFixed(0) + '°' : tempPlotMax.toFixed(0) + '°'}
         </text>
-        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="9">
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={PAD_L - 4} y={PAD_T + INNER_H} text-anchor="end" fill="#f4a460" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {imp ? cToF(tempPlotMin).toFixed(0) + '°' : tempPlotMin.toFixed(0) + '°'}
         </text>
-        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="9">
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <text x={CHART_W - PAD_R} y={PAD_T + 4} text-anchor="end" fill="rgba(42,158,158,0.9)" font-size="11" style="cursor:pointer" on:click|stopPropagation={toggleUnits}>
           {$useImperial ? (precipMax / 25.4).toFixed(1) + 'in' : precipMax.toFixed(0) + 'mm'}/mo
         </text>
 
         <!-- Chart label -->
-        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="9">Observed (1981–2010)</text>
+        <text x={PAD_L + 4} y="14" fill="rgba(255,255,255,0.8)" font-size="11">Observed (1981–2010)</text>
 
         <!-- Invisible hit areas per month column -->
         {#each hitAreas as hit}
@@ -687,6 +754,9 @@
       <div class="cycle-footer">
         <span class="legend-temp">— Temperature</span>
         <span class="legend-precip">▪ Precipitation</span>
+        <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
+          {imp ? '°F / in' : '°C / mm'}
+        </span>
       </div>
     </div>
   {:else}
@@ -714,10 +784,14 @@
                       <span class="tool-chip">{field}</span>
                     {/each}
                   </div>
+                {:else if msg.role === 'assistant'}
+                  {@html renderMarkdown(part.content)}
                 {:else}
                   {part.content}
                 {/if}
               {/each}
+            {:else if msg.role === 'assistant'}
+              {@html renderMarkdown(msg.content)}
             {:else}
               {msg.content}
             {/if}
@@ -781,7 +855,7 @@
     color: #fff;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    font-size: 0.85rem;
+    font-size: 0.875rem;
   }
 
   .close-btn {
@@ -838,7 +912,7 @@
     color: #fff;
     border: 1px solid rgba(26, 107, 107, 0.5);
     cursor: pointer;
-    font-size: 0.85rem;
+    font-size: 0.875rem;
     min-width: auto;
     transition: background 0.15s, color 0.15s;
   }
@@ -883,7 +957,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 0.8rem;
+    font-size: 0.875rem;
     padding-left: 2px;
   }
 
@@ -939,17 +1013,80 @@
 
   .chat-msg {
     line-height: 1.5;
-    white-space: pre-wrap;
     word-wrap: break-word;
   }
 
   .chat-msg.user {
     color: #aadede;
     font-weight: 500;
+    white-space: pre-wrap;
   }
 
   .chat-msg.assistant {
     color: #ddd;
+  }
+
+  /* Markdown content inside assistant messages */
+  .chat-msg.assistant :global(p) {
+    margin: 0.4em 0;
+  }
+  .chat-msg.assistant :global(p:first-child) {
+    margin-top: 0;
+  }
+  .chat-msg.assistant :global(p:last-child) {
+    margin-bottom: 0;
+  }
+  .chat-msg.assistant :global(h2),
+  .chat-msg.assistant :global(h3) {
+    margin: 0.8em 0 0.3em;
+    font-size: 1em;
+    font-weight: 600;
+    color: #aadede;
+  }
+  .chat-msg.assistant :global(h2:first-child),
+  .chat-msg.assistant :global(h3:first-child) {
+    margin-top: 0;
+  }
+  .chat-msg.assistant :global(table) {
+    border-collapse: collapse;
+    font-size: 0.85em;
+    margin: 0.5em 0;
+    width: 100%;
+  }
+  .chat-msg.assistant :global(th),
+  .chat-msg.assistant :global(td) {
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    padding: 0.25em 0.5em;
+    text-align: left;
+  }
+  .chat-msg.assistant :global(th) {
+    background: rgba(26, 107, 107, 0.2);
+    color: #aadede;
+    font-weight: 500;
+  }
+  .chat-msg.assistant :global(blockquote) {
+    border-left: 3px solid rgba(26, 107, 107, 0.5);
+    margin: 0.5em 0;
+    padding: 0.25em 0.75em;
+    color: rgba(255, 255, 255, 0.7);
+  }
+  .chat-msg.assistant :global(ol),
+  .chat-msg.assistant :global(ul) {
+    margin: 0.4em 0;
+    padding-left: 1.5em;
+  }
+  .chat-msg.assistant :global(code) {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    font-size: 0.9em;
+  }
+  .chat-msg.assistant :global(strong) {
+    color: #fff;
+  }
+  .chat-msg.assistant :global(.katex-display) {
+    margin: 0.5em 0;
+    overflow-x: auto;
   }
 
   .retry-btn {
@@ -960,7 +1097,7 @@
     padding: 0.3rem 0.75rem;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 0.85rem;
+    font-size: 0.875rem;
     min-width: auto;
   }
   .retry-btn:hover {
@@ -980,7 +1117,7 @@
     color: #aadede;
     padding: 0.15rem 0.5rem;
     border-radius: 12px;
-    font-size: 0.75rem;
+    font-size: 0.875rem;
   }
 
   .typing-indicator {
@@ -1054,7 +1191,7 @@
     display: none;
   }
 
-  @media (max-width: 640px) {
+  @media (max-width: 640px), (max-height: 500px) {
     .inspect-panel {
       top: auto;
       bottom: 0;

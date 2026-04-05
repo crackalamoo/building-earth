@@ -247,8 +247,9 @@ def compute_precipitation_jacobian(
 
     # =========================================================================
     # Convective precipitation Jacobian
-    # P = rh_gate × C × cape_factor × q × ρ  (rh_gate and cape_factor frozen)
+    # P = rh_gate × C × cape_factor(T_bl) × q × ρ
     # ∂P/∂q = rh_gate × C × cape_factor × ρ
+    # ∂P/∂T_bl = rh_gate × C × q × ρ × d(cape_factor)/dT_bl
     # =========================================================================
     rh_gate = compute_precipitation_rh_gate(rh)
     gamma_d = GRAVITY / SPECIFIC_HEAT_AIR
@@ -258,13 +259,36 @@ def compute_precipitation_jacobian(
     gamma_m = compute_moist_adiabatic_lapse_rate(T_bl, q_sat_bl)
     cape_factor = np.clip((gamma_d - gamma_m) / gamma_d, 0.0, 1.0)
     dP_conv_dq = rh_gate * CONVECTIVE_PRECIP_COEFF * cape_factor * RHO_AIR
+
+    # ∂(cape_factor)/∂T_bl via chain rule through moist lapse rate.
+    # cape_factor = 1 - N/D where N = 1 + a*qs/T, D = 1 + b*qs/T²
+    # a = Lv/Rd, b = Lv²/(cp*Rv)
+    # dqs/dT from Magnus formula: dqs/dT = qs * 17.67*243.5/(Tc+243.5)²
+    Lv = LATENT_HEAT_VAPORIZATION_J_KG
+    Rv = GAS_CONSTANT_WATER_VAPOR_J_KG_K
+    Rd = 287.0
+    a_coeff = Lv / Rd
+    b_coeff = Lv**2 / (SPECIFIC_HEAT_AIR * Rv)
+    dqs_dT = q_sat_bl * 17.67 * 243.5 / (T_bl_C + 243.5) ** 2
+    N = 1.0 + a_coeff * q_sat_bl / T_bl
+    D = 1.0 + b_coeff * q_sat_bl / T_bl**2
+    dN_dT = a_coeff * (dqs_dT * T_bl - q_sat_bl) / T_bl**2
+    dD_dT = b_coeff * (dqs_dT * T_bl**2 - 2.0 * T_bl * q_sat_bl) / T_bl**4
+    dcape_dT = -(D * dN_dT - N * dD_dT) / D**2
+    # Zero out where cape_factor was clipped to 0 or 1
+    raw_cape = (gamma_d - gamma_m) / gamma_d
+    dcape_dT = np.where((raw_cape > 0.0) & (raw_cape < 1.0), dcape_dT, 0.0)
+    dP_conv_dT_bl = rh_gate * CONVECTIVE_PRECIP_COEFF * q * RHO_AIR * dcape_dT
+
     # Apply w_factor (descent suppression + ascent amplification)
     if vertical_velocity is not None:
         w_factor = VIRGA_FLOOR + (W_BOOST_MAX - VIRGA_FLOOR) / (
             1.0 + np.exp(-vertical_velocity / VIRGA_SCALE)
         )
         dP_conv_dq = dP_conv_dq * w_factor
+        dP_conv_dT_bl = dP_conv_dT_bl * w_factor
     dP_dq += dP_conv_dq
+    dP_dT_bl += dP_conv_dT_bl
 
     return dP_dT_bl, dP_dT_atm, dP_dq
 

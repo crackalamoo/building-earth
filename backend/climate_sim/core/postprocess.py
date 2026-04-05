@@ -53,8 +53,12 @@ def postprocess_periodic_cycle_results(
     monthly_T = np.array([state.temperature for state in monthly_states])
     temperature_2m_c: np.ndarray | None = None
     if monthly_T.ndim == 3:
-        # Single-layer (no atmosphere)
+        # Single-layer (no atmosphere) — shape (12, nlat, nlon)
         monthly_surface_K = monthly_T
+        layers_map = {"surface": monthly_surface_K - 273.15}
+    elif monthly_T.ndim == 4 and monthly_T.shape[1] == 1:
+        # Single-layer wrapped in layer axis — shape (12, 1, nlat, nlon)
+        monthly_surface_K = monthly_T[:, 0]
         layers_map = {"surface": monthly_surface_K - 273.15}
     elif monthly_T.shape[1] == 3:
         # Three-layer (surface + boundary layer + atmosphere)

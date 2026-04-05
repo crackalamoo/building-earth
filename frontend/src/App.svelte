@@ -5,13 +5,16 @@
   import InspectPanel from './lib/InspectPanel.svelte';
   import ControlBar from './lib/ControlBar.svelte';
   import Legend from './lib/Legend.svelte';
-  import { loadBinaryDataInWorker, loadLandMask1deg } from './lib/globe/loadBinaryData';
+  import { loadLandMask1deg, snapToLand } from './lib/globe/loadBinaryData';
   import type { ClimateLayerData } from './lib/globe/loadBinaryData';
   import { useImperial } from './lib/stores';
+  import OnboardingOverlay from './lib/OnboardingOverlay.svelte';
+  import { currentStage, stageLoading, STAGES, STAGE_NAMES, type Stage } from './lib/onboardingState';
+  import { loadStageData, preloadStageFile } from './lib/globe/loadBinaryData';
 
   let temperatureData: number[][][] | null = null;
   let layerData: ClimateLayerData | null = null;
-  let activeLayer: 'temperature' | 'precipitation' | 'blue-marble' = 'blue-marble';
+  let activeLayer: 'temperature' | 'precipitation' | 'blue-marble' = 'temperature';
 
   function cToF(c: number): number { return c * 9 / 5 + 32; }
   function mmToIn(mm: number): number { return mm / 25.4; }
@@ -49,7 +52,6 @@
   ];
   $: precipLegendLabel = $useImperial ? 'in/mo' : 'mm/mo';
   let monthProgress = 0; // Continuous 0-12 value
-  let loading = true; // true until main data is loaded
   let error: string | null = null;
   let playing = true;
   let animationFrameId: number | null = null;
@@ -62,11 +64,53 @@
 
   // Two-phase state
   let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
-  let landMaskReady = false;
-  let revealed = false;
   let controlsVisible = false;
   let revealClicked = false;
-  let controlsCheckInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Post-onboarding location prompt
+  let locationDismissed = false;
+
+  function dismissLocationPrompt() {
+    locationDismissed = true;
+  }
+
+  function requestLocation() {
+    locationDismissed = true;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        let { latitude: lat, longitude: lon } = pos.coords;
+        // Snap to nearest land cell using high-res land mask
+        if (layerData?.land_mask) {
+          const snapped = snapToLand(layerData.land_mask, lat, lon);
+          lat = snapped.lat;
+          lon = snapped.lon;
+        }
+        pickLoc = { lat, lon };
+        globeComponent?.flyTo(lat, lon);
+      },
+      () => {
+        // Permission denied or error — just dismiss
+      },
+    );
+  }
+
+  // Stage-derived state
+  $: stage = $currentStage;
+  $: revealed = stage >= 1;
+
+  // Switch to blue-marble once when first reaching stage 4
+  let didAutoSwitchLayer = false;
+  $: if (stage === 4 && !didAutoSwitchLayer) {
+    didAutoSwitchLayer = true;
+    activeLayer = 'blue-marble';
+  }
+  // Force temperature layer if current layer isn't available at this stage
+  $: if (!layerData?.surface && activeLayer === 'blue-marble') {
+    activeLayer = 'temperature';
+  }
+  $: if (!layerData?.precipitation && activeLayer === 'precipitation') {
+    activeLayer = 'temperature';
+  }
 
   // Derive discrete month for UI display
   $: displayMonth = Math.round(monthProgress) % 12;
@@ -122,6 +166,7 @@
       pickLoc = null;
       return;
     }
+    if (!locationDismissed) dismissLocationPrompt();
     const { lat, lon } = e.detail;
     pickLoc = { lat, lon };
   }
@@ -143,34 +188,96 @@
     }
   }
 
-  function handleReveal() {
-    revealClicked = true;
-    // Start the bloom-in effect
-    globeComponent?.triggerFlash();
+  async function advanceStage() {
+    const nextStage = (stage + 1) as Stage;
+    if (nextStage > 4) return;
 
-    // Wait for bloom to reach full intensity (~600ms), then build the globe behind it
-    setTimeout(() => {
-      revealed = true;
+    if (nextStage === 1) {
+      // Stage 0 → 1: "Let there be light" — flash effect then load stage 1
+      revealClicked = true;
+      stageLoading.set(true);
+      globeComponent?.triggerFlash();
 
-      // After the build, let the globe render then start the fade-out
+      // Load stage 1 data in parallel with flash bloom
+      const loadPromise = loadStageData(
+        1, '',
+        (ld) => { layerData = ld; },
+        (td) => { temperatureData = td; },
+        (e) => { error = e.message; },
+      );
+      await Promise.all([loadPromise, new Promise(r => setTimeout(r, 650))]);
+      currentStage.set(1);
+      stageLoading.set(false);
+
       requestAnimationFrame(() => requestAnimationFrame(() => {
         globeComponent?.startFlashFade();
       }));
 
-      // Fade in controls after flash fades
-      const showControls = () => setTimeout(() => { controlsVisible = true; }, 1500);
-      if (!loading && temperatureData) {
-        showControls();
-      } else {
-        controlsCheckInterval = setInterval(() => {
-          if (!loading && temperatureData) {
-            clearInterval(controlsCheckInterval!);
-            controlsCheckInterval = null;
-            showControls();
-          }
-        }, 100);
+      // Show controls after flash fades
+      setTimeout(() => { controlsVisible = true; }, 1500);
+
+      // Preload stage 2
+      preloadStageFile(2, '');
+    } else {
+      // Stage N → N+1: same pattern as "let there be light"
+      // 1. Flash blooms in (hides everything)
+      // 2. Data loads behind flash (instant if preloaded)
+      // 3. Dispose old + swap new while flash at peak
+      // 4. Fade reveals new globe
+      stageLoading.set(true);
+      globeComponent?.triggerFlash();
+
+      // Load next stage data (instant if preloaded, parallel with bloom)
+      let nextLayerData: typeof layerData = null;
+      let nextTempData: typeof temperatureData = null;
+      const loadPromise = loadStageData(
+        nextStage, '',
+        (ld) => { nextLayerData = ld; },
+        (td) => { nextTempData = td; },
+        (e) => { error = e.message; },
+      );
+
+      // Wait for both flash bloom (650ms) and data load to finish
+      await Promise.all([loadPromise, new Promise(r => setTimeout(r, 650))]);
+
+      // Flash is at peak — swap data behind it
+      globeComponent?.disposeStageMeshes();
+      layerData = nextLayerData;
+      temperatureData = nextTempData;
+      currentStage.set(nextStage);
+      stageLoading.set(false);
+
+      // Let meshes build for a couple frames, then start fade
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        globeComponent?.startFlashFade();
+      }));
+
+      // Preload next stage
+      if (nextStage < 4) {
+        preloadStageFile(nextStage + 1, '');
       }
-    }, 650); // slightly after bloom completes
+    }
+  }
+
+  async function skipToFullModel() {
+    stageLoading.set(true);
+
+    let nextLayerData: typeof layerData = null;
+    let nextTempData: typeof temperatureData = null;
+    await loadStageData(
+      4, '',
+      (ld) => { nextLayerData = ld; },
+      (td) => { nextTempData = td; },
+      (e) => { error = e.message; },
+    );
+
+    globeComponent?.disposeStageMeshes();
+    layerData = nextLayerData;
+    temperatureData = nextTempData;
+
+    currentStage.set(4);
+    stageLoading.set(false);
+    if (!controlsVisible) controlsVisible = true;
   }
 
   async function recordGif() {
@@ -228,27 +335,20 @@
   }
 
   onMount(() => {
-    // Start animation immediately so auto-rotate and controls work
     startPlaying();
 
-    // Fetch land mask and main data in parallel
+    // Only fetch land mask for primordial globe — data loads on demand per stage
     loadLandMask1deg('').then(lm => {
       primordialLandMask = lm;
-      landMaskReady = true;
     }).catch(e => {
       console.error('Failed to load land mask:', e);
     });
 
-    loadBinaryDataInWorker(
-      '',
-      (ld) => { layerData = ld; },
-      (td) => { temperatureData = td; loading = false; },
-      (e) => { error = e.message; loading = false; },
-    );
+    // Preload stage 1 data in background while user sees primordial globe
+    preloadStageFile(1, '');
 
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
-      if (controlsCheckInterval) clearInterval(controlsCheckInterval);
     };
   });
 </script>
@@ -257,7 +357,7 @@
 <main>
   {#if error}
     <div class="globe-wrapper">
-      {#if landMaskReady}
+      {#if primordialLandMask}
         <Globe
           bind:this={globeComponent}
           data={null}
@@ -282,43 +382,68 @@
         {uniformLighting}
         {primordialLandMask}
         {revealed}
+        {stage}
         on:interact={stopAutoRotate}
         on:pick={handlePick}
       />
     </div>
-    {#if revealed && pickLoc}
+    {#if stage >= 1 && pickLoc}
       <InspectPanel
         lat={pickLoc.lat}
         lon={pickLoc.lon}
         {monthProgress}
         {temperatureData}
         {layerData}
+        {stage}
         on:close={() => { pickLoc = null; globeComponent?.dismissMarker(); }}
         on:setMonth={(e) => { monthProgress = e.detail; playing = false; }}
       />
     {/if}
-    {#if !revealed && !revealClicked}
-      <button class="reveal-btn" on:click={handleReveal}>
+    {#if stage === 0 && !revealClicked}
+      <div class="title-card">
+        <h1 class="title">Building Earth</h1>
+        <p class="subtitle">A first-principles climate simulation</p>
+      </div>
+      <button class="reveal-btn" on:click={advanceStage}>
         Let there be light
       </button>
     {/if}
-    {#if revealed && activeLayer === 'temperature'}
+    {#if stage >= 1 && stage <= 3}
+      <OnboardingOverlay
+        {stage}
+        loading={$stageLoading}
+        buttonLabel={STAGES[stage].button}
+        on:advance={advanceStage}
+        on:skip={skipToFullModel}
+      />
+    {/if}
+    {#if stage === 4}
+      <OnboardingOverlay
+        {stage}
+        loading={false}
+        buttonLabel={null}
+        {locationDismissed}
+        on:locate={requestLocation}
+        on:dismissLocation={dismissLocationPrompt}
+      />
+    {/if}
+    {#if stage >= 1 && activeLayer === 'temperature'}
       <Legend
         stops={tempLegendStops}
         label={tempLegendLabel}
-        visible={controlsVisible}
+        visible={controlsVisible && !$stageLoading}
         on:toggleUnits={toggleUnits}
       />
     {/if}
-    {#if revealed && activeLayer === 'precipitation'}
+    {#if stage >= 1 && activeLayer === 'precipitation'}
       <Legend
         stops={precipLegendStops}
         label={precipLegendLabel}
-        visible={controlsVisible}
+        visible={controlsVisible && !$stageLoading}
         on:toggleUnits={toggleUnits}
       />
     {/if}
-    {#if revealed}
+    {#if stage >= 1}
       <ControlBar
         bind:activeLayer
         bind:uniformLighting
@@ -327,8 +452,11 @@
         {recording}
         {recordingProgress}
         layerDataLoaded={!!layerData}
+        hasPrecipitation={!!layerData?.precipitation}
+        hasSurface={!!layerData?.surface}
         {displayMonth}
-        visible={controlsVisible}
+        visible={controlsVisible && !$stageLoading}
+        {stage}
         on:togglePlay={togglePlay}
         on:stopPlaying={stopPlaying}
         on:resetView={resetView}
@@ -339,13 +467,25 @@
 </main>
 
 <style>
+  @font-face {
+    font-family: 'Space Grotesk';
+    font-style: normal;
+    font-weight: 300 700;
+    font-display: swap;
+    src: url('/fonts/SpaceGrotesk-Latin.woff2') format('woff2');
+  }
+
   :global(html, body) {
     margin: 0;
     padding: 0;
     background: #000;
     color: #fff;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Space Grotesk', sans-serif;
     overflow: hidden;
+  }
+
+  :global(button, input, select, textarea) {
+    font-family: inherit;
   }
 
   :global(#app) {
@@ -366,6 +506,51 @@
     min-height: 0;
   }
 
+  .title-card {
+    position: absolute;
+    top: 3rem;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    z-index: 10;
+  }
+
+  .title {
+    font-size: 4rem;
+    font-weight: 300;
+    letter-spacing: 0.08em;
+    color: #fff;
+    text-shadow: 0 2px 30px rgba(0, 0, 0, 0.8);
+    margin: 0;
+  }
+
+  .subtitle {
+    font-size: 1.15rem;
+    font-weight: 400;
+    letter-spacing: 0.06em;
+    color: rgba(255, 255, 255, 0.85);
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+    margin: 0;
+  }
+
+  @media (max-width: 640px), (max-height: 500px) {
+    .title-card {
+      top: 2rem;
+      left: 1.5rem;
+      transform: none;
+    }
+
+    .title {
+      font-size: 2.5rem;
+    }
+
+    .subtitle {
+      font-size: 0.95rem;
+    }
+  }
+
   .reveal-btn {
     position: absolute;
     bottom: 3rem;
@@ -379,7 +564,6 @@
     border-radius: 6px;
     cursor: pointer;
     letter-spacing: 0.05em;
-    z-index: 10;
     transition: background 0.2s, border-color 0.2s;
   }
 
@@ -398,14 +582,4 @@
     z-index: 10;
   }
 
-  .loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100vh;
-  }
-
-  .error {
-    color: #ff4444;
-  }
 </style>

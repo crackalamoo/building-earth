@@ -1,3 +1,5 @@
+import { STAGES } from './onboardingState';
+
 export type MsgPart =
   | { type: 'text'; content: string }
   | { type: 'tools'; content: string; fields: string[] };
@@ -16,9 +18,16 @@ export function computeSuggestions(
   cyclePrecip: number[],
   wind: { speed: number; dir: number },
   currentMonthIdx: number,
-  _tempC: number
+  _tempC: number,
+  stage: number = 4,
 ): string[] {
   const candidates: string[] = [];
+
+  // Stage-specific suggestions (stages 1-3)
+  if (stage <= 3) {
+    const suggestions = STAGES[stage]?.chatSuggestions;
+    return suggestions?.length ? suggestions : candidates.slice(0, 3);
+  }
 
   const tempMax = Math.max(...cycleTemps);
   const tempMin = Math.min(...cycleTemps);
@@ -81,6 +90,7 @@ export async function streamChat(
     prevMonth: number | null;
     imperial: boolean;
     messages: { role: string; content: string }[];
+    stage?: number;
   },
   signal: AbortSignal,
   callbacks: StreamChatCallbacks

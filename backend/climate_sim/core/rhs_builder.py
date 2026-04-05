@@ -996,6 +996,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                             w_hadley,
                             humidity_field,
                             upper_troposphere_q_fraction=inputs.vertical_motion_cfg.upper_troposphere_q_fraction,
+                            lat_rad=lat_rad,
                         )
 
                     # Humidity-temperature coupling terms already computed above

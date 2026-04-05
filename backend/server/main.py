@@ -18,6 +18,7 @@ from .calculate import ExpressionError, resolve_fields
 from .climate_data import FIELD_INFO, OBS_FIELD_INFO, ClimateDataStore, ObsDataStore
 from .prompts import SYSTEM_PROMPT
 from .tools import TOOLS
+from onboarding_stages import get_stage_chat_context
 
 load_dotenv()
 
@@ -66,6 +67,7 @@ async def obs_data(lat: float, lon: float) -> dict:
     return {"temps": temps, "precips": precips}
 
 
+
 @app.post("/api/chat", dependencies=[Depends(chat_limiter)])
 async def chat(request: Request) -> StreamingResponse:
     body = await request.json()
@@ -74,6 +76,7 @@ async def chat(request: Request) -> StreamingResponse:
     month: int = body["month"]
     user_messages: list[dict[str, str]] = body["messages"]
     imperial: bool = body.get("imperial", False)
+    stage: int | None = body.get("stage")
 
     # Input validation
     if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
@@ -89,7 +92,10 @@ async def chat(request: Request) -> StreamingResponse:
             raise HTTPException(400, "Message too long")
 
     # Build conversation with location context
-    messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM}]
+    system_content = SYSTEM
+    if stage is not None and stage < 4:
+        system_content += get_stage_chat_context(stage)
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
 
     prev_lat: float | None = body.get("prevLat")
     prev_lon: float | None = body.get("prevLon")

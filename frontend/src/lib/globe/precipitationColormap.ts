@@ -30,6 +30,23 @@ function lerpColor(
 }
 
 /**
+ * Get RGB [0-255] for a precipitation value in mm/day.
+ */
+export function precipMmdayToColor(mmday: number): [number, number, number] {
+  const clamped = Math.min(Math.max(0, mmday), COLOR_STOPS[COLOR_STOPS.length - 1].mmday);
+  for (let i = 0; i < COLOR_STOPS.length - 1; i++) {
+    const s0 = COLOR_STOPS[i];
+    const s1 = COLOR_STOPS[i + 1];
+    if (clamped >= s0.mmday && clamped <= s1.mmday) {
+      const range = s1.mmday - s0.mmday;
+      const frac = range > 0 ? (clamped - s0.mmday) / range : 0;
+      return lerpColor(s0.color, s1.color, frac);
+    }
+  }
+  return COLOR_STOPS[COLOR_STOPS.length - 1].color;
+}
+
+/**
  * Get normalized RGB [0-1] for a precipitation value in kg/m²/s.
  */
 export function precipitationToColorNormalized(kgPerM2PerS: number): [number, number, number] {

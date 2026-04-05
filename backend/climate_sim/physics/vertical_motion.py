@@ -329,6 +329,7 @@ def hadley_moisture_tendency_jacobian(
     humidity_field: np.ndarray,
     upper_troposphere_q_fraction: float = UPPER_TROPOSPHERE_Q_FRACTION,
     boundary_layer_height_m: float = BOUNDARY_LAYER_HEIGHT_M,
+    lat_rad: np.ndarray | None = None,
 ) -> np.ndarray:
     """Diagonal Jacobian of the unified Hadley moisture tendency."""
     h = boundary_layer_height_m
@@ -340,9 +341,18 @@ def hadley_moisture_tendency_jacobian(
         capped, -descent_rate, descent_rate * (upper_troposphere_q_fraction - 1.0)
     )
 
-    # Ascent diagonal
+    # Ascent diagonal with non-local q_ref coupling
     ascent_rate = np.maximum(-w_hadley, 0.0) / h
-    ascent_jac = -ascent_rate
+    if lat_rad is not None:
+        cos_lat = np.cos(lat_rad)
+        ascent_cos = ascent_rate * cos_lat
+        ascent_weight_sum = np.sum(ascent_cos, axis=0, keepdims=True)  # (1, nlon)
+        ascent_weight_sum = np.maximum(ascent_weight_sum, 1e-30)
+        # ∂q_ref/∂q_i = ascent_rate_i * cos_i / weight_sum
+        dqref_dq = ascent_cos / ascent_weight_sum
+        ascent_jac = ascent_rate * (dqref_dq - 1.0)
+    else:
+        ascent_jac = -ascent_rate
 
     return descent_jac + ascent_jac
 

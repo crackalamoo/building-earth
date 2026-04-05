@@ -30,15 +30,15 @@
 {#if visible}
   <div class="legend" class:visible>
     <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <span class="unit-toggle" on:click={() => dispatch('toggleUnits')}>{label}</span>
+    <span class="unit-toggle" role="button" tabindex="0" on:click={() => dispatch('toggleUnits')}>{label}</span>
     <div class="legend-bar-container">
       <div
         class="legend-bar"
-        style="background: linear-gradient(to top, {gradientStr});"
+        style="--gradient: {gradientStr};"
       ></div>
       <div class="legend-ticks">
-        {#each stops.filter(s => s.value !== '') as stop}
-          <span class="tick">{stop.value}</span>
+        {#each stops.filter(s => s.value !== '') as stop, i}
+          <span class="tick">{stop.value}{#if i === stops.filter(s => s.value !== '').length - 1}<button class="tick-unit" on:click={() => dispatch('toggleUnits')}>{label}</button>{/if}</span>
         {/each}
       </div>
     </div>
@@ -69,7 +69,7 @@
   }
 
   .unit-toggle {
-    font-size: 0.8rem;
+    font-size: 0.875rem;
     color: rgba(255, 255, 255, 0.7);
     letter-spacing: 0.03em;
     cursor: pointer;
@@ -90,6 +90,7 @@
     width: 14px;
     height: 120px;
     border-radius: 2px;
+    background: linear-gradient(to top, var(--gradient));
   }
 
   .legend-ticks {
@@ -100,16 +101,58 @@
   }
 
   .tick {
-    font-size: 0.75rem;
+    font-size: 0.875rem;
     color: rgba(255, 255, 255, 0.6);
     line-height: 1;
   }
 
-  @media (max-width: 640px) {
+  .tick-unit {
+    display: none;
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: inherit;
+    padding: 0;
+    margin-left: 0.15rem;
+    cursor: pointer;
+  }
+
+  @media (max-width: 640px), (max-height: 500px) {
     .legend {
-      bottom: auto;
-      top: 1rem;
+      bottom: 5rem;
       right: 0.75rem;
+      gap: 0.2rem;
+      padding: 0.3rem 0.5rem;
+    }
+
+    .unit-toggle {
+      display: none;
+    }
+
+    .tick-unit {
+      display: inline;
+    }
+
+    .legend-bar-container {
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .legend-bar {
+      width: 120px;
+      height: 10px;
+      background: linear-gradient(to right, var(--gradient));
+    }
+
+    .legend-ticks {
+      flex-direction: row;
+      height: auto;
+      width: 120px;
+    }
+
+    .tick {
+      font-size: 0.65rem;
+      text-align: center;
     }
   }
 </style>
