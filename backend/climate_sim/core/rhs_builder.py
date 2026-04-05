@@ -33,6 +33,7 @@ from climate_sim.physics.vertical_motion import (
     _ALPHA,
 )
 from climate_sim.physics.orographic_effects import OrographicModel
+from climate_sim.physics.surface_albedo import AlbedoModel
 from climate_sim.physics.precipitation import (
     compute_precipitation_jacobian,
     compute_precipitation_recycling_jacobian,
@@ -121,6 +122,9 @@ class RhsBuildInputs:
     humidity_diffusion_operator: DiffusionOperator | None = None
     orographic_model: OrographicModel | None = None
     amoc_velocity: tuple[FloatArray, FloatArray] | None = None
+    albedo_model: AlbedoModel | None = None
+    base_albedo_field: FloatArray | None = None
+    ice_sheet_mask: FloatArray | None = None
 
 
 def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn]:
@@ -569,6 +573,21 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                     cloud_output,
                 )
 
+            # Compute snow/ice albedo derivative dα/dT_sfc for chain rule.
+            # Snow fraction uses T_surface, so the derivative goes into
+            # surface_diag (self-feedback on surface temperature).
+            albedo_derivative: np.ndarray | None = None
+            if (
+                inputs.albedo_model is not None
+                and inputs.base_albedo_field is not None
+            ):
+                T_sfc_C = state.temperature[0] - 273.15
+                albedo_derivative = inputs.albedo_model.compute_albedo_derivative(
+                    T_sfc_C,
+                    inputs.base_albedo_field,
+                    ice_sheet_mask=inputs.ice_sheet_mask,
+                )
+
             radiative_derivative = radiation.radiative_balance_rhs_temperature_derivative(
                 state.temperature,
                 heat_capacity_field=inputs.heat_capacity_field,
@@ -582,6 +601,7 @@ def create_rhs_functions(inputs: RhsBuildInputs) -> tuple[RhsFn, RhsDerivativeFn
                 cloud_jacobian=cld_jac,
                 insolation_W_m2=insolation,
                 albedo_field=state.albedo_field,
+                albedo_derivative=albedo_derivative,
             )
             assert isinstance(radiative_derivative, tuple)
             radiative_diag, cross = radiative_derivative

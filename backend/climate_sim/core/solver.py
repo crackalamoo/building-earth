@@ -162,6 +162,7 @@ def monthly_step(
 
         # Lag albedo and wind during Newton iterations for Jacobian consistency
         start_temp_capped = np.maximum(start_temp, temperature_floor)
+        snow_temp_K = None  # Use T_surface (default)
         lagged_albedo_field = surface_context.albedo_model.apply_snow_albedo(
             base_albedo_field,
             start_temp_capped[0],
@@ -170,6 +171,7 @@ def monthly_step(
             effective_mu=effective_mu,
             ocean_albedo=ocean_albedo,
             ice_sheet_mask=surface_context.ice_sheet_mask,
+            snow_temperature_K=snow_temp_K,
         )
 
         def _compute_3layer_winds(t_atm: np.ndarray, t_bl: np.ndarray) -> tuple:
@@ -1428,6 +1430,7 @@ def monthly_step(
             vertical_velocity=final_vertical_velocity,
         )
 
+        final_snow_temp = None
         final_state.albedo_field = surface_context.albedo_model.apply_snow_albedo(
             base_albedo_field,
             final_temp[0],
@@ -1436,6 +1439,7 @@ def monthly_step(
             effective_mu=effective_mu,
             ocean_albedo=ocean_albedo,
             ice_sheet_mask=surface_context.ice_sheet_mask,
+            snow_temperature_K=final_snow_temp,
         )
 
         # Update wind diagnostics for output using the converged ITCZ.
@@ -1808,6 +1812,7 @@ def find_periodic_climate_cycle(
                                 if monthly_ocean_albedo is not None
                                 else None
                             )
+                            iter_snow_temp = None
                             s.albedo_field = surface_context.albedo_model.apply_snow_albedo(
                                 base_albedo,
                                 s.temperature[0],
@@ -1817,6 +1822,7 @@ def find_periodic_climate_cycle(
                                 effective_mu=month_mu,
                                 ocean_albedo=month_ocean_alb,
                                 ice_sheet_mask=surface_context.ice_sheet_mask,
+                                snow_temperature_K=iter_snow_temp,
                             )
                     print(
                         f"Converged at iter {iter_idx} (RMS={residual_rms:.3f}K  95p={residual_95p:.3f}K)"
@@ -2050,6 +2056,9 @@ def solve_periodic_climate(
             humidity_diffusion_operator=humidity_diffusion_op,
             orographic_model=operators.orographic_model,
             amoc_velocity=operators.amoc_velocity,
+            albedo_model=operators.albedo_model,
+            base_albedo_field=operators.base_albedo_field,
+            ice_sheet_mask=operators.surface_context.ice_sheet_mask,
         )
         rhs_fn, rhs_derivative_fn = create_rhs_functions(rhs_inputs)
 

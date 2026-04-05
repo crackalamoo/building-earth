@@ -1026,13 +1026,11 @@ def radiative_balance_rhs_temperature_derivative(
     cloud_jacobian: dict[str, np.ndarray] | None = None,
     insolation_W_m2: np.ndarray | None = None,
     albedo_field: np.ndarray | None = None,
+    albedo_derivative: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Compute the Jacobian of radiative tendency with respect to temperature.
 
     Returns diagonal terms (self-feedback) and cross-layer coupling terms.
-
-    If cloud_jacobian is provided (dC/dT_bl, dC/dT_atm, dC/dq), adds
-    chain-rule contributions: dF/dT += dF/dC × dC/dT.
 
     Returns
     -------
@@ -1430,6 +1428,17 @@ def radiative_balance_rhs_temperature_derivative(
         cross[2, 1] += dF_atm_dC_conv * dC_conv_dT_bl + dF_atm_dC_strat * dC_strat_dT_bl
         # Atm from T_atm (self, via clouds): atmosphere_diag
         atmosphere_diag += dF_atm_dC_conv * dC_conv_dT_atm
+
+    # ── Albedo chain rule: dF_sfc/dT_sfc += dF_sfc/dα × dα/dT_sfc ──
+    # Snow/ice albedo depends on T_surface (positive feedback: warming →
+    # less snow → lower albedo → more SW absorbed → more warming).
+    if albedo_derivative is not None and insolation_W_m2 is not None:
+        _cloud_frac_approx = np.minimum(conv_frac + strat_frac + marine_sc_frac, 1.0)
+        sw_down_sfc_approx = 0.74 * (1.0 - 0.4 * _cloud_frac_approx) * insolation_W_m2
+
+        dF_sfc_dalpha = -sw_down_sfc_approx / heat_capacity_field
+        _ALBEDO_JAC_DAMPING = 0.15
+        surface_diag += _ALBEDO_JAC_DAMPING * dF_sfc_dalpha * albedo_derivative
 
     diag = np.stack([surface_diag, boundary_diag, atmosphere_diag])
 

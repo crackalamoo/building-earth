@@ -35,7 +35,7 @@ const SEA_ICE: [number, number, number] = [0.80, 0.88, 0.95];
 
 // Land snow fraction: Hermite smoothstep
 const SNOW_FREEZE_C = -5.0;
-const SNOW_MELT_C = 1.0;
+const SNOW_MELT_C = 3.0;
 
 // Sea ice fraction: Hermite smoothstep
 const ICE_FREEZE_C = -1.8; // seawater freezing point
