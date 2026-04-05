@@ -122,6 +122,7 @@ def _compute_land_and_lake_masks(
                 (-72.5, 237.5),  # West Antarctica (Marie Byrd Land)
                 (-72.5, 247.5),  # West Antarctica (Marie Byrd Land)
                 (22.5, 37.5),  # Red Sea
+                (32.5, 242.5),  # Southern California
             ],
             [  # Force ocean
                 (32.5, 22.5),  # Eastern Mediterranean (off Libya)
