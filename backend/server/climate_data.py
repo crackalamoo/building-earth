@@ -126,6 +126,12 @@ FIELD_INFO: dict[str, dict[str, str]] = {
         "desc": "Vertical velocity (positive = rising)",
         "unit": "m/s",
     },
+    # ── Ocean temperature ──
+    "sst": {
+        "label": "Water temperature",
+        "desc": "Sea surface temperature",
+        "unit": "°C",
+    },
     # ── Surface properties ──
     "albedo": {"label": "Albedo", "desc": "Surface albedo", "unit": "fraction (0-1)"},
     "soil_moisture": {"label": "Soil moisture", "desc": "Soil moisture", "unit": "fraction (0-1)"},
@@ -352,11 +358,24 @@ class ClimateDataStore:
         Returns dict with keys: field, value, unit, description.
         When imperial=True, converts to °F / mph / inches / ft etc.
         """
+        # SST: route to surface field, but only for ocean cells
+        display_field = field  # field name to use for label/desc in response
+        if field == "sst":
+            land_mask = self._data.get("land_mask_native") or self._data.get("land_mask")
+            if land_mask is not None:
+                lm_nlat, lm_nlon = land_mask.shape
+                lm_lat_idx = int(np.clip(round((lat + 90) / 180 * lm_nlat - 0.5), 0, lm_nlat - 1))
+                lm_lon_norm = ((lon % 360) + 360) % 360
+                lm_lon_idx = int(np.floor(lm_lon_norm / 360 * lm_nlon)) % lm_nlon
+                if land_mask[lm_lat_idx, lm_lon_idx] != 0:
+                    return {"field": "sst", "error": "This location is on land — SST is only available over ocean."}
+            field = "surface"
+
         if field not in self._data:
-            return {"field": field, "error": f"Unknown field '{field}'"}
+            return {"field": display_field, "error": f"Unknown field '{display_field}'"}
 
         arr = self._data[field]
-        info = FIELD_INFO.get(field, {"desc": field, "unit": "unknown"})
+        info = FIELD_INFO.get(display_field, {"desc": display_field, "unit": "unknown"})
 
         # Determine grid dimensions – arrays are either (nlat, nlon) or (12, nlat, nlon)
         if arr.ndim == 2:

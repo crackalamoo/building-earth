@@ -51,6 +51,7 @@ SAMPLE_CLIMATE_TOOL = {
                             "wind_direction_10m",
                             "dew_point",
                             "lapse_rate",
+                            "sst",
                         ],
                     },
                     "description": "Climate variables to sample.",
