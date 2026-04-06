@@ -18,6 +18,12 @@ COPY backend/ backend/
 
 # Copy climate data
 COPY data/main.npz data/main.npz
+COPY data/processed/ref_climatology_1deg_1981-2010.nc data/processed/ref_climatology_1deg_1981-2010.nc
+COPY data/processed/ref_humidity_precip_1deg_1981-2010.nc data/processed/ref_humidity_precip_1deg_1981-2010.nc
+
+# Copy frontend binary export (used by ClimateDataStore for high-res sampling)
+COPY frontend/public/main.bin.gz frontend/public/main.bin.gz
+COPY frontend/public/main.manifest.json frontend/public/main.manifest.json
 
 EXPOSE 8000
 
