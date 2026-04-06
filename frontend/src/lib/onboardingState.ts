@@ -36,7 +36,7 @@ export const STAGES: StageInfo[] = [
     ],
   },
   {
-    button: 'Add circulation cells',
+    button: 'Grow rainforests and deserts',
     description: 'Wind and eddies carry heat...',
     chatSuggestions: [
       'How does wind redistribute heat?',
@@ -45,7 +45,7 @@ export const STAGES: StageInfo[] = [
     ],
   },
   {
-    button: 'Add the ocean',
+    button: 'Add currents and life',
     description: 'Hadley cells create deserts and trade winds...',
     chatSuggestions: [
       'What are Hadley cells?',

@@ -157,7 +157,7 @@
     {#if stage === 1}
       <span class="explore-hint">Try clicking the globe</span>
     {/if}
-    {#if stage < 5}
+    {#if stage < 4}
       <button class="skip-link" on:click={() => dispatch('skip')}>
         Skip to full model
       </button>
