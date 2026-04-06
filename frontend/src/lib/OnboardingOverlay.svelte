@@ -23,49 +23,51 @@
   const WRITEUPS: Record<number, { text: string; values: Map<string, TemperatureValue> }> = {
     1: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['10_C', { celsius: 10, isDelta: false }],
-        ['-168_C', { celsius: -168, isDelta: false }],
-        ['-21_C', { celsius: -21, isDelta: false }],
+        ['8_C', { celsius: 8, isDelta: false }],
+        ['-170_C', { celsius: -170, isDelta: false }],
+        ['-9_C', { celsius: -9, isDelta: false }],
       ]);
       return {
-        text: "This is Earth with no air — just bare rock in space. The only thing setting the temperature is sunlight hitting the surface and heat radiating back out.\n\nThe equator gets the most direct sunlight, but even there the surface only averages {10_C} — because half the time it's night, and all the heat escapes immediately. The poles spend months in darkness and drop to {-168_C}. The global average is {-21_C}, well below freezing.\n\nNothing could live here. The planet needs something to hold onto its heat.",
+        text: "This is Earth with no air — just bare rock in space. The only thing setting the temperature is sunlight hitting the surface and heat radiating back out.\n\nThe equator gets the most direct sunlight, but even there the surface only averages {8_C} — because half the time it's night, and all the heat escapes immediately. The poles spend months in complete darkness and plunge to {-170_C} in winter. The global average is {-9_C}, well below freezing.\n\nNothing could live here. The planet needs something to hold onto its heat.",
         values,
       };
     })(),
     2: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['-21_C', { celsius: -21, isDelta: false }],
-        ['19_C', { celsius: 19, isDelta: false }],
-        ['40_delta', { celsius: 40, isDelta: true }],
-        ['70_C', { celsius: 70, isDelta: false }],
+        ['-9_C', { celsius: -9, isDelta: false }],
         ['15_C', { celsius: 15, isDelta: false }],
-        ['4_delta', { celsius: 4, isDelta: true }],
+        ['24_delta', { celsius: 24, isDelta: true }],
+        ['50_C', { celsius: 50, isDelta: false }],
+        ['14_C', { celsius: 14, isDelta: false }],
       ]);
       return {
-        text: "Now there's air. Gases like CO₂ and water vapor let sunlight through but trap the heat trying to escape. This is the greenhouse effect.\n\nThe global average jumps {40_delta}, from {-21_C} to {19_C} — just {4_delta} above the real Earth's average of {15_C}. But the tropics hit {70_C} because there are no clouds to block sunlight and no wind to carry the heat away. Meanwhile the poles are absolutely frozen, even more so than in reality.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
+        text: "Now there's air. Gases like CO₂ and water vapor are transparent to sunlight, but they absorb the heat that the surface radiates back. The air warms up, and radiates heat back down. This is the greenhouse effect.\n\nThe global average jumps {24_delta}, from {-9_C} to {15_C} — remarkably close to the real Earth's average of {14_C}. But the tropics hit {50_C} because there are no clouds to block sunlight and no wind to carry the excess heat away. Meanwhile the poles are still frozen solid.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
         values,
       };
     })(),
     3: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['29_C', { celsius: 29, isDelta: false }],
-        ['-10_C', { celsius: -10, isDelta: false }],
+        ['18_C', { celsius: 18, isDelta: false }],
+        ['-19_C', { celsius: -19, isDelta: false }],
+        ['6_C', { celsius: 6, isDelta: false }],
       ]);
       return {
-        text: "Temperature differences create pressure differences, and pressure differences create wind. The spinning Earth deflects this wind sideways — the Coriolis effect — producing the westerlies that bring weather across the midlatitudes.\n\nWind and eddies carry heat from the tropics toward the poles. Water evaporates over warm ocean, forms clouds, and falls as rain. Snow piles up in the cold regions and reflects sunlight, keeping them cold.\n\nThe equator cools to {29_C}. The poles warm to {-10_C}. The extreme temperature gap shrinks dramatically. But the rain falls too evenly — there are no deserts yet, because there's no organized circulation to dry out the subtropics.",
+        text: "Temperature differences create pressure differences, and pressure differences create wind. The spinning Earth deflects the wind sideways — this is the Coriolis effect — producing the westerlies that bring weather across the midlatitudes.\n\nWind and turbulent eddies carry heat from the tropics toward the poles. Water evaporates over warm ocean, forms clouds, and falls as rain. Snow piles up in the cold regions and reflects sunlight back to space, keeping them cold.\n\nThe equator cools to {18_C} as heat is carried poleward. The poles warm to {-19_C}. But the global average actually drops to {6_C} — clouds now block incoming sunlight, and widespread snow reflects it. It rains more where it's warmer, but there are no deserts — the Sahara gets as much rain as the tropics. Something is still missing.",
         values,
       };
     })(),
     4: (() => {
-      const values = new Map<string, TemperatureValue>();
+      const values = new Map<string, TemperatureValue>([
+        ['12_C', { celsius: 12, isDelta: false }],
+      ]);
       return {
-        text: "Hot air rises at the equator and flows poleward aloft. But the Coriolis effect won't let it reach the poles — it turns eastward and piles up around 30° latitude, then sinks. This creates the Hadley cell.\n\nThe descending air warms as it compresses and dries out. This is why the Sahara, Arabian, and Sonoran deserts all sit near 30°. Where the sinking air returns to the surface and flows back toward the equator, it becomes the trade winds.\n\nBetween the trade winds of each hemisphere, air converges and rises at the ITCZ — the Intertropical Convergence Zone — producing the intense tropical rain belt that feeds the rainforests.",
+        text: "Hot air rises at the equator, creating a belt of low pressure. It flows poleward aloft, but the Coriolis effect deflects it east. By around 30° latitude it piles up and sinks back to the surface. This giant loop is the Hadley cell.\n\nThe sinking air compresses and warms, which dries it out. This is why the Sahara, Arabian, and Sonoran deserts all sit near 30°. At the surface, the return flow blows back toward the equator — the trade winds.\n\nWhere trade winds from each hemisphere collide, air rises and produces an intense rain belt that feeds the world's tropical rainforests. The global average warms back to {12_C} as the circulation redistributes energy more efficiently.",
         values,
       };
     })(),
     5: (() => {
       return {
-        text: "Ocean currents join in. The Gulf Stream pushes warm tropical water toward Northern Europe, keeping London and Paris mild despite sitting at the same latitude as Labrador. Cold currents along the west coasts of continents bring fog to San Francisco and the Atacama.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other, creating the climate you live inside.",
+        text: "Ocean currents complete the picture. The Gulf Stream carries warm tropical water toward Northern Europe, keeping London and Paris mild despite sitting at the same latitude as Labrador. Cold currents along the west coasts of continents cool the air and bring fog to San Francisco and the Atacama.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other. This is the climate system you live inside.",
         values: new Map(),
       };
     })(),
