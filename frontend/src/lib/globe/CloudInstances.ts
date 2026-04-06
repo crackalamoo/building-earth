@@ -371,9 +371,9 @@ export class CloudInstances {
           vOpacity = aOpacity;
           vStyle = aStyle;
           vAspect = aAspect;
-          // Day/night brightness
-          vec3 normal = normalize(position);
-          float surfaceDot = dot(normal, sunDir);
+          // Day/night brightness — transform to world space to match sunDir
+          vec3 worldNormal = normalize((modelMatrix * vec4(position, 0.0)).xyz);
+          float surfaceDot = dot(worldNormal, sunDir);
           vBrightness = 0.12 + 0.88 * clamp((surfaceDot + 0.05) / 0.2, 0.0, 1.0);
         }
       `,
