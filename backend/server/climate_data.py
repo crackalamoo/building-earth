@@ -27,12 +27,12 @@ FIELD_INFO: dict[str, dict[str, str]] = {
     # ── Temperature layers ──
     "surface": {"label": "Surface temperature", "desc": "Surface / SST temperature", "unit": "°C"},
     "boundary_layer": {
-        "label": "Lower atmosphere temp",
+        "label": "Lower atmosphere temperature",
         "desc": "Boundary-layer temperature",
         "unit": "°C",
     },
     "atmosphere": {
-        "label": "Upper atmosphere temp",
+        "label": "Upper atmosphere temperature",
         "desc": "Free-atmosphere temperature",
         "unit": "°C",
     },
@@ -432,14 +432,14 @@ OBS_FIELD_INFO: dict[str, dict[str, str]] = {
     "land_temperature": {
         "var": "t_land_clim",
         "file": _CLIM_FILE,
-        "label": "Observed land temp",
+        "label": "Observed land temperature",
         "desc": "Observed 2-meter air temperature over land (GHCN_CAMS stations, land only)",
         "unit": "°C",
     },
     "sst": {
         "var": "t_sst_clim",
         "file": _CLIM_FILE,
-        "label": "Observed SST",
+        "label": "Observed water temperature",
         "desc": "Observed sea surface temperature (COBE2 satellite, ocean only)",
         "unit": "°C",
     },
@@ -453,7 +453,7 @@ OBS_FIELD_INFO: dict[str, dict[str, str]] = {
     "precipitation": {
         "var": "precip_clim",
         "file": _HP_FILE,
-        "label": "Observed precip",
+        "label": "Observed precipitation",
         "desc": "Observed precipitation (GPCP satellite+gauge)",
         "unit": "kg/m²/s",  # stored as mm/day, converted on load
     },
