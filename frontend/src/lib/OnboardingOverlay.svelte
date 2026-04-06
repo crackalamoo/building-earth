@@ -173,7 +173,7 @@
     font-size: 0.95rem;
     line-height: 1.6;
     color: rgba(255, 255, 255, 0.88);
-    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
   }
 
   .value-toggle {

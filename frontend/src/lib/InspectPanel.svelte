@@ -614,7 +614,7 @@
           <text
             x={m.x} y={CHART_H - 6}
             text-anchor="middle"
-            fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#555'}
+            fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#888'}
             font-size="12"
             font-weight={m.active ? '600' : '400'}
           >{m.label}</text>
@@ -720,7 +720,7 @@
           <text
             x={m.x} y={CHART_H - 6}
             text-anchor="middle"
-            fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#555'}
+            fill={m.active ? '#fff' : m.isCurrent ? 'rgba(255,255,255,0.5)' : '#888'}
             font-size="12"
             font-weight={m.active ? '600' : '400'}
           >{m.label}</text>
@@ -866,14 +866,14 @@
   .close-btn {
     background: none;
     border: none;
-    color: #666;
+    color: #999;
     font-size: 1.2rem;
     cursor: pointer;
     padding: 0;
     min-width: auto;
     line-height: 1;
   }
-  .close-btn:hover { color: #aaa; }
+  .close-btn:hover { color: #ccc; }
 
   .stats {
     padding: 0.5rem 1rem;

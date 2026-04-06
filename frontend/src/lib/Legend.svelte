@@ -115,6 +115,8 @@
     padding: 0;
     margin-left: 0.15rem;
     cursor: pointer;
+    vertical-align: baseline;
+    line-height: inherit;
   }
 
   @media (max-width: 640px), (max-height: 500px) {
@@ -146,12 +148,13 @@
 
     .legend-ticks {
       flex-direction: row;
+      justify-content: space-between;
       height: auto;
       width: 120px;
     }
 
     .tick {
-      font-size: 0.65rem;
+      font-size: 0.75rem;
       text-align: center;
     }
   }

@@ -95,7 +95,7 @@
   }
 
   .section-heading {
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
