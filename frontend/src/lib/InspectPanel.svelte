@@ -37,7 +37,9 @@
   let sentLon: number | null = null;
   let sentMonth: number | null = null;
 
-  $: suggestions = computeSuggestions(lat, ocean, elevation, cycleTemps, cyclePrecip, wind, currentMonthIdx, tempC, stage);
+  $: suggestions = obsLoaded
+    ? computeSuggestions(lat, ocean, elevation, cycleTemps, cyclePrecip, wind, currentMonthIdx, tempC, stage, obsTemps, obsPrecips)
+    : [];
 
   let activeTab: 'cycle' | 'ask' = 'ask';
   let hoveredMonthIdx: number | null = null;
@@ -179,10 +181,12 @@
   // Obs data (fetched from backend on location change)
   let obsTemps: (number | null)[] = Array(12).fill(null);
   let obsPrecips: (number | null)[] = Array(12).fill(null); // mm/month (already converted by backend)
+  let obsLoaded = false;
 
   $: fetchObs(lat, lon);
 
   async function fetchObs(lat: number, lon: number) {
+    obsLoaded = false;
     try {
       const res = await fetch(`${API_BASE}/api/obs?lat=${lat}&lon=${lon}`);
       const data = await res.json();
@@ -190,6 +194,7 @@
       // Backend returns mm/month already (converted via _to_display_units)
       obsPrecips = data.precips;
     } catch { /* leave previous values */ }
+    obsLoaded = true;
   }
 
   $: obsTempMin = Math.min(...(obsTemps.filter(v => v !== null) as number[]));

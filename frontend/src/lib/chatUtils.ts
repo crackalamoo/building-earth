@@ -20,6 +20,8 @@ export function computeSuggestions(
   currentMonthIdx: number,
   _tempC: number,
   stage: number = 4,
+  obsTemps: (number | null)[] = [],
+  obsPrecips: (number | null)[] = [],
 ): string[] {
   const candidates: string[] = [];
 
@@ -29,6 +31,8 @@ export function computeSuggestions(
     return suggestions?.length ? suggestions : candidates.slice(0, 3);
   }
 
+  const hasObs = obsTemps.some(v => v !== null) && obsPrecips.some(v => v !== null);
+
   const tempMax = Math.max(...cycleTemps);
   const tempMin = Math.min(...cycleTemps);
   const seasonalSwing = tempMax - tempMin;
@@ -37,31 +41,53 @@ export function computeSuggestions(
   const coldestMonth = cycleTemps.indexOf(tempMin);
   const warmestMonth = cycleTemps.indexOf(tempMax);
 
+  // Obs-derived stats (only used when obs data is available)
+  const obsTempsValid = obsTemps.filter((v): v is number => v !== null);
+  const obsPrecipsValid = obsPrecips.filter((v): v is number => v !== null);
+  const obsAvgPrecip = obsPrecipsValid.length
+    ? obsPrecipsValid.reduce((a, b) => a + b, 0) / obsPrecipsValid.length
+    : null;
+  const obsCurrentPrecip = obsPrecips[currentMonthIdx] ?? null;
+  const obsSwing = obsTempsValid.length >= 2
+    ? Math.max(...obsTempsValid) - Math.min(...obsTempsValid)
+    : null;
+  const obsColdestMonth = obsTempsValid.length === 12
+    ? obsTemps.indexOf(Math.min(...obsTempsValid))
+    : null;
+  const obsWarmestMonth = obsTempsValid.length === 12
+    ? obsTemps.indexOf(Math.max(...obsTempsValid))
+    : null;
+
+  // Helper: only add suggestion if obs agrees (or no obs available)
+  function agree(simCondition: boolean, obsCondition: boolean | null): boolean {
+    if (!hasObs || obsCondition === null) return simCondition;
+    return simCondition && obsCondition;
+  }
+
   if (elevation !== null && elevation > 1500)
     candidates.push('Why is it cooler at this elevation?');
 
-  if (ocean.isOcean) {
+  if (ocean.isOcean)
     candidates.push('Why is the sea temperature different from the air?');
-  }
 
-  if (avgMonthlyPrecip < 10)
+  if (agree(avgMonthlyPrecip < 10, obsAvgPrecip !== null ? obsAvgPrecip < 10 : null))
     candidates.push('Why is it so dry here?');
 
-  if (currentPrecip > 100)
+  if (agree(currentPrecip > 100, obsCurrentPrecip !== null ? obsCurrentPrecip > 100 : null))
     candidates.push('What drives the heavy rainfall here?');
 
-  if (seasonalSwing > 25)
+  if (agree(seasonalSwing > 25, obsSwing !== null ? obsSwing > 25 : null))
     candidates.push('Why is the seasonal swing so large here?');
-  else if (seasonalSwing < 8)
+  else if (agree(seasonalSwing < 8, obsSwing !== null ? obsSwing < 8 : null))
     candidates.push('Why is the temperature so stable year-round?');
 
-  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const sh = lat < 0;
   const boringWarmest = sh ? [0, 1, 11] : [5, 6, 7];
-  const boringColdest = sh ? [5, 6, 7] : [0, 11];
-  if (!boringWarmest.includes(warmestMonth))
+  const boringColdest = sh ? [5, 6, 7] : [0, 1, 11];
+  if (!boringWarmest.includes(warmestMonth) && (obsWarmestMonth === null || (!boringWarmest.includes(obsWarmestMonth) && obsWarmestMonth === warmestMonth)))
     candidates.push(`Why is ${monthNames[warmestMonth]} the warmest time of year here?`);
-  if (!boringColdest.includes(coldestMonth))
+  if (!boringColdest.includes(coldestMonth) && (obsColdestMonth === null || (!boringColdest.includes(obsColdestMonth) && obsColdestMonth === coldestMonth)))
     candidates.push(`Why is ${monthNames[coldestMonth]} the coldest time of year here?`);
 
   if (wind.speed > 8)
