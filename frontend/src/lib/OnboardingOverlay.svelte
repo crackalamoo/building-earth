@@ -131,6 +131,9 @@
         {/if}
       </button>
     {/if}
+    {#if stage === 1}
+      <span class="explore-hint">Try clicking the globe</span>
+    {/if}
     {#if stage < 4}
       <button class="skip-link" on:click={() => dispatch('skip')}>
         Skip to full model
@@ -139,9 +142,6 @@
     {#if stage === 4}
       <button class="next-btn" on:click={() => dispatch('locate')}>
         Where am I?
-      </button>
-      <button class="skip-link" on:click={() => dispatch('dismissLocation')}>
-        Click anywhere to explore
       </button>
     {/if}
   </div>
@@ -222,7 +222,7 @@
     align-self: flex-start;
     background: none;
     border: none;
-    color: rgba(255, 255, 255, 0.45);
+    color: rgba(255, 255, 255, 0.75);
     font-size: 0.875rem;
     cursor: pointer;
     padding: 0;
@@ -232,7 +232,13 @@
   }
 
   .skip-link:hover {
-    color: rgba(255, 255, 255, 0.7);
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  .explore-hint {
+    font-size: 0.875rem;
+    color: rgba(255, 255, 255, 0.45);
+    font-style: italic;
   }
 
   @media (max-width: 640px), (max-height: 500px) {
