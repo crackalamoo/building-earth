@@ -38,9 +38,11 @@
         ['19_C', { celsius: 19, isDelta: false }],
         ['40_delta', { celsius: 40, isDelta: true }],
         ['70_C', { celsius: 70, isDelta: false }],
+        ['15_C', { celsius: 15, isDelta: false }],
+        ['4_delta', { celsius: 4, isDelta: true }],
       ]);
       return {
-        text: "Now there's air. Gases like CO₂ and water vapor let sunlight through but trap the heat trying to escape — like a blanket around the planet. This is the greenhouse effect.\n\nThe global average jumps {40_delta}, from {-21_C} to {19_C}. But look at the tropics: they hit {70_C} because there are no clouds to block sunlight and no wind to carry the heat away. Meanwhile the poles are still frozen.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
+        text: "Now there's air. Gases like CO₂ and water vapor let sunlight through but trap the heat trying to escape — like a blanket around the planet. This is the greenhouse effect.\n\nThe global average jumps {40_delta}, from {-21_C} to {19_C} — just {4_delta} above the real Earth's average of {15_C}. But look at the tropics: they hit {70_C} because there are no clouds to block sunlight and no wind to carry the heat away. Meanwhile the poles are still frozen.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
         values,
       };
     })(),
