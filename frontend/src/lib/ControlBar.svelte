@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import { Thermometer, Globe as GlobeIcon, CloudRain, SunMoon, Sun, Play, Pause, Home } from 'lucide-svelte';
+  import { Thermometer, Globe as GlobeIcon, CloudRain, SunMoon, Sun, Play, Pause, Home, Clapperboard } from 'lucide-svelte';
 
   const dispatch = createEventDispatcher();
 
@@ -86,12 +86,8 @@
   <button class="action-btn" on:click={() => dispatch('resetView')} disabled={recording} data-tooltip="Reset View">
     <Home size={16} />
   </button>
-  <button class="action-btn record-btn" on:click={() => dispatch('recordGif')} disabled={recording} class:hidden={stage < 4}>
-    {#if recording}
-      {recordingProgress}
-    {:else}
-      Record GIF
-    {/if}
+  <button class="action-btn record-btn" on:click={() => dispatch('recordGif')} disabled={recording} class:hidden={stage < 4} data-tooltip={recording ? recordingProgress : 'Record GIF'}>
+    <Clapperboard size={16} />
   </button>
 </div>
 

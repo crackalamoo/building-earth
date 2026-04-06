@@ -294,11 +294,22 @@
       return;
     }
 
+    const GIF_MAX = 800;
+    const gifScale = Math.min(1, GIF_MAX / Math.max(canvas.width, canvas.height));
+    const gifWidth = Math.round(canvas.width * gifScale);
+    const gifHeight = Math.round(canvas.height * gifScale);
+
+    // Offscreen canvas to downscale frames if needed
+    const offscreen = document.createElement('canvas');
+    offscreen.width = gifWidth;
+    offscreen.height = gifHeight;
+    const offCtx = offscreen.getContext('2d')!;
+
     const gif = new GIF({
       workers: 2,
       quality: 10,
-      width: canvas.width,
-      height: canvas.height,
+      width: gifWidth,
+      height: gifHeight,
       workerScript: '/gif.worker.js',
     });
 
@@ -315,7 +326,8 @@
       globeComponent.renderFrame();
       await new Promise(r => requestAnimationFrame(r));
 
-      gif.addFrame(canvas, { copy: true, delay: 80 });
+      offCtx.drawImage(canvas, 0, 0, gifWidth, gifHeight);
+      gif.addFrame(offscreen, { copy: true, delay: 80 });
     }
 
     recordingProgress = 'Encoding GIF...';
