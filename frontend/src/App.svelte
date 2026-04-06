@@ -263,15 +263,18 @@
 
   async function skipToFullModel() {
     stageLoading.set(true);
+    globeComponent?.triggerFlash();
 
     let nextLayerData: typeof layerData = null;
     let nextTempData: typeof temperatureData = null;
-    await loadStageData(
+    const loadPromise = loadStageData(
       4, '',
       (ld) => { nextLayerData = ld; },
       (td) => { nextTempData = td; },
       (e) => { error = e.message; },
     );
+
+    await Promise.all([loadPromise, new Promise(r => setTimeout(r, 650))]);
 
     globeComponent?.disposeStageMeshes();
     layerData = nextLayerData;
@@ -280,6 +283,10 @@
     currentStage.set(4);
     stageLoading.set(false);
     if (!controlsVisible) controlsVisible = true;
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      globeComponent?.startFlashFade();
+    }));
   }
 
   async function recordGif() {
