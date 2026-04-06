@@ -38,10 +38,10 @@
         ['15_C', { celsius: 15, isDelta: false }],
         ['24_delta', { celsius: 24, isDelta: true }],
         ['50_C', { celsius: 50, isDelta: false }],
-        ['14_C', { celsius: 14, isDelta: false }],
+        ['17_C', { celsius: 17, isDelta: false }],
       ]);
       return {
-        text: "Now there's air. Gases like CO₂ and water vapor are transparent to sunlight, but they absorb the heat that the surface radiates back. The air warms up, and radiates heat back down. This is the greenhouse effect.\n\nThe global average jumps {24_delta}, from {-9_C} to {15_C} — remarkably close to the real Earth's average of {14_C}. But the tropics hit {50_C} because there are no clouds to block sunlight and no wind to carry the excess heat away. Meanwhile the poles are still frozen solid.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
+        text: "Now there's air. Gases like CO₂ and water vapor are transparent to sunlight, but they absorb the heat that the surface radiates back. The air warms up, and radiates heat back down. This is the **greenhouse effect**.\n\nThe global average jumps {24_delta}, from {-9_C} to {15_C} — already close to the real Earth's average of {17_C}. But the tropics hit {50_C} because there are no clouds to block sunlight and no wind to carry the excess heat away. Meanwhile the poles are still frozen solid.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
         values,
       };
     })(),
@@ -52,7 +52,7 @@
         ['6_C', { celsius: 6, isDelta: false }],
       ]);
       return {
-        text: "Temperature differences create pressure differences, and pressure differences create wind. The spinning Earth deflects the wind sideways — this is the Coriolis effect — producing the westerlies that bring weather across the midlatitudes.\n\nWind and turbulent eddies carry heat from the tropics toward the poles. Water evaporates over warm ocean, forms clouds, and falls as rain. Snow piles up in the cold regions and reflects sunlight back to space, keeping them cold.\n\nThe equator cools to {18_C} as heat is carried poleward. The poles warm to {-19_C}. But the global average actually drops to {6_C} — clouds now block incoming sunlight, and widespread snow reflects it. It rains more where it's warmer, but there are no deserts — the Sahara gets as much rain as the tropics. Something is still missing.",
+        text: "Hot air expands, and cold air shrinks. Where a column of air is hot, it expands so much that air starts spilling out to adjacent areas. Conversely, air from elsewhere flows into cold areas, where the air has shrunk. This is how temperature differences create pressure differences, and pressure differences create wind.\n\nCold air sinks at the poles and flows toward the warm equator, where air is rising. The spinning Earth deflects this flow sideways — this is the **Coriolis effect** — so surface winds across most of the globe blow from the east.\n\nWind and turbulent eddies carry heat from the tropics toward the poles. Water evaporates over warm ocean, forms clouds, and falls as rain. Snow piles up in the cold regions and reflects sunlight back to space, keeping them cold.\n\nThe equator cools to {18_C} as heat is carried poleward. The poles warm to {-19_C}. But the global average actually drops to {6_C} — clouds now block incoming sunlight, and widespread snow reflects it. The familiar deserts are missing — the Sahara gets as much rain as the tropics.",
         values,
       };
     })(),
@@ -61,14 +61,18 @@
         ['12_C', { celsius: 12, isDelta: false }],
       ]);
       return {
-        text: "Hot air rises at the equator, creating a belt of low pressure. It flows poleward aloft, but the Coriolis effect deflects it east. By around 30° latitude it piles up and sinks back to the surface. This giant loop is the Hadley cell.\n\nThe sinking air compresses and warms, which dries it out. This is why the Sahara, Arabian, and Sonoran deserts all sit near 30°. At the surface, the return flow blows back toward the equator — the trade winds.\n\nWhere trade winds from each hemisphere collide, air rises and produces an intense rain belt that feeds the world's tropical rainforests. The global average warms back to {12_C} as the circulation redistributes energy more efficiently.",
+        text: "Hot air rises near the equator, creating a belt of low pressure around the hottest parts of the globe. It flows poleward, and by around 30° latitude it piles up and sinks back to the surface. This giant loop is the **Hadley cell**.\n\nAs the air sinks, it's squeezed by the atmosphere above and warms up. Warm air can hold much more moisture before saturating, so clouds can't form and rain doesn't fall. This is why the Sahara, Arabian, and Sonoran deserts all sit near 30°. At the surface, the return flow blows back toward the equator where pressure is lower — the **trade winds**.\n\nWhere trade winds from each hemisphere collide, air rises and produces an intense rain belt that feeds the world's tropical rainforests. The global average warms back to {12_C}.",
         values,
       };
     })(),
     5: (() => {
+      const values = new Map<string, TemperatureValue>([
+        ['16_C', { celsius: 16, isDelta: false }],
+        ['17_C', { celsius: 17, isDelta: false }],
+      ]);
       return {
-        text: "Ocean currents complete the picture. The Gulf Stream carries warm tropical water toward Northern Europe, keeping London and Paris mild despite sitting at the same latitude as Labrador. Cold currents along the west coasts of continents cool the air and bring fog to San Francisco and the Atacama.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other. This is the climate system you live inside.",
-        values: new Map(),
+        text: "Ocean currents complete the picture. The Gulf Stream carries warm tropical water toward Northern Europe, keeping London and Paris mild despite sitting at the same latitude as Labrador. Cold currents along the west coasts of continents cool the air and bring fog to San Francisco and the Atacama.\n\nBiological life isn't just a passive responder to the climate — it shapes it. Trees and plants pump enormous amounts of water into the air through their leaves, far more than bare soil alone would evaporate, especially in rainforests. And over just the past century, humans have begun to change that climate faster than anything in millions of years.\n\nOur final global average of {16_C} is within 1° of the observed {17_C} — not bad for a model built from first principles.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other. This is the climate system you live inside.",
+        values,
       };
     })(),
   };
@@ -80,21 +84,29 @@
     return imperial ? `${cToF(tv.celsius)}°F` : `${tv.celsius}°C`;
   }
 
-  // Split writeup text into segments: plain text + temperature tokens
-  type Segment = { type: 'text'; content: string } | { type: 'value'; key: string };
+  // Split writeup text into segments: plain text, temperature tokens, or bold terms
+  type Segment =
+    | { type: 'text'; content: string }
+    | { type: 'value'; key: string }
+    | { type: 'bold'; content: string };
 
   function parseWriteup(stage: number): Segment[] {
     const info = WRITEUPS[stage];
     if (!info) return [];
     const parts: Segment[] = [];
-    const regex = /\{([^}]+)\}/g;
+    // Match either {value_key} or **bold text**
+    const regex = /\{([^}]+)\}|\*\*([^*]+)\*\*/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(info.text)) !== null) {
       if (match.index > lastIndex) {
         parts.push({ type: 'text', content: info.text.slice(lastIndex, match.index) });
       }
-      parts.push({ type: 'value', key: match[1] });
+      if (match[1] !== undefined) {
+        parts.push({ type: 'value', key: match[1] });
+      } else {
+        parts.push({ type: 'bold', content: match[2] });
+      }
       lastIndex = regex.lastIndex;
     }
     if (lastIndex < info.text.length) {
@@ -122,6 +134,8 @@
           {#each seg.content.split('\n\n') as para, i}
             {#if i > 0}<br /><br />{/if}{para}
           {/each}
+        {:else if seg.type === 'bold'}
+          <strong>{seg.content}</strong>
         {:else if writeupInfo.values.has(seg.key)}
           <button class="value-toggle" on:click={toggleUnits}>
             {formatValue(seg.key, writeupInfo.values.get(seg.key), imperial)}
@@ -161,7 +175,7 @@
     position: absolute;
     top: 0;
     right: 0;
-    width: min(400px, 90vw);
+    width: min(600px, 90vw);
     max-height: calc(100vh - 120px);
     max-height: calc(100dvh - 120px);
     padding: 1.5rem;
@@ -170,8 +184,37 @@
     flex-direction: column;
     gap: 1rem;
     z-index: 5;
+    background: rgba(0, 0, 0, 0.35);
+    border-left: 1px solid rgba(26, 107, 107, 0.35);
+    border-bottom: 1px solid rgba(26, 107, 107, 0.35);
+    border-bottom-left-radius: 6px;
     animation: fadeIn 0.6s ease;
-    overflow-y: auto;
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: #2a9e9e rgba(0, 0, 0, 0.3);
+  }
+
+  .overlay::-webkit-scrollbar,
+  .writeup::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .overlay::-webkit-scrollbar-track,
+  .writeup::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+  }
+
+  .overlay::-webkit-scrollbar-thumb,
+  .writeup::-webkit-scrollbar-thumb {
+    background: #2a9e9e;
+    border-radius: 4px;
+  }
+
+  .overlay::-webkit-scrollbar-thumb:hover,
+  .writeup::-webkit-scrollbar-thumb:hover {
+    background: #3fc0c0;
   }
 
   @keyframes fadeIn {
@@ -263,9 +306,11 @@
 
     .writeup {
       font-size: 0.9rem;
-      overflow-y: auto;
+      overflow-y: scroll;
       flex-shrink: 1;
       min-height: 0;
+      scrollbar-width: thin;
+      scrollbar-color: #2a9e9e rgba(0, 0, 0, 0.3);
     }
   }
 </style>
