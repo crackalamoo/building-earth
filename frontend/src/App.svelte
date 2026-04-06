@@ -303,7 +303,7 @@
       return;
     }
 
-    const GIF_MAX = 800;
+    const GIF_MAX = 600;
     const gifScale = Math.min(1, GIF_MAX / Math.max(canvas.width, canvas.height));
     const gifWidth = Math.round(canvas.width * gifScale);
     const gifHeight = Math.round(canvas.height * gifScale);
@@ -322,7 +322,7 @@
       workerScript: '/gif.worker.js',
     });
 
-    const framesPerMonth = 10;
+    const framesPerMonth = 5;
     const totalFrames = 12 * framesPerMonth;
     const rotationPerFrame = (2 * Math.PI) / totalFrames;
 
@@ -336,7 +336,7 @@
       await new Promise(r => requestAnimationFrame(r));
 
       offCtx.drawImage(canvas, 0, 0, gifWidth, gifHeight);
-      gif.addFrame(offscreen, { copy: true, delay: 80 });
+      gif.addFrame(offscreen, { copy: true, delay: 160 });
     }
 
     recordingProgress = 'Encoding GIF...';
