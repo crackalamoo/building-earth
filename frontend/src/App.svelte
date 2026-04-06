@@ -166,7 +166,7 @@
       pickLoc = null;
       return;
     }
-    if (!locationDismissed) dismissLocationPrompt();
+    if (!locationDismissed && stage === 4) dismissLocationPrompt();
     const { lat, lon } = e.detail;
     pickLoc = { lat, lon };
   }
