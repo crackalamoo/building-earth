@@ -832,6 +832,7 @@
     right: 0;
     width: min(700px, 90vw);
     height: 100vh;
+    height: 100dvh;
     background: rgba(0, 0, 0, 0.92);
     border-left: 1px solid #1a6b6b;
     z-index: 100;

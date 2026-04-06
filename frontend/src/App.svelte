@@ -519,6 +519,7 @@
   main {
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     position: relative;
@@ -597,7 +598,7 @@
 
   .reveal-btn {
     position: absolute;
-    bottom: 3rem;
+    bottom: calc(3rem + env(safe-area-inset-bottom));
     left: 50%;
     transform: translateX(-50%);
     padding: 0.8rem 2rem;

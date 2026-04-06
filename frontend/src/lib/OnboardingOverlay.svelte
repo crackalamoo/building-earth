@@ -163,6 +163,7 @@
     right: 0;
     width: min(400px, 90vw);
     max-height: calc(100vh - 120px);
+    max-height: calc(100dvh - 120px);
     padding: 1.5rem;
     padding-bottom: 1rem;
     display: flex;
