@@ -594,13 +594,19 @@
     .subtitle {
       font-size: 0.95rem;
     }
+
+    .reveal-btn {
+      padding: 0.8rem 1.2rem;
+    }
   }
 
   .reveal-btn {
     position: absolute;
     bottom: calc(3rem + env(safe-area-inset-bottom));
-    left: 50%;
-    transform: translateX(-50%);
+    left: 0;
+    right: 0;
+    margin: 0 auto;
+    width: fit-content;
     padding: 0.8rem 2rem;
     font-size: 1.1rem;
     color: #fff;
