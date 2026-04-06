@@ -434,7 +434,7 @@
       <OnboardingOverlay
         {stage}
         loading={$stageLoading}
-        buttonLabel={STAGES[stage].button}
+        buttonLabel={STAGES[stage].button ? `${STAGES[stage].button} (${stage}/4)` : null}
         on:advance={advanceStage}
         on:skip={skipToFullModel}
       />
