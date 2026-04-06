@@ -9,6 +9,8 @@
   import type { ClimateLayerData } from './lib/globe/loadBinaryData';
   import { useImperial } from './lib/stores';
   import OnboardingOverlay from './lib/OnboardingOverlay.svelte';
+  import About from './lib/About.svelte';
+  let aboutOpen = false;
   import { currentStage, stageLoading, STAGES, STAGE_NAMES, type Stage } from './lib/onboardingState';
   import { loadStageData, preloadStageFile } from './lib/globe/loadBinaryData';
 
@@ -415,6 +417,7 @@
       <div class="title-card">
         <h1 class="title">Building Earth</h1>
         <p class="subtitle">A first-principles climate simulation</p>
+        <button class="credits-link" on:click={() => aboutOpen = true}>About</button>
       </div>
       <button class="reveal-btn" on:click={advanceStage}>
         Let there be light
@@ -477,6 +480,7 @@
     {/if}
   {/if}
 </main>
+<About bind:open={aboutOpen} />
 
 <style>
   @font-face {
@@ -545,6 +549,27 @@
     color: rgba(255, 255, 255, 0.85);
     text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
     margin: 0;
+  }
+
+  .credits-link {
+    margin-top: 1.25rem;
+    background: none;
+    border: none;
+    padding: 0;
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 0.8rem;
+    font-family: inherit;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    transition: color 0.15s;
+    display: block;
+  }
+
+  .credits-link:hover {
+    color: rgba(255, 255, 255, 0.85);
   }
 
   @media (max-width: 640px), (max-height: 500px) {
