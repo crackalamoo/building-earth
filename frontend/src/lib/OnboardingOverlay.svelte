@@ -42,7 +42,7 @@
         ['4_delta', { celsius: 4, isDelta: true }],
       ]);
       return {
-        text: "Now there's air. Gases like CO₂ and water vapor let sunlight through but trap the heat trying to escape — like a blanket around the planet. This is the greenhouse effect.\n\nThe global average jumps {40_delta}, from {-21_C} to {19_C} — just {4_delta} above the real Earth's average of {15_C}. But look at the tropics: they hit {70_C} because there are no clouds to block sunlight and no wind to carry the heat away. Meanwhile the poles are still frozen.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
+        text: "Now there's air. Gases like CO₂ and water vapor let sunlight through but trap the heat trying to escape. This is the greenhouse effect.\n\nThe global average jumps {40_delta}, from {-21_C} to {19_C} — just {4_delta} above the real Earth's average of {15_C}. But the tropics hit {70_C} because there are no clouds to block sunlight and no wind to carry the heat away. Meanwhile the poles are absolutely frozen, even more so than in reality.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
         values,
       };
     })(),
@@ -58,7 +58,7 @@
     })(),
     4: (() => {
       return {
-        text: "Wind over warm ocean picks up water vapor. That moist air rises, cools, and forms clouds. Rain falls. This cycle moves huge amounts of energy — every bit of evaporation absorbs heat from the surface and releases it high in the atmosphere.\n\nOcean currents join in. The Gulf Stream pushes warm tropical water toward Northern Europe, keeping London milder than Montreal despite being farther north. Snow and ice reflect sunlight back to space, keeping the poles cold.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other, creating the climate you live inside.",
+        text: "Wind over warm ocean picks up water vapor. That moist air rises, cools, and forms clouds. Rain falls. This cycle moves huge amounts of energy — every bit of evaporation absorbs heat from the surface and releases it high in the atmosphere.\n\nOcean currents join in. The Gulf Stream pushes warm tropical water toward Northern Europe, keeping Western Europe mild despite its northern latitude. Snow and ice reflect sunlight back to space, keeping the poles cold.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other, creating the climate you live inside.",
         values: new Map(),
       };
     })(),
