@@ -9,8 +9,9 @@ from __future__ import annotations
 STAGE_NAMES = {
     1: "Radiation Only",
     2: "Atmosphere & Greenhouse",
-    3: "Diffusion & Wind",
-    4: "Full Model",
+    3: "Wind & Diffusion",
+    4: "Hadley Circulation",
+    5: "Full Model",
 }
 
 _STAGE_CHAT_CONTEXT: dict[int, dict] = {
@@ -28,32 +29,58 @@ _STAGE_CHAT_CONTEXT: dict[int, dict] = {
     2: {
         "physics": [
             "solar radiation", "surface albedo", "atmospheric absorption",
-            "greenhouse effect", "sensible heat exchange", "latent heat exchange",
+            "greenhouse effect", "sensible heat exchange",
         ],
         "missing": [
-            "wind", "lateral diffusion", "humidity transport",
+            "lateral heat transport", "wind", "humidity",
             "clouds", "ocean currents",
         ],
         "description": (
             "Atmosphere traps outgoing LW radiation. Surface warms to push energy "
-            "through the blanket. No lateral mixing."
+            "through the blanket. No lateral mixing — every grid cell is isolated."
         ),
     },
     3: {
         "physics": [
             "solar radiation", "surface albedo", "atmospheric absorption",
-            "greenhouse effect", "sensible heat exchange", "latent heat exchange",
-            "wind", "lateral diffusion", "atmospheric advection",
-            "snow/ice albedo", "orographic effects", "vertical motion",
+            "greenhouse effect", "sensible heat exchange",
+            "wind (thermal pressure gradients)", "atmospheric advection",
+            "lateral diffusion (eddy transport)", "snow/ice albedo feedback",
+            "latent heat exchange", "humidity", "clouds", "orographic effects",
         ],
-        "missing": ["ocean currents"],
+        "missing": [
+            "Hadley circulation", "ITCZ", "subtropical drying",
+            "vertical motion", "trade winds", "ocean currents",
+        ],
         "description": (
-            "Full atmospheric dynamics with wind-driven circulation and eddy diffusion. "
-            "No ocean heat transport — without the Gulf Stream and other currents, "
-            "the temperature field is more zonally symmetric."
+            "Wind blows from high pressure to low, deflected by the Coriolis effect. "
+            "Eddies diffuse heat from warm to cold regions. Water evaporates, forms "
+            "clouds, and falls as rain. Snow and ice reflect sunlight. But there is no "
+            "organized overturning circulation — no Hadley cells to create the trade winds "
+            "or dry out the subtropics."
         ),
     },
     4: {
+        "physics": [
+            "solar radiation", "surface albedo", "atmospheric absorption",
+            "greenhouse effect", "sensible heat exchange",
+            "wind", "atmospheric advection",
+            "lateral diffusion", "snow/ice albedo feedback",
+            "latent heat exchange", "humidity", "clouds", "orographic effects",
+            "Hadley circulation", "ITCZ", "trade winds", "westerlies",
+            "vertical motion (subtropical drying, adiabatic heating/cooling)",
+        ],
+        "missing": ["ocean currents"],
+        "description": (
+            "Hot air rises at the ITCZ, creating a low-pressure belt near the equator. "
+            "That air sinks in the subtropics, warming adiabatically and drying out — "
+            "this is why the world's great deserts sit at ~30° latitude. The Coriolis "
+            "effect turns the surface return flow into the trade winds. No ocean heat "
+            "transport yet — without the Gulf Stream and other currents, the temperature "
+            "field is more zonally symmetric."
+        ),
+    },
+    5: {
         "physics": ["all"],
         "missing": [],
         "description": (

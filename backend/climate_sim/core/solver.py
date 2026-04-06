@@ -1598,6 +1598,8 @@ def find_periodic_climate_cycle(
     vertical_motion_cfg: VerticalMotionConfig | None = None,
     monthly_effective_mu: np.ndarray | None = None,
     monthly_ocean_albedo: np.ndarray | None = None,
+    convergence_tolerance_rms: float = PERIODIC_FIXED_POINT_TOLERANCE_K,
+    convergence_tolerance_95p: float = PERIODIC_FIXED_POINT_TOLERANCE_K_95P,
 ) -> list[ModelState]:
     """Solve for the periodic annual climate cycle using Anderson acceleration.
 
@@ -1779,8 +1781,8 @@ def find_periodic_climate_cycle(
                     )
 
                 if (
-                    residual_rms < PERIODIC_FIXED_POINT_TOLERANCE_K
-                    and residual_95p < PERIODIC_FIXED_POINT_TOLERANCE_K_95P
+                    residual_rms < convergence_tolerance_rms
+                    and residual_95p < convergence_tolerance_95p
                 ):
                     # Ensure vegetation fraction and consistent albedo on all returned states
                     final_states = [advanced_states[(i - 2) % 12] for i in range(12)]
@@ -1983,6 +1985,8 @@ def solve_periodic_climate(
     *,
     model_config: ModelConfig,
     return_layer_map: bool = False,
+    convergence_tolerance_rms: float = PERIODIC_FIXED_POINT_TOLERANCE_K,
+    convergence_tolerance_95p: float = PERIODIC_FIXED_POINT_TOLERANCE_K_95P,
 ) -> (
     tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]
 ):
@@ -2093,6 +2097,8 @@ def solve_periodic_climate(
         vertical_motion_cfg=operators.vertical_motion_cfg,
         monthly_effective_mu=operators.monthly_effective_mu,
         monthly_ocean_albedo=operators.monthly_ocean_albedo,
+        convergence_tolerance_rms=convergence_tolerance_rms,
+        convergence_tolerance_95p=convergence_tolerance_95p,
     )
 
     # Update wind fields if wind model is enabled

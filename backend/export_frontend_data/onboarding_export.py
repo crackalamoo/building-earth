@@ -1,5 +1,5 @@
 # type: ignore[attr-defined]
-"""Export onboarding stage binaries (stages 1-3)."""
+"""Export onboarding stage binaries (stages 1-4)."""
 
 import argparse
 import os
@@ -39,12 +39,21 @@ _STAGE_FIELDS: dict[int, list[str]] = {
         "vegetation_fraction", "snow_temperature",
         "land_mask_native", "land_mask_1deg",
     ],
+    4: [
+        "temperature_2m", "land_mask", "elevation",
+        "wind_u_10m", "wind_v_10m", "wind_speed_10m", "surface",
+        "precipitation", "humidity", "soil_moisture",
+        "cloud_fraction", "cloud_high", "cloud_low", "cloud_convective",
+        "vegetation_fraction", "snow_temperature",
+        "land_mask_native", "land_mask_1deg",
+    ],
 }
 
 _STAGE_QUANTIZATION: dict[int, tuple[float, float]] = {
     1: (-100, 100),  # wider range for extreme temps
     2: (-60, 60),
     3: (-60, 60),
+    4: (-60, 60),
 }
 
 
@@ -77,9 +86,24 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
             orographic=OrographicConfig(enabled=False),
         )
     elif stage == 3:
-        # Full atmospheric dynamics but no ocean heat transport (neither
-        # wind-driven gyres nor thermohaline/AMOC).  Disable deep-root
-        # transpiration reserve to avoid veg↔P feedback instability
+        # Wind and diffusion: thermal pressure drives wind, eddies
+        # diffuse heat, water cycle active — but no Hadley cells,
+        # no ITCZ, no vertical motion (subtropical drying).
+        return ModelConfig(
+            radiation=RadiationConfig(),
+            diffusion=DiffusionConfig(),
+            wind=WindConfig(include_hadley_pressure=False),
+            advection=AdvectionConfig(),
+            surface_albedo=SurfaceAlbedoConfig(),
+            sensible_heat=SensibleHeatExchangeConfig(),
+            latent_heat=LatentHeatExchangeConfig(),
+            ocean_advection=OceanAdvectionConfig(enabled=False),
+            vertical_motion=VerticalMotionConfig(enabled=False),
+            orographic=OrographicConfig(),
+        )
+    elif stage == 4:
+        # Full atmospheric dynamics with Hadley cells, ITCZ, vertical
+        # motion — but no ocean heat transport.
         return ModelConfig(
             radiation=RadiationConfig(),
             diffusion=DiffusionConfig(),
@@ -94,7 +118,17 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
             empirical=EmpiricalCorrectionsConfig(amoc_enabled=False),
         )
     else:
-        raise ValueError(f"Stage {stage} uses the default full model config (stage 4 = main.bin)")
+        raise ValueError(f"Stage {stage} uses the default full model config (stage 5 = main.bin)")
+
+
+# Onboarding stages don't need research-grade convergence — they
+# illustrate physics.  Relax tolerance for all pre-final stages.
+_STAGE_CONVERGENCE_TOLERANCE: dict[int, tuple[float, float]] = {
+    1: (1.0, 2.0),
+    2: (1.0, 2.0),
+    3: (1.0, 2.0),
+    4: (1.0, 2.0),
+}
 
 
 def add_onboarding_args(parser: argparse.ArgumentParser) -> None:
@@ -125,8 +159,8 @@ def add_onboarding_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--stages",
         type=str,
-        default="1,2,3",
-        help="Comma-separated list of stages to export (default: 1,2,3)",
+        default="1,2,3,4",
+        help="Comma-separated list of stages to export (default: 1,2,3,4)",
     )
 
 
@@ -143,8 +177,8 @@ def run_onboarding_export(args: argparse.Namespace) -> None:
     stages_to_export = [int(s.strip()) for s in args.stages.split(",")]
 
     for stage_num in stages_to_export:
-        if stage_num not in (1, 2, 3):
-            print(f"Skipping stage {stage_num} (only stages 1-3 need separate exports)")
+        if stage_num not in (1, 2, 3, 4):
+            print(f"Skipping stage {stage_num} (only stages 1-4 need separate exports)")
             continue
 
         name = STAGE_NAMES[stage_num]
@@ -165,10 +199,15 @@ def run_onboarding_export(args: argparse.Namespace) -> None:
             print(f"Running solver for stage {stage_num} at {args.resolution}° resolution...")
             model_config = _get_stage_model_config(stage_num)
 
+            # Use relaxed convergence tolerances for stages that need it
+            tol_rms, tol_95p = _STAGE_CONVERGENCE_TOLERANCE.get(stage_num, (0.5, 1.0))
+
             lon2d, lat2d, layers = solve_periodic_climate(
                 resolution_deg=args.resolution,
                 model_config=model_config,
                 return_layer_map=True,
+                convergence_tolerance_rms=tol_rms,
+                convergence_tolerance_95p=tol_95p,
             )
             assert isinstance(layers, dict)
 

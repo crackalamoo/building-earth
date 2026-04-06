@@ -16,7 +16,7 @@
   export let monthProgress: number;
   export let temperatureData: number[][][] | null;
   export let layerData: ClimateLayerData | null;
-  export let stage: number = 4;
+  export let stage: number = 5;
 
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
   const MAX_MESSAGES = 50;

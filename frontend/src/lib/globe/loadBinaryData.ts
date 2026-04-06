@@ -283,7 +283,7 @@ export function preloadStageFile(stage: number, basePath: string = ''): Promise<
   if (preloadPromises.has(stage)) return preloadPromises.get(stage)!;
 
   const promise = (async () => {
-    const prefix = stage === 4 ? 'main' : `stage${stage}`;
+    const prefix = stage === 5 ? 'main' : `stage${stage}`;
     try {
       const [manifestRes, buffer] = await Promise.all([
         fetch(`${basePath}/${prefix}.manifest.json`),

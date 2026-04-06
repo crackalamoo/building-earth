@@ -23,7 +23,7 @@
   export let uniformLighting: boolean = false;
   export let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
   export let revealed: boolean = false;
-  export let stage: number = 4;
+  export let stage: number = 5;
 
   const dispatch = createEventDispatcher();
 
@@ -847,8 +847,8 @@
     sunLight.intensity = 2.0;
     ambientLight.intensity = 0.15;
 
-    // Atmosphere and city lights only at stage 4
-    if (stage >= 4) {
+    // Atmosphere glow from stage 2 (once there's air)
+    if (stage >= 2) {
       if (!atmosphereMesh) {
         atmosphereMesh = createAtmosphere();
         atmosphereMesh.visible = activeLayer === 'blue-marble';
@@ -856,6 +856,9 @@
       } else {
         atmosphereMesh.visible = activeLayer === 'blue-marble';
       }
+    }
+    // City lights only at stage 5
+    if (stage >= 5) {
       if (!cityLights) {
         cityLights = new CityLights();
         const cityObj = cityLights.getObject();
@@ -966,16 +969,19 @@
       }
     }
 
-    // City lights and atmosphere — only create at stage 4 (cosmetic)
-    if (revealed && stage >= 4) {
+    // Atmosphere glow from stage 2
+    if (revealed && stage >= 2) {
+      atmosphereMesh = createAtmosphere();
+      atmosphereMesh.visible = activeLayer === 'blue-marble';
+      scene.add(atmosphereMesh);
+    }
+
+    // City lights at stage 5
+    if (revealed && stage >= 5) {
       cityLights = new CityLights();
       const cityObj = cityLights.getObject();
       cityObj.visible = activeLayer === 'blue-marble';
       scene.add(cityObj);
-
-      atmosphereMesh = createAtmosphere();
-      atmosphereMesh.visible = activeLayer === 'blue-marble';
-      scene.add(atmosphereMesh);
     }
 
     // Load star field

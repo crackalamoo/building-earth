@@ -93,7 +93,7 @@ async def chat(request: Request) -> StreamingResponse:
 
     # Build conversation with location context
     system_content = SYSTEM
-    if stage is not None and stage < 4:
+    if stage is not None and stage < 5:
         system_content += get_stage_chat_context(stage)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
 

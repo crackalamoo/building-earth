@@ -49,16 +49,23 @@
     3: (() => {
       const values = new Map<string, TemperatureValue>([
         ['29_C', { celsius: 29, isDelta: false }],
-        ['-7_C', { celsius: -7, isDelta: false }],
+        ['-10_C', { celsius: -10, isDelta: false }],
       ]);
       return {
-        text: "Hot air is lighter than cold air. It rises at the equator, and cold air sinks at the poles — this creates wind.\n\nBut because the Earth is spinning, the wind doesn't blow straight from equator to pole. It curves, creating the trade winds near the tropics and the westerly winds that bring weather across Europe and North America.\n\nThis circulation carries heat from the tropics toward the poles. The equator cools to {29_C}. The poles warm to {-7_C}. The extreme temperature gap shrinks dramatically, and the map starts to look like the planet you know.",
+        text: "Temperature differences create pressure differences, and pressure differences create wind. The spinning Earth deflects this wind sideways — the Coriolis effect — producing the westerlies that bring weather across the midlatitudes.\n\nWind and eddies carry heat from the tropics toward the poles. Water evaporates over warm ocean, forms clouds, and falls as rain. Snow piles up in the cold regions and reflects sunlight, keeping them cold.\n\nThe equator cools to {29_C}. The poles warm to {-10_C}. The extreme temperature gap shrinks dramatically. But the rain falls too evenly — there are no deserts yet, because there's no organized circulation to dry out the subtropics.",
         values,
       };
     })(),
     4: (() => {
+      const values = new Map<string, TemperatureValue>();
       return {
-        text: "Wind over warm ocean picks up water vapor. That moist air rises, cools, and forms clouds. Rain falls. This cycle moves huge amounts of energy — every bit of evaporation absorbs heat from the surface and releases it high in the atmosphere.\n\nOcean currents join in. The Gulf Stream pushes warm tropical water toward Northern Europe, keeping Western Europe mild despite its northern latitude. Snow and ice reflect sunlight back to space, keeping the poles cold.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other, creating the climate you live inside.",
+        text: "Hot air rises at the equator and flows poleward aloft. But the Coriolis effect won't let it reach the poles — it turns eastward and piles up around 30° latitude, then sinks. This creates the Hadley cell.\n\nThe descending air warms as it compresses and dries out. This is why the Sahara, Arabian, and Sonoran deserts all sit near 30°. Where the sinking air returns to the surface and flows back toward the equator, it becomes the trade winds.\n\nBetween the trade winds of each hemisphere, air converges and rises at the ITCZ — the Intertropical Convergence Zone — producing the intense tropical rain belt that feeds the rainforests.",
+        values,
+      };
+    })(),
+    5: (() => {
+      return {
+        text: "Ocean currents join in. The Gulf Stream pushes warm tropical water toward Northern Europe, keeping London and Paris mild despite sitting at the same latitude as Labrador. Cold currents along the west coasts of continents bring fog to San Francisco and the Atacama.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other, creating the climate you live inside.",
         values: new Map(),
       };
     })(),
@@ -102,7 +109,7 @@
     useImperial.update(v => !v);
   }
 
-  $: visible = stage >= 1 && stage <= 4 && !loading && !(stage === 4 && locationDismissed);
+  $: visible = stage >= 1 && stage <= 5 && !loading && !(stage === 5 && locationDismissed);
 </script>
 
 {#if visible && writeupInfo}
@@ -134,12 +141,12 @@
     {#if stage === 1}
       <span class="explore-hint">Try clicking the globe</span>
     {/if}
-    {#if stage < 4}
+    {#if stage < 5}
       <button class="skip-link" on:click={() => dispatch('skip')}>
         Skip to full model
       </button>
     {/if}
-    {#if stage === 4}
+    {#if stage === 5}
       <button class="next-btn" on:click={() => dispatch('locate')}>
         Where am I?
       </button>

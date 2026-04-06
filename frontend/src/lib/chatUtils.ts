@@ -19,14 +19,14 @@ export function computeSuggestions(
   wind: { speed: number; dir: number },
   currentMonthIdx: number,
   _tempC: number,
-  stage: number = 4,
+  stage: number = 5,
   obsTemps: (number | null)[] = [],
   obsPrecips: (number | null)[] = [],
 ): string[] {
   const candidates: string[] = [];
 
   // Stage-specific suggestions (stages 1-3)
-  if (stage <= 3) {
+  if (stage <= 4) {
     const suggestions = STAGES[stage]?.chatSuggestions;
     return suggestions?.length ? suggestions : candidates.slice(0, 3);
   }

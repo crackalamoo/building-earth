@@ -100,9 +100,9 @@
   $: stage = $currentStage;
   $: revealed = stage >= 1;
 
-  // Switch to blue-marble once when first reaching stage 4
+  // Switch to blue-marble once when first reaching stage 5
   let didAutoSwitchLayer = false;
-  $: if (stage === 4 && !didAutoSwitchLayer) {
+  $: if (stage === 5 && !didAutoSwitchLayer) {
     didAutoSwitchLayer = true;
     activeLayer = 'blue-marble';
   }
@@ -168,7 +168,7 @@
       pickLoc = null;
       return;
     }
-    if (!locationDismissed && stage === 4) dismissLocationPrompt();
+    if (!locationDismissed && stage === 5) dismissLocationPrompt();
     const { lat, lon } = e.detail;
     pickLoc = { lat, lon };
   }
@@ -192,7 +192,7 @@
 
   async function advanceStage() {
     const nextStage = (stage + 1) as Stage;
-    if (nextStage > 4) return;
+    if (nextStage > 5) return;
 
     if (nextStage === 1) {
       // Stage 0 → 1: "Let there be light" — flash effect then load stage 1
@@ -255,7 +255,7 @@
       }));
 
       // Preload next stage
-      if (nextStage < 4) {
+      if (nextStage < 5) {
         preloadStageFile(nextStage + 1, '');
       }
     }
@@ -268,7 +268,7 @@
     let nextLayerData: typeof layerData = null;
     let nextTempData: typeof temperatureData = null;
     const loadPromise = loadStageData(
-      4, '',
+      5, '',
       (ld) => { nextLayerData = ld; },
       (td) => { nextTempData = td; },
       (e) => { error = e.message; },
@@ -280,7 +280,7 @@
     layerData = nextLayerData;
     temperatureData = nextTempData;
 
-    currentStage.set(4);
+    currentStage.set(5);
     stageLoading.set(false);
     if (!controlsVisible) controlsVisible = true;
 
@@ -430,7 +430,7 @@
         Let there be light
       </button>
     {/if}
-    {#if stage >= 1 && stage <= 3}
+    {#if stage >= 1 && stage <= 4}
       <OnboardingOverlay
         {stage}
         loading={$stageLoading}
@@ -439,7 +439,7 @@
         on:skip={skipToFullModel}
       />
     {/if}
-    {#if stage === 4}
+    {#if stage === 5}
       <OnboardingOverlay
         {stage}
         loading={false}

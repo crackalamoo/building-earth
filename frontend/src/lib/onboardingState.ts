@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 
-export type Stage = 0 | 1 | 2 | 3 | 4;
+export type Stage = 0 | 1 | 2 | 3 | 4 | 5;
 
 export const currentStage = writable<Stage>(0);
 export const stageLoading = writable(false);
@@ -36,18 +36,27 @@ export const STAGES: StageInfo[] = [
     ],
   },
   {
-    button: 'Add water & life',
-    description: 'Wind carries heat from equator to poles...',
+    button: 'Add circulation cells',
+    description: 'Wind and eddies carry heat...',
     chatSuggestions: [
       'How does wind redistribute heat?',
       'Why do westerlies form?',
+      'Where does it rain?',
+    ],
+  },
+  {
+    button: 'Add the ocean',
+    description: 'Hadley cells create deserts and trade winds...',
+    chatSuggestions: [
       'What are Hadley cells?',
+      'Why do deserts form at 30\u00b0?',
+      'How do trade winds work?',
     ],
   },
   {
     button: null,
-    description: 'Water evaporates, clouds form, rain falls...',
-    chatSuggestions: [],  // use default dynamic suggestions at stage 4
+    description: 'Ocean currents complete the machine...',
+    chatSuggestions: [],  // use default dynamic suggestions at stage 5
   },
 ];
 
@@ -56,6 +65,7 @@ export const STAGE_NAMES = [
   'Primordial',
   'Radiation Only',
   'Atmosphere & Greenhouse',
-  'Diffusion & Wind',
+  'Wind & Diffusion',
+  'Hadley Circulation',
   'Full Model',
 ];

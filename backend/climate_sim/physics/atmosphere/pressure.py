@@ -207,6 +207,7 @@ def compute_pressure(
     lat2d: np.ndarray | None = None,
     lon2d: np.ndarray | None = None,
     itcz_rad: np.ndarray | None = None,
+    include_hadley_pressure: bool = True,
 ) -> np.ndarray:
     """Compute surface pressure (Pa) from temperature and elevation using hydrostatic balance.
 
@@ -230,6 +231,9 @@ def compute_pressure(
     itcz_rad : np.ndarray | None
         Pre-computed ITCZ latitude in radians, shape (nlon,). If provided, uses this.
         Otherwise computes from temperature if lat2d/lon2d provided.
+    include_hadley_pressure : bool
+        If True (default), include the Hadley cell pressure anomaly (ITCZ low,
+        subtropical highs). Set to False for wind without organized overturning.
 
     Returns
     -------
@@ -278,16 +282,22 @@ def compute_pressure(
     smooth_mean = area_weighted_mean(temp_smooth, weights)
     temp_smooth = temp_smooth + (target_mean - smooth_mean)
 
-    # Thermal pressure responds only to ZONAL anomalies (departures from the
-    # zonal mean).  The meridional pressure structure (equator-to-pole gradient)
-    # is already captured by dp_hadley, which represents the Hadley/Ferrel/Polar
-    # cell response to the meridional temperature gradient.  Applying dp_th to
-    # the full temperature field would double-count the meridional component and
-    # produce ~60-100 hPa equator-to-pole gradients (obs ~20-25 hPa).
-    zonal_mean = np.mean(temp_smooth, axis=1, keepdims=True)
-    dT_zonal = temp_smooth - zonal_mean
+    if include_hadley_pressure:
+        # When Hadley pressure handles the meridional structure, thermal
+        # pressure responds only to ZONAL anomalies (departures from the
+        # zonal mean) to avoid double-counting.
+        dT = temp_smooth - np.mean(temp_smooth, axis=1, keepdims=True)
+        dp_th = -THERMAL_PRESSURE_COEFFICIENT * dT
+    else:
+        # Without Hadley pressure, thermal pressure must provide the full
+        # pressure pattern including the meridional gradient.  Use full
+        # temperature anomalies (from global mean) with a reduced coefficient
+        # to get realistic ~20-25 hPa equator-to-pole gradients.
+        global_mean = area_weighted_mean(temp_smooth, weights)
+        dT = temp_smooth - global_mean
+        # Full-field coefficient: obs ~22 hPa over ~30K pole-to-equator ΔT
+        dp_th = -THERMAL_PRESSURE_COEFFICIENT * dT
 
-    dp_th = -THERMAL_PRESSURE_COEFFICIENT * dT_zonal
     dp_th = dp_th - area_weighted_mean(dp_th, weights)
 
     t_ref_lat = area_weighted_mean(temp_smooth, weights, axis=1)
@@ -296,34 +306,36 @@ def compute_pressure(
 
     p_orog = mean_p * np.exp(-gravity_m_s2 * elevation / (GAS_CONSTANT_J_KG_K * t_ref_safe))
 
-    # Compute ITCZ from temperature or use pre-computed
-    if itcz_rad is None:
-        if lat2d is None or lon2d is None:
-            raise ValueError("lat2d and lon2d must be provided when itcz_rad is None")
-        # Type narrowing: after the check above, we know these are not None
-        lat2d_nonnull: np.ndarray = lat2d  # type: ignore[assignment]
-        lon2d_nonnull: np.ndarray = lon2d  # type: ignore[assignment]
-        with time_block("compute_itcz_in_pressure"):
-            cell_areas = spherical_cell_area(
-                lon2d_nonnull, lat2d_nonnull, earth_radius_m=R_EARTH_METERS
-            )
-            itcz_lat_rad = compute_itcz_latitude(temperature, lat2d_nonnull, cell_areas)
+    if include_hadley_pressure:
+        # Compute ITCZ from temperature or use pre-computed
+        if itcz_rad is None:
+            if lat2d is None or lon2d is None:
+                raise ValueError("lat2d and lon2d must be provided when itcz_rad is None")
+            # Type narrowing: after the check above, we know these are not None
+            lat2d_nonnull: np.ndarray = lat2d  # type: ignore[assignment]
+            lon2d_nonnull: np.ndarray = lon2d  # type: ignore[assignment]
+            with time_block("compute_itcz_in_pressure"):
+                cell_areas = spherical_cell_area(
+                    lon2d_nonnull, lat2d_nonnull, earth_radius_m=R_EARTH_METERS
+                )
+                itcz_lat_rad = compute_itcz_latitude(temperature, lat2d_nonnull, cell_areas)
+        else:
+            itcz_lat_rad = itcz_rad
+
+        # Create 2D latitude field in radians
+        lat_2d_rad = np.deg2rad(np.broadcast_to(lat_deg[:, None], shape))
+
+        # Broadcast ITCZ to 2D grid (same value for all latitudes in a longitude column)
+        itcz_2d = np.broadcast_to(itcz_lat_rad[np.newaxis, :], shape)
+
+        # Apply Hadley cell pressure pattern using analytical Gaussian formula
+        dp_hadley = hadley_pressure_anomaly(lat_2d_rad, itcz_2d)
+        dp_hadley = dp_hadley - area_weighted_mean(dp_hadley, weights)
     else:
-        itcz_lat_rad = itcz_rad
-
-    # Create 2D latitude field in radians
-    lat_2d_rad = np.deg2rad(np.broadcast_to(lat_deg[:, None], shape))
-
-    # Broadcast ITCZ to 2D grid (same value for all latitudes in a longitude column)
-    itcz_2d = np.broadcast_to(itcz_lat_rad[np.newaxis, :], shape)
-
-    # Apply Hadley cell pressure pattern using analytical Gaussian formula
-    dp_hadley = hadley_pressure_anomaly(lat_2d_rad, itcz_2d)
-    dp_hadley = dp_hadley - area_weighted_mean(dp_hadley, weights)
+        dp_hadley = 0.0
 
     p_surface = p_orog + dp_th + dp_hadley
     p_surface = p_surface * (mean_p / area_weighted_mean(p_surface, weights))
-    # p_surface = mean_p + dp_hadley
 
     return p_surface
 

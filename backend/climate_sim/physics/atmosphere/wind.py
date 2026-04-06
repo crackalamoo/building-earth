@@ -130,6 +130,7 @@ class WindConfig:
     troposphere_scale_height_m: float = 8000.0
     coriolis_floor_s: float = 1e-5
     minimum_temperature_K: float = 150.0
+    include_hadley_pressure: bool = True
 
 
 class WindModel:
@@ -286,6 +287,7 @@ class WindModel:
             skip_smoothing=True,
             lat2d=self._lat2d,
             lon2d=self._lon2d,
+            include_hadley_pressure=self._config.include_hadley_pressure,
         )
 
         # Compute geopotential height of the reference pressure surface
@@ -525,6 +527,7 @@ class WindModel:
             itcz_rad=itcz_rad,
             lat2d=self._lat2d,
             lon2d=self._lon2d,
+            include_hadley_pressure=self._config.include_hadley_pressure,
         )
 
         # Map wind speed to 10 m height

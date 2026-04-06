@@ -18,7 +18,7 @@
   export let layerDataLoaded = false;
   export let displayMonth = 0;
   export let visible = false;
-  export let stage = 4;
+  export let stage = 5;
   export let hasPrecipitation = false;
   export let hasSurface = false;
 </script>
@@ -86,7 +86,7 @@
   <button class="action-btn" on:click={() => dispatch('resetView')} disabled={recording} data-tooltip="Reset View">
     <Home size={16} />
   </button>
-  <button class="action-btn record-btn" on:click={() => dispatch('recordGif')} disabled={recording} class:hidden={stage < 4} data-tooltip={recording ? recordingProgress : 'Record GIF'}>
+  <button class="action-btn record-btn" on:click={() => dispatch('recordGif')} disabled={recording} class:hidden={stage < 5} data-tooltip={recording ? recordingProgress : 'Record GIF'}>
     <Clapperboard size={16} />
   </button>
 </div>
