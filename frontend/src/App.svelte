@@ -126,7 +126,7 @@
     if (lastTime !== null) {
       const dt = (time - lastTime) / 1000;
       const isAutoRotating = globeComponent?.isAutoRotating() ?? true;
-      const speed = isAutoRotating ? 1 : (1 / 15);
+      const speed = isAutoRotating ? 1 : (1 / 5);
       monthProgress = (monthProgress + dt * speed) % 12;
     }
     lastTime = time;
