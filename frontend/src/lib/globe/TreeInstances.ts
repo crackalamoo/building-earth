@@ -313,8 +313,8 @@ function computeCellCurves(
       const growthDrive = (longDays || daysLengthening) ? tempGrowth : 0;
 
       // Update foliage
-      const loss = (senescence + coldStress) * 0.4;
-      const gain = growthDrive * 0.35;
+      const loss = (senescence + coldStress) * 0.75;
+      const gain = growthDrive * 0.4;
       foliage = clamp(foliage - loss + gain, 0, 1);
 
       // Remap so it never goes below minFoliage
