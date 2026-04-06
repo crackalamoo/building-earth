@@ -202,7 +202,7 @@
 
       // Load stage 1 data in parallel with flash bloom
       const loadPromise = loadStageData(
-        1, '',
+        1,
         (ld) => { layerData = ld; },
         (td) => { temperatureData = td; },
         (e) => { error = e.message; },
@@ -219,7 +219,7 @@
       setTimeout(() => { controlsVisible = true; }, 1500);
 
       // Preload stage 2
-      preloadStageFile(2, '');
+      preloadStageFile(2);
     } else {
       // Stage N → N+1: same pattern as "let there be light"
       // 1. Flash blooms in (hides everything)
@@ -233,7 +233,7 @@
       let nextLayerData: typeof layerData = null;
       let nextTempData: typeof temperatureData = null;
       const loadPromise = loadStageData(
-        nextStage, '',
+        nextStage,
         (ld) => { nextLayerData = ld; },
         (td) => { nextTempData = td; },
         (e) => { error = e.message; },
@@ -256,7 +256,7 @@
 
       // Preload next stage
       if (nextStage < 5) {
-        preloadStageFile(nextStage + 1, '');
+        preloadStageFile(nextStage + 1);
       }
     }
   }
@@ -268,7 +268,7 @@
     let nextLayerData: typeof layerData = null;
     let nextTempData: typeof temperatureData = null;
     const loadPromise = loadStageData(
-      5, '',
+      5,
       (ld) => { nextLayerData = ld; },
       (td) => { nextTempData = td; },
       (e) => { error = e.message; },
@@ -359,14 +359,14 @@
     startPlaying();
 
     // Only fetch land mask for primordial globe — data loads on demand per stage
-    loadLandMask1deg('').then(lm => {
+    loadLandMask1deg().then(lm => {
       primordialLandMask = lm;
     }).catch(e => {
       console.error('Failed to load land mask:', e);
     });
 
     // Preload stage 1 data in background while user sees primordial globe
-    preloadStageFile(1, '');
+    preloadStageFile(1);
 
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);

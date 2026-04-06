@@ -3,14 +3,22 @@
  */
 
 /**
+ * Base URL for binary climate data files. In production, these live on a
+ * Cloudflare R2 bucket; in dev, they're served from frontend/public via Vite.
+ * Set VITE_DATA_BASE in .env to point to the R2 public URL.
+ */
+const DATA_BASE: string = (import.meta.env.VITE_DATA_BASE || '').replace(/\/$/, '');
+
+/**
  * Fetch a gzip-compressed .bin.gz file and return the decompressed ArrayBuffer.
  * Some servers (Vite dev) transparently decompress via Content-Encoding: gzip,
- * while others (Cloudflare Pages) serve raw gzip bytes. We detect which case
+ * while others (Cloudflare R2) serve raw gzip bytes. We detect which case
  * by checking for the gzip magic number (0x1f 0x8b) in the first two bytes.
  */
-async function fetchBinary(url: string): Promise<ArrayBuffer> {
-  const res = await fetch(`${url}.gz`);
-  if (!res.ok) throw new Error(`Failed to load ${url}.gz: ${res.status}`);
+async function fetchBinary(path: string): Promise<ArrayBuffer> {
+  const url = `${DATA_BASE}/${path}.gz`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to load ${url}: ${res.status}`);
   const buf = await res.arrayBuffer();
   const header = new Uint8Array(buf, 0, 2);
   if (header[0] === 0x1f && header[1] === 0x8b) {
@@ -120,10 +128,10 @@ function decodeField(buffer: ArrayBuffer, field: ManifestField): Float32Array | 
   return new Float32Array(buffer, field.offset, field.bytes / 4);
 }
 
-export async function loadBinaryData(basePath: string = ''): Promise<ClimateLayerData> {
+export async function loadBinaryData(): Promise<ClimateLayerData> {
   const [manifestRes, buffer] = await Promise.all([
-    fetch(`${basePath}/main.manifest.json`),
-    fetchBinary(`${basePath}/main.bin`),
+    fetch(`${DATA_BASE}/main.manifest.json`),
+    fetchBinary('main.bin'),
   ]);
 
   if (!manifestRes.ok) {
@@ -155,8 +163,9 @@ export async function loadBinaryData(basePath: string = ''): Promise<ClimateLaye
 /**
  * Fetch the standalone 1° land mask (180×360 Uint8Array) for the primordial globe.
  */
-export async function loadLandMask1deg(basePath: string = ''): Promise<{ data: Uint8Array; nlat: number; nlon: number }> {
-  const res = await fetch(`${basePath}/landmask1deg.bin`);
+export async function loadLandMask1deg(): Promise<{ data: Uint8Array; nlat: number; nlon: number }> {
+  const url = `${DATA_BASE}/landmask1deg.bin`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to load land mask: ${res.status}`);
   const buf = await res.arrayBuffer();
   const data = new Uint8Array(buf);
@@ -278,7 +287,7 @@ const preloadPromises = new Map<number, Promise<void>>();
  * Fetch, decode, and cache a stage's data in the background.
  * Call this after loading stage N to pre-decode stage N+1.
  */
-export function preloadStageFile(stage: number, basePath: string = ''): Promise<void> {
+export function preloadStageFile(stage: number): Promise<void> {
   if (decodedCache.has(stage)) return Promise.resolve();
   if (preloadPromises.has(stage)) return preloadPromises.get(stage)!;
 
@@ -286,8 +295,8 @@ export function preloadStageFile(stage: number, basePath: string = ''): Promise<
     const prefix = stage === 5 ? 'main' : `stage${stage}`;
     try {
       const [manifestRes, buffer] = await Promise.all([
-        fetch(`${basePath}/${prefix}.manifest.json`),
-        fetchBinary(`${basePath}/${prefix}.bin`),
+        fetch(`${DATA_BASE}/${prefix}.manifest.json`),
+        fetchBinary(`${prefix}.bin`),
       ]);
       if (!manifestRes.ok) return;
 
@@ -329,7 +338,6 @@ export function preloadStageFile(stage: number, basePath: string = ''): Promise<
  */
 export async function loadStageData(
   stage: number,
-  basePath: string,
   onLayerData: (ld: ClimateLayerData) => void,
   onTemperatureData: (td: number[][][]) => void,
   onError: (err: Error) => void,
@@ -350,7 +358,7 @@ export async function loadStageData(
 
   // Fallback: fetch + decode now (shouldn't normally happen)
   try {
-    await preloadStageFile(stage, basePath);
+    await preloadStageFile(stage);
     if (decodedCache.has(stage)) {
       const cached = decodedCache.get(stage)!;
       decodedCache.delete(stage);
