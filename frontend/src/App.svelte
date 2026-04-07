@@ -617,7 +617,7 @@
 
   .reveal-btn {
     position: absolute;
-    bottom: calc(3rem + env(safe-area-inset-bottom));
+    bottom: 3rem;
     left: 0;
     right: 0;
     margin: 0 auto;
