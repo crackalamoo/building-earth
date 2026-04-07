@@ -135,20 +135,27 @@ export function createSunBloom(): THREE.Mesh {
  * Update screen-space sun bloom uniforms each frame.
  * Handles camera-facing check, globe occlusion, and screen-space projection.
  */
+// Reusable scratch vectors so updateSunBloom does zero per-frame allocations
+// (it runs every frame; new Vector3s here pile up GC pressure fast).
+const _sbSunNDC = new THREE.Vector3();
+const _sbCamDir = new THREE.Vector3();
+const _sbToSun = new THREE.Vector3();
+const _sbToSunDir = new THREE.Vector3();
+const _sbToGlobeDir = new THREE.Vector3();
+const _sbGlobeCenter = new THREE.Vector3();
+
 export function updateSunBloom(
   bloomQuad: THREE.Mesh,
   sunOrb: THREE.Mesh,
   camera: THREE.PerspectiveCamera,
 ): void {
   const mat = bloomQuad.material as THREE.ShaderMaterial;
-  const sunWorldPos = sunOrb.position.clone();
-  const sunNDC = sunWorldPos.project(camera);
+  _sbSunNDC.copy(sunOrb.position).project(camera);
 
   // Check if sun is in front of camera
-  const camDir = new THREE.Vector3();
-  camera.getWorldDirection(camDir);
-  const toSun = sunOrb.position.clone().normalize();
-  const facing = camDir.dot(toSun);
+  camera.getWorldDirection(_sbCamDir);
+  _sbToSun.copy(sunOrb.position).normalize();
+  const facing = _sbCamDir.dot(_sbToSun);
 
   // Ray-sphere occlusion: check if sun disc is blocked by globe
   const sunAngularRadius = 7.2 / 360; // ~0.02 rad
@@ -156,25 +163,25 @@ export function updateSunBloom(
   const camPos = camera.position;
   const camDist = camPos.length();
   const globeAngularRadius = Math.asin(Math.min(1, globeRadius / camDist));
-  const toSunDir = sunOrb.position.clone().sub(camPos).normalize();
-  const toGlobeDir = camPos.clone().negate().normalize();
-  const angleBetween = Math.acos(Math.min(1, Math.max(-1, toSunDir.dot(toGlobeDir))));
+  _sbToSunDir.copy(sunOrb.position).sub(camPos).normalize();
+  _sbToGlobeDir.copy(camPos).negate().normalize();
+  const angleBetween = Math.acos(Math.min(1, Math.max(-1, _sbToSunDir.dot(_sbToGlobeDir))));
   const clearAngle = globeAngularRadius + sunAngularRadius;
   const visibility = smoothstep(clearAngle - 0.04, clearAngle + 0.02, angleBetween);
 
   if (facing > -0.2 && visibility > 0.001) {
     mat.uniforms.sunVisible.value = smoothstep(-0.2, 0.1, facing) * visibility;
     mat.uniforms.sunScreenPos.value.set(
-      sunNDC.x * 0.5 + 0.5,
-      sunNDC.y * 0.5 + 0.5,
+      _sbSunNDC.x * 0.5 + 0.5,
+      _sbSunNDC.y * 0.5 + 0.5,
     );
     mat.uniforms.sunIntensity.value = 1.0;
     mat.uniforms.aspectRatio.value = camera.aspect;
 
     // Globe screen-space disc for masking
-    const globeCenter = new THREE.Vector3(0, 0, 0).clone().project(camera);
-    const gcx = globeCenter.x * 0.5 + 0.5;
-    const gcy = globeCenter.y * 0.5 + 0.5;
+    _sbGlobeCenter.set(0, 0, 0).project(camera);
+    const gcx = _sbGlobeCenter.x * 0.5 + 0.5;
+    const gcy = _sbGlobeCenter.y * 0.5 + 0.5;
     mat.uniforms.globeScreenPos.value.set(gcx, gcy);
     const cDist = camera.position.length();
     const R = 1.0;

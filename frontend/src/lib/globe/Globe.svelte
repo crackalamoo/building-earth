@@ -440,68 +440,62 @@
 
     if (uniformLighting) {
       // "Always Day": place sun directly behind camera so visible side is always lit
-      const cameraDir = new THREE.Vector3();
-      camera.getWorldDirection(cameraDir);
-      const dir = cameraDir.negate();
-      const normalizedDir = dir.clone().normalize();
-      if (treeInstances) treeInstances.setSunDirection(normalizedDir);
-      if (cloudInstances) cloudInstances.setSunDirection(normalizedDir);
-      if (cityLights) cityLights.setSunDirection(normalizedDir);
-      if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, normalizedDir);
-      if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(normalizedDir);
-      sunLight.position.copy(normalizedDir).multiplyScalar(distance);
-      if (sunOrb) sunOrb.position.copy(normalizedDir).multiplyScalar(360);
+      camera.getWorldDirection(_sunCameraDir);
+      _sunDir.copy(_sunCameraDir).negate().normalize();
+      if (treeInstances) treeInstances.setSunDirection(_sunDir);
+      if (cloudInstances) cloudInstances.setSunDirection(_sunDir);
+      if (cityLights) cityLights.setSunDirection(_sunDir);
+      if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, _sunDir);
+      if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(_sunDir);
+      sunLight.position.copy(_sunDir).multiplyScalar(distance);
+      if (sunOrb) sunOrb.position.copy(_sunDir).multiplyScalar(360);
       return;
     }
 
     const declination = getSunDeclination(displayMonthProgress);
 
-    let horizontalDir: THREE.Vector3;
-
     if (isAutoRotating) {
       // Sun stays fixed relative to camera view (illuminates from viewer's left-front)
-      const cameraDir = new THREE.Vector3();
-      camera.getWorldDirection(cameraDir);
+      camera.getWorldDirection(_sunCameraDir);
 
       // Get "left" direction relative to camera view (cross with world up)
-      const worldUp = new THREE.Vector3(0, 1, 0);
-      const leftDir = new THREE.Vector3().crossVectors(worldUp, cameraDir).normalize();
+      _sunLeftDir.crossVectors(_worldUp, _sunCameraDir).normalize();
 
       // Blend left direction away from camera direction to push sun more behind camera
       // This makes ~60% of visible globe lit instead of 50%
       const backwardBias = 0.4;
-      horizontalDir = new THREE.Vector3(
-        leftDir.x - cameraDir.x * backwardBias,
+      _sunHorizontalDir.set(
+        _sunLeftDir.x - _sunCameraDir.x * backwardBias,
         0,
-        leftDir.z - cameraDir.z * backwardBias
+        _sunLeftDir.z - _sunCameraDir.z * backwardBias,
       ).normalize();
     } else {
       // Sun orbits around the globe in world space
-      horizontalDir = new THREE.Vector3(
+      _sunHorizontalDir.set(
         Math.cos(sunOrbitAngle),
         0,
-        Math.sin(sunOrbitAngle)
+        Math.sin(sunOrbitAngle),
       );
     }
 
     // Apply declination tilt
-    const sunDir = new THREE.Vector3(
-      horizontalDir.x * Math.cos(declination),
+    const cosDecl = Math.cos(declination);
+    _sunDir.set(
+      _sunHorizontalDir.x * cosDecl,
       Math.sin(declination),
-      horizontalDir.z * Math.cos(declination)
+      _sunHorizontalDir.z * cosDecl,
     ).normalize();
 
-    if (treeInstances) treeInstances.setSunDirection(sunDir);
-    if (cloudInstances) cloudInstances.setSunDirection(sunDir.clone());
-    if (cityLights) cityLights.setSunDirection(sunDir);
-    if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, sunDir);
+    if (treeInstances) treeInstances.setSunDirection(_sunDir);
+    if (cloudInstances) cloudInstances.setSunDirection(_sunDir);
+    if (cityLights) cityLights.setSunDirection(_sunDir);
+    if (atmosphereMesh) updateAtmosphereSunDirection(atmosphereMesh, _sunDir);
 
     // Update ocean specular shader sun direction (in world space, pre-scaling)
-    if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(sunDir);
+    if (bmShaderMaterial) bmShaderMaterial.uniforms.sunDirection.value.copy(_sunDir);
 
-    const sunDirNorm = sunDir.clone().normalize();
-    sunLight.position.copy(sunDirNorm).multiplyScalar(distance);
-    if (sunOrb) sunOrb.position.copy(sunDirNorm).multiplyScalar(360);
+    sunLight.position.copy(_sunDir).multiplyScalar(distance);
+    if (sunOrb) sunOrb.position.copy(_sunDir).multiplyScalar(360);
   }
 
   function initWindParticles() {
@@ -556,6 +550,20 @@
     mouseDownPos = { x: e.clientX, y: e.clientY };
   }
 
+  // Reused per-click and per-frame to avoid GC churn
+  const _pickSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1);
+  const _pickHit = new THREE.Vector3();
+  const _axisY = new THREE.Vector3(0, 1, 0);
+  const _worldUp = new THREE.Vector3(0, 1, 0);
+  const _markerWorldPos = new THREE.Vector3();
+  const _markerToCam = new THREE.Vector3();
+  const _markerNormal = new THREE.Vector3();
+  const _markerProj = new THREE.Vector3();
+  const _sunCameraDir = new THREE.Vector3();
+  const _sunLeftDir = new THREE.Vector3();
+  const _sunHorizontalDir = new THREE.Vector3();
+  const _sunDir = new THREE.Vector3();
+
   function onMouseUp(e: MouseEvent) {
     const dx = e.clientX - mouseDownPos.x;
     const dy = e.clientY - mouseDownPos.y;
@@ -568,18 +576,20 @@
     );
     raycaster.setFromCamera(mouse, camera);
 
-    // Intersect whichever globe is visible
     const target = activeLayer === 'blue-marble' ? blueMarbleGlobe : activeLayer === 'precipitation' ? precipGlobe : globe;
     if (!target) return;
-    const hits = raycaster.intersectObject(target);
-    if (hits.length === 0) {
+
+    // Analytic sphere intersection — O(1) instead of raycasting against the
+    // multi-million-vertex mesh, which can stall Safari for hundreds of ms.
+    // The globe is a unit sphere centered at origin (radius 1).
+    const hit = raycaster.ray.intersectSphere(_pickSphere, _pickHit);
+    if (!hit) {
       dismissMarker();
       return;
     }
 
-    const hit = hits[0].point;
-    // Transform to local mesh coords (undo globe rotation)
-    const local = target.worldToLocal(hit.clone());
+    // Transform world hit into the rotated mesh's local frame
+    const local = target.worldToLocal(_pickHit.clone());
     const r = local.length();
     const lat = Math.asin(local.y / r) * (180 / Math.PI);
     const lon = Math.atan2(local.z, -local.x) * (180 / Math.PI);
@@ -1106,22 +1116,22 @@
       const refMesh = activeLayer === 'blue-marble' ? blueMarbleGlobe : activeLayer === 'precipitation' ? precipGlobe : globe;
       const rotY = refMesh?.rotation.y ?? 0;
 
-      // Apply globe rotation to get world position
-      const worldPos = markerWorldPos.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
-      markerMesh.position.copy(worldPos);
+      // Apply globe rotation to get world position (in-place; no allocation)
+      _markerWorldPos.copy(markerWorldPos).applyAxisAngle(_axisY, rotY);
+      markerMesh.position.copy(_markerWorldPos);
       markerMesh.lookAt(0, 0, 0);
 
       // Visibility: is marker facing camera?
-      const toCamera = new THREE.Vector3().subVectors(camera.position, worldPos).normalize();
-      const surfaceNormal = worldPos.clone().normalize();
-      const visible = surfaceNormal.dot(toCamera) > 0;
+      _markerToCam.copy(camera.position).sub(_markerWorldPos).normalize();
+      _markerNormal.copy(_markerWorldPos).normalize();
+      const visible = _markerNormal.dot(_markerToCam) > 0;
       markerMesh.visible = visible;
 
       // Project to screen
-      const projPos = worldPos.clone().project(camera);
+      _markerProj.copy(_markerWorldPos).project(camera);
       const rect = renderer.domElement.getBoundingClientRect();
-      const sx = (projPos.x * 0.5 + 0.5) * rect.width + rect.left;
-      const sy = (-projPos.y * 0.5 + 0.5) * rect.height + rect.top;
+      const sx = (_markerProj.x * 0.5 + 0.5) * rect.width + rect.left;
+      const sy = (-_markerProj.y * 0.5 + 0.5) * rect.height + rect.top;
       dispatch('markerScreen', { x: sx, y: sy, visible });
     }
 

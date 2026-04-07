@@ -492,10 +492,15 @@ export class CloudInstances {
 
       const lon = ((d.baseLon[idx] + d.driftLon[idx]) % 360 + 360) % 360;
       const lat = Math.max(-89, Math.min(89, d.baseLat[idx] + d.driftLat[idx]));
-      const [x, y, z] = latLonToXYZ(lat, lon, d.radius[idx]);
-      positions[idx * 3] = x;
-      positions[idx * 3 + 1] = y;
-      positions[idx * 3 + 2] = z;
+      // Inlined latLonToXYZ to avoid per-cloud array allocation in the hot loop
+      const radius = d.radius[idx];
+      const phi = (90 - lat) * DEG2RAD;
+      const theta = lon * DEG2RAD;
+      const sinPhi = Math.sin(phi);
+      const cosPhi = Math.cos(phi);
+      positions[idx * 3] = -radius * sinPhi * Math.cos(theta);
+      positions[idx * 3 + 1] = radius * cosPhi;
+      positions[idx * 3 + 2] = radius * sinPhi * Math.sin(theta);
     }
 
     posAttr.needsUpdate = true;

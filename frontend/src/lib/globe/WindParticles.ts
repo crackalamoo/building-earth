@@ -122,8 +122,12 @@ export class WindParticles {
     this.monthFrac = wrapped - Math.floor(wrapped);
   }
 
+  // Reused per-frame scratch — avoids tens of thousands of object literals/sec
+  private _windOut: { u: number; v: number } = { u: 0, v: 0 };
+
   update(dt: number): void {
     const month = this.monthIndex;
+    const DEG2RAD_LOCAL = Math.PI / 180;
 
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       this.ages[i] += dt;
@@ -140,12 +144,14 @@ export class WindParticles {
         this.trailLons[base + t] = this.trailLons[base + t - 1];
       }
 
-      // Advect head position
+      // Advect head position (writes into _windOut to avoid allocation)
       const headLat = this.trailLats[base];
       const headLon = this.trailLons[base];
-      const { u, v } = this.sampleWind(month, headLat, headLon);
+      this.sampleWindInto(month, headLat, headLon, this._windOut);
+      const u = this._windOut.u;
+      const v = this._windOut.v;
 
-      const latRad = headLat * (Math.PI / 180);
+      const latRad = headLat * DEG2RAD_LOCAL;
       const cosLat = Math.cos(latRad);
       const dlat = v * ADVECTION_SPEED * dt;
       const dlon = cosLat > 0.05 ? (u * ADVECTION_SPEED * dt) / cosLat : 0;
@@ -202,6 +208,8 @@ export class WindParticles {
       particleAlpha *= (0.3 + 0.7 * speedFactor);
 
       // Build line segments: each segment connects trail[t] → trail[t+1]
+      // latLonToXYZ is inlined here to avoid millions of array allocations.
+      const DEG2RAD_LOCAL = Math.PI / 180;
       for (let t = 0; t < TRAIL_LENGTH - 1; t++) {
         const segIdx = vertBase + t * 2;
         // Trail fades: head (t=0) is brightest, tail is transparent
@@ -211,19 +219,23 @@ export class WindParticles {
         // Start vertex of segment
         const lat0 = this.trailLats[trailBase + t];
         const lon0 = this.trailLons[trailBase + t];
-        const [x0, y0, z0] = this.latLonToXYZ(lat0, lon0);
-        this.positions[segIdx * 3] = x0;
-        this.positions[segIdx * 3 + 1] = y0;
-        this.positions[segIdx * 3 + 2] = z0;
+        const phi0 = (90 - lat0) * DEG2RAD_LOCAL;
+        const theta0 = lon0 * DEG2RAD_LOCAL;
+        const sinPhi0 = Math.sin(phi0);
+        this.positions[segIdx * 3] = -GLOBE_RADIUS * sinPhi0 * Math.cos(theta0);
+        this.positions[segIdx * 3 + 1] = GLOBE_RADIUS * Math.cos(phi0);
+        this.positions[segIdx * 3 + 2] = GLOBE_RADIUS * sinPhi0 * Math.sin(theta0);
         this.alphas[segIdx] = particleAlpha * headFade;
 
         // End vertex of segment
         const lat1 = this.trailLats[trailBase + t + 1];
         const lon1 = this.trailLons[trailBase + t + 1];
-        const [x1, y1, z1] = this.latLonToXYZ(lat1, lon1);
-        this.positions[(segIdx + 1) * 3] = x1;
-        this.positions[(segIdx + 1) * 3 + 1] = y1;
-        this.positions[(segIdx + 1) * 3 + 2] = z1;
+        const phi1 = (90 - lat1) * DEG2RAD_LOCAL;
+        const theta1 = lon1 * DEG2RAD_LOCAL;
+        const sinPhi1 = Math.sin(phi1);
+        this.positions[(segIdx + 1) * 3] = -GLOBE_RADIUS * sinPhi1 * Math.cos(theta1);
+        this.positions[(segIdx + 1) * 3 + 1] = GLOBE_RADIUS * Math.cos(phi1);
+        this.positions[(segIdx + 1) * 3 + 2] = GLOBE_RADIUS * sinPhi1 * Math.sin(theta1);
         this.alphas[segIdx + 1] = particleAlpha * tailFade;
       }
     }
@@ -306,6 +318,30 @@ export class WindParticles {
       v01 * (1 - tLat) * tLon +
       v11 * tLat * tLon
     );
+  }
+
+  private sampleWindInto(
+    month: number,
+    lat: number,
+    lon: number,
+    out: { u: number; v: number },
+  ): void {
+    const m0 = month % 12;
+    const t = this.monthFrac;
+    const uData = this.windFields.wind_u_10m.data as Float32Array;
+    const vData = this.windFields.wind_v_10m.data as Float32Array;
+    const u0 = this.sampleFieldBilinear(uData, m0, lat, lon);
+    const v0 = this.sampleFieldBilinear(vData, m0, lat, lon);
+    if (t < 0.001) {
+      out.u = u0;
+      out.v = v0;
+      return;
+    }
+    const m1 = (month + 1) % 12;
+    const u1 = this.sampleFieldBilinear(uData, m1, lat, lon);
+    const v1 = this.sampleFieldBilinear(vData, m1, lat, lon);
+    out.u = u0 + (u1 - u0) * t;
+    out.v = v0 + (v1 - v0) * t;
   }
 
   private sampleWind(month: number, lat: number, lon: number): { u: number; v: number } {

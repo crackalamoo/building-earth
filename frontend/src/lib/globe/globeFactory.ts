@@ -13,11 +13,20 @@ export function createGlobeMesh(
   elevationData?: Float32Array, elevNlat?: number, elevNlon?: number,
   landMaskData?: Uint8Array, maskNlat?: number, maskNlon?: number,
 ): THREE.Mesh {
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const blendedNormals: number[] = [];
+  // Pre-allocate typed arrays. Using number[] + .push() is dramatically slower
+  // in Safari than writing into Float32Arrays directly (Safari's array→typed
+  // array conversion path is much weaker than V8's). At ~6M vertices the
+  // difference can be tens of seconds vs hundreds of ms.
+  const cellCount = latCount * lonCount;
+  const vertexCount = cellCount * 6; // 2 triangles, 3 verts each
+  const positions = new Float32Array(vertexCount * 3);
+  const colors = new Float32Array(vertexCount * 3);
+  const blendedNormals = new Float32Array(vertexCount * 3);
+  const hasIsOcean = !!(landMaskData && maskNlat && maskNlon);
+  const isOceanArr = hasIsOcean ? new Float32Array(vertexCount) : null;
+  let writeIdx = 0; // current vertex offset (0-indexed)
 
-  function getVertex(lat: number, lon: number): [number, number, number] {
+  function writeVertex(lat: number, lon: number, isLand: boolean): void {
     let r = radius;
     if (elevationData && elevNlat && elevNlon) {
       const elev = sampleElevation(elevationData, elevNlat, elevNlon, lat, lon);
@@ -25,35 +34,46 @@ export function createGlobeMesh(
     }
     const phi = (90 - lat) * (Math.PI / 180);
     const theta = lon * (Math.PI / 180);
-    return [
-      -r * Math.sin(phi) * Math.cos(theta),
-      r * Math.cos(phi),
-      r * Math.sin(phi) * Math.sin(theta)
-    ];
-  }
+    const sinPhi = Math.sin(phi);
+    const cosPhi = Math.cos(phi);
+    const cosTheta = Math.cos(theta);
+    const sinTheta = Math.sin(theta);
 
-  function addVertex(lat: number, lon: number, r: number, g: number, b: number, isLand: boolean): void {
-    const [x, y, z] = getVertex(lat, lon);
-    positions.push(x, y, z);
-    colors.push(r, g, b);
+    const o3 = writeIdx * 3;
+    positions[o3] = -r * sinPhi * cosTheta;
+    positions[o3 + 1] = r * cosPhi;
+    positions[o3 + 2] = r * sinPhi * sinTheta;
 
-    const phi = (90 - lat) * (Math.PI / 180);
-    const theta = lon * (Math.PI / 180);
-    const snx = -Math.sin(phi) * Math.cos(theta);
-    const sny = Math.cos(phi);
-    const snz = Math.sin(phi) * Math.sin(theta);
+    // Default color (will be updated immediately)
+    colors[o3] = 0.1;
+    colors[o3 + 1] = 0.1;
+    colors[o3 + 2] = 0.1;
+
+    const snx = -sinPhi * cosTheta;
+    const sny = cosPhi;
+    const snz = sinPhi * sinTheta;
 
     // Ocean: use pure sphere normals (bathymetry shouldn't affect lighting)
     if (elevationData && elevNlat && elevNlon && isLand) {
       const [dnx, dny, dnz] = displacedNormal(elevationData, elevNlat, elevNlon, lat, lon, radius);
-      let nx = snx + NORMAL_BLEND * (dnx - snx);
-      let ny = sny + NORMAL_BLEND * (dny - sny);
-      let nz = snz + NORMAL_BLEND * (dnz - snz);
+      const nx = snx + NORMAL_BLEND * (dnx - snx);
+      const ny = sny + NORMAL_BLEND * (dny - sny);
+      const nz = snz + NORMAL_BLEND * (dnz - snz);
       const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      blendedNormals.push(nx / len, ny / len, nz / len);
+      blendedNormals[o3] = nx / len;
+      blendedNormals[o3 + 1] = ny / len;
+      blendedNormals[o3 + 2] = nz / len;
     } else {
-      blendedNormals.push(snx, sny, snz);
+      blendedNormals[o3] = snx;
+      blendedNormals[o3 + 1] = sny;
+      blendedNormals[o3 + 2] = snz;
     }
+
+    if (isOceanArr) {
+      isOceanArr[writeIdx] = isLand ? 0.0 : 1.0;
+    }
+
+    writeIdx++;
   }
 
   const latStep = 180 / latCount;
@@ -73,42 +93,26 @@ export function createGlobeMesh(
       const lon0 = j * lonStep;
       const lon1 = (j + 1) * lonStep;
 
-      const cellIsLand = (landMaskData && maskNlat && maskNlon)
-        ? landMaskData[dataLatIdx * maskNlon + j] === 1
+      const cellIsLand = hasIsOcean
+        ? landMaskData![dataLatIdx * maskNlon! + j] === 1
         : false;
 
-      // Default color (will be updated immediately)
-      const r = 0.1, g = 0.1, b = 0.1;
+      writeVertex(lat0, lon0, cellIsLand);
+      writeVertex(lat1, lon0, cellIsLand);
+      writeVertex(lat1, lon1, cellIsLand);
 
-      addVertex(lat0, lon0, r, g, b, cellIsLand);
-      addVertex(lat1, lon0, r, g, b, cellIsLand);
-      addVertex(lat1, lon1, r, g, b, cellIsLand);
-
-      addVertex(lat0, lon0, r, g, b, cellIsLand);
-      addVertex(lat1, lon1, r, g, b, cellIsLand);
-      addVertex(lat0, lon1, r, g, b, cellIsLand);
-    }
-  }
-
-  // Build per-vertex isOcean attribute if land mask provided
-  const isOceanArr: number[] = [];
-  if (landMaskData && maskNlat && maskNlon) {
-    for (let i = 0; i < latCount; i++) {
-      const dataLatIdx = latCount - 1 - i;
-      for (let j = 0; j < lonCount; j++) {
-        const isLand = landMaskData[dataLatIdx * maskNlon + j] === 1;
-        const val = isLand ? 0.0 : 1.0;
-        for (let v = 0; v < 6; v++) isOceanArr.push(val);
-      }
+      writeVertex(lat0, lon0, cellIsLand);
+      writeVertex(lat1, lon1, cellIsLand);
+      writeVertex(lat0, lon1, cellIsLand);
     }
   }
 
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(blendedNormals, 3));
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  if (isOceanArr.length > 0) {
-    geometry.setAttribute('isOcean', new THREE.Float32BufferAttribute(isOceanArr, 1));
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(blendedNormals, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  if (isOceanArr) {
+    geometry.setAttribute('isOcean', new THREE.BufferAttribute(isOceanArr, 1));
   }
 
   const material = new THREE.MeshLambertMaterial({
