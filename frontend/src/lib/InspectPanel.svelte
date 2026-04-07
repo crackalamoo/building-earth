@@ -790,7 +790,7 @@
 
       <div class="cycle-footer">
         <span class="legend-temp">— Temperature</span>
-        <span class="legend-precip">▪ Precipitation</span>
+        <span class="legend-precip">▪︎ Precipitation</span>
         <span class="unit-toggle" role="button" tabindex="0" on:click|stopPropagation={toggleUnits}>
           {imp ? '°F / in' : '°C / mm'}
         </span>
@@ -1028,7 +1028,10 @@
   }
 
   .legend-temp { color: #f4a460; }
-  .legend-precip { color: rgba(42, 158, 158, 0.9); }
+  .legend-precip {
+    color: rgba(42, 158, 158, 0.9);
+    font-variant-emoji: text;
+  }
 
   .chat-area {
     flex: 1;
@@ -1246,8 +1249,8 @@
       right: 0;
       width: 100%;
       height: auto;
-      max-height: 55vh;
-      max-height: 55dvh;
+      max-height: 65vh;
+      max-height: 65dvh;
       border-left: none;
       border-top: 1px solid #1a6b6b;
       border-radius: 12px 12px 0 0;
