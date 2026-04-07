@@ -1201,7 +1201,9 @@
     color: #fff;
     padding: 0.5rem 0.75rem;
     border-radius: 6px;
-    font-size: 0.9rem;
+    /* iOS Safari auto-zooms inputs with font-size below 16px on focus.
+       Keep at 16px+ to prevent the page from being yanked around. */
+    font-size: 16px;
     outline: none;
     box-sizing: border-box;
   }

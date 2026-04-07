@@ -257,9 +257,23 @@
     background: #3fc0c0;
   }
 
+  /* Desktop: slide in from the right edge where the overlay sits */
   @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(8px); }
+    from { opacity: 0; transform: translateX(24px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  /* Mobile collapsed teaser: slide down from the top edge */
+  @keyframes fadeInMobile {
+    from { opacity: 0; transform: translateY(-24px); }
     to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Mobile expanded modal: just fade in (the modal uses translate(-50%, -50%)
+     for centering, so animating transform here would fight that). */
+  @keyframes modalFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
 
 .writeup {
@@ -421,6 +435,12 @@
       overflow: hidden;
     }
 
+    /* Mobile expanded modal: cancel the desktop right-slide animation
+       (it conflicts with the center transform) and just fade in. */
+    .overlay {
+      animation: modalFadeIn 0.3s ease;
+    }
+
     /* Collapsed: small teaser bar pinned to the top of the screen */
     .overlay.collapsed {
       position: absolute;
@@ -430,6 +450,7 @@
       transform: none;
       width: 100vw;
       max-height: none;
+      animation: fadeInMobile 0.4s ease;
       padding: 0.75rem 1rem;
       flex-direction: row;
       flex-wrap: wrap;
