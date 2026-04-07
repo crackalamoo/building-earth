@@ -211,7 +211,8 @@ __marimo__/
 data/*
 utils/*
 .vscode/*
-.claude/*
+.claude/**/*.local.*
+.claude/**/scratch.py
 
 # Frontend
 frontend/node_modules/
