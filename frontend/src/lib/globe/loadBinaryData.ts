@@ -10,6 +10,20 @@
 const DATA_BASE: string = (import.meta.env.VITE_DATA_BASE || '').replace(/\/$/, '');
 
 /**
+ * Whether this device should load the lower-resolution mobile binaries.
+ * The mobile files have the same field structure but the high-res grid
+ * (720x1440) is downsampled to 180x360, dropping mesh and GPU memory by ~16x.
+ */
+const IS_MOBILE: boolean =
+  typeof navigator !== 'undefined' &&
+  /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+/** Pick the file basename (with _mobile suffix if appropriate). */
+function variantName(base: string): string {
+  return IS_MOBILE ? `${base}_mobile` : base;
+}
+
+/**
  * Fetch a gzip-compressed .bin.gz file and return the decompressed ArrayBuffer.
  * Some servers (Vite dev) transparently decompress via Content-Encoding: gzip,
  * while others (Cloudflare R2) serve raw gzip bytes. We detect which case
@@ -129,9 +143,10 @@ function decodeField(buffer: ArrayBuffer, field: ManifestField): Float32Array | 
 }
 
 export async function loadBinaryData(): Promise<ClimateLayerData> {
+  const name = variantName('main');
   const [manifestRes, buffer] = await Promise.all([
-    fetch(`${DATA_BASE}/main.manifest.json`),
-    fetchBinary('main.bin'),
+    fetch(`${DATA_BASE}/${name}.manifest.json`),
+    fetchBinary(`${name}.bin`),
   ]);
 
   if (!manifestRes.ok) {
@@ -292,7 +307,7 @@ export function preloadStageFile(stage: number): Promise<void> {
   if (preloadPromises.has(stage)) return preloadPromises.get(stage)!;
 
   const promise = (async () => {
-    const prefix = stage === 5 ? 'main' : `stage${stage}`;
+    const prefix = variantName(stage === 5 ? 'main' : `stage${stage}`);
     try {
       const [manifestRes, buffer] = await Promise.all([
         fetch(`${DATA_BASE}/${prefix}.manifest.json`),
