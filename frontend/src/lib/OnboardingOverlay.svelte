@@ -34,7 +34,7 @@
         ['-9_C', { celsius: -9, isDelta: false }],
       ]);
       return {
-        teaser: "Bare rock in space — sunlight in, heat out. The poles freeze in months of darkness.",
+        teaser: "This is Earth as a bare rock in space with no air — sunlight in, heat out. The poles freeze in months of darkness; even at the equator, 12 hours of night is enough to chill the air.",
         text: "This is Earth with no air — just bare rock in space. The only thing setting the temperature is sunlight hitting the surface and heat radiating back out.\n\nThe equator gets the most direct sunlight, but even there the surface only averages {8_C} — because half the time it's night, and all the heat escapes immediately. The poles spend months in complete darkness and plunge to {-170_C} in winter. The global average is {-9_C}, well below freezing.\n\nNothing could live here. The planet needs something to hold onto its heat.",
         values,
       };
@@ -60,7 +60,7 @@
         ['6_C', { celsius: 6, isDelta: false }],
       ]);
       return {
-        teaser: "Hot air spilling into cold creates wind. Eddies carry heat from the tropics toward the poles.",
+        teaser: "Air spills from hot to cold up high, and the reverse down low, creating wind. Eddies carry heat from the tropics toward the poles.",
         text: "Hot air expands, and cold air shrinks. Where a column of air is hot, it expands so much that air starts spilling out to adjacent areas. Conversely, air from elsewhere flows into cold areas, where the air has shrunk. This is how temperature differences create pressure differences, and pressure differences create wind.\n\nCold air sinks at the poles and flows toward the warm equator, where air is rising. The spinning Earth deflects this flow sideways — this is the **Coriolis effect** — so surface winds across most of the globe blow from the east.\n\nWind and turbulent eddies carry heat from the tropics toward the poles. Water evaporates over warm ocean, forms clouds, and falls as rain. Snow piles up in the cold regions and reflects sunlight back to space, keeping them cold.\n\nThe equator cools to {18_C} as heat is carried poleward. The poles warm to {-19_C}. But the global average actually drops to {6_C} — clouds now block incoming sunlight, and widespread snow reflects it. The familiar deserts are missing — the Sahara gets as much rain as the tropics.",
         values,
       };
@@ -393,7 +393,7 @@
     color: rgba(255, 255, 255, 0.95);
   }
 
-  @media (max-width: 640px), (max-height: 500px) {
+  @media (max-width: 800px), (max-height: 500px) {
     /* Mobile expanded: modal with backdrop, centered. Matches About modal. */
     .backdrop.visible {
       display: block;

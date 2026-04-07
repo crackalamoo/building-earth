@@ -104,7 +104,7 @@
   // teaser line + next button) so the globe stays visible. The user can tap
   // "Read more" to see the full writeup. Desktop is never collapsed.
   const isMobileViewport = typeof window !== 'undefined'
-    && window.matchMedia('(max-width: 640px), (max-height: 500px)').matches;
+    && window.matchMedia('(max-width: 800px), (max-height: 500px)').matches;
   let onboardingCollapsed = isMobileViewport;
   $: stage, (onboardingCollapsed = isMobileViewport);
 
@@ -595,7 +595,7 @@
     color: rgba(255, 255, 255, 0.85);
   }
 
-  @media (max-width: 640px), (max-height: 500px) {
+  @media (max-width: 800px), (max-height: 500px) {
     .title-card {
       top: 2rem;
       left: 1.5rem;

@@ -395,16 +395,21 @@
   ];
   $: displayMonth = MONTH_NAMES[Math.floor(monthProgress) % 12];
 
-  let isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches;
+  let isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 800px)').matches;
 
   // ── Drag-to-dismiss (mobile) ──
   let panelEl: HTMLDivElement;
+  let dragHandleEl: HTMLDivElement;
   let dragStartY = 0;
   let dragOffsetY = 0;
   let dragging = false;
 
   function onDragStart(e: TouchEvent | MouseEvent) {
     if (!isMobile) return;
+    // Allow taps on interactive children (e.g. the close button) to bubble
+    // through normally instead of being captured as a drag.
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('[data-no-drag]')) return;
     dragging = true;
     dragOffsetY = 0;
     const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
@@ -415,9 +420,14 @@
 
   function onDragMove(e: TouchEvent | MouseEvent) {
     if (!dragging) return;
+    // Block iOS scroll so the panel can follow the finger
+    if ('touches' in e && e.cancelable) e.preventDefault();
     const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
     dragOffsetY = Math.max(0, clientY - dragStartY); // only allow dragging down
-    if (panelEl) panelEl.style.transform = `translateY(${dragOffsetY}px)`;
+    // iOS Safari doesn't visually update `transform` on this fixed element
+    // (verified empirically — the inline style updates and computed style
+    // shows it, but no repaint happens). Animating `bottom` instead works.
+    if (panelEl) panelEl.style.bottom = `${-dragOffsetY}px`;
   }
 
   function onDragEnd() {
@@ -428,7 +438,7 @@
       close();
     } else {
       // Snap back
-      if (panelEl) panelEl.style.transform = '';
+      if (panelEl) panelEl.style.bottom = '';
       dragOffsetY = 0;
     }
   }
@@ -444,15 +454,27 @@
   }
 
   function addDragListeners() {
+    // touchstart on the drag handle MUST be {passive: false} so we can
+    // call e.preventDefault() and stop iOS from interpreting the gesture
+    // as a scroll. Svelte's on:touchstart attaches as passive, so we
+    // bypass it with a manual addEventListener on the bound handle.
+    if (dragHandleEl) {
+      dragHandleEl.addEventListener('touchstart', onDragStart, { passive: false });
+    }
     window.addEventListener('touchmove', onDragMove, { passive: false });
     window.addEventListener('touchend', onDragEnd);
+    window.addEventListener('touchcancel', onDragEnd);
     window.addEventListener('mousemove', onDragMove);
     window.addEventListener('mouseup', onDragEnd);
   }
 
   function removeDragListeners() {
+    if (dragHandleEl) {
+      dragHandleEl.removeEventListener('touchstart', onDragStart);
+    }
     window.removeEventListener('touchmove', onDragMove);
     window.removeEventListener('touchend', onDragEnd);
+    window.removeEventListener('touchcancel', onDragEnd);
     window.removeEventListener('mousemove', onDragMove);
     window.removeEventListener('mouseup', onDragEnd);
   }
@@ -469,7 +491,7 @@
   onMount(() => {
     if (isMobile) addDragListeners();
 
-    const mql = window.matchMedia('(max-width: 640px)');
+    const mql = window.matchMedia('(max-width: 800px)');
     const onMediaChange = (e: MediaQueryListEvent) => { isMobile = e.matches; };
     mql.addEventListener('change', onMediaChange);
 
@@ -490,17 +512,27 @@
 >
   {#if isMobile}
     <!-- svelte-ignore a11y-no-static-element-interactions -->
-    <div class="drag-handle" on:touchstart={onDragStart} on:mousedown={onDragStart}>
-      <div class="drag-handle-pill"></div>
+    <div class="drag-area" bind:this={dragHandleEl} on:mousedown={onDragStart}>
+      <div class="drag-handle">
+        <div class="drag-handle-pill"></div>
+      </div>
+      <div class="panel-header">
+        <div class="coords">
+          {Math.abs(lat).toFixed(1)}°{lat >= 0 ? 'N' : 'S'}, {Math.abs(lon).toFixed(1)}°{lon >= 0 ? 'E' : 'W'}
+          <span class="month-tag">{displayMonth}</span>
+        </div>
+        <button class="close-btn" data-no-drag on:click|stopPropagation={close}>×</button>
+      </div>
+    </div>
+  {:else}
+    <div class="panel-header">
+      <div class="coords">
+        {Math.abs(lat).toFixed(1)}°{lat >= 0 ? 'N' : 'S'}, {Math.abs(lon).toFixed(1)}°{lon >= 0 ? 'E' : 'W'}
+        <span class="month-tag">{displayMonth}</span>
+      </div>
+      <button class="close-btn" on:click|stopPropagation={close}>×</button>
     </div>
   {/if}
-  <div class="panel-header">
-    <div class="coords">
-      {Math.abs(lat).toFixed(1)}°{lat >= 0 ? 'N' : 'S'}, {Math.abs(lon).toFixed(1)}°{lon >= 0 ? 'E' : 'W'}
-      <span class="month-tag">{displayMonth}</span>
-    </div>
-    <button class="close-btn" on:click|stopPropagation={close}>×</button>
-  </div>
 
   <div class="stats">
     <div class="stat">
@@ -839,6 +871,17 @@
     display: flex;
     flex-direction: column;
     font-size: 1rem;
+  }
+
+  .inspect-panel.dragging {
+    transition: none;
+  }
+
+  .drag-area {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    touch-action: none;
   }
 
   .panel-header {
@@ -1189,22 +1232,20 @@
     z-index: 1;
   }
 
-  .inspect-panel.dragging {
-    transition: none;
-  }
-
   .drag-handle {
     display: none;
   }
 
-  @media (max-width: 640px), (max-height: 500px) {
+  @media (max-width: 800px), (max-height: 500px) {
     .inspect-panel {
       top: auto;
       bottom: 0;
       left: 0;
       right: 0;
       width: 100%;
-      max-height: 65vh;
+      height: auto;
+      max-height: 55vh;
+      max-height: 55dvh;
       border-left: none;
       border-top: 1px solid #1a6b6b;
       border-radius: 12px 12px 0 0;

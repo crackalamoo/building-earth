@@ -119,7 +119,7 @@
     line-height: inherit;
   }
 
-  @media (max-width: 640px), (max-height: 500px) {
+  @media (max-width: 800px), (max-height: 500px) {
     .legend {
       bottom: 5rem;
       right: 0.75rem;
