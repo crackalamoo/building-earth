@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { ELEVATION_SCALE, sampleElevation } from './elevation';
 
 const GLOBE_RADIUS = 1.001;
 
@@ -45,8 +46,14 @@ export class CityLights {
   private sunDirUniform = { value: new THREE.Vector3(1, 0, 0) };
   private group = new THREE.Group();
   private disposed = false;
+  private elevData: Float32Array | null;
+  private elevNlat: number;
+  private elevNlon: number;
 
-  constructor() {
+  constructor(elevData?: Float32Array, elevNlat?: number, elevNlon?: number) {
+    this.elevData = elevData ?? null;
+    this.elevNlat = elevNlat ?? 0;
+    this.elevNlon = elevNlon ?? 0;
     this.load();
   }
 
@@ -68,12 +75,20 @@ export class CityLights {
         const lat = view.getFloat32(offset + 4, true);
         const pop = view.getFloat32(offset + 8, true);
 
+        // Lift the city above the displaced terrain in blue marble mode so
+        // it isn't buried inside a mountain. The same lookup the mesh uses.
+        let radius = GLOBE_RADIUS;
+        if (this.elevData) {
+          const elev = sampleElevation(this.elevData, this.elevNlat, this.elevNlon, lat, lon);
+          radius += Math.max(0, elev) * ELEVATION_SCALE;
+        }
+
         // Convert lat/lon to 3D position on globe
         const phi = (90 - lat) * (Math.PI / 180);
         const theta = lon * (Math.PI / 180);
-        positions[i * 3] = -GLOBE_RADIUS * Math.sin(phi) * Math.cos(theta);
-        positions[i * 3 + 1] = GLOBE_RADIUS * Math.cos(phi);
-        positions[i * 3 + 2] = GLOBE_RADIUS * Math.sin(phi) * Math.sin(theta);
+        positions[i * 3] = -radius * Math.sin(phi) * Math.cos(theta);
+        positions[i * 3 + 1] = radius * Math.cos(phi);
+        positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
 
         // Size from log(population): range ~2 (small towns) to ~8 (megacities)
         // Use sqrt(population) for wide dynamic range:

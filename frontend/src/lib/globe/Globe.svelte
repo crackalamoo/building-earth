@@ -36,7 +36,9 @@
   let globe: THREE.Mesh | null = null;
   let blueMarbleGlobe: THREE.Mesh | null = null;
   let precipGlobe: THREE.Mesh | null = null;
-  let bordersGroup: THREE.Group | null = null;
+  let bordersGroup: THREE.Group | null = null; // parent of both variants
+  let bordersFlat: THREE.Group | null = null;
+  let bordersTerrain: THREE.Group | null = null;
   let animationId: number;
   let sunLight: THREE.DirectionalLight;
   let displayMonthProgress = 0; // Smoothly interpolates toward target
@@ -333,9 +335,11 @@
   let ambientLight: THREE.AmbientLight;
 
   // Toggle visibility when activeLayer changes
-  // Reference activeLayer before the if so Svelte tracks it as a dependency
+  // Reference activeLayer before the if so Svelte tracks it as a dependency.
+  // bordersGroup is referenced so the block re-runs after async border load.
   $: {
     const layer = activeLayer;
+    void bordersGroup;
     if (scene) {
       if (globe) globe.visible = layer === 'temperature';
       if (precipGlobe) precipGlobe.visible = layer === 'precipitation';
@@ -345,7 +349,46 @@
       if (cloudInstances) cloudInstances.getObject().visible = layer === 'blue-marble';
       if (cityLights) cityLights.getObject().visible = layer === 'blue-marble';
       if (atmosphereMesh) atmosphereMesh.visible = layer === 'blue-marble';
+      if (bordersFlat) bordersFlat.visible = layer !== 'blue-marble';
+      if (bordersTerrain) bordersTerrain.visible = layer === 'blue-marble';
     }
+  }
+
+  // Build the two borders variants and add them to the scene. Called from
+  // init() and re-called whenever layerData changes (which happens after
+  // each stage transition once disposeStageMeshes() has cleared the old
+  // bordersGroup).
+  let bordersLoading = false;
+  function loadBordersIntoScene(): void {
+    if (!showBorders || !scene || bordersGroup || bordersLoading) return;
+    bordersLoading = true;
+    const elev = layerData?.elevation;
+    loadBorders(
+      elev?.data as Float32Array | undefined,
+      elev?.shape[0],
+      elev?.shape[1],
+    ).then(({ flat, terrain }) => {
+      bordersLoading = false;
+      if (!scene) return;
+      const group = new THREE.Group();
+      group.add(flat);
+      group.add(terrain);
+      flat.visible = activeLayer !== 'blue-marble';
+      terrain.visible = activeLayer === 'blue-marble';
+      scene.add(group);
+      bordersFlat = flat;
+      bordersTerrain = terrain;
+      bordersGroup = group;
+    }).catch(e => {
+      bordersLoading = false;
+      console.error('Failed to load borders:', e);
+    });
+  }
+
+  // Reactive trigger: whenever layerData changes (i.e. after a stage
+  // transition) and borders aren't currently loaded, build them.
+  $: if (layerData && !bordersGroup && !bordersLoading && scene) {
+    loadBordersIntoScene();
   }
 
   function ensurePrecipBase(month: number) {
@@ -687,6 +730,8 @@
         }
       });
       bordersGroup = null;
+      bordersFlat = null;
+      bordersTerrain = null;
     }
     // Reset caches
     tempBaseCache = new Array(12).fill(null);
@@ -871,7 +916,12 @@
     // City lights only at stage 5
     if (stage >= 5) {
       if (!cityLights) {
-        cityLights = new CityLights();
+        const elev = layerData?.elevation;
+        cityLights = new CityLights(
+          elev?.data as Float32Array | undefined,
+          elev?.shape[0],
+          elev?.shape[1],
+        );
         const cityObj = cityLights.getObject();
         cityObj.visible = activeLayer === 'blue-marble';
         scene.add(cityObj);
@@ -989,7 +1039,12 @@
 
     // City lights at stage 5
     if (revealed && stage >= 5) {
-      cityLights = new CityLights();
+      const elev = layerData?.elevation;
+      cityLights = new CityLights(
+        elev?.data as Float32Array | undefined,
+        elev?.shape[0],
+        elev?.shape[1],
+      );
       const cityObj = cityLights.getObject();
       cityObj.visible = activeLayer === 'blue-marble';
       scene.add(cityObj);
@@ -1002,18 +1057,9 @@
       scene.add(sf.milkyWay);  // milky way (rotated via shader uniform)
     }).catch(e => console.error('Failed to load stars:', e));
 
-    // Load borders
-    if (showBorders) {
-      const elev = layerData?.elevation;
-      loadBorders(
-        elev?.data as Float32Array | undefined,
-        elev?.shape[0],
-        elev?.shape[1],
-      ).then(group => {
-        bordersGroup = group;
-        scene.add(bordersGroup);
-      }).catch(e => console.error('Failed to load borders:', e));
-    }
+    // Load borders for the first time (also re-runs reactively after stage
+    // transitions when bordersGroup is reset to null).
+    loadBordersIntoScene();
 
     // Handle resize. window resize covers viewport changes, but layout shifts
     // (e.g. the control bar appearing) don't fire a window resize — so we

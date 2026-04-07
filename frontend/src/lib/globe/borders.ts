@@ -13,10 +13,32 @@ let _elevData: Float32Array | null = null;
 let _elevNlat = 0;
 let _elevNlon = 0;
 
+/**
+ * Sample the maximum elevation in a small neighborhood around (lat, lon).
+ * Border vertices use this so they sit above any nearby peak — a plain
+ * point sample can dip under the displaced mesh face on the back side
+ * of a mountain, even when the offset above the surface is generous.
+ */
+function sampleMaxElevation(lat: number, lon: number): number {
+  if (!_elevData) return 0;
+  const dLat = 180 / _elevNlat;
+  const dLon = 360 / _elevNlon;
+  let maxElev = -Infinity;
+  for (let di = -1; di <= 1; di++) {
+    for (let dj = -1; dj <= 1; dj++) {
+      const la = Math.max(-89.9, Math.min(89.9, lat + di * dLat));
+      const lo = ((lon + dj * dLon) % 360 + 360) % 360;
+      const e = sampleElevation(_elevData, _elevNlat, _elevNlon, la, lo);
+      if (e > maxElev) maxElev = e;
+    }
+  }
+  return maxElev;
+}
+
 function latLonToVector3(lat: number, lon: number, r: number): THREE.Vector3 {
   let radius = r;
   if (_elevData) {
-    const elev = sampleElevation(_elevData, _elevNlat, _elevNlon, lat, lon);
+    const elev = sampleMaxElevation(lat, lon);
     radius += Math.max(0, elev) * ELEVATION_SCALE;
   }
   const phi = (90 - lat) * (Math.PI / 180);
@@ -39,12 +61,12 @@ function createLineFromCoords(
   const dark = new THREE.Line(geom, new THREE.LineBasicMaterial({
     color: darkColor,
     transparent: true,
-    opacity: 0.8,
+    opacity: 1.0,
   }));
   const light = new THREE.Line(geom.clone(), new THREE.LineBasicMaterial({
     color: lightColor,
     transparent: true,
-    opacity: 0.3,
+    opacity: 0.35,
   }));
   return [dark, light];
 }
@@ -71,19 +93,8 @@ function processMultiPolygon(
   return lines;
 }
 
-/**
- * Load country borders and coastlines, returning a THREE.Group.
- * Fetches /countries-110m.json and /land-110m.json.
- */
-export async function loadBorders(
-  elevData?: Float32Array, elevNlat?: number, elevNlon?: number,
-): Promise<THREE.Group> {
-  _elevData = elevData ?? null;
-  _elevNlat = elevNlat ?? 0;
-  _elevNlon = elevNlon ?? 0;
-
+async function buildBordersAtRadius(radius: number): Promise<THREE.Group> {
   const group = new THREE.Group();
-  const radius = 1.002; // slightly above globe surface
 
   // Country borders
   const response = await fetch('/countries-110m.json');
@@ -92,7 +103,7 @@ export async function loadBorders(
   const mesh = topojson.mesh(topology, countries);
 
   if (mesh.type === 'MultiLineString') {
-    const lines = processMultiLineString(mesh.coordinates, radius, 0x333333, 0xcccccc);
+    const lines = processMultiLineString(mesh.coordinates, radius, 0x000000, 0xcccccc);
     lines.forEach(line => group.add(line));
   }
 
@@ -117,4 +128,36 @@ export async function loadBorders(
   }
 
   return group;
+}
+
+/**
+ * Load country borders and coastlines, returning two THREE.Groups: one
+ * built without elevation displacement (for the smooth temperature /
+ * precipitation globes) and one built on top of the displaced terrain
+ * (for blue marble). Globe.svelte toggles visibility based on the
+ * active layer.
+ */
+export async function loadBorders(
+  elevData?: Float32Array, elevNlat?: number, elevNlon?: number,
+): Promise<{ flat: THREE.Group; terrain: THREE.Group }> {
+  // Flat variant: no elevation sampling (smooth sphere underneath).
+  _elevData = null;
+  _elevNlat = 0;
+  _elevNlon = 0;
+  const flat = await buildBordersAtRadius(1.002);
+
+  // Terrain-aware variant: lifts each vertex above the displaced mesh.
+  if (elevData && elevNlat && elevNlon) {
+    _elevData = elevData;
+    _elevNlat = elevNlat;
+    _elevNlon = elevNlon;
+  }
+  const terrain = await buildBordersAtRadius(1.002);
+
+  // Reset shared state so future calls without elevation start clean.
+  _elevData = null;
+  _elevNlat = 0;
+  _elevNlon = 0;
+
+  return { flat, terrain };
 }
