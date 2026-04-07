@@ -177,7 +177,7 @@
       return;
     }
     if (!locationDismissed && stage === 5) dismissLocationPrompt();
-    onboardingCollapsed = true;
+    if (isMobileViewport) onboardingCollapsed = true;
     const { lat, lon } = e.detail;
     pickLoc = { lat, lon };
   }
@@ -439,7 +439,7 @@
         Let there be light
       </button>
     {/if}
-    {#if stage >= 1 && stage <= 4}
+    {#if stage >= 1 && stage <= 4 && !pickLoc}
       <OnboardingOverlay
         {stage}
         loading={$stageLoading}
@@ -451,7 +451,7 @@
         on:collapse={() => { onboardingCollapsed = true; }}
       />
     {/if}
-    {#if stage === 5}
+    {#if stage === 5 && !pickLoc}
       <OnboardingOverlay
         {stage}
         loading={false}

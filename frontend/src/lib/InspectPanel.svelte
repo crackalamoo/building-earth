@@ -835,7 +835,7 @@
     height: 100dvh;
     background: rgba(0, 0, 0, 0.92);
     border-left: 1px solid #1a6b6b;
-    z-index: 100;
+    z-index: 200;
     display: flex;
     flex-direction: column;
     font-size: 1rem;
