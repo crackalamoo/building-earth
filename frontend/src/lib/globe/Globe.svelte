@@ -28,6 +28,7 @@
   const dispatch = createEventDispatcher();
 
   let container: HTMLDivElement;
+  let containerResizeObserver: ResizeObserver | null = null;
   let renderer: THREE.WebGLRenderer;
   let scene: THREE.Scene;
   let camera: THREE.PerspectiveCamera;
@@ -1004,8 +1005,14 @@
       }).catch(e => console.error('Failed to load borders:', e));
     }
 
-    // Handle resize
+    // Handle resize. window resize covers viewport changes, but layout shifts
+    // (e.g. the control bar appearing) don't fire a window resize — so we
+    // also observe the container itself.
     window.addEventListener('resize', onResize);
+    if (typeof ResizeObserver !== 'undefined') {
+      containerResizeObserver = new ResizeObserver(() => onResize());
+      containerResizeObserver.observe(container);
+    }
 
     // Click-to-inspect: raycasting
     renderer.domElement.addEventListener('mousedown', onMouseDown);
@@ -1224,6 +1231,8 @@
     cancelAnimationFrame(animationId);
     if (cacheWorker) { cacheWorker.terminate(); cacheWorker = null; }
     window.removeEventListener('resize', onResize);
+    containerResizeObserver?.disconnect();
+    containerResizeObserver = null;
     renderer?.domElement.removeEventListener('mousedown', onMouseDown);
     renderer?.domElement.removeEventListener('mouseup', onMouseUp);
     renderer?.dispose();

@@ -172,10 +172,20 @@
     cursor: pointer;
     -webkit-appearance: none;
     appearance: none;
+    height: 18px;
+    background: transparent;
+    outline: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* WebKit (Safari, Chrome) needs the track styled via this pseudo-element.
+     Setting background on the input itself does not draw a track in Safari. */
+  input[type="range"]::-webkit-slider-runnable-track {
     height: 4px;
     background: #2a9e9e;
     border-radius: 2px;
-    outline: none;
+    border: none;
   }
 
   input[type="range"]::-webkit-slider-thumb {
@@ -187,6 +197,8 @@
     border: 2px solid rgba(255, 255, 255, 0.4);
     cursor: pointer;
     transition: background 0.15s;
+    /* Center the thumb on the 4px track: (4 - 14) / 2 = -5 */
+    margin-top: -5px;
   }
 
   input[type="range"]::-webkit-slider-thumb:hover {
@@ -195,6 +207,13 @@
 
   input[type="range"]::-webkit-slider-thumb:active {
     background: #1a8080;
+  }
+
+  input[type="range"]::-moz-range-track {
+    height: 4px;
+    background: #2a9e9e;
+    border-radius: 2px;
+    border: none;
   }
 
   input[type="range"]::-moz-range-thumb {
@@ -208,12 +227,6 @@
 
   input[type="range"]::-moz-range-thumb:active {
     background: #1a8080;
-  }
-
-  input[type="range"]::-moz-range-track {
-    height: 4px;
-    background: #2a9e9e;
-    border-radius: 2px;
   }
 
   [data-tooltip] {
