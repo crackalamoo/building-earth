@@ -100,6 +100,14 @@
   $: stage = $currentStage;
   $: revealed = stage >= 1;
 
+  // Mobile onboarding overlay starts in "collapsed" mode (showing only the
+  // teaser line + next button) so the globe stays visible. The user can tap
+  // "Read more" to see the full writeup. Desktop is never collapsed.
+  const isMobileViewport = typeof window !== 'undefined'
+    && window.matchMedia('(max-width: 640px), (max-height: 500px)').matches;
+  let onboardingCollapsed = isMobileViewport;
+  $: stage, (onboardingCollapsed = isMobileViewport);
+
   // Switch to blue-marble once when first reaching stage 5
   let didAutoSwitchLayer = false;
   $: if (stage === 5 && !didAutoSwitchLayer) {
@@ -169,6 +177,7 @@
       return;
     }
     if (!locationDismissed && stage === 5) dismissLocationPrompt();
+    onboardingCollapsed = true;
     const { lat, lon } = e.detail;
     pickLoc = { lat, lon };
   }
@@ -435,8 +444,11 @@
         {stage}
         loading={$stageLoading}
         buttonLabel={STAGES[stage].button ? `${STAGES[stage].button} (${stage}/4)` : null}
+        collapsed={onboardingCollapsed}
         on:advance={advanceStage}
         on:skip={skipToFullModel}
+        on:expand={() => { onboardingCollapsed = false; }}
+        on:collapse={() => { onboardingCollapsed = true; }}
       />
     {/if}
     {#if stage === 5}
@@ -444,9 +456,12 @@
         {stage}
         loading={false}
         buttonLabel={null}
+        collapsed={onboardingCollapsed}
         {locationDismissed}
         on:locate={requestLocation}
         on:dismissLocation={dismissLocationPrompt}
+        on:expand={() => { onboardingCollapsed = false; }}
+        on:collapse={() => { onboardingCollapsed = true; }}
       />
     {/if}
     {#if stage >= 1 && activeLayer === 'temperature'}
