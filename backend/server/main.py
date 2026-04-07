@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from .rate_limit import create_chat_limiter
 from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI, APIError
+from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
 
 from .calculate import ExpressionError, resolve_fields
 from .climate_data import FIELD_INFO, OBS_FIELD_INFO, ClimateDataStore, ObsDataStore
@@ -47,9 +48,33 @@ SYSTEM = SYSTEM_PROMPT
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-dummy"))
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-nano")
 
+# Reasoning models (gpt-5*, o-series) accept a reasoning_effort knob that
+# trades latency for deeper deliberation. For a tool-calling chat app the
+# default ("medium") wastes seconds on every turn. We use "low" — "minimal"
+# is contraindicated by OpenAI for multi-step or tool-heavy workflows and
+# noticeably degrades instruction following, while the latency gap to "low"
+# is under a second on gpt-5-mini.
+# Non-reasoning models (gpt-4.1*, gpt-4o*) reject this parameter, so we only
+# pass it when the model name indicates support.
+_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+SUPPORTS_REASONING_EFFORT = MODEL.startswith(_REASONING_MODEL_PREFIXES)
+REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "low")
+
 MAX_TOOL_ROUNDS = 15
 MAX_MESSAGES = 50
 MAX_MESSAGE_LENGTH = 2000
+
+
+def _tool_placeholder_label(tool_name: str) -> str:
+    """Friendly placeholder shown the moment a tool call's name appears in
+    the OpenAI stream, before its arguments have finished streaming."""
+    if tool_name == "sample_climate":
+        return "Looking up climate…"
+    if tool_name == "sample_observations":
+        return "Looking up observations…"
+    if tool_name == "calculate":
+        return "Calculating…"
+    return "Looking up…"
 
 
 @app.get("/api/obs")
@@ -88,6 +113,8 @@ async def chat(request: Request) -> StreamingResponse:
     if len(user_messages) > MAX_MESSAGES:
         raise HTTPException(400, "Too many messages")
     for msg in user_messages:
+        if msg.get("role") != "user":
+            continue
         if len(msg.get("content", "")) > MAX_MESSAGE_LENGTH:
             raise HTTPException(400, "Message too long")
 
@@ -116,55 +143,71 @@ async def chat(request: Request) -> StreamingResponse:
         "Dec",
     ]
 
-    context_parts: list[str] = []
-    loc_changed = (
-        prev_lat is None
-        or round(lat, 1) != round(prev_lat, 1)
-        or round(lon, 1) != round(prev_lon or 0, 1)
-    )
-    month_changed = prev_month is None or month != prev_month
+    # Always stamp the current location and month on the latest user message
+    # so the model never has to scroll back through prior turns to remember
+    # where the user is. We put it on the user message (not the system prompt)
+    # to preserve system-prompt caching — the system prefix stays bit-identical
+    # across requests while the per-turn context rides the user turn.
+    ns = "N" if lat >= 0 else "S"
+    ew = "E" if lon >= 0 else "W"
+    location_str = f"{lat:.1f}°{ns}, {abs(lon):.1f}°{ew}"
+    month_str = month_names[month % 12]
 
-    if loc_changed:
-        ns = "N" if lat >= 0 else "S"
-        ew = "E" if lon >= 0 else "W"
-        context_parts.append(f"[Location: {lat:.1f}°{ns}, {abs(lon):.1f}°{ew}]")
-    if month_changed:
-        context_parts.append(f"[Month: {month_names[month % 12]}]")
+    loc_changed = (
+        prev_lat is not None
+        and (round(lat, 1) != round(prev_lat, 1)
+             or round(lon, 1) != round(prev_lon or 0, 1))
+    )
+    month_changed = prev_month is not None and month != prev_month
+
+    location_label = "Now at" if loc_changed else "Location"
+    month_label = "Now month" if month_changed else "Month"
+    prefix = f"[{location_label}: {location_str}] [{month_label}: {month_str}]\n\n"
 
     messages.extend(user_messages)
-
-    if context_parts:
-        prefix = " ".join(context_parts) + "\n\n"
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i]["role"] == "user":
-                messages[i] = {**messages[i], "content": prefix + messages[i]["content"]}
-                break
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i]["role"] == "user":
+            messages[i] = {**messages[i], "content": prefix + messages[i]["content"]}
+            break
 
     # Stream everything: tool-call rounds + final text, all via streaming API
     async def generate():
         nonlocal messages
+        # Flush an immediate SSE comment so the browser opens the stream and any
+        # intermediate proxies (Railway, nginx) commit headers right away.
+        yield ": open\n\n"
         for _ in range(MAX_TOOL_ROUNDS):
             # Accumulate tool calls and text from a single streamed response
             tool_calls_acc: dict[int, dict[str, str]] = {}  # index -> {id, name, arguments}
-            text_chunks: list[str] = []
+            announced_tool_idx: set[int] = set()  # which indexes already had their name flushed
 
             try:
+                extra_kwargs: dict[str, Any] = {}
+                if SUPPORTS_REASONING_EFFORT:
+                    extra_kwargs["reasoning_effort"] = REASONING_EFFORT
+                # The OpenAI SDK expects discriminated TypedDicts for messages
+                # and tools. We build those dicts dynamically (with assistant
+                # tool_calls, tool results, etc.), so a structural cast at the
+                # boundary is the right call — typing each literal would force
+                # an explosion of TypedDict imports without buying real safety.
                 stream = await client.chat.completions.create(
                     model=MODEL,
-                    messages=messages,
-                    tools=TOOLS,
+                    messages=cast(list[ChatCompletionMessageParam], messages),
+                    tools=cast(list[ChatCompletionToolParam], TOOLS),
                     tool_choice="auto",
                     stream=True,
+                    **extra_kwargs,
                 )
                 async for chunk in stream:
                     delta = chunk.choices[0].delta
 
                     # Stream text tokens immediately
                     if delta.content:
-                        text_chunks.append(delta.content)
                         yield f"data: {json.dumps({'text': delta.content})}\n\n"
 
-                    # Accumulate tool call deltas
+                    # Accumulate tool call deltas, and flush a "thinking" event
+                    # the first time each tool call's name appears so the user
+                    # gets feedback in ~1s instead of waiting for the whole round.
                     if delta.tool_calls:
                         for tc_delta in delta.tool_calls:
                             idx = tc_delta.index
@@ -177,6 +220,13 @@ async def chat(request: Request) -> StreamingResponse:
                                     tool_calls_acc[idx]["name"] = tc_delta.function.name
                                 if tc_delta.function.arguments:
                                     tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+                            # Flush a generic placeholder as soon as we know
+                            # which tool is being called. The per-field labels
+                            # come later, after the arguments fully stream.
+                            if idx not in announced_tool_idx and tool_calls_acc[idx]["name"]:
+                                announced_tool_idx.add(idx)
+                                placeholder = _tool_placeholder_label(tool_calls_acc[idx]["name"])
+                                yield f"data: {json.dumps({'tool': placeholder, 'pending': True})}\n\n"
             except APIError as e:
                 yield f"data: {json.dumps({'error': f'LLM service error: {e.message}'})}\n\n"
                 break

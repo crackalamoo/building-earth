@@ -2,7 +2,7 @@ import { STAGES } from './onboardingState';
 
 export type MsgPart =
   | { type: 'text'; content: string }
-  | { type: 'tools'; content: string; fields: string[] };
+  | { type: 'tools'; content: string; fields: string[]; pendingCount?: number };
 
 export type ChatMessage = {
   role: 'user' | 'assistant';
@@ -157,8 +157,27 @@ export async function streamChat(
           onContent(parsed.error);
         } else if (parsed.tool) {
           const last = currentParts[currentParts.length - 1];
-          if (last?.type === 'tools') last.fields = [...last.fields, parsed.tool];
-          else currentParts.push({ type: 'tools', content: '', fields: [parsed.tool] });
+          const isPending = parsed.pending === true;
+          if (last?.type === 'tools') {
+            if (isPending) {
+              last.fields = [...last.fields, parsed.tool];
+              last.pendingCount = (last.pendingCount ?? 0) + 1;
+            } else {
+              // First real label arriving — drop any pending placeholders
+              // accumulated for this round before appending.
+              const pending = last.pendingCount ?? 0;
+              const kept = pending > 0 ? last.fields.slice(0, last.fields.length - pending) : last.fields;
+              last.fields = [...kept, parsed.tool];
+              last.pendingCount = 0;
+            }
+          } else {
+            currentParts.push({
+              type: 'tools',
+              content: '',
+              fields: [parsed.tool],
+              pendingCount: isPending ? 1 : 0,
+            });
+          }
         } else if (parsed.text) {
           const last = currentParts[currentParts.length - 1];
           if (last?.type === 'text') last.content += parsed.text;
