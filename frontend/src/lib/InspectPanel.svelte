@@ -340,6 +340,12 @@
           onContent(chunk) {
             messages[messages.length - 1].content += chunk;
           },
+          onThinking(delta, reset) {
+            const last = messages[messages.length - 1];
+            last.thinking = (reset ? '' : last.thinking ?? '') + delta;
+            messages = [...messages];
+            scrollToBottom();
+          },
           onError(msg) {
             messages[messages.length - 1].content += msg;
           },
@@ -822,12 +828,11 @@
         </div>
       {:else}
         {#each messages as msg, mi}
+          {@const isStreamingLast = msg.role === 'assistant' && mi === messages.length - 1 && streaming}
+          {@const lastPart = msg.parts && msg.parts.length > 0 ? msg.parts[msg.parts.length - 1] : null}
+          {@const awaitingText = isStreamingLast && (!lastPart || lastPart.type !== 'text')}
           <div class="chat-msg {msg.role}">
-            {#if msg.role === 'assistant' && mi === messages.length - 1 && streaming && (!msg.parts || msg.parts.length === 0)}
-              <div class="typing-indicator">
-                <span></span><span></span><span></span>
-              </div>
-            {:else if msg.parts && msg.parts.length > 0}
+            {#if msg.parts && msg.parts.length > 0}
               {#each msg.parts as part}
                 {#if part.type === 'tools'}
                   <div class="tool-progress">
@@ -841,10 +846,19 @@
                   {part.content}
                 {/if}
               {/each}
-            {:else if msg.role === 'assistant'}
+            {:else if !awaitingText && msg.role === 'assistant'}
               {@html renderMarkdown(msg.content)}
-            {:else}
+            {:else if !awaitingText}
               {msg.content}
+            {/if}
+            {#if awaitingText}
+              {#if msg.thinking}
+                <div class="thinking">{msg.thinking}</div>
+              {:else}
+                <div class="typing-indicator">
+                  <span></span><span></span><span></span>
+                </div>
+              {/if}
             {/if}
             {#if errorOccurred && msg.role === 'assistant' && mi === messages.length - 1}
               <button class="retry-btn" on:click={retryLastMessage}>Retry</button>
@@ -1186,6 +1200,14 @@
     padding: 0.15rem 0.5rem;
     border-radius: 12px;
     font-size: 0.875rem;
+  }
+
+  .thinking {
+    color: rgba(255, 255, 255, 0.55);
+    font-style: italic;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
   }
 
   .typing-indicator {

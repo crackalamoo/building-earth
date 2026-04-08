@@ -13,12 +13,20 @@ from fastapi.staticfiles import StaticFiles
 from .rate_limit import create_chat_limiter
 from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI, APIError
-from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
+from openai.types.responses import (
+    ResponseInputParam,
+    ResponseOutputItemAddedEvent,
+    ResponseOutputItemDoneEvent,
+    ResponseReasoningSummaryPartAddedEvent,
+    ResponseReasoningSummaryTextDeltaEvent,
+    ResponseTextDeltaEvent,
+    ToolParam,
+)
 
 from .calculate import ExpressionError, resolve_fields
 from .climate_data import FIELD_INFO, OBS_FIELD_INFO, ClimateDataStore, ObsDataStore
 from .prompts import SYSTEM_PROMPT
-from .tools import TOOLS
+from .tools import TOOLS, tool_placeholder_label
 from onboarding_stages import get_stage_chat_context
 
 load_dotenv()
@@ -79,18 +87,6 @@ MAX_MESSAGES = 50
 MAX_MESSAGE_LENGTH = 2000
 
 
-def _tool_placeholder_label(tool_name: str) -> str:
-    """Friendly placeholder shown the moment a tool call's name appears in
-    the OpenAI stream, before its arguments have finished streaming."""
-    if tool_name == "sample_climate":
-        return "Looking up climate…"
-    if tool_name == "sample_observations":
-        return "Looking up observations…"
-    if tool_name == "calculate":
-        return "Calculating…"
-    return "Looking up…"
-
-
 @app.get("/api/obs")
 async def obs_data(lat: float, lon: float) -> dict:
     if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
@@ -138,7 +134,6 @@ async def chat(request: Request) -> StreamingResponse:
     system_content = SYSTEM
     if stage is not None and stage < 5:
         system_content += get_stage_chat_context(stage)
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
 
     prev_lat: float | None = body.get("prevLat")
     prev_lon: float | None = body.get("prevLon")
@@ -158,69 +153,88 @@ async def chat(request: Request) -> StreamingResponse:
     location_label = "Now at" if loc_changed else "Location"
     prefix = f"[{location_label}: {location_str}]\n\n"
 
-    messages.extend(user_messages)
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i]["role"] == "user":
-            messages[i] = {**messages[i], "content": prefix + messages[i]["content"]}
-            break
+    # Find the index of the latest user-authored message so we can stamp the
+    # location prefix on it as we build the typed input list.
+    last_user_idx = next(
+        (i for i in range(len(user_messages) - 1, -1, -1)
+         if user_messages[i].get("role") == "user"),
+        None,
+    )
 
-    # Stream everything: tool-call rounds + final text, all via streaming API
+    input_items: list[dict[str, Any]] = [
+        {"type": "message", "role": "system", "content": system_content}
+    ]
+    for i, msg in enumerate(user_messages):
+        content = msg.get("content", "")
+        if i == last_user_idx:
+            content = prefix + content
+        input_items.append(
+            {"type": "message", "role": msg["role"], "content": content}
+        )
+
+    # Stream everything: reasoning summaries, tool-call rounds, and final
+    # text — all via the Responses streaming API.
     async def generate():
-        nonlocal messages
+        nonlocal input_items
         # Flush an immediate SSE comment so the browser opens the stream and any
         # intermediate proxies (Railway, nginx) commit headers right away.
         yield ": open\n\n"
         for _ in range(MAX_TOOL_ROUNDS):
-            # Accumulate tool calls and text from a single streamed response
-            tool_calls_acc: dict[int, dict[str, str]] = {}  # index -> {id, name, arguments}
-            announced_tool_idx: set[int] = set()  # which indexes already had their name flushed
+            # Tool calls collected from this round, in arrival order. Each
+            # entry has name, arguments, and call_id from the completed
+            # function_call output item.
+            pending_tool_calls: list[dict[str, str]] = []
 
             try:
                 extra_kwargs: dict[str, Any] = {}
                 if SUPPORTS_REASONING_EFFORT:
-                    extra_kwargs["reasoning_effort"] = REASONING_EFFORT
-                # The OpenAI SDK expects discriminated TypedDicts for messages
-                # and tools. We build those dicts dynamically (with assistant
-                # tool_calls, tool results, etc.), so a structural cast at the
-                # boundary is the right call — typing each literal would force
-                # an explosion of TypedDict imports without buying real safety.
-                stream = await client.chat.completions.create(
+                    # "auto" lets the model decide summary length. Non-reasoning
+                    # models reject the whole reasoning kwarg, so we only attach
+                    # it for gpt-5/o-series.
+                    extra_kwargs["reasoning"] = {
+                        "effort": REASONING_EFFORT,
+                        "summary": "auto",
+                    }
+                stream = await client.responses.create(
                     model=MODEL,
-                    messages=cast(list[ChatCompletionMessageParam], messages),
-                    tools=cast(list[ChatCompletionToolParam], TOOLS),
+                    input=cast(ResponseInputParam, input_items),
+                    tools=cast(list[ToolParam], TOOLS),
                     tool_choice="auto",
                     stream=True,
                     **extra_kwargs,
                 )
-                async for chunk in stream:
-                    delta = chunk.choices[0].delta
+                async for event in stream:
+                    if isinstance(event, ResponseTextDeltaEvent):
+                        yield f"data: {json.dumps({'text': event.delta})}\n\n"
 
-                    # Stream text tokens immediately
-                    if delta.content:
-                        yield f"data: {json.dumps({'text': delta.content})}\n\n"
+                    elif isinstance(event, ResponseReasoningSummaryTextDeltaEvent):
+                        # Streamed reasoning summary — gives the user something
+                        # concrete to read while the model is thinking.
+                        yield f"data: {json.dumps({'thinking': event.delta})}\n\n"
 
-                    # Accumulate tool call deltas, and flush a "thinking" event
-                    # the first time each tool call's name appears so the user
-                    # gets feedback in ~1s instead of waiting for the whole round.
-                    if delta.tool_calls:
-                        for tc_delta in delta.tool_calls:
-                            idx = tc_delta.index
-                            if idx not in tool_calls_acc:
-                                tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
-                            if tc_delta.id:
-                                tool_calls_acc[idx]["id"] = tc_delta.id
-                            if tc_delta.function:
-                                if tc_delta.function.name:
-                                    tool_calls_acc[idx]["name"] = tc_delta.function.name
-                                if tc_delta.function.arguments:
-                                    tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
-                            # Flush a generic placeholder as soon as we know
-                            # which tool is being called. The per-field labels
-                            # come later, after the arguments fully stream.
-                            if idx not in announced_tool_idx and tool_calls_acc[idx]["name"]:
-                                announced_tool_idx.add(idx)
-                                placeholder = _tool_placeholder_label(tool_calls_acc[idx]["name"])
-                                yield f"data: {json.dumps({'tool': placeholder, 'pending': True})}\n\n"
+                    elif isinstance(event, ResponseReasoningSummaryPartAddedEvent):
+                        # Separate consecutive summary parts with a blank line
+                        # so they read as paragraphs in the UI.
+                        if event.summary_index > 0:
+                            yield f"data: {json.dumps({'thinking': '\\n\\n'})}\n\n"
+
+                    elif isinstance(event, ResponseOutputItemAddedEvent):
+                        # Flush a placeholder the instant we know which tool the
+                        # model is calling, before its arguments finish streaming.
+                        if event.item.type == "function_call":
+                            placeholder = tool_placeholder_label(event.item.name)
+                            yield f"data: {json.dumps({'tool': placeholder, 'pending': True})}\n\n"
+
+                    elif isinstance(event, ResponseOutputItemDoneEvent):
+                        # function_call items carry name, arguments, and call_id
+                        # together — collect them here for resolution after the
+                        # stream ends.
+                        if event.item.type == "function_call":
+                            pending_tool_calls.append({
+                                "name": event.item.name,
+                                "arguments": event.item.arguments,
+                                "call_id": event.item.call_id,
+                            })
             except APIError as e:
                 yield f"data: {json.dumps({'error': f'LLM service error: {e.message}'})}\n\n"
                 break
@@ -228,14 +242,10 @@ async def chat(request: Request) -> StreamingResponse:
                 yield f"data: {json.dumps({'error': 'Something went wrong. Please try again.'})}\n\n"
                 break
 
-            # If no tool calls, we're done — text was already streamed
-            if not tool_calls_acc:
+            if not pending_tool_calls:
                 break
 
-            # Resolve tool calls and notify frontend
-            assistant_tool_calls = []
-            for idx in sorted(tool_calls_acc):
-                tc = tool_calls_acc[idx]
+            for tc in pending_tool_calls:
                 try:
                     args = json.loads(tc["arguments"])
                     if tc["name"] == "calculate":
@@ -251,8 +261,14 @@ async def chat(request: Request) -> StreamingResponse:
                         result = calc_result
                         yield f"data: {json.dumps({'tool': 'Calculate'})}\n\n"
                     else:
-                        fields_list = args.get("fields", [args["field"]] if "field" in args else [])
-                        data_store = obs_store if tc["name"] == "sample_observations" else request_store
+                        fields_list = args.get(
+                            "fields", [args["field"]] if "field" in args else []
+                        )
+                        data_store = (
+                            obs_store
+                            if tc["name"] == "sample_observations"
+                            else request_store
+                        )
                         result = data_store.sample_many(
                             fields=fields_list,
                             lat=args["lat"],
@@ -260,13 +276,14 @@ async def chat(request: Request) -> StreamingResponse:
                             month=args["month"],
                             imperial=imperial,
                         )
-                        # Send tool progress event
                         field_meta = (
-                            OBS_FIELD_INFO if tc["name"] == "sample_observations" else FIELD_INFO
+                            OBS_FIELD_INFO
+                            if tc["name"] == "sample_observations"
+                            else FIELD_INFO
                         )
                         labels = [
                             field_meta.get(f, {}).get("label", f)
-                            for f in args.get("fields", [args.get("field", "?")])
+                            for f in fields_list
                         ]
                         for label in labels:
                             yield f"data: {json.dumps({'tool': label})}\n\n"
@@ -276,25 +293,24 @@ async def chat(request: Request) -> StreamingResponse:
                 except Exception:
                     result = {"error": "Failed to process tool call"}
                     yield f"data: {json.dumps({'tool': '?'})}\n\n"
-                assistant_tool_calls.append(
+
+                # function_call must precede function_call_output in the input
+                # so the model sees its own call before the output.
+                input_items.append(
                     {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                        "type": "function_call",
+                        "call_id": tc["call_id"],
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
                     }
                 )
-                messages.append(
+                input_items.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": json.dumps(result),
+                        "type": "function_call_output",
+                        "call_id": tc["call_id"],
+                        "output": json.dumps(result),
                     }
                 )
-            # Insert assistant message with tool calls before tool results
-            messages.insert(
-                len(messages) - len(assistant_tool_calls),
-                {"role": "assistant", "tool_calls": assistant_tool_calls},
-            )
 
         yield "data: [DONE]\n\n"
 

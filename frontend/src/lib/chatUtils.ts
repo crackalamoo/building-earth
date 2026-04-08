@@ -8,6 +8,7 @@ export type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
   parts?: MsgPart[];
+  thinking?: string;
 };
 
 export function computeSuggestions(
@@ -101,6 +102,10 @@ export function computeSuggestions(
 export type StreamChatCallbacks = {
   onPart: (parts: MsgPart[]) => void;
   onContent: (content: string) => void;
+  // Reasoning summary delta. `reset` is true when this delta starts a fresh
+  // round of thinking after a tool call — the consumer should clear any
+  // accumulated thinking text before appending.
+  onThinking: (delta: string, reset: boolean) => void;
   onError: (msg: string) => void;
   onDone: () => void;
 };
@@ -119,8 +124,12 @@ export async function streamChat(
   signal: AbortSignal,
   callbacks: StreamChatCallbacks
 ): Promise<void> {
-  const { onPart, onContent, onError, onDone } = callbacks;
+  const { onPart, onContent, onThinking, onError, onDone } = callbacks;
   const currentParts: MsgPart[] = [];
+  // Set when a tool/text event arrives, cleared on the next thinking delta.
+  // Tells the consumer that the next thinking delta is a fresh round and
+  // any previously displayed thinking should be cleared first.
+  let thinkingStale = false;
 
   const res = await fetch(`${apiBase}/api/chat`, {
     method: 'POST',
@@ -153,6 +162,7 @@ export async function streamChat(
           if (last?.type === 'text') last.content += parsed.error;
           else currentParts.push({ type: 'text', content: parsed.error });
           onContent(parsed.error);
+          thinkingStale = true;
         } else if (parsed.tool) {
           const last = currentParts[currentParts.length - 1];
           const isPending = parsed.pending === true;
@@ -176,11 +186,19 @@ export async function streamChat(
               pendingCount: isPending ? 1 : 0,
             });
           }
+          thinkingStale = true;
         } else if (parsed.text) {
           const last = currentParts[currentParts.length - 1];
           if (last?.type === 'text') last.content += parsed.text;
           else currentParts.push({ type: 'text', content: parsed.text });
           onContent(parsed.text);
+          thinkingStale = true;
+        } else if (parsed.thinking) {
+          // Reasoning summary delta — drive the live "thinking" UI directly,
+          // not via parts. The consumer clears it once any text part starts.
+          onThinking(parsed.thinking, thinkingStale);
+          thinkingStale = false;
+          continue;
         } else {
           continue;
         }
