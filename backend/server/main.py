@@ -61,9 +61,8 @@ def _load_stage_store(stage: int) -> ClimateDataStore:
         manifest_path=f"frontend/public/stage{stage}.manifest.json",
     )
 
-stage_stores: dict[int, ClimateDataStore] = {
-    s: _load_stage_store(s) for s in (1, 2, 3, 4, 5)
-}
+
+stage_stores: dict[int, ClimateDataStore] = {s: _load_stage_store(s) for s in (1, 2, 3, 4, 5)}
 obs_store = ObsDataStore()
 
 SYSTEM = SYSTEM_PROMPT
@@ -101,7 +100,6 @@ async def obs_data(lat: float, lon: float) -> dict:
         temps.append(t["value"])
         precips.append(p["value"])
     return {"temps": temps, "precips": precips}
-
 
 
 @app.post("/api/chat", dependencies=[Depends(chat_limiter)])
@@ -145,10 +143,8 @@ async def chat(request: Request) -> StreamingResponse:
     ew = "E" if lon >= 0 else "W"
     location_str = f"{lat:.1f}°{ns}, {abs(lon):.1f}°{ew}"
 
-    loc_changed = (
-        prev_lat is not None
-        and (round(lat, 1) != round(prev_lat, 1)
-             or round(lon, 1) != round(prev_lon or 0, 1))
+    loc_changed = prev_lat is not None and (
+        round(lat, 1) != round(prev_lat, 1) or round(lon, 1) != round(prev_lon or 0, 1)
     )
 
     location_label = "Now at" if loc_changed else "Location"
@@ -157,8 +153,11 @@ async def chat(request: Request) -> StreamingResponse:
     # Find the index of the latest user-authored message so we can stamp the
     # location prefix on it as we build the typed input list.
     last_user_idx = next(
-        (i for i in range(len(user_messages) - 1, -1, -1)
-         if user_messages[i].get("role") == "user"),
+        (
+            i
+            for i in range(len(user_messages) - 1, -1, -1)
+            if user_messages[i].get("role") == "user"
+        ),
         None,
     )
 
@@ -169,9 +168,7 @@ async def chat(request: Request) -> StreamingResponse:
         content = msg.get("content", "")
         if i == last_user_idx:
             content = prefix + content
-        input_items.append(
-            {"type": "message", "role": msg["role"], "content": content}
-        )
+        input_items.append({"type": "message", "role": msg["role"], "content": content})
 
     # Stream everything: reasoning summaries, tool-call rounds, and final
     # text — all via the Responses streaming API.
@@ -231,11 +228,13 @@ async def chat(request: Request) -> StreamingResponse:
                         # together — collect them here for resolution after the
                         # stream ends.
                         if event.item.type == "function_call":
-                            pending_tool_calls.append({
-                                "name": event.item.name,
-                                "arguments": event.item.arguments,
-                                "call_id": event.item.call_id,
-                            })
+                            pending_tool_calls.append(
+                                {
+                                    "name": event.item.name,
+                                    "arguments": event.item.arguments,
+                                    "call_id": event.item.call_id,
+                                }
+                            )
             except APIError as e:
                 yield f"data: {json.dumps({'error': f'LLM service error: {e.message}'})}\n\n"
                 break
@@ -262,13 +261,9 @@ async def chat(request: Request) -> StreamingResponse:
                         result = calc_result
                         yield f"data: {json.dumps({'tool': 'Calculate'})}\n\n"
                     else:
-                        fields_list = args.get(
-                            "fields", [args["field"]] if "field" in args else []
-                        )
+                        fields_list = args.get("fields", [args["field"]] if "field" in args else [])
                         data_store = (
-                            obs_store
-                            if tc["name"] == "sample_observations"
-                            else request_store
+                            obs_store if tc["name"] == "sample_observations" else request_store
                         )
                         result = data_store.sample_many(
                             fields=fields_list,
@@ -278,14 +273,9 @@ async def chat(request: Request) -> StreamingResponse:
                             imperial=imperial,
                         )
                         field_meta = (
-                            OBS_FIELD_INFO
-                            if tc["name"] == "sample_observations"
-                            else FIELD_INFO
+                            OBS_FIELD_INFO if tc["name"] == "sample_observations" else FIELD_INFO
                         )
-                        labels = [
-                            field_meta.get(f, {}).get("label", f)
-                            for f in fields_list
-                        ]
+                        labels = [field_meta.get(f, {}).get("label", f) for f in fields_list]
                         for label in labels:
                             yield f"data: {json.dumps({'tool': label})}\n\n"
                 except ExpressionError as exc:

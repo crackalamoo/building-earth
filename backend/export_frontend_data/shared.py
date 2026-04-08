@@ -48,7 +48,7 @@ def _fill_island_vegetation(
                 continue
             annual_precip = float(np.sum(precip[:, i, j] * month_seconds))
             u = np.clip((annual_precip - p_min) / (p_max - p_min), 0.0, 1.0)
-            veg_frac = u ** 0.6
+            veg_frac = u**0.6
             warm_months = float(np.sum(surface[:, i, j] > growing_thresh))
             gs_u = np.clip(warm_months / full_months, 0.0, 1.0)
             gs_cap = gs_u * gs_u * (3.0 - 2.0 * gs_u)
@@ -150,11 +150,13 @@ def write_binary_export(
             t2m_src = native_layers["surface"]
             t2m_label = "from surface"
         if t2m_src is not None:
-            t2m_u8 = np.clip(
-                (t2m_src - quantization_min) * (255.0 / quant_range), 0, 255
-            ).astype(np.uint8)
+            t2m_u8 = np.clip((t2m_src - quantization_min) * (255.0 / quant_range), 0, 255).astype(
+                np.uint8
+            )
             fields.append(("temperature_2m", t2m_u8, "uint8"))
-            print(f"  temperature_2m: {t2m_u8.shape} ({t2m_label}, uint8, range [{quantization_min}, {quantization_max}])")
+            print(
+                f"  temperature_2m: {t2m_u8.shape} ({t2m_label}, uint8, range [{quantization_min}, {quantization_max}])"
+            )
 
     # surface: always native resolution
     if should_include("surface") and "surface" in native_layers:
@@ -183,7 +185,10 @@ def write_binary_export(
         veg = native_layers["vegetation_fraction"].copy()
         if interpolate and "precipitation" in native_layers and "surface" in native_layers:
             veg = _fill_island_vegetation(
-                veg, native_layers, native_land_mask, land_mask,
+                veg,
+                native_layers,
+                native_land_mask,
+                land_mask,
             )
         fields.append(("vegetation_fraction", veg, "float16"))
         print(f"  vegetation_fraction: {veg.shape}")
@@ -278,13 +283,15 @@ def write_binary_export(
             encoded = arr.astype(np.float32)
 
         raw = encoded.tobytes()
-        manifest["fields"].append({
-            "name": name,
-            "shape": list(arr.shape),
-            "dtype": dtype_str,
-            "offset": offset,
-            "bytes": len(raw),
-        })
+        manifest["fields"].append(
+            {
+                "name": name,
+                "shape": list(arr.shape),
+                "dtype": dtype_str,
+                "offset": offset,
+                "bytes": len(raw),
+            }
+        )
         blobs.append(raw)
         offset += len(raw)
 

@@ -236,8 +236,8 @@ class ClimateDataStore:
             return
         with open(manifest_path) as f:
             manifest = json.load(f)
-        if bin_path.suffix == '.gz':
-            with gzip.open(bin_path, 'rb') as f:
+        if bin_path.suffix == ".gz":
+            with gzip.open(bin_path, "rb") as f:
                 raw = f.read()
         else:
             raw = bin_path.read_bytes()
@@ -380,7 +380,10 @@ class ClimateDataStore:
                 lm_lon_norm = ((lon % 360) + 360) % 360
                 lm_lon_idx = int(np.floor(lm_lon_norm / 360 * lm_nlon)) % lm_nlon
                 if land_mask[lm_lat_idx, lm_lon_idx] != 0:
-                    return {"field": "sst", "error": "This location is on land — SST is only available over ocean."}
+                    return {
+                        "field": "sst",
+                        "error": "This location is on land — SST is only available over ocean.",
+                    }
             field = "surface"
 
         if field not in self._data:
@@ -569,7 +572,9 @@ class ObsDataStore:
         # If NaN, search nearby cells (up to 2° away) for the closest valid value.
         # Use month=0 as a default search frame when annual-averaging.
         if np.isnan(value):
-            value = self._nearest_valid(arr, lat_idx, lon_idx, 0 if month is None else int(month) % 12)
+            value = self._nearest_valid(
+                arr, lat_idx, lon_idx, 0 if month is None else int(month) % 12
+            )
 
         if np.isnan(value):
             return {

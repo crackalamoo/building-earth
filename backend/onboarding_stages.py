@@ -18,54 +18,93 @@ _STAGE_CHAT_CONTEXT: dict[int, dict] = {
     1: {
         "physics": ["solar radiation", "surface albedo", "Stefan-Boltzmann emission"],
         "missing": [
-            "atmosphere", "greenhouse effect", "wind", "humidity",
-            "clouds", "ocean currents",
+            "atmosphere",
+            "greenhouse effect",
+            "wind",
+            "humidity",
+            "clouds",
+            "ocean currents",
         ],
     },
     2: {
         "physics": [
-            "solar radiation", "surface albedo", "atmospheric absorption",
-            "greenhouse effect", "sensible heat exchange",
+            "solar radiation",
+            "surface albedo",
+            "atmospheric absorption",
+            "greenhouse effect",
+            "sensible heat exchange",
         ],
         "missing": [
-            "lateral heat transport", "wind", "humidity",
-            "clouds", "ocean currents",
+            "lateral heat transport",
+            "wind",
+            "humidity",
+            "clouds",
+            "ocean currents",
         ],
     },
     3: {
         "physics": [
-            "solar radiation", "surface albedo", "atmospheric absorption",
-            "greenhouse effect", "sensible heat exchange",
-            "wind (thermal pressure gradients)", "atmospheric advection",
-            "lateral diffusion (eddy transport)", "snow/ice albedo feedback",
-            "latent heat exchange", "humidity", "clouds", "orographic effects",
+            "solar radiation",
+            "surface albedo",
+            "atmospheric absorption",
+            "greenhouse effect",
+            "sensible heat exchange",
+            "wind (thermal pressure gradients)",
+            "atmospheric advection",
+            "lateral diffusion (eddy transport)",
+            "snow/ice albedo feedback",
+            "latent heat exchange",
+            "humidity",
+            "clouds",
+            "orographic effects",
         ],
         "missing": [
-            "Hadley circulation", "ITCZ", "subtropical drying",
-            "vertical motion", "trade winds", "ocean currents",
+            "Hadley circulation",
+            "ITCZ",
+            "subtropical drying",
+            "vertical motion",
+            "trade winds",
+            "ocean currents",
         ],
     },
     4: {
         "physics": [
-            "solar radiation", "surface albedo", "atmospheric absorption",
-            "greenhouse effect", "sensible heat exchange",
-            "wind", "atmospheric advection",
-            "lateral diffusion", "snow/ice albedo feedback",
-            "latent heat exchange", "humidity", "clouds", "orographic effects",
-            "Hadley circulation", "ITCZ", "trade winds", "westerlies",
+            "solar radiation",
+            "surface albedo",
+            "atmospheric absorption",
+            "greenhouse effect",
+            "sensible heat exchange",
+            "wind",
+            "atmospheric advection",
+            "lateral diffusion",
+            "snow/ice albedo feedback",
+            "latent heat exchange",
+            "humidity",
+            "clouds",
+            "orographic effects",
+            "Hadley circulation",
+            "ITCZ",
+            "trade winds",
+            "westerlies",
             "vertical motion (subtropical drying, adiabatic heating/cooling)",
         ],
         "missing": ["ocean currents"],
     },
     5: {
         "physics": [
-            "solar radiation", "surface albedo", "atmospheric absorption",
-            "greenhouse effect", "sensible heat exchange",
-            "wind from thermal pressure gradients", "Coriolis deflection",
-            "atmospheric advection", "lateral diffusion (eddy heat transport)",
+            "solar radiation",
+            "surface albedo",
+            "atmospheric absorption",
+            "greenhouse effect",
+            "sensible heat exchange",
+            "wind from thermal pressure gradients",
+            "Coriolis deflection",
+            "atmospheric advection",
+            "lateral diffusion (eddy heat transport)",
             "humidity, latent heat exchange, evaporation",
             "Sundqvist clouds and precipitation",
-            "snow/ice albedo feedback", "orographic effects",
+            "snow/ice albedo feedback",
+            "orographic effects",
             "Hadley circulation, ITCZ, trade winds, subtropical drying",
             "ocean currents (Stommel-style gyres, Ekman pumping)",
             "vegetation–climate feedback",
@@ -88,12 +127,14 @@ def get_stage_chat_context(stage: int) -> str:
 
     name = STAGE_NAMES.get(stage, f"Stage {stage}")
     lines = [
-        f"\n\nIMPORTANT CONTEXT — The user is viewing the model at Stage {stage}: \"{name}\".",
+        f'\n\nIMPORTANT CONTEXT — The user is viewing the model at Stage {stage}: "{name}".',
         f"Physics active: {', '.join(info['physics'])}.",
     ]
     if stage < 5:
         if info["missing"]:
-            lines.append(f"Physics NOT yet active (will be added in later stages): {', '.join(info['missing'])}.")
+            lines.append(
+                f"Physics NOT yet active (will be added in later stages): {', '.join(info['missing'])}."
+            )
         lines.append(
             "When explaining observations, frame your answer in terms of what physics IS and IS NOT "
             "active at this stage. For example, if wind is missing, explain that there's no lateral "

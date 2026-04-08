@@ -90,9 +90,7 @@ def _downsample_land_mask(mask: np.ndarray, factor: int) -> np.ndarray:
     """Downsample a uint8 land mask. Output cell is land iff >= half of sub-cells are land."""
     nlat, nlon = mask.shape
     if nlat % factor != 0 or nlon % factor != 0:
-        raise ValueError(
-            f"Land mask shape {(nlat, nlon)} not divisible by factor {factor}"
-        )
+        raise ValueError(f"Land mask shape {(nlat, nlon)} not divisible by factor {factor}")
     out_nlat = nlat // factor
     out_nlon = nlon // factor
     blocks = mask.reshape(out_nlat, factor, out_nlon, factor)
@@ -115,9 +113,7 @@ def _downsample_surface_dependent(
     unconditional mean of the block.
     """
     if arr.shape[-2:] != high_mask.shape:
-        raise ValueError(
-            f"Field shape {arr.shape} does not match high-res mask {high_mask.shape}"
-        )
+        raise ValueError(f"Field shape {arr.shape} does not match high-res mask {high_mask.shape}")
     out_nlat, out_nlon = low_mask.shape
 
     # Reshape arr into blocks of (..., out_nlat, factor, out_nlon, factor)
@@ -147,10 +143,7 @@ def _downsample_surface_dependent(
 
     # Edge case: an output cell labeled "land" but with zero land sub-cells
     # (shouldn't happen given the threshold rule, but be defensive)
-    needs_fallback = (
-        (is_land_low & (land_count == 0))
-        | (~is_land_low & (ocean_count == 0))
-    )
+    needs_fallback = (is_land_low & (land_count == 0)) | (~is_land_low & (ocean_count == 0))
     if np.any(needs_fallback):
         out = np.where(needs_fallback, fallback_mean, out)
 
@@ -161,9 +154,7 @@ def _downsample_surface_independent(arr: np.ndarray, factor: int) -> np.ndarray:
     """Plain block-mean downsampling for fields with no surface-type split."""
     nlat, nlon = arr.shape[-2:]
     if nlat % factor != 0 or nlon % factor != 0:
-        raise ValueError(
-            f"Field shape {arr.shape} not divisible by factor {factor}"
-        )
+        raise ValueError(f"Field shape {arr.shape} not divisible by factor {factor}")
     out_nlat = nlat // factor
     out_nlon = nlon // factor
     blocks_shape = arr.shape[:-2] + (out_nlat, factor, out_nlon, factor)

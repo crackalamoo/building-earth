@@ -104,4 +104,6 @@ for region_name, mask in masks.items():
             valid = ~np.isnan(obs_T[midx]) & mask
             sv = sim_T2m[midx][valid].ravel()
             ov = obs_T[midx][valid].ravel()
-        print(f"{region_name + ' ' + mname:>12} {sv.mean():9.1f} {ov.mean():9.1f} {sv.std():8.1f} {ov.std():8.1f}")
+        print(
+            f"{region_name + ' ' + mname:>12} {sv.mean():9.1f} {ov.mean():9.1f} {sv.std():8.1f} {ov.std():8.1f}"
+        )

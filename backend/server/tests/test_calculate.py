@@ -56,10 +56,10 @@ def test_zonal_mean_depends_on_requested_latitude() -> None:
     nm, nlat, nlon = _grid()
     # Each lat row holds a distinct constant value across all lons.
     field = np.zeros((nm, nlat, nlon))
-    field[:, 0, :] = 10.0   # lat = -67.5
-    field[:, 1, :] = 20.0   # lat = -22.5
-    field[:, 2, :] = 30.0   # lat =  22.5
-    field[:, 3, :] = 40.0   # lat =  67.5
+    field[:, 0, :] = 10.0  # lat = -67.5
+    field[:, 1, :] = 20.0  # lat = -22.5
+    field[:, 2, :] = 30.0  # lat =  22.5
+    field[:, 3, :] = 40.0  # lat =  67.5
     store = _FakeStore({"temperature_2m": field})
 
     polar = resolve_fields("zonal_mean(T)", store, lat=67.5, lon=None, month=0)
@@ -77,23 +77,19 @@ def test_lat_band_mean_selects_correct_band() -> None:
     nm, nlat, nlon = _grid()
     field = np.zeros((nm, nlat, nlon))
     field[:, 0, :] = -100.0  # -67.5  (skipped by [0, 90])
-    field[:, 1, :] = -50.0   # -22.5  (skipped)
-    field[:, 2, :] = 50.0    #  22.5  (included)
-    field[:, 3, :] = 100.0   #  67.5  (included)
+    field[:, 1, :] = -50.0  # -22.5  (skipped)
+    field[:, 2, :] = 50.0  #  22.5  (included)
+    field[:, 3, :] = 100.0  #  67.5  (included)
     store = _FakeStore({"temperature_2m": field})
 
     # Northern hemisphere band: [0, 90]. cos(22.5°)=0.924, cos(67.5°)=0.383
     # Mean = (50*0.924 + 100*0.383) / (0.924 + 0.383)
     #      = (46.2 + 38.3) / 1.307 ≈ 64.65
-    nh = resolve_fields(
-        "lat_band_mean(T, 0, 90)", store, lat=None, lon=None, month=0
-    )
+    nh = resolve_fields("lat_band_mean(T, 0, 90)", store, lat=None, lon=None, month=0)
     assert nh["result"] == pytest.approx(64.65, abs=0.05)
 
     # Symmetric southern band → negated result by construction.
-    sh = resolve_fields(
-        "lat_band_mean(T, -90, 0)", store, lat=None, lon=None, month=0
-    )
+    sh = resolve_fields("lat_band_mean(T, -90, 0)", store, lat=None, lon=None, month=0)
     assert sh["result"] == pytest.approx(-64.65, abs=0.05)
 
 
@@ -110,15 +106,11 @@ def test_box_mean_isolates_single_cell() -> None:
     # Box (lat_min=10, lon_min=100, lat_max=30, lon_max=130) contains only
     # the (22.5, 112.5) cell. With one cell, the cos-weighted mean is just
     # the cell value.
-    inside = resolve_fields(
-        "box_mean(T, 10, 100, 30, 130)", store, lat=None, lon=None, month=0
-    )
+    inside = resolve_fields("box_mean(T, 10, 100, 30, 130)", store, lat=None, lon=None, month=0)
     assert inside["result"] == pytest.approx(1000.0)
 
     # Same lat band but a different lon range → no cells contain the hot one.
-    outside = resolve_fields(
-        "box_mean(T, 10, 200, 30, 250)", store, lat=None, lon=None, month=0
-    )
+    outside = resolve_fields("box_mean(T, 10, 200, 30, 250)", store, lat=None, lon=None, month=0)
     assert outside["result"] == pytest.approx(0.0)
 
 
@@ -131,24 +123,20 @@ def test_box_mean_longitude_wraparound() -> None:
     # are the closest cells to the antimeridian (lon=22.5 just east of 0,
     # lon=337.5 just west of 360).
     field = np.zeros((nm, nlat, nlon))
-    field[:, 2, 0] = 100.0   # lat=22.5, lon=22.5
-    field[:, 2, 7] = 100.0   # lat=22.5, lon=337.5
+    field[:, 2, 0] = 100.0  # lat=22.5, lon=22.5
+    field[:, 2, 7] = 100.0  # lat=22.5, lon=337.5
     store = _FakeStore({"temperature_2m": field})
 
     # Wraparound box from lon=300 to lon=60 (crossing 0/360). This should
     # capture lons 337.5 and 22.5 (both = 100), nothing else in row 2.
     # The lat band [10, 30] only includes row index 2 (lat=22.5).
     # Two cells, both 100 → mean = 100.
-    wrap = resolve_fields(
-        "box_mean(T, 10, 300, 30, 60)", store, lat=None, lon=None, month=0
-    )
+    wrap = resolve_fields("box_mean(T, 10, 300, 30, 60)", store, lat=None, lon=None, month=0)
     assert wrap["result"] == pytest.approx(100.0)
 
     # Non-wrapping box from lon=60 to lon=300 (the great middle). Row 2 has
     # lons 67.5, 112.5, 157.5, 202.5, 247.5, 292.5 — six zero-valued cells.
-    middle = resolve_fields(
-        "box_mean(T, 10, 60, 30, 300)", store, lat=None, lon=None, month=0
-    )
+    middle = resolve_fields("box_mean(T, 10, 60, 30, 300)", store, lat=None, lon=None, month=0)
     assert middle["result"] == pytest.approx(0.0)
 
 
@@ -156,13 +144,13 @@ def test_composition_inside_reduction() -> None:
     """global_mean of a composite expression — sqrt(u² + v²) — should
     evaluate the composite cell-by-cell and then reduce."""
     nm, nlat, nlon = _grid()
-    store = _FakeStore({
-        "wind_u_10m": np.full((nm, nlat, nlon), 3.0),
-        "wind_v_10m": np.full((nm, nlat, nlon), 4.0),
-    })
-    result = resolve_fields(
-        "global_mean(sqrt(u**2 + v**2))", store, lat=None, lon=None, month=0
+    store = _FakeStore(
+        {
+            "wind_u_10m": np.full((nm, nlat, nlon), 3.0),
+            "wind_v_10m": np.full((nm, nlat, nlon), 4.0),
+        }
     )
+    result = resolve_fields("global_mean(sqrt(u**2 + v**2))", store, lat=None, lon=None, month=0)
     # 3-4-5 triangle: every cell is 5, so the global mean is 5.
     assert result["result"] == pytest.approx(5.0)
 
@@ -180,15 +168,11 @@ def test_anomaly_from_zonal_mean() -> None:
     store = _FakeStore({"temperature_2m": field})
 
     # At the hot cell: T=80, zonal_mean=18.75, anomaly=61.25
-    hot = resolve_fields(
-        "T - zonal_mean(T)", store, lat=22.5, lon=112.5, month=0
-    )
+    hot = resolve_fields("T - zonal_mean(T)", store, lat=22.5, lon=112.5, month=0)
     assert hot["result"] == pytest.approx(61.25)
 
     # At a cold cell in the same row: T=10, zonal_mean=18.75, anomaly=-8.75
-    cold = resolve_fields(
-        "T - zonal_mean(T)", store, lat=22.5, lon=22.5, month=0
-    )
+    cold = resolve_fields("T - zonal_mean(T)", store, lat=22.5, lon=22.5, month=0)
     assert cold["result"] == pytest.approx(-8.75)
 
 
@@ -231,11 +215,13 @@ def test_single_point_eval_still_works() -> None:
     """Regression: pre-reductions behavior — bare expression evaluated at
     one cell, including field aliases and math composition."""
     nm, nlat, nlon = _grid()
-    store = _FakeStore({
-        "temperature_2m": np.full((nm, nlat, nlon), 25.0),
-        "wind_u_10m": np.full((nm, nlat, nlon), 3.0),
-        "wind_v_10m": np.full((nm, nlat, nlon), 4.0),
-    })
+    store = _FakeStore(
+        {
+            "temperature_2m": np.full((nm, nlat, nlon), 25.0),
+            "wind_u_10m": np.full((nm, nlat, nlon), 3.0),
+            "wind_v_10m": np.full((nm, nlat, nlon), 4.0),
+        }
+    )
     # Bare alias.
     t = resolve_fields("T", store, lat=22.5, lon=112.5, month=0)
     assert t["result"] == pytest.approx(25.0)

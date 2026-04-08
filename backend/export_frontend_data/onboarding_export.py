@@ -32,20 +32,44 @@ _STAGE_FIELDS: dict[int, list[str]] = {
     1: ["temperature_2m", "land_mask", "elevation", "surface"],
     2: ["temperature_2m", "land_mask", "elevation", "surface"],
     3: [
-        "temperature_2m", "land_mask", "elevation",
-        "wind_u_10m", "wind_v_10m", "wind_speed_10m", "surface",
-        "precipitation", "humidity", "soil_moisture",
-        "cloud_fraction", "cloud_high", "cloud_low", "cloud_convective",
-        "vegetation_fraction", "snow_temperature",
-        "land_mask_native", "land_mask_1deg",
+        "temperature_2m",
+        "land_mask",
+        "elevation",
+        "wind_u_10m",
+        "wind_v_10m",
+        "wind_speed_10m",
+        "surface",
+        "precipitation",
+        "humidity",
+        "soil_moisture",
+        "cloud_fraction",
+        "cloud_high",
+        "cloud_low",
+        "cloud_convective",
+        "vegetation_fraction",
+        "snow_temperature",
+        "land_mask_native",
+        "land_mask_1deg",
     ],
     4: [
-        "temperature_2m", "land_mask", "elevation",
-        "wind_u_10m", "wind_v_10m", "wind_speed_10m", "surface",
-        "precipitation", "humidity", "soil_moisture",
-        "cloud_fraction", "cloud_high", "cloud_low", "cloud_convective",
-        "vegetation_fraction", "snow_temperature",
-        "land_mask_native", "land_mask_1deg",
+        "temperature_2m",
+        "land_mask",
+        "elevation",
+        "wind_u_10m",
+        "wind_v_10m",
+        "wind_speed_10m",
+        "surface",
+        "precipitation",
+        "humidity",
+        "soil_moisture",
+        "cloud_fraction",
+        "cloud_high",
+        "cloud_low",
+        "cloud_convective",
+        "vegetation_fraction",
+        "snow_temperature",
+        "land_mask_native",
+        "land_mask_1deg",
     ],
 }
 
@@ -145,7 +169,8 @@ def add_onboarding_args(parser: argparse.ArgumentParser) -> None:
         help="Output directory (default: frontend/public/)",
     )
     parser.add_argument(
-        "--resolution", "-r",
+        "--resolution",
+        "-r",
         type=float,
         default=5.0,
         help="Grid resolution in degrees (default: 5.0)",
@@ -182,9 +207,9 @@ def run_onboarding_export(args: argparse.Namespace) -> None:
             continue
 
         name = STAGE_NAMES[stage_num]
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Stage {stage_num}: {name}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         cache_path = Path(data_dir) / f"stage{stage_num}.npz"
 

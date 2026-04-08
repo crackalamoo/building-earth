@@ -73,12 +73,14 @@ MATH_CONSTANTS: dict[str, float] = {
 # and collapse one or more axes, returning a scalar that the rest of the
 # expression then uses like any other value.
 
-REDUCTION_FUNCTIONS: frozenset[str] = frozenset({
-    "global_mean",
-    "zonal_mean",
-    "lat_band_mean",
-    "box_mean",
-})
+REDUCTION_FUNCTIONS: frozenset[str] = frozenset(
+    {
+        "global_mean",
+        "zonal_mean",
+        "lat_band_mean",
+        "box_mean",
+    }
+)
 
 # ── AST node whitelist ────────────────────────────────────────────────────────
 
@@ -149,10 +151,7 @@ def _collect_names(tree: ast.AST) -> set[str]:
             self.generic_visit(node)
 
         def visit_Name(self, node: ast.Name) -> None:
-            if (
-                node.id not in ALLOWED_FUNCTIONS
-                and node.id not in REDUCTION_FUNCTIONS
-            ):
+            if node.id not in ALLOWED_FUNCTIONS and node.id not in REDUCTION_FUNCTIONS:
                 names.add(node.id)
 
     _Collector().visit(tree)
@@ -290,17 +289,13 @@ def _zonal_mean(values: np.ndarray, lat: float) -> float:
 def _lat_band_mean(values: np.ndarray, lat_min: float, lat_max: float) -> float:
     """Area-weighted (cos-lat) mean over rows whose lat falls in [lat_min, lat_max]."""
     if lat_min > lat_max:
-        raise ExpressionError(
-            f"lat_band_mean: lat_min ({lat_min}) must be <= lat_max ({lat_max})"
-        )
+        raise ExpressionError(f"lat_band_mean: lat_min ({lat_min}) must be <= lat_max ({lat_max})")
     if _is_scalar(values):
         return float(values)
     lats, _ = _grid_axes(values)
     mask = (lats >= lat_min) & (lats <= lat_max)
     if not mask.any():
-        raise ExpressionError(
-            f"lat_band_mean: no grid rows fall in [{lat_min}, {lat_max}]"
-        )
+        raise ExpressionError(f"lat_band_mean: no grid rows fall in [{lat_min}, {lat_max}]")
     band_values = values[mask]
     band_weights = np.cos(np.deg2rad(lats[mask]))
     weighted_rows = (band_values * band_weights[:, None]).sum(axis=1)
@@ -317,9 +312,7 @@ def _box_mean(
     """Area-weighted (cos-lat) mean over a lat/lon box. Longitude bounds may
     wrap across the antimeridian (lon_min > lon_max means wraparound)."""
     if lat_min > lat_max:
-        raise ExpressionError(
-            f"box_mean: lat_min ({lat_min}) must be <= lat_max ({lat_max})"
-        )
+        raise ExpressionError(f"box_mean: lat_min ({lat_min}) must be <= lat_max ({lat_max})")
     if _is_scalar(values):
         return float(values)
     lats, lons = _grid_axes(values)
