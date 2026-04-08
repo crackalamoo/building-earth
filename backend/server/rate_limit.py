@@ -7,6 +7,19 @@ from collections import deque
 from fastapi import HTTPException, Request
 
 
+def _client_ip(request: Request) -> str:
+    """Best-effort real client IP. Behind a reverse proxy (Railway, etc.)
+    request.client.host is the proxy's IP, so all users would share one
+    bucket. The first entry in X-Forwarded-For is the original client per
+    convention; the proxy appends to the list rather than replacing it."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        first = xff.split(",", 1)[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else "unknown"
+
+
 class RateLimiter:
     """Per-IP sliding-window rate limiter.
 
@@ -29,7 +42,7 @@ class RateLimiter:
         self._cleanup_interval = 300.0  # purge stale IPs every 5 min
 
     async def __call__(self, request: Request) -> None:
-        ip = request.client.host if request.client else "unknown"
+        ip = _client_ip(request)
         now = time.monotonic()
 
         # Lazy cleanup of stale IP buckets
