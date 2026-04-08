@@ -21,9 +21,9 @@ export const STAGES: StageInfo[] = [
     button: 'Add an atmosphere',
     description: 'Raw sunlight on bare rock...',
     chatSuggestions: [
-      'Why is the equator so hot?',
+      'Why is even the equator so cold in this model?',
       'Why are the poles frozen?',
-      'What\'s missing from this model?',
+      'What\'s making water temperatures more stable than land temperatures?',
     ],
   },
   {
@@ -39,9 +39,9 @@ export const STAGES: StageInfo[] = [
     button: 'Grow rainforests and deserts',
     description: 'Wind and eddies carry heat...',
     chatSuggestions: [
-      'How does wind redistribute heat?',
-      'Why do westerlies form?',
-      'Where does it rain?',
+      'What\'s the difference between winds and eddies?',
+      'Why are the winds going east to west towards the equator?',
+      'Why doesn\'t the rain reach the interior Amazon?',
     ],
   },
   {
@@ -50,7 +50,7 @@ export const STAGES: StageInfo[] = [
     chatSuggestions: [
       'What are Hadley cells?',
       'Why do deserts form at 30\u00b0?',
-      'How do trade winds work?',
+      'Why do trade winds and westerlies go in different directions?',
     ],
   },
   {
