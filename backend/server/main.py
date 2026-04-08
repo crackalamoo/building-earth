@@ -2,6 +2,7 @@
 
 import json
 import os
+import traceback
 from pathlib import Path
 from typing import Any, cast
 
@@ -251,10 +252,10 @@ async def chat(request: Request) -> StreamingResponse:
                     if tc["name"] == "calculate":
                         calc_result = resolve_fields(
                             expression=args["expression"],
-                            sample_fn=request_store.sample_raw,
-                            lat=args["lat"],
-                            lon=args["lon"],
-                            month=args["month"],
+                            store=request_store,
+                            lat=args.get("lat"),
+                            lon=args.get("lon"),
+                            month=args.get("month"),
                         )
                         if "unit" in args:
                             calc_result["unit"] = args["unit"]
@@ -273,7 +274,7 @@ async def chat(request: Request) -> StreamingResponse:
                             fields=fields_list,
                             lat=args["lat"],
                             lon=args["lon"],
-                            month=args["month"],
+                            month=args.get("month"),
                             imperial=imperial,
                         )
                         field_meta = (
@@ -290,8 +291,18 @@ async def chat(request: Request) -> StreamingResponse:
                 except ExpressionError as exc:
                     result = {"error": str(exc)}
                     yield f"data: {json.dumps({'tool': 'Calculate'})}\n\n"
-                except Exception:
-                    result = {"error": "Failed to process tool call"}
+                except Exception as exc:
+                    # Bare except is intentional: any tool resolution error
+                    # becomes a friendly result for the model. Logging the
+                    # traceback here keeps surprises debuggable instead of
+                    # silently sending '?' to the user.
+                    print(
+                        f"[chat] tool call '{tc['name']}' failed: {exc}\n"
+                        f"  args: {tc.get('arguments')}\n"
+                        f"  {traceback.format_exc()}",
+                        flush=True,
+                    )
+                    result = {"error": f"Failed to process tool call: {exc}"}
                     yield f"data: {json.dumps({'tool': '?'})}\n\n"
 
                 # function_call must precede function_call_output in the input

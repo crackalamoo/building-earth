@@ -219,6 +219,17 @@ class ClimateDataStore:
         self._load_npz_fallback(Path(npz_path))
         self._compute_derived()
 
+    def get_array(self, field: str) -> np.ndarray | None:
+        """Return the full underlying array for a field, or None if absent.
+
+        Shape is either (12, nlat, nlon) for fields with a time axis or
+        (nlat, nlon) for static fields like elevation. Different fields may
+        have different (nlat, nlon) — the production store mixes 36x72,
+        180x360, and 720x1440 grids — so callers should derive grid axes
+        from the array shape, not from a store-level attribute.
+        """
+        return self._data.get(field)
+
     def _load_binary(self, bin_path: Path, manifest_path: Path) -> None:
         """Load interpolated fields from the frontend binary export."""
         if not bin_path.exists() or not manifest_path.exists():
@@ -349,13 +360,14 @@ class ClimateDataStore:
         field: str,
         lat: float,
         lon: float,
-        month: int,
+        month: int | None,
         *,
         imperial: bool = False,
     ) -> dict[str, Any]:
         """Sample a single field value at (lat, lon, month).
 
-        Returns dict with keys: field, value, unit, description.
+        If `month` is None the field is averaged over all 12 months (annual
+        mean). Returns dict with keys: field, value, unit, description.
         When imperial=True, converts to °F / mph / inches / ft etc.
         """
         # SST: route to surface field, but only for ocean cells
@@ -392,10 +404,11 @@ class ClimateDataStore:
         lon_norm = ((lon % 360) + 360) % 360
         lon_idx = int(np.floor(lon_norm / 360 * nlon)) % nlon
 
-        month_idx = int(month) % 12
-
         if has_month:
-            value = float(arr[month_idx, lat_idx, lon_idx])
+            if month is None:
+                value = float(arr[:, lat_idx, lon_idx].mean())
+            else:
+                value = float(arr[int(month) % 12, lat_idx, lon_idx])
         else:
             value = float(arr[lat_idx, lon_idx])
 
@@ -414,11 +427,12 @@ class ClimateDataStore:
         fields: list[str],
         lat: float,
         lon: float,
-        month: int,
+        month: int | None,
         *,
         imperial: bool = False,
     ) -> list[dict[str, Any]]:
-        """Sample multiple fields at the same location and month."""
+        """Sample multiple fields at the same location. month=None averages
+        each time-varying field over all 12 months."""
         return [self.sample(f, lat, lon, month, imperial=imperial) for f in fields]
 
 
@@ -520,11 +534,12 @@ class ObsDataStore:
         field: str,
         lat: float,
         lon: float,
-        month: int,
+        month: int | None,
         *,
         imperial: bool = False,
     ) -> dict[str, Any]:
-        """Sample an observation field at (lat, lon, month)."""
+        """Sample an observation field at (lat, lon, month). month=None
+        returns the annual mean over all 12 months."""
         if field not in self._data:
             return {"field": field, "error": f"Unknown observation field '{field}'"}
 
@@ -542,16 +557,19 @@ class ObsDataStore:
         lat_idx = int(np.clip(round((lat + 90) / 180 * nlat - 0.5), 0, nlat - 1))
         lon_norm = ((lon % 360) + 360) % 360
         lon_idx = int(np.floor(lon_norm / 360 * nlon)) % nlon
-        month_idx = int(month) % 12
 
         if arr.ndim == 3:
-            value = float(arr[month_idx, lat_idx, lon_idx])
+            if month is None:
+                value = float(np.nanmean(arr[:, lat_idx, lon_idx]))
+            else:
+                value = float(arr[int(month) % 12, lat_idx, lon_idx])
         else:
             value = float(arr[lat_idx, lon_idx])
 
-        # If NaN, search nearby cells (up to 2° away) for the closest valid value
+        # If NaN, search nearby cells (up to 2° away) for the closest valid value.
+        # Use month=0 as a default search frame when annual-averaging.
         if np.isnan(value):
-            value = self._nearest_valid(arr, lat_idx, lon_idx, month_idx)
+            value = self._nearest_valid(arr, lat_idx, lon_idx, 0 if month is None else int(month) % 12)
 
         if np.isnan(value):
             return {
@@ -604,9 +622,10 @@ class ObsDataStore:
         fields: list[str],
         lat: float,
         lon: float,
-        month: int,
+        month: int | None,
         *,
         imperial: bool = False,
     ) -> list[dict[str, Any]]:
-        """Sample multiple observation fields at the same location and month."""
+        """Sample multiple observation fields at the same location. month=None
+        returns the annual mean for each time-varying field."""
         return [self.sample(f, lat, lon, month, imperial=imperial) for f in fields]

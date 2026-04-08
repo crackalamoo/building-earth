@@ -66,10 +66,10 @@ SAMPLE_CLIMATE_TOOL = {
             },
             "month": {
                 "type": "integer",
-                "description": "Month index (0 = January, 11 = December).",
+                "description": "Month index (0=Jan, 11=Dec). Omit for annual mean.",
             },
         },
-        "required": ["fields", "lat", "lon", "month"],
+        "required": ["fields", "lat", "lon"],
     },
 }
 
@@ -115,10 +115,10 @@ SAMPLE_OBSERVATIONS_TOOL = {
             },
             "month": {
                 "type": "integer",
-                "description": "Month index (0 = January, 11 = December).",
+                "description": "Month index (0=Jan, 11=Dec). Omit for annual mean.",
             },
         },
-        "required": ["fields", "lat", "lon", "month"],
+        "required": ["fields", "lat", "lon"],
     },
 }
 
@@ -126,19 +126,23 @@ CALCULATE_TOOL = {
     "type": "function",
     "name": "calculate",
     "description": (
-        "Evaluate a math expression over climate data. "
-        "Use these aliases as variable names — they resolve automatically at the given location. "
-        "Aliases: T (2m air temp °C), T_s (surface °C), T_bl (boundary layer °C), "
-        "T_atm (free atmosphere °C), q (specific humidity kg/kg), q_sat (saturation humidity kg/kg), "
-        "RH (relative humidity %), Td (dew point °C), P (surface pressure Pa), "
-        "u (10m E/W wind m/s), v (10m N/S wind m/s), ws (10m wind speed m/s), "
-        "wind_dir (wind direction °), u_bl, v_bl, ws_bl (BL winds), "
-        "u_g, v_g, ws_g (geostrophic winds), u_ocean, v_ocean (ocean currents), "
-        "z (elevation m), precip (precipitation kg/m²/s), clouds (cloud fraction 0-1), "
-        "lapse (lapse rate °C/km). "
-        "IMPORTANT: Values are in raw SI units which differ from sample_climate display units: "
-        "q in kg/kg (not g/kg), P in Pa (not mb), wind in m/s (not km/h). "
-        "Supports: +, -, *, /, **, sqrt, exp, log, sin, cos, atan2, abs, min, max, pi."
+        "Evaluate a math expression over climate data at a single cell, or "
+        "with spatial / temporal reductions to compare a location to broader regions.\n\n"
+        "Field aliases (raw SI units): T (2m air temp °C), T_s (surface °C), "
+        "T_bl, T_atm, q (kg/kg), q_sat, RH (%), Td (°C), P (Pa), "
+        "u, v, ws (10m winds m/s), u_bl, v_bl, ws_bl (BL winds), u_g, v_g, ws_g (geostrophic winds), "
+        "u_ocean, v_ocean, z (m), precip (kg/m²/s), clouds (0-1), lapse (°C/km), "
+        "wind_dir (°). Math: +-*/, **, sqrt, exp, log, sin/cos/tan, abs, pi, e.\n\n"
+        "Reductions:\n"
+        "  global_mean(expr) — cos-lat weighted global mean\n"
+        "  zonal_mean(expr) — mean over all lons at the requested lat\n"
+        "  lat_band_mean(expr, lat_min, lat_max) — area-weighted band mean\n"
+        "  box_mean(expr, lat_min, lon_min, lat_max, lon_max) — area-weighted box mean. "
+        "lon_min > lon_max wraps the antimeridian.\n\n"
+        "Reductions compose: `T - zonal_mean(T)` is the local zonal anomaly.\n\n"
+        "Parameters: bare field references need lat+lon. zonal_mean needs lat. "
+        "Other reductions supply their own geography. month is always optional — "
+        "omit for an annual mean over all 12 months."
     ),
     "strict": False,
     "parameters": {
@@ -146,7 +150,7 @@ CALCULATE_TOOL = {
         "properties": {
             "expression": {
                 "type": "string",
-                "description": "Math expression using field names/aliases and math functions.",
+                "description": "Math expression using field names/aliases, math functions, and reductions.",
             },
             "lat": {
                 "type": "number",
@@ -158,14 +162,14 @@ CALCULATE_TOOL = {
             },
             "month": {
                 "type": "integer",
-                "description": "Month index (0 = January, 11 = December).",
+                "description": "Month index (0=Jan, 11=Dec). Omit for annual mean.",
             },
             "unit": {
                 "type": "string",
-                "description": "Optional unit label for the result (e.g. '°C', '%', 'm/s').",
+                "description": "Optional unit label for the result.",
             },
         },
-        "required": ["expression", "lat", "lon", "month"],
+        "required": ["expression"],
     },
 }
 
