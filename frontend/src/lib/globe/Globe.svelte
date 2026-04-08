@@ -990,6 +990,7 @@
     controls.maxDistance = 20;
     controls.autoRotate = true;
     controls.autoRotateSpeed = 0.5;
+    controls.enablePan = false;
 
     // Stop auto-rotation on user interaction
     controls.addEventListener('start', () => {
