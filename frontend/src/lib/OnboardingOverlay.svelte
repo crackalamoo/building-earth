@@ -29,62 +29,62 @@
   const WRITEUPS: Record<number, { teaser: string; text: string; values: Map<string, TemperatureValue> }> = {
     1: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['8_C', { celsius: 8, isDelta: false }],
+        ['7_C', { celsius: 7, isDelta: false }],
         ['-170_C', { celsius: -170, isDelta: false }],
         ['-9_C', { celsius: -9, isDelta: false }],
       ]);
       return {
         teaser: "This is Earth as a bare rock in space with no air — sunlight in, heat out. The poles freeze in months of darkness; even at the equator, 12 hours of night is enough to chill the air.",
-        text: "This is Earth with no air — just bare water and rock in space. The only thing setting the temperature is sunlight hitting the surface and heat radiating back out.\n\nThe equator gets the most direct sunlight, but even there the surface only averages {8_C} — because half the time it's night, and all the heat escapes immediately. The poles spend months in complete darkness and plunge to {-170_C} in winter. The global average is {-9_C}, well below freezing.\n\nNothing could live here. The planet needs something to hold onto its heat.",
+        text: "This is Earth with no air — just bare water and rock in space. The only thing setting the temperature is sunlight hitting the surface and heat radiating back out.\n\nThe equator gets the most direct sunlight, but even there the surface only averages {7_C} — because half the time it's night, and all the heat escapes immediately. The poles spend months in complete darkness and plunge to {-170_C} in winter. The global average is {-9_C}, well below freezing.\n\nNothing could live here. The planet needs something to hold onto its heat.",
         values,
       };
     })(),
     2: (() => {
       const values = new Map<string, TemperatureValue>([
         ['-9_C', { celsius: -9, isDelta: false }],
-        ['10_C', { celsius: 10, isDelta: false }],
-        ['19_delta', { celsius: 19, isDelta: true }],
-        ['40_C', { celsius: 40, isDelta: false }],
-        ['-50_C', { celsius: -50, isDelta: false }],
+        ['9_C', { celsius: 9, isDelta: false }],
+        ['18_delta', { celsius: 18, isDelta: true }],
+        ['39_C', { celsius: 39, isDelta: false }],
+        ['-46_C', { celsius: -46, isDelta: false }],
         ['17_C', { celsius: 17, isDelta: false }],
       ]);
       return {
         teaser: "Air traps the heat trying to escape — the greenhouse effect. But there's no wind to spread it around.",
-        text: "Now there's air. Gases like CO₂ and water vapor are transparent to sunlight, but they absorb the heat that the surface radiates back. The air warms up, and radiates heat back down. This is the **greenhouse effect**.\n\nThe global average jumps {19_delta}, from {-9_C} to {10_C} — already most of the way to the real Earth's average of {17_C}. But the tropics hit {40_C} because there are no clouds to block sunlight and no wind to carry the excess heat away. Meanwhile the poles plunge to {-50_C}.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
+        text: "Now there's air. Gases like CO₂ and water vapor are transparent to sunlight, but they absorb the heat that the surface radiates back. The air warms up, and radiates heat back down. This is the **greenhouse effect**.\n\nThe global average jumps {18_delta}, from {-9_C} to {9_C} — most of the way to the real Earth's average of {17_C}. The tropics hit {39_C} because there are no clouds to block sunlight and no wind to carry the excess heat away. Meanwhile the poles plunge to {-46_C}.\n\nThe atmosphere traps heat, but it can't move it. Every spot on the planet is on its own.",
         values,
       };
     })(),
     3: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['19_C', { celsius: 19, isDelta: false }],
-        ['-27_C', { celsius: -27, isDelta: false }],
-        ['7_C', { celsius: 7, isDelta: false }],
+        ['20_C', { celsius: 20, isDelta: false }],
+        ['-24_C', { celsius: -24, isDelta: false }],
+        ['9_C', { celsius: 9, isDelta: false }],
       ]);
       return {
         teaser: "Air spills from hot to cold up high, and the reverse down low, creating wind. Eddies carry heat from the tropics toward the poles.",
-        text: "Hot air expands, and cold air shrinks. Where a column of air is hot, it expands so much that air starts spilling out to adjacent areas. Conversely, air from elsewhere flows into cold areas, where the air has shrunk. This is how temperature differences create pressure differences, and pressure differences create wind.\n\nWhere extreme heat over land meets warm oceans, this contributes to summer monsoons, most famously the Indian monsoon. Warm, moist ocean air rushes into the land.\n\nCold air sinks at the poles and flows toward the warm equator, where air is rising. The spinning Earth deflects this flow sideways — this is the **Coriolis effect** — so surface winds across most of the globe blow from the east.\n\nWind and turbulent eddies carry heat from the tropics toward the poles. Water evaporates over warm ocean, forms clouds, and falls as rain. Snow piles up in the cold regions and reflects sunlight back to space, keeping them cold.\n\nThe equator cools to {19_C} as heat is carried poleward. The poles warm to {-27_C}. But the global average actually drops to {7_C} — clouds now block incoming sunlight, and widespread snow reflects it. The familiar deserts are missing — the Sahara gets more rain than the Amazon.",
+        text: "Hot air expands, and cold air shrinks. Where a column of air is hot, it expands so much that air starts spilling out to adjacent areas. Conversely, air from elsewhere flows into cold areas, where the air has shrunk. This is how temperature differences create pressure differences, and pressure differences create wind.\n\nWhere extreme heat over land meets warm oceans, this contributes to summer monsoons, most famously the Indian monsoon. Warm, moist ocean air rushes into the land.\n\nCold air sinks at the poles and flows toward the warm equator, where air is rising. The spinning Earth deflects this flow sideways — this is the **Coriolis effect** — so surface winds across most of the globe blow from the east.\n\nWind and turbulent eddies carry heat from the tropics toward the poles. Water evaporates over warm ocean, forms clouds, and falls as rain. Snow piles up in the cold regions and reflects sunlight back to space, keeping them cold.\n\nThe equator cools to {20_C} as heat is carried poleward. The poles warm to {-24_C}. But the global average actually drops to {9_C} — clouds now block incoming sunlight, and widespread snow reflects it. The familiar deserts are missing — the Sahara gets more rain than the Amazon.",
         values,
       };
     })(),
     4: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['13_C', { celsius: 13, isDelta: false }],
+        ['12_C', { celsius: 12, isDelta: false }],
       ]);
       return {
         teaser: "Hot air rises at the equator and sinks at 30°. The desert belt is born.",
-        text: "Hot air rises near the equator, creating a belt of low pressure around the hottest parts of the globe. It flows poleward, and by around 30° latitude it piles up and sinks back to the surface. This giant loop is the **Hadley cell**.\n\nAs the air sinks, it's squeezed by the atmosphere above and warms up. Warm air can hold much more moisture before saturating, so clouds can't form and rain doesn't fall. This is why the Sahara, the Sonoran, and the Australian outback all sit near 30°. At the surface, the return flow blows back toward the equator where pressure is lower — the **trade winds**.\n\nWhere trade winds from each hemisphere collide, air rises and produces an intense rain belt that feeds the world's tropical rainforests and monsoon regions. The global average warms back to {13_C}.",
+        text: "Hot air rises near the equator, creating a belt of low pressure around the hottest parts of the globe. It flows poleward, and by around 30° latitude it piles up and sinks back to the surface. This giant loop is the **Hadley cell**.\n\nAs the air sinks, it's squeezed by the atmosphere above and warms up. Warm air can hold much more moisture before saturating, so clouds can't form and rain doesn't fall. This is why the Sahara, the Sonoran, and the Australian outback all sit near 30°. At the surface, the return flow blows back toward the equator where pressure is lower — the **trade winds**.\n\nWhere trade winds from each hemisphere collide, air rises and produces an intense rain belt that feeds the world's tropical rainforests and monsoon regions. The global average warms back to {12_C}.",
         values,
       };
     })(),
     5: (() => {
       const values = new Map<string, TemperatureValue>([
-        ['16_C', { celsius: 16, isDelta: false }],
+        ['18_C', { celsius: 18, isDelta: false }],
         ['17_C', { celsius: 17, isDelta: false }],
         ['1_delta', { celsius: 1, isDelta: true }],
       ]);
       return {
         teaser: "Ocean currents move heat around the planet. The machine is complete.",
-        text: "Ocean currents complete the picture. The Gulf Stream carries warm tropical water toward Northern Europe, keeping London and Paris mild despite sitting at the same latitude as Labrador. Cold currents along the west coasts of continents cool the air and bring fog to San Francisco and the Atacama.\n\nBiological life isn't just a passive responder to the climate. Trees and plants pump enormous amounts of water into the air through their leaves, far more than bare soil alone would evaporate, especially in rainforests. And over just the past century, humans have begun to change the climate faster than anything in millions of years.\n\nOur final global average of {16_C} is within {1_delta} of the observed {17_C} — not bad for a model built from first principles.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other. This is the climate system you live inside.",
+        text: "Ocean currents complete the picture. The Gulf Stream carries warm tropical water toward Northern Europe, keeping London and Paris mild despite sitting at the same latitude as Labrador. Cold currents along the west coasts of continents cool the air and bring fog to San Francisco and the Atacama.\n\nBiological life isn't just a passive responder to the climate. Trees and plants pump enormous amounts of water into the air through their leaves, far more than bare soil alone would evaporate, especially in rainforests. And over just the past century, humans have begun to change the climate faster than anything in millions of years.\n\nOur final global average of {18_C} is within {1_delta} of the observed {17_C} — not bad for a model built from first principles.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other. This is the climate system you live inside.",
         values,
       };
     })(),

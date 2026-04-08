@@ -16,10 +16,15 @@ STAGE_NAMES = {
 
 _STAGE_CHAT_CONTEXT: dict[int, dict] = {
     1: {
-        "physics": ["solar radiation", "surface albedo", "Stefan-Boltzmann emission"],
+        "physics": [
+            "solar radiation",
+            "surface land/ocean heat capacity",
+            "Stefan-Boltzmann emission",
+        ],
         "missing": [
             "atmosphere",
             "greenhouse effect",
+            "snow/ice albedo feedback",
             "wind",
             "humidity",
             "clouds",
@@ -29,13 +34,13 @@ _STAGE_CHAT_CONTEXT: dict[int, dict] = {
     2: {
         "physics": [
             "solar radiation",
-            "surface albedo",
             "atmospheric absorption",
             "greenhouse effect",
             "sensible heat exchange",
         ],
         "missing": [
             "lateral heat transport",
+            "snow/ice albedo feedback",
             "wind",
             "humidity",
             "clouds",
@@ -45,7 +50,6 @@ _STAGE_CHAT_CONTEXT: dict[int, dict] = {
     3: {
         "physics": [
             "solar radiation",
-            "surface albedo",
             "atmospheric absorption",
             "greenhouse effect",
             "sensible heat exchange",
@@ -53,10 +57,11 @@ _STAGE_CHAT_CONTEXT: dict[int, dict] = {
             "atmospheric advection",
             "lateral diffusion (eddy transport)",
             "snow/ice albedo feedback",
-            "latent heat exchange",
             "humidity",
+            "evaporation",
             "clouds",
             "orographic effects",
+            "vegetation-dependent albedo",
         ],
         "missing": [
             "Hadley circulation",
@@ -65,12 +70,12 @@ _STAGE_CHAT_CONTEXT: dict[int, dict] = {
             "vertical motion",
             "trade winds",
             "ocean currents",
+            "transpiration",
         ],
     },
     4: {
         "physics": [
             "solar radiation",
-            "surface albedo",
             "atmospheric absorption",
             "greenhouse effect",
             "sensible heat exchange",
@@ -78,22 +83,22 @@ _STAGE_CHAT_CONTEXT: dict[int, dict] = {
             "atmospheric advection",
             "lateral diffusion",
             "snow/ice albedo feedback",
-            "latent heat exchange",
             "humidity",
+            "evaporation",
             "clouds",
             "orographic effects",
+            "vegetation-dependent albedo",
             "Hadley circulation",
             "ITCZ",
             "trade winds",
             "westerlies",
             "vertical motion (subtropical drying, adiabatic heating/cooling)",
         ],
-        "missing": ["ocean currents"],
+        "missing": ["ocean currents", "transpiration"],
     },
     5: {
         "physics": [
             "solar radiation",
-            "surface albedo",
             "atmospheric absorption",
             "greenhouse effect",
             "sensible heat exchange",
@@ -101,13 +106,14 @@ _STAGE_CHAT_CONTEXT: dict[int, dict] = {
             "Coriolis deflection",
             "atmospheric advection",
             "lateral diffusion (eddy heat transport)",
-            "humidity, latent heat exchange, evaporation",
+            "humidity",
+            "evapotranspiration",
             "Sundqvist clouds and precipitation",
             "snow/ice albedo feedback",
             "orographic effects",
+            "vegetation-dependent albedo",
             "Hadley circulation, ITCZ, trade winds, subtropical drying",
             "ocean currents (Stommel-style gyres, Ekman pumping)",
-            "vegetation–climate feedback",
         ],
         "missing": [
             "ENSO and other interannual ocean variability",

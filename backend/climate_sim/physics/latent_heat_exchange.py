@@ -17,11 +17,21 @@ from climate_sim.data.constants import (
 SEAWATER_FREEZE_C = -1.8
 
 
+# Deep root water reserve: our 300mm soil bucket represents ~30cm of soil,
+# but tropical forest roots extend 3-5m. The deeper layers retain water that
+# the shallow bucket can't track. SM_effective for transpiration adds
+# veg_fraction * this reserve to the bucket SM.
+_DEEP_ROOT_SM_RESERVE = 0.25
+
+
 @dataclass(frozen=True)
 class LatentHeatExchangeConfig:
     """Configuration for the latent heat exchange model."""
 
     enabled: bool = True
+    # When False, vegetation transpiration is suppressed and only bare-soil
+    # evaporation contributes to latent heat.
+    transpiration_enabled: bool = True
     minimum_wind_speed_m_s: float = 2.0
     # Manabe (1969) beta function: β = min(θ/θ_crit, 1)
     # Below field capacity, evapotranspiration scales linearly with soil moisture.
@@ -33,11 +43,6 @@ class LatentHeatExchangeConfig:
     # Typical values: 0.05-0.10 sandy, 0.15-0.20 clay (Fu et al. 2022,
     # Science Advances). Using 0.12 as a global average.
     transpiration_wilting_point: float = 0.12
-    # Deep root water reserve: our 300mm bucket represents ~30cm of soil, but
-    # tropical forest roots extend 3-5m.  The deeper layers retain water that
-    # the shallow bucket can't track.  SM_effective for transpiration adds
-    # veg_fraction * this reserve to the bucket SM.
-    deep_root_sm_reserve: float = 0.25
     # No evaporation below freezing (ice-covered surface)
     freeze_threshold_c: float = SEAWATER_FREEZE_C
 
@@ -122,14 +127,18 @@ class LatentHeatExchangeModel:
             rh = humidity_q / np.maximum(q_sat, 1e-10)
             beta_soil = np.minimum(rh / theta_crit, 1.0)
 
-        if vegetation_fraction is None or soil_moisture is None:
+        if (
+            vegetation_fraction is None
+            or soil_moisture is None
+            or not self._config.transpiration_enabled
+        ):
             return beta_soil
 
         wilt = self._config.transpiration_wilting_point
         # Deep root water: forests access water below our shallow bucket.
         # Effective SM for transpiration includes a reserve proportional to
         # vegetation fraction (more roots = more deep water access).
-        sm_eff = soil_moisture + vegetation_fraction * self._config.deep_root_sm_reserve
+        sm_eff = soil_moisture + vegetation_fraction * _DEEP_ROOT_SM_RESERVE
         beta_transp = np.clip((sm_eff - wilt) / (theta_crit - wilt), 0.0, 1.0)
         return (1.0 - vegetation_fraction) * beta_soil + vegetation_fraction * beta_transp
 
@@ -592,19 +601,19 @@ class LatentHeatExchangeModel:
             1.0 / theta_crit,
             0.0,
         )
-        # For transpiration, SM_eff = SM + veg*reserve. d(SM_eff)/dSM = 1.
-        # So d(beta_transp)/dSM = 1/(theta_crit - wilt) when wilt < SM_eff < theta_crit
-        sm_eff = soil_moisture + (
-            vegetation_fraction * self._config.deep_root_sm_reserve
-            if vegetation_fraction is not None
-            else 0.0
-        )
-        dbeta_transp = np.where(
-            (sm_eff > wilt) & (sm_eff < theta_crit) if soil_moisture is not None else True,
-            1.0 / (theta_crit - wilt),
-            0.0,
-        )
-        if vegetation_fraction is not None:
+        if (
+            soil_moisture is not None
+            and vegetation_fraction is not None
+            and self._config.transpiration_enabled
+        ):
+            # For transpiration, SM_eff = SM + veg*reserve. d(SM_eff)/dSM = 1.
+            # So d(beta_transp)/dSM = 1/(theta_crit - wilt) when wilt < SM_eff < theta_crit
+            sm_eff = soil_moisture + vegetation_fraction * _DEEP_ROOT_SM_RESERVE
+            dbeta_transp = np.where(
+                (sm_eff > wilt) & (sm_eff < theta_crit),
+                1.0 / (theta_crit - wilt),
+                0.0,
+            )
             dbeta_dSM = (
                 1.0 - vegetation_fraction
             ) * dbeta_soil + vegetation_fraction * dbeta_transp

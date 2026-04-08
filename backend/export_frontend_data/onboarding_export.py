@@ -98,7 +98,7 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
         )
     elif stage == 2:
         return ModelConfig(
-            radiation=RadiationConfig(),  # include_atmosphere=True (default)
+            radiation=RadiationConfig(default_cloud_cover=0.0),
             diffusion=DiffusionConfig(enabled=False),
             wind=WindConfig(enabled=False),
             advection=AdvectionConfig(enabled=False),
@@ -112,7 +112,9 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
     elif stage == 3:
         # Wind and diffusion: thermal pressure drives wind, eddies
         # diffuse heat, water cycle active — but no Hadley cells,
-        # no ITCZ, no vertical motion (subtropical drying).
+        # no ITCZ, no vertical motion (subtropical drying), and only
+        # bare-soil evaporation (vegetation transpiration is staged in
+        # at stage 5 alongside the vegetation–climate feedback).
         return ModelConfig(
             radiation=RadiationConfig(),
             diffusion=DiffusionConfig(),
@@ -120,14 +122,15 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
             advection=AdvectionConfig(),
             surface_albedo=SurfaceAlbedoConfig(),
             sensible_heat=SensibleHeatExchangeConfig(),
-            latent_heat=LatentHeatExchangeConfig(),
+            latent_heat=LatentHeatExchangeConfig(transpiration_enabled=False),
             ocean_advection=OceanAdvectionConfig(enabled=False),
             vertical_motion=VerticalMotionConfig(enabled=False),
             orographic=OrographicConfig(),
         )
     elif stage == 4:
         # Full atmospheric dynamics with Hadley cells, ITCZ, vertical
-        # motion — but no ocean heat transport.
+        # motion — but no ocean heat transport, and still no vegetation
+        # transpiration.
         return ModelConfig(
             radiation=RadiationConfig(),
             diffusion=DiffusionConfig(),
@@ -135,7 +138,7 @@ def _get_stage_model_config(stage: int) -> ModelConfig:
             advection=AdvectionConfig(),
             surface_albedo=SurfaceAlbedoConfig(),
             sensible_heat=SensibleHeatExchangeConfig(),
-            latent_heat=LatentHeatExchangeConfig(deep_root_sm_reserve=0.0),
+            latent_heat=LatentHeatExchangeConfig(transpiration_enabled=False),
             ocean_advection=OceanAdvectionConfig(enabled=False),
             vertical_motion=VerticalMotionConfig(),
             orographic=OrographicConfig(),

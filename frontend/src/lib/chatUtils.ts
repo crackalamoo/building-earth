@@ -69,16 +69,16 @@ export function computeSuggestions(
     candidates.push('Why is it cooler at this elevation?');
 
   if (ocean.isOcean)
-    candidates.push('Why is the sea temperature different from the air?');
+    candidates.push('How does the ocean shape the climate here?');
 
   if (agree(avgMonthlyPrecip < 10, obsAvgPrecip !== null ? obsAvgPrecip < 10 : null))
     candidates.push('Why is it so dry here?');
 
   if (agree(currentPrecip > 100, obsCurrentPrecip !== null ? obsCurrentPrecip > 100 : null))
-    candidates.push('What drives the heavy rainfall here?');
+    candidates.push('Why does it rain so much here?');
 
   if (agree(seasonalSwing > 25, obsSwing !== null ? obsSwing > 25 : null))
-    candidates.push('Why is the seasonal swing so large here?');
+    candidates.push('Why are the seasons so extreme here?');
   else if (agree(seasonalSwing < 8, obsSwing !== null ? obsSwing < 8 : null))
     candidates.push('Why is the temperature so stable year-round?');
 
@@ -92,9 +92,9 @@ export function computeSuggestions(
     candidates.push(`Why is ${monthNames[coldestMonth]} the coldest time of year here?`);
 
   if (wind.speed > 8)
-    candidates.push('What drives the strong winds here?');
+    candidates.push('Why is it so windy here?');
 
-  candidates.push('What affects the climate here?');
+  candidates.push('What makes this place\'s climate unique?');
 
   return candidates.slice(0, 3);
 }

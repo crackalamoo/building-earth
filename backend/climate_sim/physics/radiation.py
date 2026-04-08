@@ -94,6 +94,8 @@ class RadiationConfig:
     boundary_layer_emissivity: float = BOUNDARY_LAYER_EMISSIVITY
     shortwave_absorptance_atmosphere: float = SHORTWAVE_ABSORPTANCE_ATMOSPHERE
     cloud_top_delta_z_m: float = ATMOSPHERE_LAYER_HEIGHT_M / 2.0
+    # Default cloud cover used in the no-humidity warm-start branch
+    default_cloud_cover: float = 0.5
 
 
 def _with_floor(values: np.ndarray, floor: float) -> np.ndarray:
@@ -453,8 +455,13 @@ def radiative_balance_rhs(
             cloud_coverage = np.clip(rh - 0.5, 0, 0.5) * 2.0  # Linear ramp from RH=0.5 to 1.0
             cloud_albedo = np.full_like(cloud_coverage, 0.35)
         else:
-            # No humidity info: assume 50% cloud cover globally
-            cloud_coverage = np.full_like(surface, 0.50)
+            # No humidity info: warm-start with the configured default cloud
+            # cover. This is reached during the first RHS evaluation before
+            # humidity is initialized — a sensible default is needed for the
+            # solver's initial guess. The default (0.5) gives a roughly
+            # Earth-like radiation balance to start from; stage 2 overrides
+            # this to 0 to match its no-clouds physics.
+            cloud_coverage = np.full_like(surface, config.default_cloud_cover)
             cloud_albedo = np.full_like(surface, 0.35)
 
         # Treat all clouds as low stratiform for the fallback
@@ -1067,7 +1074,7 @@ def radiative_balance_rhs_temperature_derivative(
             rh = humidity_q / np.maximum(compute_saturation_specific_humidity(surface), 1e-10)
             cloud_coverage = np.clip(rh - 0.5, 0, 0.5) * 2.0
         else:
-            cloud_coverage = np.full_like(surface, 0.50)
+            cloud_coverage = np.full_like(surface, config.default_cloud_cover)
 
         # Treat all as stratiform for fallback
         conv_frac = np.zeros_like(surface)

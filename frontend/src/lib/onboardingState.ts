@@ -30,8 +30,8 @@ export const STAGES: StageInfo[] = [
     button: 'Stir the air',
     description: 'A blanket of air traps heat...',
     chatSuggestions: [
-      'How does the greenhouse effect warm the poles?',
-      'Why is it still unrealistic?',
+      'Why doesn\'t anything stop the tropics from overheating?',
+      'Why is the planet so uneven?',
       'How much warming does the atmosphere add?',
     ],
   },
@@ -41,7 +41,7 @@ export const STAGES: StageInfo[] = [
     chatSuggestions: [
       'What\'s the difference between winds and eddies?',
       'Why are the winds going east to west towards the equator?',
-      'Why doesn\'t the rain reach the interior Amazon?',
+      'Why are the tropical rainforests still so dry?',
     ],
   },
   {
@@ -50,7 +50,7 @@ export const STAGES: StageInfo[] = [
     chatSuggestions: [
       'What are Hadley cells?',
       'Why do deserts form at 30\u00b0?',
-      'Why do trade winds and westerlies go in different directions?',
+      'Why does the wind flip direction at 30\u00b0?',
     ],
   },
   {
