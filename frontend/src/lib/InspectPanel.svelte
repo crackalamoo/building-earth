@@ -860,6 +860,8 @@
           type="text"
           class="chat-input"
           placeholder="Ask about this location..."
+          enterkeyhint="send"
+          autocomplete="off"
           bind:value={inputText}
           on:keydown={handleKeydown}
           disabled={streaming}
