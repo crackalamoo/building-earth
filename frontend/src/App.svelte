@@ -419,6 +419,7 @@
         {primordialLandMask}
         {revealed}
         {stage}
+        inspectOpen={pickLoc !== null}
         on:interact={stopAutoRotate}
         on:pick={handlePick}
       />

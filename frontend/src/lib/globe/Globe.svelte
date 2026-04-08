@@ -24,6 +24,11 @@
   export let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
   export let revealed: boolean = false;
   export let stage: number = 5;
+  // When the inspect panel is open we shift the rendered viewport so the globe
+  // doesn't sit underneath the panel. Done via camera.setViewOffset rather than
+  // moving the canvas (which would break raycasting) or panning the camera
+  // target (which introduces orbit weirdness).
+  export let inspectOpen: boolean = false;
 
   const dispatch = createEventDispatcher();
 
@@ -44,6 +49,10 @@
   let displayMonthProgress = 0; // Smoothly interpolates toward target
   let sunOrbitAngle = 0; // Rotates sun when camera is not auto-rotating
   let lastAnimateTime: number | null = null;
+  // Smoothly tweened view offset for the inspect-open shift. We track the
+  // current displayed offset and lerp it toward the target each frame.
+  let viewOffsetX = 0; // current offset, normalized 0..1 of width
+  let viewOffsetY = 0; // current offset, normalized 0..1 of height
   let windParticles: WindParticles | null = null;
   let treeInstances: TreeInstances | null = null;
   let cloudInstances: CloudInstances | null = null;
@@ -1079,9 +1088,45 @@
     animate();
   }
 
+  function targetViewOffset(): { x: number; y: number } {
+    if (!inspectOpen || !container) return { x: 0, y: 0 };
+    const w = container.clientWidth;
+    // Mobile breakpoint matches the rest of the app's media queries.
+    const isMobile = w <= 800;
+    // Positive y offset shifts the rendered viewport DOWN, which moves the
+    // globe UP visually. Positive x offset shifts the viewport RIGHT, which
+    // moves the globe LEFT visually. Magnitudes tuned to roughly half-clear
+    // the inspect panel.
+    if (isMobile) return { x: 0, y: 0.18 };
+    return { x: 0.16, y: 0 };
+  }
+
+  function applyViewOffset() {
+    if (!camera || !container) return;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (Math.abs(viewOffsetX) < 0.001 && Math.abs(viewOffsetY) < 0.001) {
+      camera.clearViewOffset();
+    } else {
+      camera.setViewOffset(w, h, viewOffsetX * w, viewOffsetY * h, w, h);
+    }
+  }
+
   function animate(time?: number) {
     animationId = requestAnimationFrame(animate);
     controls.update();
+
+    // Smoothly tween the view offset toward its target so the inspect-open
+    // shift glides instead of snapping.
+    const target = targetViewOffset();
+    const lerp = 0.12;
+    const prevX = viewOffsetX;
+    const prevY = viewOffsetY;
+    viewOffsetX += (target.x - viewOffsetX) * lerp;
+    viewOffsetY += (target.y - viewOffsetY) * lerp;
+    if (Math.abs(viewOffsetX - prevX) > 0.0001 || Math.abs(viewOffsetY - prevY) > 0.0001) {
+      applyViewOffset();
+    }
 
     const isAutoRotating = controls.autoRotate;
 
@@ -1248,6 +1293,9 @@
     camera.aspect = container.clientWidth / container.clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(container.clientWidth, container.clientHeight);
+    // setViewOffset stores absolute pixel values (offsetX/Y, fullWidth/Height),
+    // so resizing the container leaves them stale. Re-apply with current size.
+    applyViewOffset();
     if (cloudInstances) cloudInstances.setViewportHeight(container.clientHeight * Math.min(window.devicePixelRatio, 2), camera.fov);
   }
 
