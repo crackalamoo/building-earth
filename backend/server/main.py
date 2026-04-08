@@ -98,7 +98,6 @@ async def chat(request: Request) -> StreamingResponse:
     body = await request.json()
     lat: float = body["lat"]
     lon: float = body["lon"]
-    month: int = body["month"]
     user_messages: list[dict[str, str]] = body["messages"]
     imperial: bool = body.get("imperial", False)
     stage: int | None = body.get("stage")
@@ -106,8 +105,6 @@ async def chat(request: Request) -> StreamingResponse:
     # Input validation
     if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
         raise HTTPException(400, "Invalid coordinates")
-    if not (0 <= month <= 11):
-        raise HTTPException(400, "Invalid month")
     if not isinstance(user_messages, list) or not user_messages:
         raise HTTPException(400, "Invalid messages")
     if len(user_messages) > MAX_MESSAGES:
@@ -126,43 +123,21 @@ async def chat(request: Request) -> StreamingResponse:
 
     prev_lat: float | None = body.get("prevLat")
     prev_lon: float | None = body.get("prevLon")
-    prev_month: int | None = body.get("prevMonth")
 
-    month_names = [
-        "Jan",
-        "Feb",
-        "Mar",
-        "Apr",
-        "May",
-        "Jun",
-        "Jul",
-        "Aug",
-        "Sep",
-        "Oct",
-        "Nov",
-        "Dec",
-    ]
-
-    # Always stamp the current location and month on the latest user message
-    # so the model never has to scroll back through prior turns to remember
-    # where the user is. We put it on the user message (not the system prompt)
-    # to preserve system-prompt caching — the system prefix stays bit-identical
-    # across requests while the per-turn context rides the user turn.
+    # Always stamp the current location on the latest user message so the model
+    # never has to scroll back through prior turns to remember where the user is.
     ns = "N" if lat >= 0 else "S"
     ew = "E" if lon >= 0 else "W"
     location_str = f"{lat:.1f}°{ns}, {abs(lon):.1f}°{ew}"
-    month_str = month_names[month % 12]
 
     loc_changed = (
         prev_lat is not None
         and (round(lat, 1) != round(prev_lat, 1)
              or round(lon, 1) != round(prev_lon or 0, 1))
     )
-    month_changed = prev_month is not None and month != prev_month
 
     location_label = "Now at" if loc_changed else "Location"
-    month_label = "Now month" if month_changed else "Month"
-    prefix = f"[{location_label}: {location_str}] [{month_label}: {month_str}]\n\n"
+    prefix = f"[{location_label}: {location_str}]\n\n"
 
     messages.extend(user_messages)
     for i in range(len(messages) - 1, -1, -1):

@@ -13,6 +13,7 @@
   let aboutOpen = false;
   import { currentStage, stageLoading, STAGES, STAGE_NAMES, type Stage } from './lib/onboardingState';
   import { loadStageData, preloadStageFile } from './lib/globe/loadBinaryData';
+  import type { ChatMessage } from './lib/chatUtils';
 
   let temperatureData: number[][][] | null = null;
   let layerData: ClimateLayerData | null = null;
@@ -63,6 +64,11 @@
   let recordingProgress = '';
   let uniformLighting = false;
   let pickLoc: { lat: number; lon: number } | null = null;
+
+  // Chat history — persists for the whole session
+  let chatMessages: ChatMessage[] = [];
+  let chatSentLat: number | null = null;
+  let chatSentLon: number | null = null;
 
   // Two-phase state
   let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
@@ -425,6 +431,10 @@
         {temperatureData}
         {layerData}
         {stage}
+        bind:messages={chatMessages}
+        sentLat={chatSentLat}
+        sentLon={chatSentLon}
+        on:updateChatState={(e) => { chatMessages = e.detail.messages; chatSentLat = e.detail.sentLat; chatSentLon = e.detail.sentLon; }}
         on:close={() => { pickLoc = null; globeComponent?.dismissMarker(); }}
         on:setMonth={(e) => { monthProgress = e.detail; playing = false; }}
       />

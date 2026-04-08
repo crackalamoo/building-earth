@@ -17,6 +17,9 @@
   export let temperatureData: number[][][] | null;
   export let layerData: ClimateLayerData | null;
   export let stage: number = 5;
+  export let messages: ChatMessage[] = [];
+  export let sentLat: number | null = null;
+  export let sentLon: number | null = null;
 
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
   const MAX_MESSAGES = 50;
@@ -25,7 +28,6 @@
   function precipCss(mmMonth: number): string { const [r,g,b] = precipMmdayToColor(mmMonth / 30.44); return `rgb(${r},${g},${b})`; }
 
   // Chat state
-  let messages: ChatMessage[] = [];
   let inputText = '';
   let streaming = false;
   let limitReached = false;
@@ -33,9 +35,6 @@
   let lastFailedMessage = '';
   let chatContainer: HTMLDivElement;
   let currentParts: MsgPart[] = [];
-  let sentLat: number | null = null;
-  let sentLon: number | null = null;
-  let sentMonth: number | null = null;
 
   $: suggestions = obsLoaded
     ? computeSuggestions(lat, ocean, elevation, cycleTemps, cyclePrecip, wind, currentMonthIdx, tempC, stage, obsTemps, obsPrecips)
@@ -319,14 +318,13 @@
     currentParts = [];
     scrollToBottom();
 
-    const month = Math.floor(monthProgress) % 12;
     try {
       abortController = new AbortController();
       await streamChat(
         API_BASE,
         {
-          lat, lon, month,
-          prevLat: sentLat, prevLon: sentLon, prevMonth: sentMonth,
+          lat, lon,
+          prevLat: sentLat, prevLon: sentLon,
           imperial: $useImperial,
           stage,
           messages: messages.filter(m => m.content !== '').map(m => ({ role: m.role, content: m.content })),
@@ -361,9 +359,7 @@
     } finally {
       streaming = false;
       abortController = null;
-      sentLat = lat;
-      sentLon = lon;
-      sentMonth = month;
+      dispatch('updateChatState', { messages, sentLat: lat, sentLon: lon });
     }
   }
 
@@ -488,6 +484,18 @@
     }
   }
 
+  // On mobile, keep the panel pinned just above the on-screen keyboard by
+  // tracking visualViewport offset. This prevents iOS from scrolling the page
+  // when the keyboard opens.
+  let keyboardOffset = 0;
+
+  function updateKeyboardOffset() {
+    if (!isMobile || !window.visualViewport) return;
+    const vv = window.visualViewport;
+    // Amount the viewport has shifted up due to keyboard
+    keyboardOffset = window.innerHeight - vv.height - vv.offsetTop;
+  }
+
   onMount(() => {
     if (isMobile) addDragListeners();
 
@@ -495,9 +503,14 @@
     const onMediaChange = (e: MediaQueryListEvent) => { isMobile = e.matches; };
     mql.addEventListener('change', onMediaChange);
 
+    window.visualViewport?.addEventListener('resize', updateKeyboardOffset);
+    window.visualViewport?.addEventListener('scroll', updateKeyboardOffset);
+
     return () => {
       removeDragListeners();
       mql.removeEventListener('change', onMediaChange);
+      window.visualViewport?.removeEventListener('resize', updateKeyboardOffset);
+      window.visualViewport?.removeEventListener('scroll', updateKeyboardOffset);
     };
   });
 </script>
@@ -507,6 +520,7 @@
   class="inspect-panel"
   class:dragging
   bind:this={panelEl}
+  style={isMobile && keyboardOffset > 0 ? `bottom: ${keyboardOffset}px` : ''}
   transition:fly={{ x: isMobile ? 0 : 700, y: isMobile ? 400 : 0, duration: 200 }}
   on:click={onPanelClick}
 >

@@ -110,10 +110,8 @@ export async function streamChat(
   payload: {
     lat: number;
     lon: number;
-    month: number;
     prevLat: number | null;
     prevLon: number | null;
-    prevMonth: number | null;
     imperial: boolean;
     messages: { role: string; content: string }[];
     stage?: number;
