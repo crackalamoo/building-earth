@@ -51,6 +51,7 @@ upload-stages:
 	for i in 1 2 3 4; do \
 		wrangler r2 object put $(R2_BUCKET)/stage$$i.bin.gz --file frontend/public/stage$$i.bin.gz --remote; \
 		wrangler r2 object put $(R2_BUCKET)/stage$$i.manifest.json --file frontend/public/stage$$i.manifest.json --remote; \
+		wrangler r2 object put $(R2_BUCKET)/stage$$i.npz --file data/stage$$i.npz --remote; \
 	done
 
 upload-mobile:

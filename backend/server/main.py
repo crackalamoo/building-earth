@@ -39,8 +39,22 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-# Load climate data once at startup
-store = ClimateDataStore()
+# Load climate data once at startup. One simulation snapshot per onboarding
+# stage so the LLM's tool lookups return numbers consistent with what the
+# user is actually looking at on the globe. Stage 5 is the full final model
+# (data/main.npz); stages 1-4 are the progressive onboarding snapshots.
+def _load_stage_store(stage: int) -> ClimateDataStore:
+    if stage == 5:
+        return ClimateDataStore()
+    return ClimateDataStore(
+        npz_path=f"data/stage{stage}.npz",
+        bin_path=f"frontend/public/stage{stage}.bin.gz",
+        manifest_path=f"frontend/public/stage{stage}.manifest.json",
+    )
+
+stage_stores: dict[int, ClimateDataStore] = {
+    s: _load_stage_store(s) for s in (1, 2, 3, 4, 5)
+}
 obs_store = ObsDataStore()
 
 SYSTEM = SYSTEM_PROMPT
@@ -101,6 +115,11 @@ async def chat(request: Request) -> StreamingResponse:
     user_messages: list[dict[str, str]] = body["messages"]
     imperial: bool = body.get("imperial", False)
     stage: int | None = body.get("stage")
+
+    # Pick the simulation snapshot that matches the user's current stage so
+    # the LLM's tool lookups return numbers consistent with what the user is
+    # actually looking at on the globe. Stage 5 is the full final model.
+    request_store = stage_stores[stage if stage in stage_stores else 5]
 
     # Input validation
     if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
@@ -222,7 +241,7 @@ async def chat(request: Request) -> StreamingResponse:
                     if tc["name"] == "calculate":
                         calc_result = resolve_fields(
                             expression=args["expression"],
-                            sample_fn=store.sample_raw,
+                            sample_fn=request_store.sample_raw,
                             lat=args["lat"],
                             lon=args["lon"],
                             month=args["month"],
@@ -233,7 +252,7 @@ async def chat(request: Request) -> StreamingResponse:
                         yield f"data: {json.dumps({'tool': 'Calculate'})}\n\n"
                     else:
                         fields_list = args.get("fields", [args["field"]] if "field" in args else [])
-                        data_store = obs_store if tc["name"] == "sample_observations" else store
+                        data_store = obs_store if tc["name"] == "sample_observations" else request_store
                         result = data_store.sample_many(
                             fields=fields_list,
                             lat=args["lat"],

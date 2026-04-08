@@ -23,6 +23,11 @@ RUN mkdir -p data/processed frontend/public && \
     curl -fsSL "$DATA_BASE/main.npz" -o data/main.npz && \
     curl -fsSL "$DATA_BASE/main.bin.gz" -o frontend/public/main.bin.gz && \
     curl -fsSL "$DATA_BASE/main.manifest.json" -o frontend/public/main.manifest.json && \
+    for i in 1 2 3 4; do \
+      curl -fsSL "$DATA_BASE/stage$i.npz" -o "data/stage$i.npz" && \
+      curl -fsSL "$DATA_BASE/stage$i.bin.gz" -o "frontend/public/stage$i.bin.gz" && \
+      curl -fsSL "$DATA_BASE/stage$i.manifest.json" -o "frontend/public/stage$i.manifest.json"; \
+    done && \
     curl -fsSL "$DATA_BASE/ref_climatology_1deg_1981-2010.nc" -o data/processed/ref_climatology_1deg_1981-2010.nc && \
     curl -fsSL "$DATA_BASE/ref_humidity_precip_1deg_1981-2010.nc" -o data/processed/ref_humidity_precip_1deg_1981-2010.nc
 

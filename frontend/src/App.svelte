@@ -106,6 +106,20 @@
   $: stage = $currentStage;
   $: revealed = stage >= 1;
 
+  // Reset chat history whenever the user advances to a new stage. The
+  // simulation behind the LLM's tools changes between stages, and old
+  // suggested prompts no longer fit the new physics — keeping prior turns
+  // would let the model answer about a stage the user is no longer viewing.
+  let lastChatStage: number | null = null;
+  $: if (stage !== lastChatStage) {
+    if (lastChatStage !== null) {
+      chatMessages = [];
+      chatSentLat = null;
+      chatSentLon = null;
+    }
+    lastChatStage = stage;
+  }
+
   // Mobile onboarding overlay starts in "collapsed" mode (showing only the
   // teaser line + next button) so the globe stays visible. The user can tap
   // "Read more" to see the full writeup. Desktop is never collapsed.
