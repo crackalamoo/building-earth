@@ -133,7 +133,7 @@ async def chat(request: Request) -> StreamingResponse:
 
     # Build conversation with location context
     system_content = SYSTEM
-    if stage is not None and stage < 5:
+    if stage is not None:
         system_content += get_stage_chat_context(stage)
 
     prev_lat: float | None = body.get("prevLat")
