@@ -21,6 +21,34 @@
   export let stage = 5;
   export let hasPrecipitation = false;
   export let hasSurface = false;
+
+  let draggingSlider = false;
+
+  function sliderPointerDown(e: PointerEvent) {
+    const target = e.currentTarget as HTMLInputElement;
+    const rect = target.getBoundingClientRect();
+    const min = parseFloat(target.min);
+    const max = parseFloat(target.max);
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    monthProgress = min + ratio * (max - min);
+    dispatch('stopPlaying');
+    draggingSlider = true;
+    target.setPointerCapture(e.pointerId);
+  }
+
+  function sliderPointerMove(e: PointerEvent) {
+    if (!draggingSlider) return;
+    const target = e.currentTarget as HTMLInputElement;
+    const rect = target.getBoundingClientRect();
+    const min = parseFloat(target.min);
+    const max = parseFloat(target.max);
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    monthProgress = min + ratio * (max - min);
+  }
+
+  function sliderPointerUp(_e: PointerEvent) {
+    draggingSlider = false;
+  }
 </script>
 
 <div class="controls" class:visible>
@@ -74,6 +102,10 @@
       step="0.01"
       bind:value={monthProgress}
       on:input={() => dispatch('stopPlaying')}
+      on:pointerdown={sliderPointerDown}
+      on:pointermove={sliderPointerMove}
+      on:pointerup={sliderPointerUp}
+      on:pointercancel={sliderPointerUp}
     />
   </label>
   <button class="action-btn" on:click={() => dispatch('togglePlay')} disabled={recording} data-tooltip={playing ? 'Pause' : 'Play'}>
@@ -93,8 +125,7 @@
 
 <style>
   .controls {
-    padding: 0.75rem 1rem;
-    padding-bottom: 1.5rem;
+    padding: 0.5rem 1rem 1rem;
     display: flex;
     justify-content: center;
     align-items: center;
@@ -256,7 +287,7 @@
   }
 
   button {
-    padding: 0.5rem 1rem;
+    padding: 0.4rem 0.8rem;
     background: rgba(14, 74, 74, 0.3);
     color: #fff;
     border: 1px solid rgba(26, 107, 107, 0.5);

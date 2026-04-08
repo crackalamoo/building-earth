@@ -48,7 +48,7 @@
 <style>
   .legend {
     position: absolute;
-    bottom: 5rem;
+    bottom: 4.5rem;
     right: 1.5rem;
     display: flex;
     flex-direction: column;
@@ -121,7 +121,7 @@
 
   @media (max-width: 800px), (max-height: 500px) {
     .legend {
-      bottom: 5rem;
+      bottom: 5.5rem;
       right: 0.75rem;
       gap: 0.2rem;
       padding: 0.3rem 0.5rem;

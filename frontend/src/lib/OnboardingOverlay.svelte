@@ -79,10 +79,11 @@
       const values = new Map<string, TemperatureValue>([
         ['16_C', { celsius: 16, isDelta: false }],
         ['17_C', { celsius: 17, isDelta: false }],
+        ['1_delta', { celsius: 1, isDelta: true }],
       ]);
       return {
         teaser: "Ocean currents move heat around the planet. The machine is complete.",
-        text: "Ocean currents complete the picture. The Gulf Stream carries warm tropical water toward Northern Europe, keeping London and Paris mild despite sitting at the same latitude as Labrador. Cold currents along the west coasts of continents cool the air and bring fog to San Francisco and the Atacama.\n\nBiological life isn't just a passive responder to the climate — it shapes it. Trees and plants pump enormous amounts of water into the air through their leaves, far more than bare soil alone would evaporate, especially in rainforests. And over just the past century, humans have begun to change that climate faster than anything in millions of years.\n\nOur final global average of {16_C} is within 1° of the observed {17_C} — not bad for a model built from first principles.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other. This is the climate system you live inside.",
+        text: "Ocean currents complete the picture. The Gulf Stream carries warm tropical water toward Northern Europe, keeping London and Paris mild despite sitting at the same latitude as Labrador. Cold currents along the west coasts of continents cool the air and bring fog to San Francisco and the Atacama.\n\nBiological life isn't just a passive responder to the climate — it shapes it. Trees and plants pump enormous amounts of water into the air through their leaves, far more than bare soil alone would evaporate, especially in rainforests. And over just the past century, humans have begun to change that climate faster than anything in millions of years.\n\nOur final global average of {16_C} is within {1_delta} of the observed {17_C} — not bad for a model built from first principles.\n\nThe machine is complete. Sunlight, air, water, and ice — all connected, all responding to each other. This is the climate system you live inside.",
         values,
       };
     })(),
