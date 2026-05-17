@@ -1,9 +1,10 @@
 .PHONY: frontend backend sim docker docker-stop \
         export export-main export-stages downsample-mobile \
         upload upload-main upload-stages upload-mobile upload-obs \
-        deploy
+        download-obs deploy
 
 R2_BUCKET = climate-sim-data
+R2_PUBLIC = https://pub-9a1d53d2ac6f42a8b83952d8fab2e668.r2.dev
 
 # ── Dev ─────────────────────────────────────────────────────────────────
 frontend:
@@ -36,6 +37,12 @@ export-stages:
 # Output is frontend/public/{main,stage1..4}_mobile.bin.gz + manifests.
 downsample-mobile:
 	PYTHONPATH=backend uv run python -m export_frontend_data.downsample_for_mobile --input-dir frontend/public --factor 4
+
+# ── Download from R2 ────────────────────────────────────────────────────
+download-obs:
+	mkdir -p data/processed
+	curl -fsSL "$(R2_PUBLIC)/ref_climatology_1deg_1981-2010.nc" -o data/processed/ref_climatology_1deg_1981-2010.nc
+	curl -fsSL "$(R2_PUBLIC)/ref_humidity_precip_1deg_1981-2010.nc" -o data/processed/ref_humidity_precip_1deg_1981-2010.nc
 
 # ── Upload to R2 ────────────────────────────────────────────────────────
 # Requires wrangler CLI + `wrangler login` (or R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY env vars).
