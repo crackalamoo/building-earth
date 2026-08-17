@@ -8,7 +8,7 @@ Live at **[earth.crackalamoo.com](https://earth.crackalamoo.com)**
 
 ---
 
-Building Earth is an interactive 3D globe that runs a real climate simulation that derives temperature, humidity, precipitation, wind, and clouds from first principles. Click anywhere on the planet and ask why.
+Building Earth is an interactive 3D globe that runs a real climate simulation that derives temperature, humidity, precipitation, wind, and clouds from first principles. Click anywhere on the planet and ask why the climate is like that there.
 
 The simulation solves for a full annual cycle across a global grid, driven by:
 
@@ -49,7 +49,7 @@ make frontend
 
 ### LLM chat backend
 
-The "ask why" chat feature is a separate FastAPI server. It requires an OpenAI API key and the NOAA reference data files (used for LLM tool context, not the simulation itself).
+The "ask why" chat feature is a separate FastAPI server. It requires an OpenAI API key and the NOAA reference data files (used for LLM tool context, not the simulation itself). The same backend is also used to display reference climate charts in the UI.
 
 ```bash
 # Download obs reference data from R2 (one-time, ~30MB)
