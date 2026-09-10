@@ -70,6 +70,8 @@
   let chatSentLat: number | null = null;
   let chatSentLon: number | null = null;
 
+  const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+
   // Two-phase state
   let primordialLandMask: { data: Uint8Array; nlat: number; nlon: number } | null = null;
   let controlsVisible = false;
@@ -226,6 +228,8 @@
     if (nextStage === 1) {
       // Stage 0 → 1: "Let there be light" — flash effect then load stage 1
       revealClicked = true;
+      // Fire-and-forget: start waking the backend before the first real API call
+      fetch(`${API_BASE}/health`).catch(() => {});
       stageLoading.set(true);
       globeComponent?.triggerFlash();
 
