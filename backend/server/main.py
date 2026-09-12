@@ -15,6 +15,7 @@ from .rate_limit import create_chat_limiter
 from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI, APIError
 from openai.types.responses import (
+    ResponseCompletedEvent,
     ResponseInputParam,
     ResponseOutputItemAddedEvent,
     ResponseOutputItemDoneEvent,
@@ -68,17 +69,17 @@ obs_store = ObsDataStore()
 SYSTEM = SYSTEM_PROMPT
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-dummy"))
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-nano")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 
-# Reasoning models (gpt-5*, o-series) accept a reasoning_effort knob that
-# trades latency for deeper deliberation. For a tool-calling chat app the
-# default ("medium") wastes seconds on every turn. We use "low" — "minimal"
-# is contraindicated by OpenAI for multi-step or tool-heavy workflows and
-# noticeably degrades instruction following, while the latency gap to "low"
-# is under a second on gpt-5-mini.
+# Reasoning models accept a reasoning_effort knob that trades latency for
+# deeper deliberation. For a tool-calling chat app the default ("medium")
+# wastes seconds on every turn. We use "low" — "none" and "minimal" are
+# contraindicated by OpenAI for multi-step or tool-heavy workflows and
+# noticeably degrade instruction following, while the latency gap to "low"
+# is under a second.
 # Non-reasoning models (gpt-4.1*, gpt-4o*) reject this parameter, so we only
 # pass it when the model name indicates support.
-_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+_REASONING_MODEL_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
 SUPPORTS_REASONING_EFFORT = MODEL.startswith(_REASONING_MODEL_PREFIXES)
 REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "low")
 
@@ -161,9 +162,7 @@ async def chat(request: Request) -> StreamingResponse:
         None,
     )
 
-    input_items: list[dict[str, Any]] = [
-        {"type": "message", "role": "system", "content": system_content}
-    ]
+    input_items: list[Any] = [{"type": "message", "role": "system", "content": system_content}]
     for i, msg in enumerate(user_messages):
         content = msg.get("content", "")
         if i == last_user_idx:
@@ -182,6 +181,9 @@ async def chat(request: Request) -> StreamingResponse:
             # entry has name, arguments, and call_id from the completed
             # function_call output item.
             pending_tool_calls: list[dict[str, str]] = []
+            # Full output of this round (reasoning + function_call items),
+            # echoed back so the model keeps its reasoning across tool rounds.
+            round_output: list[Any] = []
 
             try:
                 extra_kwargs: dict[str, Any] = {}
@@ -235,6 +237,9 @@ async def chat(request: Request) -> StreamingResponse:
                                     "call_id": event.item.call_id,
                                 }
                             )
+
+                    elif isinstance(event, ResponseCompletedEvent):
+                        round_output = list(event.response.output)
             except APIError as e:
                 yield f"data: {json.dumps({'error': f'LLM service error: {e.message}'})}\n\n"
                 break
@@ -244,6 +249,21 @@ async def chat(request: Request) -> StreamingResponse:
 
             if not pending_tool_calls:
                 break
+
+            if round_output:
+                input_items.extend(round_output)
+            else:
+                # No completed event; rebuild the function_call items so each
+                # function_call_output below has a matching call.
+                input_items.extend(
+                    {
+                        "type": "function_call",
+                        "call_id": tc["call_id"],
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    }
+                    for tc in pending_tool_calls
+                )
 
             for tc in pending_tool_calls:
                 try:
@@ -295,16 +315,6 @@ async def chat(request: Request) -> StreamingResponse:
                     result = {"error": f"Failed to process tool call: {exc}"}
                     yield f"data: {json.dumps({'tool': '?'})}\n\n"
 
-                # function_call must precede function_call_output in the input
-                # so the model sees its own call before the output.
-                input_items.append(
-                    {
-                        "type": "function_call",
-                        "call_id": tc["call_id"],
-                        "name": tc["name"],
-                        "arguments": tc["arguments"],
-                    }
-                )
                 input_items.append(
                     {
                         "type": "function_call_output",
