@@ -1,10 +1,14 @@
 .PHONY: frontend backend sim docker docker-stop \
         export export-main export-stages downsample-mobile \
         upload upload-main upload-stages upload-mobile upload-obs \
-        download-obs deploy
+        download-obs deploy eval
 
 R2_BUCKET = climate-sim-data
 R2_PUBLIC = https://pub-9a1d53d2ac6f42a8b83952d8fab2e668.r2.dev
+
+# Where the simulation caches main.npz and elevation data
+DATA_DIR ?= $(CURDIR)/data
+export DATA_DIR
 
 # ── Dev ─────────────────────────────────────────────────────────────────
 frontend:
@@ -14,7 +18,11 @@ backend:
 	uv run uvicorn backend.server.main:app --port 8000 --reload
 
 sim:
+	mkdir -p "$(DATA_DIR)"
 	uv run python backend/main.py --resolution 5
+
+eval:
+	uv run python backend/eval.py --cache --headless --resolution 5
 
 docker:
 	docker compose up --build

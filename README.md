@@ -20,6 +20,22 @@ The simulation solves for a full annual cycle across a global grid, driven by:
 
 Results are evaluated against NOAA climatology, but the model itself is fully first-principles; there is no explicit dependence on historical climatology data.
 
+## Evaluation against NOAA
+
+Annual, area-weighted comparison against 1981–2010 NOAA climatology at 5° resolution (land 2 m air temperature: GHCN-CAMS; SST: COBE2; precipitation: GPCP; humidity, SLP, wind, clouds: NCEP reanalysis). Bias is sim − obs.
+
+| Variable | Global RMSE | Bias (land / ocean / global) | Pattern corr. (land / ocean / global) |
+|----------|------------:|:----------------------------:|:-------------------------------------:|
+| Temperature: land T2m, ocean SST (°C) | 4.10 | +1.43 / +0.61 / +0.84 | 0.94 / 0.94 / 0.94 |
+| Specific humidity (g/kg) | 3.25 | +1.72 / +1.06 / +1.25 | 0.86 / 0.91 / 0.90 |
+| Relative humidity (%) | 20.3 | −9.7 / +6.7 / +2.1 | 0.54 / −0.12 / 0.27 |
+| Precipitation (mm/day) | 2.32 | −0.47 / −1.34 / −1.08 | 0.66 / 0.37 / 0.48 |
+| Sea-level pressure (hPa) | 8.33 | −0.49 / +2.58 / +1.66 | 0.55 / 0.69 / 0.62 |
+| 10 m wind speed (m/s) | 3.15 | −0.05 / −0.70 / −0.51 | −0.14 / 0.20 / 0.23 |
+| Cloud cover (%) | 26.4 | −4.6 / +6.6 / +3.2 | 0.36 / −0.01 / 0.29 |
+
+Temperature is the strongest result: pattern correlation with observations is 0.94, with land (T2m) RMSE of 5.5 °C and ocean (SST) RMSE of 3.4 °C. Wind direction is captured better than speed (U-component correlation 0.61, V-component 0.31). Precipitation is too low overall, especially over the ocean (sim 1.5 vs obs 2.9 mm/day).
+
 ## Tech stack
 
 | Layer | Technology |
@@ -66,6 +82,6 @@ make backend        # runs on port 8000
 
 ```bash
 make sim            # or reuse a cached run
-uv run python backend/eval.py --cache --headless --resolution 5
+make eval
 ```
 
