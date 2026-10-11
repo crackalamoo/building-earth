@@ -1,0 +1,27 @@
+app = "earth-crackalamoo-api"
+primary_region = "iad"
+
+[build]
+
+[env]
+  CORS_ORIGIN = "https://earth.crackalamoo.com,https://crackalamoo-earth.pages.dev"
+  OPENAI_MODEL = "gpt-6-luna"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

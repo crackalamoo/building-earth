@@ -74,6 +74,6 @@ upload-obs:
 	wrangler r2 object put $(R2_BUCKET)/ref_humidity_precip_1deg_1981-2010.nc --file data/processed/ref_humidity_precip_1deg_1981-2010.nc --remote
 
 # ── Full deploy: sim → export → upload → push ──────────────────────────
-# After push, Cloudflare Pages and Railway auto-rebuild from main.
+# After push, Cloudflare Pages and Fly.io (via GitHub Actions) auto-rebuild from main.
 deploy: sim export upload
 	git push

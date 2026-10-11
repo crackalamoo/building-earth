@@ -69,7 +69,7 @@ obs_store = ObsDataStore()
 SYSTEM = SYSTEM_PROMPT
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-dummy"))
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna")
 
 # Reasoning models accept a reasoning_effort knob that trades latency for
 # deeper deliberation. For a tool-calling chat app the default ("medium")
