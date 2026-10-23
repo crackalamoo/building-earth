@@ -3,6 +3,14 @@ name: Deploy backend to Fly.io
 on:
   push:
     branches: [main]
+    paths:
+      - 'backend/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'fly.toml'
+      - '.github/workflows/fly-deploy.yml'
   workflow_dispatch:
 
 concurrency:
