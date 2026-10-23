@@ -20,7 +20,10 @@
       </div>
       <div class="modal-body">
         <p>A first-principles climate simulation built from scratch with a beautiful visualizer and an AI explainer.</p>
-        <a class="github-link" href="https://github.com/crackalamoo/2025-proj0" target="_blank" rel="noopener">View source on GitHub</a>
+        <div class="links">
+          <a class="about-link" href="https://github.com/crackalamoo/building-earth" target="_blank" rel="noopener">View source on GitHub</a>
+          <a class="about-link" href="https://www.harysdalvi.com" target="_blank" rel="noopener">Made by Harys Dalvi</a>
+        </div>
         <div class="section-heading">My Inspirations</div>
         <p>A heartfelt thanks to all of the following:</p>
         <ul>
@@ -81,16 +84,22 @@
     margin: 0 0 1rem;
   }
 
-  .github-link {
-    display: inline-block;
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
     margin-bottom: 1.5rem;
+  }
+
+  .about-link {
+    display: inline-block;
     color: #3fc0c0;
     font-size: 0.9rem;
     text-decoration: underline;
     text-underline-offset: 3px;
   }
 
-  .github-link:hover {
+  .about-link:hover {
     color: #5ddcdc;
   }
 
